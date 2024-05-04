@@ -1,0 +1,3 @@
+let val = "abcd";
+
+out(val);
