@@ -13,12 +13,21 @@ I want:
 - copy before arguments means we clone them (aka you don't modify what you've taken).
 
 
-```rust
+Built-in Types:
+- `number` (f64) A 64-Bit floating point number
+- `string` A String
+- `bool` A boolean
+- `table` A table (HashMap)
+- `array` An Array
+- `Result`: `{ success: bool, value: any }` A return value of a function (TODO: Add Generics)
+- Internal `ArrayStruct`: An array representation of a structure (to save space)
+
+```rs
 const value1 = 12;
 let value2 = { a: 12 };
 let value3: string = "";
 
-fn main(val: uint, some_arg, spread: ...) {
+fn main(val: number, some_arg, spread: ...) {
     value2.a;
     for i in range(0, val) {
         print(spread[i]);
@@ -42,15 +51,14 @@ impl Iterate for Abc { // <- While this may not look like it, this is still duck
         return 12;
     }
 }
-/*
-impl Abc {
-    fn next(self: Self) -> int {
-        return 12;
-    }
-}
+
+// impl Abc {
+//     fn next(self: Self) -> number {
+//         return 12;
+//     }
+// }
 
 this would have the same effect as the above
-*/
 
 struct WeirdNumber {}
 
@@ -63,11 +71,11 @@ impl WeirdNumber {
     }
 }
 let num = WeirdNumber{};
-print(`10 + ${num}: %s`, 10 + num); // 10 + 12: 0
+print("10 + %s: %s", num, 10 + num); // 10 + 12: 0
 
 let a = 0;
 
-fn add_to_number1(clone val: int) { // <- if its not clone ..., its always implicitly &int, aka &i32
+fn add_to_number1(copy val: number) { // <- if its not copy ..., its always implicitly &int, aka &i32
     val += 12;
     print(val);
 }
@@ -75,7 +83,7 @@ fn add_to_number1(clone val: int) { // <- if its not clone ..., its always impli
 add_to_number1(a); // 12
 print(a); // 0
 
-fn add_to_number2(val: int) { // <- if its not clone ..., its always implicitly &int, aka &i32
+fn add_to_number2(val: number) { // <- if its not copy ..., its always implicitly &int, aka &i32
     val += 12;
 }
 
