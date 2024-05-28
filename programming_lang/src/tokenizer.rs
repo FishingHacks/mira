@@ -1,76 +1,126 @@
-use crate::globals::GlobalString;
+use std::fmt::{Display, Write};
 
-#[derive(Clone, Copy, Debug)]
+use crate::{
+    error::ProgrammingLangTokenizationError,
+    globals::GlobalString,
+    parser::{LiteralValue, Parser},
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenType {
-    Let,                     // done
-    Const,                   // done
-    Equals,                  // done
-    NotEquals,               // done
-    LessThan,                // done
-    GreaterThan,             // done
-    LessThanEquals,          // done
-    GreaterThanEquals,       // done
-    LogicalAnd,              // done
-    LogicalOr,               // done
-    StringLiteral,           // done
-    NumberLiteral,           // done
-    IdentifierLiteral,       // done
-    AssignValue,             // done
-    AssignTypeOrStructValue, // done
-    Semicolon,               // done
-    ParenLeft,               // done
-    ParenRight,              // done
-    CurlyLeft,               // done
-    CurlyRight,              // done
-    BracketLeft,             // done
-    BracketRight,            // done
-    Plus,                    // done
-    Minus,                   // done
-    Multiply,                // done
-    Divide,                  // done
-    Modulo,                  // done
-    IntegerDivide,           // done
-    BitwiseNot,              // done
-    BitwiseAnd,              // done
-    BitwiseOr,               // done
-    BitwiseXor,              // done
-    Return,                  // done
-    If,                      // done
-    While,                   // done
-    For,                     // done
-    In,                      // done
-    Range,                   // done
-    RangeInclusive,          // done
-    Spread,                  // done
-    Typeof,                  // done
-    ReturnType,              // done
-    Trait,                   // done
-    Impl,                    // done
-    Comma,                   // done
-    Copy,                    // done
-    PlusAssign,              // done
-    MinusAssign,             // done
-    DivideAssign,            // done
-    MultiplyAssign,          // done
-    BitwiseAndAssign,        // done
-    BitwiseOrAssign,         // done
-    BitwiseXorAssign,        // done
-    Dot,                     // done
-    Eof,                     // done
+    // Tokenization, Parsing ; *: no types
+    Let,                     // done, done
+    Const,                   // done, done
+    Equals,                  // done, done
+    NotEquals,               // done, done
+    LessThan,                // done, done
+    GreaterThan,             // done, done
+    LessThanEquals,          // done, done
+    GreaterThanEquals,       // done, done
+    LogicalNot,              // done, done
+    LogicalAnd,              // done, done
+    LogicalOr,               // done, done
+    StringLiteral,           // done, done
+    NumberLiteral,           // done, done
+    BooleanLiteral,          // done, done
+    NullLiteral,             // done, done
+    IdentifierLiteral,       // done, done
+    AssignValue,             // done, done
+    AssignTypeOrStructValue, // done, done*
+    Semicolon,               // done, done
+    ParenLeft,               // done, done
+    ParenRight,              // done, done
+    CurlyLeft,               // done, done
+    CurlyRight,              // done, done
+    BracketLeft,             // done, done
+    BracketRight,            // done, done
+    Plus,                    // done, done
+    Minus,                   // done, done
+    Multiply,                // done, done
+    Divide,                  // done, done
+    Modulo,                  // done, done
+    ModuloAssign,            // done, done
+    IntegerDivide,           // done, done
+    BitwiseNot,              // done, done
+    BitwiseAnd,              // done, done
+    BitwiseOr,               // done, done
+    BitwiseXor,              // done, done
+    Return,                  // done, done
+    Fn,                      // done, done
+    If,                      // done, done
+    Else,                    // done, done
+    While,                   // done, done
+    For,                     // done, done
+    In,                      // done, done
+    Range,                   // done, done
+    RangeInclusive,          // done, done
+    Spread,                  // done, done
+    ReturnType,              // done, *
+    Struct,                  // done,
+    Trait,                   // done, *
+    Impl,                    // done,
+    Comma,                   // done, done
+    Copy,                    // done, done
+    PlusAssign,              // done, done
+    MinusAssign,             // done, done
+    DivideAssign,            // done, done
+    MultiplyAssign,          // done, done
+    BitwiseAndAssign,        // done, done
+    BitwiseOrAssign,         // done, done
+    BitwiseXorAssign,        // done, done
+    Dot,                     // done, done
+    As,                      // done, *
+    QuestionMark,            // done, *
+    Eof,                     // done, done
 }
 
 #[derive(Clone, Debug)]
 pub enum Literal {
     Number(f64),
     String(Box<str>),
+    Null,
+    Bool(bool),
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct Location {
+    pub line: usize,
+    pub file: GlobalString,
+    pub column: usize,
+}
+
+impl Location {
+    pub fn new(file: GlobalString, line: usize, column: usize) -> Self {
+        Self { column, file, line }
+    }
+}
+
+impl Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.file, f)?;
+        f.write_char(':')?;
+        Display::fmt(&self.line, f)?;
+        f.write_char(':')?;
+        Display::fmt(&self.column, f)
+    }
+}
+
+#[macro_export]
+macro_rules! loc {
+    ($file:expr;$line:expr) => {
+        $crate::tokenizer::Location::new($file, $line, 0)
+    };
+    ($file:expr;$line:expr;$column:expr) => {
+        $crate::tokenizer::Location::new($file, $line, $column)
+    };
+}
+pub(crate) use loc;
 
 #[derive(Clone, Debug)]
 pub struct Token {
     pub typ: TokenType,
     pub literal: Option<Literal>,
-    pub line_number: usize,
-    pub file: GlobalString,
+    pub location: Location,
 }
 
 impl Token {
@@ -82,9 +132,33 @@ impl Token {
     ) -> Self {
         Self {
             typ,
-            file,
-            line_number,
+            location: loc!(file;line_number),
             literal,
+        }
+    }
+
+    pub fn to_literal_value(&self) -> Option<LiteralValue> {
+        match self.typ {
+            TokenType::StringLiteral
+            | TokenType::NullLiteral
+            | TokenType::BooleanLiteral
+            | TokenType::NumberLiteral => self.literal.as_ref().map(|v| match v {
+                Literal::Null => LiteralValue::Null,
+                Literal::Bool(b) => LiteralValue::Bool(*b),
+                Literal::Number(n) => LiteralValue::Number(*n),
+                Literal::String(s) => LiteralValue::String(s.clone()),
+            }),
+            TokenType::IdentifierLiteral => {
+                if let Some(lit) = &self.literal {
+                    return match &lit {
+                        Literal::String(v) => Some(LiteralValue::Dynamic(v.clone())),
+                        _ => None,
+                    };
+                } else {
+                    return None;
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -110,7 +184,7 @@ impl Tokenizer {
         }
     }
 
-    pub fn scan_tokens(&mut self) -> Result<Vec<Token>, Vec<String>> {
+    pub fn scan_tokens(&mut self) -> Result<(), Vec<ProgrammingLangTokenizationError>> {
         let mut errors = vec![];
         while !self.is_at_end() {
             self.start = self.current;
@@ -122,14 +196,13 @@ impl Tokenizer {
         self.tokens.push(Token {
             typ: TokenType::Eof,
             literal: None,
-            line_number: self.line,
-            file: self.file,
+            location: loc!(self.file;self.line + 1),
         });
 
         if errors.len() > 0 {
             Err(errors)
         } else {
-            Ok(self.tokens.clone())
+            Ok(())
         }
     }
 
@@ -169,7 +242,7 @@ impl Tokenizer {
         }
     }
 
-    fn scan_token(&mut self) -> Result<(), String> {
+    fn scan_token(&mut self) -> Result<(), ProgrammingLangTokenizationError> {
         let c = self.advance();
 
         macro_rules! token {
@@ -187,6 +260,7 @@ impl Tokenizer {
         }
 
         match c {
+            '?' => token!(QuestionMark),
             '(' => token!(ParenLeft),
             ')' => token!(ParenRight),
             '{' => token!(CurlyLeft),
@@ -222,14 +296,15 @@ impl Tokenizer {
                 }
             }
             '/' if self.peek() != '/' => token!(Divide, DivideAssign, '='),
-            '%' => token!(Modulo),
+            '%' => token!(Modulo, ModuloAssign, '='),
             '*' => token!(Multiply, MultiplyAssign, '='),
             '=' => token!(AssignValue, Equals, '='),
             '<' => token!(LessThan, LessThanEquals, '='),
             '>' => token!(GreaterThan, GreaterThanEquals, '='),
             ':' => token!(AssignTypeOrStructValue),
             ';' => token!(Semicolon),
-            '!' => token!(BitwiseNot, NotEquals, '='),
+            '!' => token!(LogicalNot, NotEquals, '='),
+            '~' => token!(BitwiseNot),
             '&' => {
                 if self.if_char_advance('=') {
                     token!(BitwiseAndAssign);
@@ -253,10 +328,17 @@ impl Tokenizer {
             '/' if self.if_char_advance('/') => {
                 while !self.is_at_end() && self.advance() != '\n' {}
             }
-            c @ ('0'..='9') => return self.parse_number(c),
+            ('0'..='9') => return self.parse_number(c),
             '"' => return self.parse_string(),
-            c @ _ if Self::is_valid_identifier_char(c) => self.parse_identifier(c),
-            _ => return Err(format!("Unknown Token: {c}")),
+            _ if Self::is_valid_identifier_char(c) && !matches!(c, ('0'..='9')) => {
+                self.parse_identifier(c)
+            }
+            _ => {
+                return Err(ProgrammingLangTokenizationError::unknown_token(
+                    loc!(self.file;self.line),
+                    c,
+                ))
+            }
         }
         Ok(())
     }
@@ -266,7 +348,7 @@ impl Tokenizer {
             .push(Token::new(token, None, self.line, self.file));
     }
 
-    fn parse_number(&mut self, first_char: char) -> Result<(), String> {
+    fn parse_number(&mut self, first_char: char) -> Result<(), ProgrammingLangTokenizationError> {
         let mut str = String::with_capacity(5);
         if first_char == '.' {
             str.push('0');
@@ -274,8 +356,18 @@ impl Tokenizer {
         str.push(first_char);
 
         while !self.is_at_end() {
-            if matches!(self.peek(), '.' | ('0'..='9')) {
+            if matches!(self.peek(), ('0'..='9')) {
                 str.push(self.advance())
+            } else if self.peek() == '.'
+                && matches!(
+                    self.source
+                        .get(self.current + 1)
+                        .map(|c| *c)
+                        .unwrap_or('\0'),
+                    ('0'..='9')
+                )
+            {
+                str.push(self.advance());
             } else {
                 break;
             }
@@ -283,14 +375,18 @@ impl Tokenizer {
 
         let num = match str.parse::<f64>() {
             Ok(num) => num,
-            Err(e) => return Err(format!("{e:?}")),
+            Err(..) => {
+                return Err(ProgrammingLangTokenizationError::invalid_number(
+                    loc!(self.file;self.line),
+                ))
+            }
         };
         self.add_token_lit(TokenType::NumberLiteral, Literal::Number(num));
 
         Ok(())
     }
 
-    fn parse_string(&mut self) -> Result<(), String> {
+    fn parse_string(&mut self) -> Result<(), ProgrammingLangTokenizationError> {
         let mut is_backslash = false;
         let mut str = String::with_capacity(30);
 
@@ -309,9 +405,8 @@ impl Tokenizer {
             }
         }
         if self.cur_char() != '"' || self.source[self.current - 2] == '\\' {
-            return Err(format!(
-                "{}:{}: Expected \", but found nothing",
-                self.file, self.line,
+            return Err(ProgrammingLangTokenizationError::unclosed_string(
+                loc!(self.file;self.line+1),
             ));
         }
 
@@ -340,33 +435,41 @@ impl Tokenizer {
             if Self::is_valid_identifier_char(self.peek()) {
                 identifier.push(self.advance());
             } else {
-                if let Some(typ) = Self::try_token_from_keyword(&identifier) {
-                    self.add_token(typ);
-                } else {
-                    self.add_token_lit(
-                        TokenType::IdentifierLiteral,
-                        Literal::String(identifier.into()),
-                    );
-                }
                 break;
             }
         }
+        match identifier.as_str() {
+            "null" => return self.add_token(TokenType::NullLiteral),
+            "true" => return self.add_token_lit(TokenType::BooleanLiteral, Literal::Bool(true)),
+            "false" => return self.add_token_lit(TokenType::BooleanLiteral, Literal::Bool(false)),
+            _ => (),
+        }
+        if let Some(typ) = Self::try_token_from_keyword(&identifier) {
+            return self.add_token(typ);
+        }
+        self.add_token_lit(
+            TokenType::IdentifierLiteral,
+            Literal::String(identifier.into()),
+        );
     }
 
     fn try_token_from_keyword(word: &str) -> Option<TokenType> {
         match word {
             "let" => Some(TokenType::Let),
             "const" => Some(TokenType::Const),
-            "idiv" => Some(TokenType::IntegerDivide),
+            "as" => Some(TokenType::As),
+            "fn" => Some(TokenType::Fn),
             "return" => Some(TokenType::Return),
             "if" => Some(TokenType::If),
+            "else" => Some(TokenType::Else),
             "while" => Some(TokenType::While),
             "for" => Some(TokenType::For),
             "in" => Some(TokenType::In),
-            "typeof" => Some(TokenType::Typeof),
-            "trait" => Some(TokenType::Trait),
-            "impl" => Some(TokenType::Impl),
             "copy" => Some(TokenType::Copy),
+            "idiv" => Some(TokenType::IntegerDivide),
+            "struct" => Some(TokenType::Struct),
+            "impl" => Some(TokenType::Impl),
+            "trait" => Some(TokenType::Trait),
             _ => None,
         }
     }
@@ -379,6 +482,17 @@ impl Tokenizer {
     // valid characters:
     // abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$#
     fn is_valid_identifier_char(character: char) -> bool {
-        matches!(character, '_' | '$' | '#' | ('a'..='z') | ('A'..='Z'))
+        matches!(
+            character,
+            '_' | '$' | '#' | ('a'..='z') | ('A'..='Z') | ('0'..='9')
+        )
+    }
+
+    pub fn get_tokens(&self) -> &Vec<Token> {
+        &self.tokens
+    }
+
+    pub fn to_parser(self) -> Parser {
+        Parser::new(self.tokens)
     }
 }

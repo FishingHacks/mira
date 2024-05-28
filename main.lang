@@ -1,3 +1,106 @@
-let val = "abcd";
+const value1 = 12;
+let value2 = { a: 12 };
+let value3 = "";
 
-out(val);
+fn main(val, some_arg, ...spread) {
+    value2.a;
+    for (i in 0..val) // not done: for loops
+        println(spread[i]);
+   
+    println(typeof(some_arg));
+}
+
+//trait Iterate { // not done: traits
+//    fn next(self); // not done: abstract functions
+//    // not done: trait functions
+//    fn next(self) { // this codeblock gets ignored, these 2 do functionally the same thing, this would throw an error due to redefinition of Iterate::next()!
+//        println(123);
+//    }
+//}
+
+//struct Abc { // not done: structs
+//    val: string;
+//}
+
+// not done: impl
+//impl Iterate for Abc { // <- While this may not look like it, this is still ducktyping. impl Iterate for Abc just hints at the compiler what im trying to do, so that the compiler itself can throw an error if too many or too little functions are implemented or if the function arguments and returns and the ones of the trait don't match.
+//    fn next(self) { // not done: impl functions
+//        return 12;
+//    }
+//}
+
+// impl Abc {
+//     fn next(self) -> number {
+//         return 12;
+//     }
+// }
+
+// this would have the same effect as the above
+
+//struct WeirdNumber {}
+
+//impl WeirdNumber {
+//    fn string() { return "12" }
+//    fn add(self, other) {
+//        if typeof(other) == "number" {
+//            return other - 10;
+//        }
+//    }
+//}
+let num = WeirdNumber{};
+println("10 + %s: %s", num, 10 + num); // 10 + 12: 0
+
+let a = 0;
+
+fn add_to_number1(copy val) { // <- if its not copy ..., its always implicitly &int, aka &i32
+    val += 12;
+    println(val);
+}
+
+add_to_number1(a); // 12
+println(a); // 0
+
+fn add_to_number2(val) { // <- if its not copy ..., its always implicitly &int, aka &i32
+    val += 12;
+}
+
+add_to_number1(a); // 12
+println(a); // 12
+
+while (true) {}
+
+// Proposed Generics
+// Replace all generics with any for right now!
+
+//struct Result {
+//    val,
+//    success
+//}
+
+//impl Result {
+//    fn is_ok(self) {
+//        return self.success;
+//    }
+
+//    fn unwrap() {
+//        if (!self.success) {
+//            panic("Failed to unwrap!")
+//        }
+//        return self.val;
+//    }
+
+//    fn ok(self: Self) {
+//        return self.val;
+//    }
+
+//    fn err(self) {
+//        return self.val;
+//    }
+
+//    fn expect(self, str) {
+//        if (self.success) {
+//            return self.val;
+//        }
+//        panic(format("Failed to unwrap: %s", str))
+//    }
+//}
