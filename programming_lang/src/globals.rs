@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt::Display};
+use std::{cell::Cell, fmt::{Debug, Display, Write}, hash::Hash};
 
 fn with_global_strs<Fn, R>(f: Fn) -> R
 where
@@ -12,7 +12,7 @@ where
 }
 
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Eq)]
 pub struct GlobalString(usize);
 
 impl Display for GlobalString {
@@ -24,6 +24,19 @@ impl Display for GlobalString {
                 self.0
             )),
         })
+    }
+}
+
+impl Debug for GlobalString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GlobalString#")?;
+        Debug::fmt(&self.0, f)?;
+        f.write_char('(')?;
+        with_global_strs(|strings| match strings.get(self.0) {
+            Some(v) => Debug::fmt(&**v, f),
+            None => f.write_str("not found"),
+        })?;
+        f.write_char(')')
     }
 }
 
@@ -53,6 +66,45 @@ impl From<String> for GlobalString {
                 }
             };
             Self(index)
+        })
+    }
+}
+
+impl PartialEq for GlobalString {
+    fn eq(&self, other: &Self) -> bool {
+        if self.0 == other.0 { return true; }
+        with_global_strs(|strings| {
+            if let Some(self_str) = strings.get(self.0) {
+                if let Some(other_str) = strings.get(other.0) {
+                    return self_str == other_str;
+                }
+            }
+            return false;
+        })
+    }
+}
+
+impl PartialOrd for GlobalString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        if self.0 == other.0 { return Some(std::cmp::Ordering::Equal); }
+        with_global_strs(|strings| {
+            if let Some(self_str) = strings.get(self.0) {
+                if let Some(other_str) = strings.get(other.0) {
+                    return self_str.partial_cmp(other_str);
+                }
+            }
+            return None;
+        })
+    }
+}
+
+impl Hash for GlobalString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        with_global_strs(|strings| {
+            match strings.get(self.0) {
+                None => panic!("GlobalString#{} is not present but expected to be hashable", self.0),
+                Some(c) => c.hash(state),
+            }
         })
     }
 }

@@ -6,11 +6,7 @@ use std::{
     time::Instant,
 };
 
-use programming_lang::{
-    error::ProgrammingLangError,
-    globals::GlobalString,
-    tokenizer::Tokenizer,
-};
+use programming_lang::{error::ProgrammingLangError, globals::GlobalString, module::Module, tokenizer::Tokenizer};
 
 fn main() -> std::io::Result<()> {
     // if let Err(e) = run_file("./main.lang") {
@@ -18,7 +14,8 @@ fn main() -> std::io::Result<()> {
     // }
     // return Ok(());
     let file = GlobalString::from("<stdin>");
-
+    let mut module = Module::new();
+    
     loop {
         print!("> ");
         let _ = stdout().flush();
@@ -26,6 +23,24 @@ fn main() -> std::io::Result<()> {
         let Ok(_) = stdin().read_line(&mut str) else {
             continue;
         };
+
+        if str == "\n" || str == "\r\n" {
+            continue;
+        }
+        if str.trim() == ".exit" {
+            break;
+        }
+        if str.trim() == ".help" {
+            //┌─┐└┘│├┬┴┼┴┤
+            // TODO: Better help menu
+            println!("┌───────┬──────────────────────┐");
+            println!("│ .help │ Prints the help menu │");
+            println!("│ .exit │ Exits the repl       │");
+            println!("└───────┴──────────────────────┘");
+
+            continue;
+        }
+
         let start = Instant::now();
         let mut tokenizer = Tokenizer::new(&str, file);
 
@@ -50,22 +65,45 @@ fn main() -> std::io::Result<()> {
         let start = Instant::now();
 
         let mut parser = tokenizer.to_parser();
-        while parser.current < parser.tokens.len() - 1 {
-            match parser.parse_statement() {
-                Ok(v) => {
-                    println!("Parsed: {v}");
+        let parsed = match parser.parse_all() {
+            Ok(statements) => {
+                for stmt in &statements {
+                    println!("parsed: {stmt}");
                 }
-                Err(e) => {
-                    println!("Could not parse: {e:?}");
-                    parser.bail();
-                }
+                statements
             }
-        }
+            Err(errors) => {
+                for error in &errors {
+                    println!("{error:?}");
+                }
+                continue;
+            }
+        };
+
         println!(
             "Parsing: {}μs",
             Instant::now().duration_since(start).as_micros()
         );
+
+        let start = Instant::now();
+
+        match module.push_all(parsed) {
+            Ok(_) => (),
+            Err(errors) => {
+                for err in &errors {
+                    println!("{err:?}");
+                }
+                continue;
+            }
+        }
+
+        println!(
+            "Module Creation: {}μs",
+            Instant::now().duration_since(start).as_micros()
+        );
     }
+
+    Ok(())
 }
 
 enum ProgrammingLangIoError {

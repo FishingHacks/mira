@@ -8,7 +8,9 @@ use crate::{
     tokenizer::{Literal, Location, Token, TokenType},
 };
 
-use super::{statement::Callable, Parser};
+use super::{
+    statement::{display_contract, FunctionContract}, types::TypeRef, Parser, Statement
+};
 
 #[derive(Debug, Clone)]
 pub enum LiteralValue {
@@ -19,7 +21,7 @@ pub enum LiteralValue {
     Number(f64),
     Bool(bool),
     Dynamic(Box<str>),
-    Callable(Callable),
+    AnonymousFunction(FunctionContract, Box<Statement>),
     Null,
 }
 
@@ -70,7 +72,11 @@ impl Display for LiteralValue {
 
                 f.write_str(" }")
             }
-            LiteralValue::Callable(v) => Display::fmt(v, f),
+            LiteralValue::AnonymousFunction(v, body) => {
+                display_contract(f, v, false)?;
+                Display::fmt(body, f)?;
+                f.write_char(')')
+            }
         }
     }
 }
@@ -87,7 +93,7 @@ impl LiteralValue {
             LiteralValue::Array(..) => "array",
             LiteralValue::Object(..) => "object",
             LiteralValue::Struct(..) => "struct",
-            LiteralValue::Callable(..) => "function",
+            LiteralValue::AnonymousFunction(..) => "function",
         }
     }
 }
@@ -123,6 +129,11 @@ pub enum Expression {
         inclusive: bool,
         loc: Location,
     },
+    TypeCast {
+        left_side: Box<Expression>,
+        new_type: TypeRef,
+        loc: Location,
+    }
 }
 
 impl Display for Expression {
@@ -201,6 +212,13 @@ impl Display for Expression {
                 Display::fmt(right_side, f)?;
                 f.write_char(')')
             }
+            Expression::TypeCast { left_side, new_type, loc: _ } => {
+                f.write_str("(type-cast ")?;
+                Display::fmt(left_side, f)?;
+                f.write_str(" -> ")?;
+                Display::fmt(new_type, f)?;
+                f.write_char(')')
+            }
         }
     }
 }
@@ -233,15 +251,16 @@ impl Expression {
         }
     }
 
-    pub fn loc(&self) -> &Location {
+    pub fn loc(&self) -> Location {
         match self {
-            Self::Literal(_, v) => v,
-            Self::Unary { operator, .. } => &operator.location,
-            Self::Binary { operator, .. } => &operator.location,
+            Self::Literal(_, v) => *v,
+            Self::Unary { operator, .. } => operator.location,
+            Self::Binary { operator, .. } => operator.location,
             Self::FunctionCall { identifier, .. } => identifier.loc(),
             Self::Indexing { right_side, .. } => right_side.loc(),
-            Self::Assignment { loc, .. } => &loc,
-            Self::Range { loc, .. } => &loc,
+            Self::Assignment { loc, .. } => *loc,
+            Self::Range { loc, .. } => *loc,
+            Self::TypeCast { loc, .. } => *loc,
         }
     }
 
@@ -276,7 +295,7 @@ impl Expression {
                         match operator.typ {
                             TokenType::Plus => match v {
                                 LiteralValue::Dynamic(..) => (),
-                                LiteralValue::Number(v) => *self = Self::number(*v, loc),
+                                LiteralValue::Number(..) => (),
                                 v @ _ => {
                                     return Err(
                                         ProgrammingLangParsingError::CannotDoUnaryOperation {
@@ -394,7 +413,7 @@ impl Expression {
                                     )
                                 }
                             },
-                            TokenType::Multiply => match (left, right) {
+                            TokenType::MultiplyOrDeref => match (left, right) {
                                 (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
                                 }
                                 (LiteralValue::Number(left), LiteralValue::Number(right)) => {
@@ -539,7 +558,7 @@ impl Expression {
                                     )
                                 }
                             },
-                            TokenType::BitwiseAnd => match (left, right) {
+                            TokenType::BitwiseAndOrReference => match (left, right) {
                                 (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
                                 }
                                 (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
@@ -660,7 +679,7 @@ impl Expression {
                                     | LiteralValue::Array(..)
                                     | LiteralValue::Object(..)
                                     | LiteralValue::Struct(..)
-                                    | LiteralValue::Callable(..),
+                                    | LiteralValue::AnonymousFunction(..),
                                     _,
                                 )
                                 | (
@@ -669,7 +688,7 @@ impl Expression {
                                     | LiteralValue::Array(..)
                                     | LiteralValue::Object(..)
                                     | LiteralValue::Struct(..)
-                                    | LiteralValue::Callable(..),
+                                    | LiteralValue::AnonymousFunction(..),
                                 ) => {}
                                 (l, r) => {
                                     *self = Self::bool(
@@ -708,7 +727,7 @@ impl Expression {
             } => {
                 left_side.optimize()?;
                 right_side.optimize()?;
-                let real_loc = *left_side.loc();
+                let real_loc = left_side.loc();
 
                 match (&mut **left_side, &mut **right_side) {
                     (Expression::Literal(left_side, ..), Expression::Literal(right_side, ..)) => {
@@ -768,6 +787,7 @@ impl Expression {
                 left_side.optimize()?;
                 right_side.optimize()?;
             }
+            Self::TypeCast { left_side, .. } => left_side.optimize()?,
         })
     }
 }
@@ -868,8 +888,8 @@ impl Parser {
             TokenType::Divide,
             TokenType::IntegerDivide,
             TokenType::Modulo,
-            TokenType::Multiply,
-            TokenType::BitwiseAnd,
+            TokenType::MultiplyOrDeref,
+            TokenType::BitwiseAndOrReference,
             TokenType::BitwiseOr,
             TokenType::BitwiseXor,
             TokenType::DivideAssign,
@@ -892,11 +912,11 @@ impl Parser {
                     assign_set!(expr, right, operator);
                 }
                 TokenType::MultiplyAssign => {
-                    operator.typ = TokenType::Multiply;
+                    operator.typ = TokenType::MultiplyOrDeref;
                     assign_set!(expr, right, operator);
                 }
                 TokenType::BitwiseAndAssign => {
-                    operator.typ = TokenType::BitwiseAnd;
+                    operator.typ = TokenType::BitwiseAndOrReference;
                     assign_set!(expr, right, operator);
                 }
                 TokenType::BitwiseOrAssign => {
@@ -929,8 +949,8 @@ impl Parser {
     }
 
     fn assignment(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
-        let expr = self.indexed()?;
-        if self.matches(&[TokenType::AssignValue]) {
+        let expr = self.type_cast()?;
+        if self.match_tok(TokenType::AssignValue) {
             let loc = self.previous().location;
             let value = self.expression()?;
             return Ok(Expression::Assignment {
@@ -939,6 +959,18 @@ impl Parser {
                 loc,
             });
         }
+        Ok(expr)
+    }
+
+    fn type_cast(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+        let mut expr = self.indexed()?;
+
+        while self.match_tok(TokenType::As) {
+            let loc = self.previous().location;
+            let new_type = TypeRef::parse(self)?;
+            expr = Expression::TypeCast { left_side: Box::new(expr), new_type, loc };
+        }
+
         Ok(expr)
     }
 
@@ -992,7 +1024,7 @@ impl Parser {
                     );
                 };
 
-                if self.matches(&[TokenType::BracketRight]) {
+                if self.match_tok(TokenType::BracketRight) {
                     expr = Expression::Indexing {
                         left_side: Box::new(expr),
                         right_side: Box::new(indexing_expr),
@@ -1055,7 +1087,8 @@ impl Parser {
         if self.peek().typ == TokenType::Fn {
             let loc = self.peek().location;
             return Ok(Expression::Literal(
-                LiteralValue::Callable(self.parse_callable(true)?),
+                self.parse_callable(true)
+                    .map(|(contract, body)| LiteralValue::AnonymousFunction(contract, body))?,
                 loc,
             ));
         }
@@ -1079,9 +1112,9 @@ impl Parser {
             }
         }
 
-        if self.matches(&[TokenType::ParenLeft]) {
+        if self.match_tok(TokenType::ParenLeft) {
             let expr = self.expression()?;
-            if self.matches(&[TokenType::ParenRight]) {
+            if self.match_tok(TokenType::ParenRight) {
                 return Ok(expr);
             }
 
@@ -1101,20 +1134,20 @@ impl Parser {
     }
 
     fn try_array(&mut self) -> Option<Result<Expression, ProgrammingLangParsingError>> {
-        if self.matches(&[TokenType::BracketLeft]) {
+        if self.match_tok(TokenType::BracketLeft) {
             let loc = self.previous().location;
             let mut arr = vec![];
-            while !self.matches(&[TokenType::BracketRight]) {
+            while !self.match_tok(TokenType::BracketRight) {
                 if arr.len() > 0 {
                     // expect a comma
-                    if !self.matches(&[TokenType::Comma]) {
+                    if !self.match_tok(TokenType::Comma) {
                         return Some(Err(ProgrammingLangParsingError::ExpectedArrayElement {
                             loc: self.peek().location,
                             found: self.peek().typ,
                         }));
                     }
                     // in order to allow stuff like [1, 2, 3, ]
-                    if self.matches(&[TokenType::BracketRight]) {
+                    if self.match_tok(TokenType::BracketRight) {
                         break;
                     }
                 }
@@ -1135,19 +1168,19 @@ impl Parser {
     fn try_object(
         &mut self,
     ) -> Option<Result<HashMap<Box<str>, Expression>, ProgrammingLangParsingError>> {
-        if self.matches(&[TokenType::CurlyLeft]) {
+        if self.match_tok(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
-            while !self.matches(&[TokenType::CurlyRight]) {
+            while !self.match_tok(TokenType::CurlyRight) {
                 if obj.len() > 0 {
                     // expect a comma
-                    if !self.matches(&[TokenType::Comma]) {
+                    if !self.match_tok(TokenType::Comma) {
                         return Some(Err(ProgrammingLangParsingError::ExpectedObjectElement {
                             loc: self.peek().location,
                             found: self.peek().typ,
                         }));
                     }
                     // in order to allow stuff like [1, 2, 3, ]
-                    if self.matches(&[TokenType::CurlyRight]) {
+                    if self.match_tok(TokenType::CurlyRight) {
                         break;
                     }
                 }
@@ -1174,7 +1207,7 @@ impl Parser {
                     }
                 };
 
-                if !self.matches(&[TokenType::AssignTypeOrStructValue]) {
+                if !self.match_tok(TokenType::AssignTypeOrStructValue) {
                     return Some(Err(ProgrammingLangParsingError::ExpectedArbitrary {
                         loc: self.peek().location,
                         expected: TokenType::AssignTypeOrStructValue,

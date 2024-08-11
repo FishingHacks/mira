@@ -1,46 +1,84 @@
 use std::fmt::{Debug, Display, Write};
 
 use crate::{
-    error::ProgrammingLangParsingError,
-    tokenizer::{Literal, TokenType},
+    error::ProgrammingLangParsingError, globals::GlobalString, tokenizer::{Literal, Location, TokenType}
 };
 
-use super::{Expression, LiteralValue, Parser};
+use super::{types::TypeRef, Expression, LiteralValue, Parser};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Statement {
     If {
         condition: Expression,
         if_stmt: Box<Statement>,
         else_stmt: Option<Box<Statement>>,
+        location: Location,
     },
     While {
         condition: Expression,
         child: Box<Statement>,
+        location: Location,
     },
     For {
         iterator: Expression,
-        var_name: Box<str>,
+        var_name: GlobalString,
         child: Box<Statement>,
+        location: Location,
     },
-    Return(Option<Expression>),
-    Block(Box<[Statement]>),
-    Const(Box<str>, Expression),
-    Var(Box<str>, Expression),
+    Return(Option<Expression>, Location),
+    Block(Box<[Statement]>, Location),
+    Const(GlobalString, Expression, Option<TypeRef>, Location),
+    Var(GlobalString, Expression, Option<TypeRef>, Location),
     Expression(Expression),
-    Function(Callable),
+    Function(FunctionContract, Box<Statement>),
+    ExternalFunction(FunctionContract),
+    Struct {
+        name: GlobalString,
+        elements: Vec<(GlobalString, TypeRef)>,
+        location: Location,
+    },
+    Implementation {
+        struct_name: GlobalString,
+        functions: Vec<(FunctionContract, Box<Statement>)>,
+        location: Location,
+    },
+}
+
+impl Statement {
+    pub fn loc(&self) -> Location {
+        match self {
+            Self::Expression(expr) => expr.loc(),
+            Self::ExternalFunction(c) | Self::Function(c, _) => c.location,
+
+            Self::Block(_, location)
+            | Self::Const(_, _, _, location)
+            | Self::For { location, .. }
+            | Self::If { location, .. }
+            | Self::Implementation { location, .. }
+            | Self::Return(_, location)
+            | Self::Struct { location, .. }
+            | Self::Var(_, _, _, location)
+            | Self::While { location, .. } => *location,
+        }
+    }
 }
 
 impl Display for Statement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Var(left_hand, right_hand) => {
+            Self::Var(left_hand, right_hand, None, _) => {
                 f.write_fmt(format_args!("(var-assign {left_hand} {right_hand})"))
             }
-            Self::Const(left_hand, right_hand) => {
+            Self::Var(left_hand, right_hand, Some(typ), _) => {
+                f.write_fmt(format_args!("(var-assign {left_hand} {typ} {right_hand})"))
+            }
+            Self::Const(left_hand, right_hand, None, _) => {
                 f.write_fmt(format_args!("(constant {left_hand} {right_hand})"))
             }
-            Self::Block(stmts) => {
+            Self::Const(left_hand, right_hand, Some(typ), _) => {
+                f.write_fmt(format_args!("(constant {left_hand} {typ} {right_hand})"))
+            }
+            Self::Block(stmts, _) => {
                 f.write_char('{')?;
                 for stmt in &**stmts {
                     f.write_char('\n')?;
@@ -57,41 +95,120 @@ impl Display for Statement {
                 f.write_char('}')
             }
             Self::Expression(v) => Display::fmt(v, f),
-            Self::Return(Some(v)) => f.write_fmt(format_args!("(return {v})")),
-            Self::Return(None) => f.write_str("(return null)"),
+            Self::Return(Some(v), _) => f.write_fmt(format_args!("(return {v})")),
+            Self::Return(None, _) => f.write_str("(return null)"),
             Self::If {
                 condition,
                 if_stmt,
                 else_stmt: Some(else_stmt),
+                location: _,
             } => f.write_fmt(format_args!("(if {condition} {if_stmt} {else_stmt})")),
             Self::If {
                 condition,
                 if_stmt,
                 else_stmt: None,
+                location: _,
             } => f.write_fmt(format_args!("(if {condition} {if_stmt})")),
             Self::For {
                 iterator,
                 var_name,
                 child,
+                location: _,
             } => f.write_fmt(format_args!("(for {var_name} {iterator} {child})")),
-            Self::While { condition, child } => {
-                f.write_fmt(format_args!("(while {condition} {child})"))
+            Self::While {
+                condition,
+                child,
+                location: _,
+            } => f.write_fmt(format_args!("(while {condition} {child})")),
+            Self::Struct {
+                name,
+                elements: arguments,
+                location: _,
+            } => {
+                Display::fmt(name, f)?;
+                f.write_str(" {\n")?;
+
+                for arg_name in arguments {
+                    f.write_str("    ")?;
+                    Display::fmt(&arg_name.0, f)?;
+                    f.write_str(": ")?;
+                    Display::fmt(&arg_name.1, f)?;
+                    f.write_str(",\n")?;
+                }
+
+                f.write_str("}")
             }
-            Self::Function(callable) => Display::fmt(callable, f),
+            Self::Implementation {
+                struct_name,
+                functions,
+                location: _,
+            } => {
+                f.write_str("impl ")?;
+                Display::fmt(struct_name, f)?;
+                f.write_str(" {\n")?;
+
+                for (contract, body) in functions {
+                    f.write_str("    ")?;
+                    display_contract(f, contract, false)?;
+                    Display::fmt(body, f)?;
+                    f.write_str(")\n")?;
+                }
+
+                f.write_str("}")
+            }
+            Self::Function(contract, body) => {
+                display_contract(f, contract, false)?;
+                Display::fmt(body, f)?;
+                f.write_char(')')
+            }
+            Self::ExternalFunction(contract) => display_contract(f, contract, true),
         }
+    }
+}
+
+pub fn display_contract(
+    f: &mut std::fmt::Formatter<'_>,
+    contract: &FunctionContract,
+    is_external: bool,
+) -> std::fmt::Result {
+    if is_external {
+        f.write_str("(external callable ")?;
+    } else {
+        f.write_str("(callable ")?;
+    }
+    if let Some(name) = &contract.name {
+        Display::fmt(name, f)?;
+        f.write_char(' ')?;
+    }
+    f.write_char('(')?;
+    for i in 0..contract.arguments.len() {
+        if i != 0 {
+            f.write_char(' ')?;
+        }
+        Display::fmt(&contract.arguments[i], f)?;
+    }
+    f.write_char(')')?;
+    if let Some(return_type) = &contract.return_type {
+        f.write_str(" returns ")?;
+        Display::fmt(return_type, f)?;
+    }
+    if is_external {
+        f.write_char(')')
+    } else {
+        f.write_char(' ')
     }
 }
 
 impl Parser {
     fn consume_semicolon(&mut self) -> Result<(), ProgrammingLangParsingError> {
-        if !self.matches(&[TokenType::Semicolon]) {
+        if !self.match_tok(TokenType::Semicolon) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 expected: TokenType::Semicolon,
                 found: self.peek().typ,
             });
         }
-        while self.matches(&[TokenType::Semicolon]) {}
+        while self.match_tok(TokenType::Semicolon) {}
         Ok(())
     }
 
@@ -109,8 +226,29 @@ impl Parser {
         )
     }
 
+    pub fn parse_all(&mut self) -> Result<Vec<Statement>, Vec<ProgrammingLangParsingError>> {
+        let mut statements = vec![];
+        let mut errors = vec![];
+
+        while self.current < self.tokens.len() - 1 {
+            match self.parse_statement() {
+                Err(error) => {
+                    errors.push(error);
+                    self.bail();
+                }
+                Ok(statement) => statements.push(statement),
+            }
+        }
+
+        if !errors.is_empty() {
+            Err(errors)
+        } else {
+            Ok(statements)
+        }
+    }
+
     pub fn parse_statement(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
-        while self.matches(&[TokenType::Semicolon]) {}
+        while self.match_tok(TokenType::Semicolon) {}
         match self.peek().typ {
             TokenType::Let => self.parse_let_stmt(),
             TokenType::Const => self.parse_const_stmt(),
@@ -119,7 +257,12 @@ impl Parser {
             TokenType::If => self.parse_if_stmt(),
             TokenType::While => self.parse_while_stmt(),
             TokenType::For => self.parse_for_stmt(),
-            TokenType::Fn => Ok(Statement::Function(self.parse_callable(false)?)),
+            TokenType::Struct => self.parse_struct(),
+            TokenType::Impl => self.parse_impl(),
+            TokenType::Fn => self
+                .parse_callable(false)
+                .map(|(contract, body)| Statement::Function(contract, body)),
+            TokenType::Extern => self.parse_external(),
             _ => self.parse_expression_stmt(),
         }
     }
@@ -133,21 +276,35 @@ impl Parser {
     fn parse_let_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         // let <identifier>;
         // let <identifier> = <expr>;
-        self.advance(); // skip `let`
-        let name = self.expect_identifier()?.clone();
-        let expr = if self.matches(&[TokenType::AssignValue]) {
+        let location = self.advance().location; // skip `let`
+        let name = GlobalString::from(&**self.expect_identifier()?);
+
+        let typ = if self.match_tok(TokenType::AssignTypeOrStructValue) {
+            Some(TypeRef::parse(self)?)
+        } else {
+            None
+        };
+
+        let expr = if self.match_tok(TokenType::AssignValue) {
             self.parse_expression()?
         } else {
             Expression::Literal(LiteralValue::Null, self.previous().location)
         };
         self.consume_semicolon()?;
-        Ok(Statement::Var(name, expr))
+        Ok(Statement::Var(name, expr, typ, location))
     }
     fn parse_const_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         // const <identifier> = <expr>;
-        self.advance(); // skip `const`
-        let name = self.expect_identifier()?.clone();
-        if !self.matches(&[TokenType::AssignValue]) {
+        let location = self.advance().location; // skip `const`
+        let name = GlobalString::from(&**self.expect_identifier()?);
+
+        let typ = if self.match_tok(TokenType::AssignTypeOrStructValue) {
+            Some(TypeRef::parse(self)?)
+        } else {
+            None
+        };
+
+        if !self.match_tok(TokenType::AssignValue) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 expected: TokenType::AssignValue,
@@ -156,36 +313,36 @@ impl Parser {
         }
         let expr = self.parse_expression()?;
         self.consume_semicolon()?;
-        Ok(Statement::Const(name, expr))
+        Ok(Statement::Const(name, expr, typ, location))
     }
     fn parse_block_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         // { <...statements...> }
-        self.advance(); // skip `{`
+        let location = self.advance().location; // skip `{`
         let mut statements = vec![];
 
-        while !self.matches(&[TokenType::CurlyRight]) {
+        while !self.match_tok(TokenType::CurlyRight) {
             statements.push(self.parse_statement()?);
         }
 
-        Ok(Statement::Block(statements.into_boxed_slice()))
+        Ok(Statement::Block(statements.into_boxed_slice(), location))
     }
     fn parse_return_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         // return;
         // return <expr>;
-        self.advance(); // skip `return`
-        if self.matches(&[TokenType::Semicolon]) {
-            return Ok(Statement::Return(None));
+        let location = self.advance().location; // skip `return`
+        if self.match_tok(TokenType::Semicolon) {
+            return Ok(Statement::Return(None, location));
         }
         let expr = self.parse_expression()?;
         self.consume_semicolon()?;
-        Ok(Statement::Return(Some(expr)))
+        Ok(Statement::Return(Some(expr), location))
     }
     fn parse_if_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         // if (<expr>) <stmt>
         // if (<expr>) <stmt> else <stmt>
         // we have else if support, because else <stmt>, the stmt can be another if expression!
-        self.advance(); // skip `if`
-        if !self.matches(&[TokenType::ParenLeft]) {
+        let location = self.advance().location; // skip `if`
+        if !self.match_tok(TokenType::ParenLeft) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 found: self.peek().typ,
@@ -193,7 +350,7 @@ impl Parser {
             });
         }
         let condition = self.parse_expression()?;
-        if !self.matches(&[TokenType::ParenRight]) {
+        if !self.match_tok(TokenType::ParenRight) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 found: self.peek().typ,
@@ -201,26 +358,27 @@ impl Parser {
             });
         }
         let if_stmt = self.parse_statement()?;
-        if self.matches(&[TokenType::Else]) {
+        if self.match_tok(TokenType::Else) {
             return Ok(Statement::If {
                 condition,
                 if_stmt: Box::new(if_stmt),
                 else_stmt: Some(Box::new(self.parse_statement()?)),
+                location
             });
         }
         Ok(Statement::If {
             condition,
             if_stmt: Box::new(if_stmt),
             else_stmt: None,
+            location,
         })
     }
-
     fn parse_while_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         // if (<expr>) <stmt>
         // if (<expr>) <stmt> else <stmt>
         // we have else if support, because else <stmt>, the stmt can be another if expression!
-        self.advance(); // skip `if`
-        if !self.matches(&[TokenType::ParenLeft]) {
+        let location = self.advance().location; // skip `if`
+        if !self.match_tok(TokenType::ParenLeft) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 found: self.peek().typ,
@@ -228,7 +386,7 @@ impl Parser {
             });
         }
         let condition = self.parse_expression()?;
-        if !self.matches(&[TokenType::ParenRight]) {
+        if !self.match_tok(TokenType::ParenRight) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 found: self.peek().typ,
@@ -238,14 +396,14 @@ impl Parser {
         Ok(Statement::While {
             condition,
             child: Box::new(self.parse_statement()?),
+            location
         })
     }
-
     fn parse_for_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         // for (<identifier> in <expr>) <stmt>
-        self.advance(); // skip over `for`
+        let location = self.advance().location; // skip over `for`
 
-        if !self.matches(&[TokenType::ParenLeft]) {
+        if !self.match_tok(TokenType::ParenLeft) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 found: self.peek().typ,
@@ -253,8 +411,8 @@ impl Parser {
             });
         }
 
-        let var_name = self.expect_identifier()?.clone();
-        if !self.matches(&[TokenType::In]) {
+        let var_name = GlobalString::from(&**self.expect_identifier()?);
+        if !self.match_tok(TokenType::In) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 expected: TokenType::In,
@@ -262,7 +420,7 @@ impl Parser {
             });
         }
         let iterator = self.parse_expression()?;
-        if !self.matches(&[TokenType::ParenRight]) {
+        if !self.match_tok(TokenType::ParenRight) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 found: self.peek().typ,
@@ -275,11 +433,81 @@ impl Parser {
             iterator,
             var_name,
             child,
+            location,
+        })
+    }
+    fn parse_struct(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+        // struct Name { ... fields ... }
+        // fields: field: type,[...]
+        let location = self.advance().location; // skip over `struct`
+        let name = GlobalString::from(&**self.expect_identifier()?);
+        let mut elements = vec![];
+
+        if !self.match_tok(TokenType::CurlyLeft) {
+            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                loc: self.peek().location,
+                expected: TokenType::CurlyLeft,
+                found: self.peek().typ,
+            });
+        }
+
+        while !self.match_tok(TokenType::CurlyRight) {
+            if elements.len() > 0 {
+                // needs comma
+                if !self.match_tok(TokenType::Comma) {
+                    return Err(ProgrammingLangParsingError::ExpectedObjectElement {
+                        loc: self.peek().location,
+                        found: self.peek().typ,
+                    });
+                }
+                // for trailing commas
+                if self.match_tok(TokenType::CurlyRight) {
+                    break;
+                }
+            }
+            let name = GlobalString::from(&**self.expect_identifier()?);
+            if !self.match_tok(TokenType::AssignTypeOrStructValue) {
+                return Err(ProgrammingLangParsingError::ExpectedType {
+                    loc: self.peek().location,
+                    found: self.peek().typ,
+                });
+            }
+            let typ = TypeRef::parse(self)?;
+            elements.push((name, typ));
+        }
+
+        Ok(Statement::Struct { name, elements, location })
+    }
+    fn parse_impl(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+        // impl <name> { ... }
+        // body: bunch of functions
+        // skip over `impl`
+        let location = self.advance().location;
+        let struct_name = GlobalString::from(&**self.expect_identifier()?);
+
+        if !self.match_tok(TokenType::CurlyLeft) {
+            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                loc: self.peek().location,
+                expected: TokenType::CurlyLeft,
+                found: self.peek().typ,
+            });
+        }
+
+        let mut functions = vec![];
+
+        while !self.match_tok(TokenType::CurlyRight) {
+            functions.push(self.parse_callable(false)?);
+        }
+
+        Ok(Statement::Implementation {
+            struct_name,
+            functions,
+            location,
         })
     }
 
-    fn expect_identifier(&mut self) -> Result<&Box<str>, ProgrammingLangParsingError> {
-        if !self.matches(&[TokenType::IdentifierLiteral]) {
+    pub fn expect_identifier(&mut self) -> Result<&Box<str>, ProgrammingLangParsingError> {
+        if !self.match_tok(TokenType::IdentifierLiteral) {
             return Err(ProgrammingLangParsingError::ExpectedIdentifier {
                 loc: self.peek().location,
                 found: self.peek().typ,
@@ -294,72 +522,32 @@ impl Parser {
     }
 }
 
-impl Debug for Callable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let body = format!("{}", self.body);
-
-        f.debug_struct("Callable")
-            .field("name", &self.name)
-            .field("arguments", &self.arguments)
-            .field("last_one_spreads", &self.last_one_spreads)
-            .field("body", &body)
-            .finish()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Argument {
-    pub copy: bool,
     pub name: Box<str>,
+    pub typ: TypeRef,
 }
 
 impl Argument {
-    pub fn new(copy: bool, name: Box<str>) -> Self { Self { copy, name } }
+    pub fn new(typ: TypeRef, name: Box<str>) -> Self {
+        Self { name, typ }
+    }
 }
 
 impl Display for Argument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.copy {
-            f.write_str("copy ")?;
-        }
-        f.write_str(&*self.name)
+        f.write_str(&*self.name)?;
+        f.write_str(": ")?;
+        Display::fmt(&self.typ, f)
     }
 }
 
-#[derive(Clone)]
-pub struct Callable {
-    pub name: Option<Box<str>>,
+#[derive(Clone, Debug)]
+pub struct FunctionContract {
+    pub name: Option<GlobalString>,
     pub arguments: Vec<Argument>,
-    pub last_one_spreads: bool,
-    pub body: Box<Statement>,
-}
-
-impl Display for Callable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("(callable ")?;
-        if let Some(ref name) = self.name {
-            f.write_str(&**name)?;
-            f.write_char(' ')?;
-        }
-
-        f.write_char('(')?;
-
-        for i in 0..self.arguments.len() {
-            if i != 0 {
-                f.write_str(", ")?;
-            }
-            if i == self.arguments.len() - 1 && self.last_one_spreads {
-                f.write_str("...")?;
-            }
-            Display::fmt(&self.arguments[i], f)?;
-        }
-
-        f.write_str(") ")?;
-
-        Display::fmt(&*self.body, f)?;
-
-        f.write_char(')')
-    }
+    pub return_type: Option<TypeRef>,
+    pub location: Location,
 }
 
 /*
@@ -376,11 +564,106 @@ arguments => list of argument seperated by comma, trailing comma allowed, the la
 */
 
 impl Parser {
+    pub fn parse_external(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+        let location = self.peek().location;
+        if !self.match_tok(TokenType::Extern) {
+            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                loc: self.peek().location,
+                expected: TokenType::Extern,
+                found: self.peek().typ,
+            });
+        }
+        if !self.match_tok(TokenType::Fn) {
+            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                loc: self.peek().location,
+                expected: TokenType::Fn,
+                found: self.peek().typ,
+            });
+        }
+
+        let name = {
+            if !self.match_tok(TokenType::IdentifierLiteral) {
+                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                    loc: self.peek().location,
+                    expected: TokenType::IdentifierLiteral,
+                    found: self.peek().typ,
+                });
+            }
+
+            let Some(Literal::String(ref name)) = self.previous().literal else {
+                return Err(ProgrammingLangParsingError::InvalidTokenization {
+                    loc: self.previous().location,
+                });
+            };
+
+            GlobalString::from(&**name)
+        };
+
+        let mut arguments = vec![];
+
+        if !self.match_tok(TokenType::ParenLeft) {
+            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                loc: self.peek().location,
+                found: self.peek().typ,
+                expected: TokenType::ParenLeft,
+            });
+        }
+
+        while !self.match_tok(TokenType::ParenRight) {
+            if arguments.len() > 0 {
+                if !self.match_tok(TokenType::Comma) {
+                    return Err(ProgrammingLangParsingError::ExpectedFunctionArgument {
+                        loc: self.peek().location,
+                        found: self.peek().typ,
+                    });
+                }
+
+                // for trailing comma
+                if self.match_tok(TokenType::ParenRight) {
+                    break;
+                }
+            }
+
+            let name = self.expect_identifier()?.clone();
+            if !self.match_tok(TokenType::AssignTypeOrStructValue) {
+                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                    loc: self.previous().location,
+                    expected: TokenType::AssignTypeOrStructValue,
+                    found: self.previous().typ,
+                });
+            }
+
+            arguments.push(Argument::new(TypeRef::parse(self)?, name));
+        }
+
+        let return_type = if self.match_tok(TokenType::ReturnType) {
+            Some(TypeRef::parse(self)?)
+        } else {
+            None
+        };
+
+        if !self.match_tok(TokenType::Semicolon) {
+            Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                loc: self.peek().location,
+                expected: TokenType::Semicolon,
+                found: self.peek().typ,
+            })
+        } else {
+            Ok(Statement::ExternalFunction(FunctionContract {
+                arguments,
+                name: Some(name),
+                return_type,
+                location,
+            }))
+        }
+    }
+
     pub fn parse_callable(
         &mut self,
         anonymous: bool,
-    ) -> Result<Callable, ProgrammingLangParsingError> {
-        if !self.matches(&[TokenType::Fn]) {
+    ) -> Result<(FunctionContract, Box<Statement>), ProgrammingLangParsingError> {
+        let location = self.peek().location;
+        if !self.match_tok(TokenType::Fn) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 expected: TokenType::Fn,
@@ -389,18 +672,18 @@ impl Parser {
         }
 
         let name = if anonymous {
-            if self.matches(&[TokenType::IdentifierLiteral]) {
-                let Some(Literal::String(ref v)) = self.previous().literal else {
+            if self.match_tok(TokenType::IdentifierLiteral) {
+                let Some(Literal::String(ref name)) = self.previous().literal else {
                     return Err(ProgrammingLangParsingError::InvalidTokenization {
                         loc: self.previous().location,
                     });
                 };
-                Some(v.clone())
+                Some(GlobalString::from(&**name))
             } else {
                 None
             }
         } else {
-            if !self.matches(&[TokenType::IdentifierLiteral]) {
+            if !self.match_tok(TokenType::IdentifierLiteral) {
                 return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                     loc: self.peek().location,
                     expected: TokenType::IdentifierLiteral,
@@ -408,20 +691,17 @@ impl Parser {
                 });
             }
 
-            let Some(Literal::String(ref v)) = self.previous().literal else {
+            let Some(Literal::String(ref name)) = self.previous().literal else {
                 return Err(ProgrammingLangParsingError::InvalidTokenization {
                     loc: self.previous().location,
                 });
             };
-            Some(v.clone())
+            Some(GlobalString::from(&**name))
         };
 
         let mut arguments = vec![];
-        let mut last_one_spreads = false;
 
-        // parse arguments
-
-        if !self.matches(&[TokenType::ParenLeft]) {
+        if !self.match_tok(TokenType::ParenLeft) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location,
                 found: self.peek().typ,
@@ -429,9 +709,9 @@ impl Parser {
             });
         }
 
-        while !self.matches(&[TokenType::ParenRight]) {
+        while !self.match_tok(TokenType::ParenRight) {
             if arguments.len() > 0 {
-                if !self.matches(&[TokenType::Comma]) {
+                if !self.match_tok(TokenType::Comma) {
                     return Err(ProgrammingLangParsingError::ExpectedFunctionArgument {
                         loc: self.peek().location,
                         found: self.peek().typ,
@@ -439,33 +719,28 @@ impl Parser {
                 }
 
                 // for trailing comma
-                if self.matches(&[TokenType::ParenRight]) {
+                if self.match_tok(TokenType::ParenRight) {
                     break;
                 }
             }
 
-            if self.matches(&[TokenType::Spread]) {
-                // last argument
-                let copy = self.matches(&[TokenType::Copy]);
-                arguments.push(Argument::new(copy, self.expect_identifier()?.clone()));
-                last_one_spreads = true;
-
-                // consume optional comma
-                self.matches(&[TokenType::Comma]);
-
-                if !self.matches(&[TokenType::ParenRight]) {
-                    return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                        loc: self.peek().location,
-                        found: self.peek().typ,
-                        expected: TokenType::ParenRight,
-                    });
-                }
-                break;
+            let name = self.expect_identifier()?.clone();
+            if !self.match_tok(TokenType::AssignTypeOrStructValue) {
+                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                    loc: self.previous().location,
+                    expected: TokenType::AssignTypeOrStructValue,
+                    found: self.previous().typ,
+                });
             }
 
-            let copy = self.matches(&[TokenType::Copy]);
-            arguments.push(Argument::new(copy, self.expect_identifier()?.clone()));
+            arguments.push(Argument::new(TypeRef::parse(self)?, name));
         }
+
+        let return_type = if self.match_tok(TokenType::ReturnType) {
+            Some(TypeRef::parse(self)?)
+        } else {
+            None
+        };
 
         // body:
         // - an expression
@@ -475,18 +750,22 @@ impl Parser {
             Box::new(self.parse_statement()?)
         } else {
             let expr = self.parse_expression()?;
+            let return_location = expr.loc();
             if !anonymous {
                 // needs a semicolon if this isnt anonymous
                 self.consume_semicolon()?;
             }
-            Box::new(Statement::Return(Some(expr)))
+            Box::new(Statement::Return(Some(expr), return_location))
         };
 
-        Ok(Callable {
-            name,
-            arguments,
-            last_one_spreads,
+        Ok((
+            FunctionContract {
+                name,
+                arguments,
+                return_type,
+                location,
+            },
             body,
-        })
+        ))
     }
 }

@@ -1,8 +1,10 @@
 use crate::tokenizer::{Token, TokenType};
 pub use expression::{Expression, LiteralValue};
-pub use statement::Statement;
+pub use statement::{Statement, FunctionContract, Argument};
+pub use types::{RESERVED_TYPE_NAMES, Type, TypeRef};
 mod expression;
 mod statement;
+mod types;
 
 pub struct Parser {
     pub tokens: Vec<Token>,
@@ -59,6 +61,18 @@ impl Parser {
                 return true;
             }
         }
+        false
+    }
+
+    fn match_tok(&mut self, token_type: TokenType) -> bool {
+        if self.is_at_end() {
+            return false;
+        }
+        if self.check(token_type) {
+            self.advance();
+            return true;
+        }
+
         false
     }
 

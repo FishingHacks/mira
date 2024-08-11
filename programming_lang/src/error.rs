@@ -6,6 +6,7 @@ use crate::tokenizer::{Location, TokenType};
 pub enum ProgrammingLangError {
     Parsing(ProgrammingLangParsingError),
     Tokenization(ProgrammingLangTokenizationError),
+    ProgramForming(ProgrammingLangProgramFormingError),
     Generic(&'static str),
 }
 
@@ -14,6 +15,7 @@ impl Debug for ProgrammingLangError {
         match self {
             Self::Parsing(v) => Debug::fmt(v, f),
             Self::Tokenization(v) => Debug::fmt(v, f),
+            Self::ProgramForming(v) => Debug::fmt(v, f),
             Self::Generic(v) => f.write_str(v),
         }
     }
@@ -33,6 +35,10 @@ impl From<ProgrammingLangTokenizationError> for ProgrammingLangError {
 
 #[derive(Clone, Copy)]
 pub enum ProgrammingLangParsingError {
+    ExpectedType {
+        loc: Location,
+        found: TokenType,
+    },
     ExpectedFunctionArgument {
         loc: Location,
         found: TokenType,
@@ -60,6 +66,9 @@ pub enum ProgrammingLangParsingError {
     ExpectedIdentifier {
         loc: Location,
         found: TokenType,
+    },
+    ExpectedUnsignedIntegerOnly {
+        loc: Location,
     },
     CannotDoUnaryOperation {
         loc: Location,
@@ -146,6 +155,7 @@ impl ProgrammingLangParsingError {
         match self {
             Self::CannotDoBinaryOperation { loc, .. }
             | Self::CannotDoUnaryOperation { loc, .. }
+            | Self::ExpectedType { loc, .. }
             | Self::ExpectedExpression { loc, .. }
             | Self::ExpectedIdentifier { loc, .. }
             | Self::InvalidOperand { loc, .. }
@@ -156,6 +166,7 @@ impl ProgrammingLangParsingError {
             | Self::ExpectedFunctionArgumentExpression { loc, .. }
             | Self::InvalidTokenization { loc }
             | Self::AssignmentInvalidLeftSide { loc }
+            | Self::ExpectedUnsignedIntegerOnly { loc }
             | Self::ExpectedArbitrary { loc, .. }
             | Self::InvalidUnaryOperand { loc, .. } => loc,
         }
@@ -214,6 +225,8 @@ impl Debug for ProgrammingLangParsingError {
             Self::ExpectedArrayElement { loc, found } => f.write_fmt(format_args!("{loc}: Expected , or ], but found {found:?}")),
             Self::ExpectedObjectElement { loc, found } => f.write_fmt(format_args!("{loc}: Expected , or }}, but found {found:?}")),
             Self::ExpectedKey { loc, found } => f.write_fmt(format_args!("{loc}: Expected a key (a string, number or identifier), but found {found:?}")),
+            Self::ExpectedUnsignedIntegerOnly { loc } => f.write_fmt(format_args!("{loc}: You can only use positive integers here")),
+            Self::ExpectedType { loc, found } => f.write_fmt(format_args!("{loc}: Expected a type, but found {found:?}")),
         }
     }
 }
@@ -255,6 +268,21 @@ impl Debug for ProgrammingLangTokenizationError {
             Self::UnknownTokenError { character, .. } => {
                 f.write_fmt(format_args!("Unknown Token: `{character}`"))
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum ProgrammingLangProgramFormingError {
+    NoCodeOutsideOfFunctions(Location),
+    AnonymousFunctionAtGlobalLevel(Location),
+}
+
+impl Debug for ProgrammingLangProgramFormingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoCodeOutsideOfFunctions(loc) => f.write_fmt(format_args!("{loc}: Code outside of a function boundary")),
+            Self::AnonymousFunctionAtGlobalLevel(loc) => f.write_fmt(format_args!("{loc}: There are no anonymous functions at global level allowed")),
         }
     }
 }

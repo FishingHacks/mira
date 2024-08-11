@@ -36,17 +36,18 @@ pub enum TokenType {
     BracketRight,            // done, done
     Plus,                    // done, done
     Minus,                   // done, done
-    Multiply,                // done, done
+    MultiplyOrDeref,         // done, done
     Divide,                  // done, done
     Modulo,                  // done, done
     ModuloAssign,            // done, done
     IntegerDivide,           // done, done
     BitwiseNot,              // done, done
-    BitwiseAnd,              // done, done
+    BitwiseAndOrReference,   // done, done
     BitwiseOr,               // done, done
     BitwiseXor,              // done, done
     Return,                  // done, done
     Fn,                      // done, done
+    Extern,
     If,                      // done, done
     Else,                    // done, done
     While,                   // done, done
@@ -54,13 +55,11 @@ pub enum TokenType {
     In,                      // done, done
     Range,                   // done, done
     RangeInclusive,          // done, done
-    Spread,                  // done, done
     ReturnType,              // done, *
     Struct,                  // done,
     Trait,                   // done, *
     Impl,                    // done,
     Comma,                   // done, done
-    Copy,                    // done, done
     PlusAssign,              // done, done
     MinusAssign,             // done, done
     DivideAssign,            // done, done
@@ -272,8 +271,6 @@ impl Tokenizer {
                 if self.if_char_advance('.') {
                     if self.if_char_advance('=') {
                         token!(RangeInclusive); // ..=
-                    } else if self.if_char_advance('.') {
-                        token!(Spread); // ...
                     } else {
                         token!(Range); // ..
                     }
@@ -297,7 +294,7 @@ impl Tokenizer {
             }
             '/' if self.peek() != '/' => token!(Divide, DivideAssign, '='),
             '%' => token!(Modulo, ModuloAssign, '='),
-            '*' => token!(Multiply, MultiplyAssign, '='),
+            '*' => token!(MultiplyOrDeref, MultiplyAssign, '='),
             '=' => token!(AssignValue, Equals, '='),
             '<' => token!(LessThan, LessThanEquals, '='),
             '>' => token!(GreaterThan, GreaterThanEquals, '='),
@@ -311,7 +308,7 @@ impl Tokenizer {
                 } else if self.if_char_advance('&') {
                     token!(LogicalAnd);
                 } else {
-                    token!(BitwiseAnd);
+                    token!(BitwiseAndOrReference);
                 }
             }
             '|' => {
@@ -435,6 +432,14 @@ impl Tokenizer {
             if Self::is_valid_identifier_char(self.peek()) {
                 identifier.push(self.advance());
             } else {
+                let next_char = self.peek();
+                let char_after_next = self.source.get(self.current + 1).map(|c| *c).unwrap_or('\0');
+                if next_char == ':' && char_after_next == ':' {
+                    identifier.push_str("::");
+                    self.advance();
+                    self.advance();
+                    continue;
+                }
                 break;
             }
         }
@@ -459,13 +464,13 @@ impl Tokenizer {
             "const" => Some(TokenType::Const),
             "as" => Some(TokenType::As),
             "fn" => Some(TokenType::Fn),
+            "extern" => Some(TokenType::Extern),
             "return" => Some(TokenType::Return),
             "if" => Some(TokenType::If),
             "else" => Some(TokenType::Else),
             "while" => Some(TokenType::While),
             "for" => Some(TokenType::For),
             "in" => Some(TokenType::In),
-            "copy" => Some(TokenType::Copy),
             "idiv" => Some(TokenType::IntegerDivide),
             "struct" => Some(TokenType::Struct),
             "impl" => Some(TokenType::Impl),
@@ -484,7 +489,7 @@ impl Tokenizer {
     fn is_valid_identifier_char(character: char) -> bool {
         matches!(
             character,
-            '_' | '$' | '#' | ('a'..='z') | ('A'..='Z') | ('0'..='9')
+            '_' | '$' | '#' | ('a'..='z') | ('A'..='Z') | ('0'..='9') // TODO: generics / types: make TypeName::FunctionName use some custom token as :: instead of having that part of the type
         )
     }
 

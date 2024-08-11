@@ -4,7 +4,7 @@ let value3 = "";
 
 fn main(val, some_arg, ...spread) {
     value2.a;
-    for (i in 0..val) // not done: for loops
+    for (i in 0..val)
         println(spread[i]);
    
     println(typeof(some_arg));
@@ -18,35 +18,36 @@ fn main(val, some_arg, ...spread) {
 //    }
 //}
 
-//struct Abc { // not done: structs
-//    val: string;
-//}
+struct Abc { // not done: typed structs
+    val,
+}
 
-// not done: impl
+// not done: impl for
 //impl Iterate for Abc { // <- While this may not look like it, this is still ducktyping. impl Iterate for Abc just hints at the compiler what im trying to do, so that the compiler itself can throw an error if too many or too little functions are implemented or if the function arguments and returns and the ones of the trait don't match.
-//    fn next(self) { // not done: impl functions
+//    fn next(self) {
 //        return 12;
 //    }
 //}
 
-// impl Abc {
-//     fn next(self) -> number {
-//         return 12;
-//     }
-// }
+impl Abc {
+    fn next(self) {
+        return 12;
+    }
+}
 
 // this would have the same effect as the above
 
-//struct WeirdNumber {}
+struct WeirdNumber {}
 
-//impl WeirdNumber {
-//    fn string() { return "12" }
-//    fn add(self, other) {
-//        if typeof(other) == "number" {
-//            return other - 10;
-//        }
-//    }
-//}
+impl WeirdNumber {
+    fn string() { return "12"; }
+    fn add(self, other) {
+        if (typeof(other) == "number") {
+            return other - 10;
+        }
+    }
+}
+
 let num = WeirdNumber{};
 println("10 + %s: %s", num, 10 + num); // 10 + 12: 0
 
@@ -69,38 +70,35 @@ println(a); // 12
 
 while (true) {}
 
-// Proposed Generics
-// Replace all generics with any for right now!
+struct Result {
+    val,
+    success
+}
 
-//struct Result {
-//    val,
-//    success
-//}
+impl Result {
+    fn is_ok(self) {
+        return self.success;
+    }
 
-//impl Result {
-//    fn is_ok(self) {
-//        return self.success;
-//    }
+    fn unwrap() {
+        if (!self.success) {
+            panic("Failed to unwrap!");
+        }
+        return self.val;
+    }
 
-//    fn unwrap() {
-//        if (!self.success) {
-//            panic("Failed to unwrap!")
-//        }
-//        return self.val;
-//    }
+    fn ok(self) {
+        return self.val;
+    }
 
-//    fn ok(self: Self) {
-//        return self.val;
-//    }
+    fn err(self) {
+        return self.val;
+    }
 
-//    fn err(self) {
-//        return self.val;
-//    }
-
-//    fn expect(self, str) {
-//        if (self.success) {
-//            return self.val;
-//        }
-//        panic(format("Failed to unwrap: %s", str))
-//    }
-//}
+    fn expect(self, str) {
+        if (self.success) {
+            return self.val;
+        }
+        panic(format("Failed to unwrap: %s", str));
+    }
+}
