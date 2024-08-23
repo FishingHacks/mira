@@ -45,6 +45,7 @@ pub enum TokenType {
     BitwiseAndOrReference,   // done, done
     BitwiseOr,               // done, done
     BitwiseXor,              // done, done
+    PipeOperator,            // done, done
     Return,                  // done, done
     Fn,                      // done, done
     Extern,
@@ -316,6 +317,8 @@ impl Tokenizer {
                     token!(BitwiseOrAssign);
                 } else if self.if_char_advance('|') {
                     token!(LogicalOr);
+                } else if self.if_char_advance('>') {
+                    token!(PipeOperator);
                 } else {
                     token!(BitwiseOr);
                 }

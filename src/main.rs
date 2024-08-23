@@ -162,7 +162,7 @@ fn run_file<P: AsRef<Path>>(path: P) -> Result<(), ProgrammingLangIoError> {
     let mut parser = tokenizer.to_parser();
     let mut errors: Vec<ProgrammingLangError> = vec![];
     while parser.current < parser.tokens.len() - 1 {
-        match parser.parse_statement() {
+        match parser.parse_statement(true) {
             Ok(v) => {
                 println!("Parsed: {v}");
             }

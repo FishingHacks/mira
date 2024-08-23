@@ -179,3 +179,18 @@ impl Result {
     }
 }
 ```
+
+
+### Expression Ordering (the first thing will be tried to parsed first, as in multiplication comes before addition, meaning 3 + 4 * 5 will first parse 4 * 5 and then 3 +):
+1. Parenthese
+2. Literal
+3. Indexing (`.a / [0] / ["a"] / a.a() / a[0]() / a["a"]() / a()`)
+4. references (`&val, *val`)
+5. typecast (`a as b`)
+6. assignment (`a = b`)
+7. Unary +, -, ~ and ! (`!val, ~val, -val, +val`)
+8. Factor (`/, idiv, %, *, &, |, ^, /=, %=, *=, &=, |= and ^=`), binary (`a operator b`)
+9. Term (`-, +, -=, +=`), binary (`a operator b`)
+10. Range (`a..b, a..=b`)
+11. Pipe Operator (`a |> b()`)
+12. comparison (`==, !=, <, >, <=, >=, &&, ||`), binary (`a operator b`)

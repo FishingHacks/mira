@@ -1,7 +1,10 @@
 use std::fmt::{Debug, Display, Write};
 
 use crate::{
-    error::ProgrammingLangParsingError, globals::GlobalString, tokenizer::{Literal, Location, TokenType}
+    error::ProgrammingLangParsingError,
+    globals::GlobalString,
+    module::{FunctionId, Module},
+    tokenizer::{Literal, Location, TokenType},
 };
 
 use super::{types::TypeRef, Expression, LiteralValue, Parser};
@@ -31,6 +34,7 @@ pub enum Statement {
     Var(GlobalString, Expression, Option<TypeRef>, Location),
     Expression(Expression),
     Function(FunctionContract, Box<Statement>),
+    BakedFunction(FunctionId, Location),
     ExternalFunction(FunctionContract),
     Struct {
         name: GlobalString,
@@ -50,7 +54,8 @@ impl Statement {
             Self::Expression(expr) => expr.loc(),
             Self::ExternalFunction(c) | Self::Function(c, _) => c.location,
 
-            Self::Block(_, location)
+            Self::BakedFunction(_, location)
+            | Self::Block(_, location)
             | Self::Const(_, _, _, location)
             | Self::For { location, .. }
             | Self::If { location, .. }
@@ -61,11 +66,169 @@ impl Statement {
             | Self::While { location, .. } => *location,
         }
     }
+
+    pub fn bake_functions(&mut self, module: &mut Module) {
+        match self {
+            Self::Implementation { .. } => unreachable!(),
+            Self::BakedFunction(..)
+            | Self::Struct { .. }
+            | Self::ExternalFunction(..)
+            | Self::Return(None, ..) => (),
+            Self::Function(contract, statement) => {
+                let location = contract.location;
+                let id = module.push_fn(contract.clone(), *(statement.clone()));
+                *self = Self::BakedFunction(id, location);
+            }
+            Self::Block(statements, ..) => statements
+                .iter_mut()
+                .for_each(|stmt| stmt.bake_functions(module)),
+            Self::Const(_, stmt, ..) | Self::Var(_, stmt, ..) => stmt.bake_functions(module),
+            Self::Expression(expr) => expr.bake_functions(module),
+            Self::For {
+                iterator, child, ..
+            } => {
+                iterator.bake_functions(module);
+                child.bake_functions(module);
+            }
+            Self::While {
+                condition, child, ..
+            } => {
+                condition.bake_functions(module);
+                child.bake_functions(module);
+            }
+            Self::If {
+                condition,
+                if_stmt,
+                else_stmt,
+                ..
+            } => {
+                condition.bake_functions(module);
+                if_stmt.bake_functions(module);
+                if let Some(stmt) = else_stmt {
+                    stmt.bake_functions(module);
+                }
+            }
+            Self::Return(Some(val), ..) => val.bake_functions(module),
+        }
+    }
+
+    pub fn mod_fmt(&self, f: &mut std::fmt::Formatter<'_>, module: &Module) -> std::fmt::Result {
+        match self {
+            Self::BakedFunction(id, _) => {
+                if let Some((contract, body)) = module.get_fn(*id) {
+                    display_contract(f, contract, false)?;
+                    Display::fmt(body, f)?;
+                    f.write_char(')')
+                } else {
+                    f.write_str("(module-fn ")?;
+                    Debug::fmt(id, f)?;
+                    f.write_char(')')
+                }
+            }
+            Self::Var(left_hand, right_hand, None, _) => {
+                f.write_fmt(format_args!("(var-assign {left_hand} {right_hand})"))
+            }
+            Self::Var(left_hand, right_hand, Some(typ), _) => {
+                f.write_fmt(format_args!("(var-assign {left_hand} {typ} {right_hand})"))
+            }
+            Self::Const(left_hand, right_hand, None, _) => {
+                f.write_fmt(format_args!("(constant {left_hand} {right_hand})"))
+            }
+            Self::Const(left_hand, right_hand, Some(typ), _) => {
+                f.write_fmt(format_args!("(constant {left_hand} {typ} {right_hand})"))
+            }
+            Self::Block(stmts, _) => {
+                f.write_char('{')?;
+                for stmt in &**stmts {
+                    f.write_char('\n')?;
+                    Display::fmt(stmt, f)?;
+                }
+                if stmts.len() > 0 {
+                    // {} for empty block, for filled block:
+                    // {
+                    // statement1
+                    // statement2
+                    // }
+                    f.write_char('\n')?;
+                }
+                f.write_char('}')
+            }
+            Self::Expression(v) => Display::fmt(v, f),
+            Self::Return(Some(v), _) => f.write_fmt(format_args!("(return {v})")),
+            Self::Return(None, _) => f.write_str("(return null)"),
+            Self::If {
+                condition,
+                if_stmt,
+                else_stmt: Some(else_stmt),
+                location: _,
+            } => f.write_fmt(format_args!("(if {condition} {if_stmt} {else_stmt})")),
+            Self::If {
+                condition,
+                if_stmt,
+                else_stmt: None,
+                location: _,
+            } => f.write_fmt(format_args!("(if {condition} {if_stmt})")),
+            Self::For {
+                iterator,
+                var_name,
+                child,
+                location: _,
+            } => f.write_fmt(format_args!("(for {var_name} {iterator} {child})")),
+            Self::While {
+                condition,
+                child,
+                location: _,
+            } => f.write_fmt(format_args!("(while {condition} {child})")),
+            Self::Struct {
+                name,
+                elements: arguments,
+                location: _,
+            } => {
+                Display::fmt(name, f)?;
+                f.write_str(" {\n")?;
+
+                for arg_name in arguments {
+                    f.write_str("    ")?;
+                    Display::fmt(&arg_name.0, f)?;
+                    f.write_str(": ")?;
+                    Display::fmt(&arg_name.1, f)?;
+                    f.write_str(",\n")?;
+                }
+
+                f.write_str("}")
+            }
+            Self::Implementation {
+                struct_name,
+                functions,
+                location: _,
+            } => {
+                f.write_str("impl ")?;
+                Display::fmt(struct_name, f)?;
+                f.write_str(" {\n")?;
+
+                for (contract, body) in functions {
+                    f.write_str("    ")?;
+                    display_contract(f, contract, false)?;
+                    Display::fmt(body, f)?;
+                    f.write_str(")\n")?;
+                }
+
+                f.write_str("}")
+            }
+            Self::Function(contract, body) => {
+                display_contract(f, contract, false)?;
+                Display::fmt(body, f)?;
+                f.write_char(')')
+            }
+            Self::ExternalFunction(contract) => display_contract(f, contract, true),
+        }
+    }
 }
 
 impl Display for Statement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::BakedFunction(id, _) => f.write_fmt(format_args!("(module-fn {id:08x})")),
             Self::Var(left_hand, right_hand, None, _) => {
                 f.write_fmt(format_args!("(var-assign {left_hand} {right_hand})"))
             }
@@ -231,7 +394,7 @@ impl Parser {
         let mut errors = vec![];
 
         while self.current < self.tokens.len() - 1 {
-            match self.parse_statement() {
+            match self.parse_statement(true) {
                 Err(error) => {
                     errors.push(error);
                     self.bail();
@@ -247,9 +410,32 @@ impl Parser {
         }
     }
 
-    pub fn parse_statement(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    pub fn parse_statement(
+        &mut self,
+        is_global: bool,
+    ) -> Result<Statement, ProgrammingLangParsingError> {
+        macro_rules! invalid_kw {
+            ($kw: literal) => {
+                return Err(ProgrammingLangParsingError::InvalidKeyword {
+                    keyword: $kw,
+                    loc: self.peek().location,
+                })
+            };
+        }
+
         while self.match_tok(TokenType::Semicolon) {}
         match self.peek().typ {
+            TokenType::Impl if !is_global => invalid_kw!("impl block"),
+            TokenType::Extern if !is_global => invalid_kw!("external value/function"),
+            TokenType::Struct if !is_global => invalid_kw!("struct definition"),
+
+            TokenType::Return if is_global => invalid_kw!("return"),
+            TokenType::CurlyLeft if is_global => invalid_kw!("code block"),
+            TokenType::If if is_global => invalid_kw!("if statement"),
+            TokenType::While if is_global => invalid_kw!("while loop"),
+            TokenType::For if is_global => invalid_kw!("for loop"),
+
+
             TokenType::Let => self.parse_let_stmt(),
             TokenType::Const => self.parse_const_stmt(),
             TokenType::CurlyLeft => self.parse_block_stmt(),
@@ -321,7 +507,7 @@ impl Parser {
         let mut statements = vec![];
 
         while !self.match_tok(TokenType::CurlyRight) {
-            statements.push(self.parse_statement()?);
+            statements.push(self.parse_statement(false)?);
         }
 
         Ok(Statement::Block(statements.into_boxed_slice(), location))
@@ -357,13 +543,13 @@ impl Parser {
                 expected: TokenType::ParenRight,
             });
         }
-        let if_stmt = self.parse_statement()?;
+        let if_stmt = self.parse_statement(false)?;
         if self.match_tok(TokenType::Else) {
             return Ok(Statement::If {
                 condition,
                 if_stmt: Box::new(if_stmt),
-                else_stmt: Some(Box::new(self.parse_statement()?)),
-                location
+                else_stmt: Some(Box::new(self.parse_statement(false)?)),
+                location,
             });
         }
         Ok(Statement::If {
@@ -395,8 +581,8 @@ impl Parser {
         }
         Ok(Statement::While {
             condition,
-            child: Box::new(self.parse_statement()?),
-            location
+            child: Box::new(self.parse_statement(false)?),
+            location,
         })
     }
     fn parse_for_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
@@ -428,7 +614,7 @@ impl Parser {
             });
         }
 
-        let child = Box::new(self.parse_statement()?);
+        let child = Box::new(self.parse_statement(false)?);
         Ok(Statement::For {
             iterator,
             var_name,
@@ -476,7 +662,11 @@ impl Parser {
             elements.push((name, typ));
         }
 
-        Ok(Statement::Struct { name, elements, location })
+        Ok(Statement::Struct {
+            name,
+            elements,
+            location,
+        })
     }
     fn parse_impl(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         // impl <name> { ... }
@@ -747,7 +937,7 @@ impl Parser {
         // - a statement
         // examples: `
         let body = if Self::is_statement(self.peek().typ) {
-            Box::new(self.parse_statement()?)
+            Box::new(self.parse_statement(false)?)
         } else {
             let expr = self.parse_expression()?;
             let return_location = expr.loc();

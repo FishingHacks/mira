@@ -39,6 +39,9 @@ pub enum ProgrammingLangParsingError {
         loc: Location,
         found: TokenType,
     },
+    ExpectedFunctionCall {
+        loc: Location,
+    },
     ExpectedFunctionArgument {
         loc: Location,
         found: TokenType,
@@ -99,6 +102,10 @@ pub enum ProgrammingLangParsingError {
         loc: Location,
         expected: TokenType,
         found: TokenType,
+    },
+    InvalidKeyword {
+        keyword: &'static str,
+        loc: Location,
     },
 }
 
@@ -164,11 +171,13 @@ impl ProgrammingLangParsingError {
             | Self::ExpectedKey { loc, .. }
             | Self::ExpectedFunctionArgument { loc, .. }
             | Self::ExpectedFunctionArgumentExpression { loc, .. }
+            | Self::ExpectedFunctionCall { loc }
             | Self::InvalidTokenization { loc }
             | Self::AssignmentInvalidLeftSide { loc }
             | Self::ExpectedUnsignedIntegerOnly { loc }
             | Self::ExpectedArbitrary { loc, .. }
-            | Self::InvalidUnaryOperand { loc, .. } => loc,
+            | Self::InvalidUnaryOperand { loc, .. }
+            | Self::InvalidKeyword { loc, .. } => loc,
         }
     }
 }
@@ -208,6 +217,9 @@ impl Debug for ProgrammingLangParsingError {
             Self::ExpectedFunctionArgumentExpression { loc, found } => f.write_fmt(format_args!(
                 "{loc}: Expected an expression or `)`, but found {found:?}"
             )),
+            Self::ExpectedFunctionCall { loc } => f.write_fmt(format_args!(
+                "{loc}: Expected a function call"
+            )),
             Self::ExpectedIdentifier { loc, found } => f.write_fmt(format_args!(
                 "{loc}: Expected an identifier, but found {found:?}"
             )),
@@ -221,12 +233,27 @@ impl Debug for ProgrammingLangParsingError {
                 loc,
                 expected,
                 found,
-            } => f.write_fmt(format_args!("{loc}: Expected {expected:?} but found {found:?}")),
-            Self::ExpectedArrayElement { loc, found } => f.write_fmt(format_args!("{loc}: Expected , or ], but found {found:?}")),
-            Self::ExpectedObjectElement { loc, found } => f.write_fmt(format_args!("{loc}: Expected , or }}, but found {found:?}")),
-            Self::ExpectedKey { loc, found } => f.write_fmt(format_args!("{loc}: Expected a key (a string, number or identifier), but found {found:?}")),
-            Self::ExpectedUnsignedIntegerOnly { loc } => f.write_fmt(format_args!("{loc}: You can only use positive integers here")),
-            Self::ExpectedType { loc, found } => f.write_fmt(format_args!("{loc}: Expected a type, but found {found:?}")),
+            } => f.write_fmt(format_args!(
+                "{loc}: Expected {expected:?} but found {found:?}"
+            )),
+            Self::ExpectedArrayElement { loc, found } => {
+                f.write_fmt(format_args!("{loc}: Expected , or ], but found {found:?}"))
+            }
+            Self::ExpectedObjectElement { loc, found } => {
+                f.write_fmt(format_args!("{loc}: Expected , or }}, but found {found:?}"))
+            }
+            Self::ExpectedKey { loc, found } => f.write_fmt(format_args!(
+                "{loc}: Expected a key (a string, number or identifier), but found {found:?}"
+            )),
+            Self::ExpectedUnsignedIntegerOnly { loc } => f.write_fmt(format_args!(
+                "{loc}: You can only use positive integers here"
+            )),
+            Self::ExpectedType { loc, found } => {
+                f.write_fmt(format_args!("{loc}: Expected a type, but found {found:?}"))
+            }
+            Self::InvalidKeyword { keyword, loc } => {
+                f.write_fmt(format_args!("{loc}: {keyword:?} is not allowed here"))
+            }
         }
     }
 }
@@ -276,13 +303,25 @@ impl Debug for ProgrammingLangTokenizationError {
 pub enum ProgrammingLangProgramFormingError {
     NoCodeOutsideOfFunctions(Location),
     AnonymousFunctionAtGlobalLevel(Location),
+    GlobalValueNoLiteral(Location),
+    GlobalValueNoType(Location),
 }
 
 impl Debug for ProgrammingLangProgramFormingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoCodeOutsideOfFunctions(loc) => f.write_fmt(format_args!("{loc}: Code outside of a function boundary")),
-            Self::AnonymousFunctionAtGlobalLevel(loc) => f.write_fmt(format_args!("{loc}: There are no anonymous functions at global level allowed")),
+            Self::NoCodeOutsideOfFunctions(loc) => {
+                f.write_fmt(format_args!("{loc}: Code outside of a function boundary"))
+            }
+            Self::AnonymousFunctionAtGlobalLevel(loc) => f.write_fmt(format_args!(
+                "{loc}: There are no anonymous functions at global level allowed"
+           )),
+           Self::GlobalValueNoLiteral(loc) => f.write_fmt(format_args!(
+                "{loc}: global-level let or const expects you to pass a literal"
+           )),
+           Self::GlobalValueNoType(loc) => f.write_fmt(format_args!(
+                "{loc}: global-level const expects you to pass a type"
+           )),
         }
     }
 }

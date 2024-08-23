@@ -5,11 +5,14 @@ use std::{
 
 use crate::{
     error::{OperationType, ProgrammingLangParsingError},
+    module::{FunctionId, Module},
     tokenizer::{Literal, Location, Token, TokenType},
 };
 
 use super::{
-    statement::{display_contract, FunctionContract}, types::TypeRef, Parser, Statement
+    statement::{display_contract, FunctionContract},
+    types::TypeRef,
+    Parser, Statement,
 };
 
 #[derive(Debug, Clone)]
@@ -17,11 +20,11 @@ pub enum LiteralValue {
     String(Box<str>),
     Array(Vec<Expression>),
     Struct(HashMap<Box<str>, Expression>, Box<str>),
-    Object(HashMap<Box<str>, Expression>),
     Number(f64),
     Bool(bool),
     Dynamic(Box<str>),
     AnonymousFunction(FunctionContract, Box<Statement>),
+    BakedAnonymousFunction(FunctionId),
     Null,
 }
 
@@ -44,6 +47,9 @@ impl Display for LiteralValue {
             f.write_char(' ')?;
         }
         match self {
+            LiteralValue::BakedAnonymousFunction(id) => {
+                f.write_fmt(format_args!("(module-fn {id})"))
+            }
             LiteralValue::Bool(b) => f.write_str(if *b { "true" } else { "false" }),
             LiteralValue::Dynamic(d) => f.write_str(&**d),
             LiteralValue::Null => f.write_str("null"),
@@ -59,8 +65,9 @@ impl Display for LiteralValue {
                 }
                 f.write_char(']')
             }
-            LiteralValue::Struct(v, _) | LiteralValue::Object(v) => {
-                f.write_char('{')?;
+            LiteralValue::Struct(v, name) => {
+                f.write_str(&**name)?;
+                f.write_str(" {")?;
 
                 for (k, v) in v {
                     f.write_char(' ')?;
@@ -91,9 +98,8 @@ impl LiteralValue {
             LiteralValue::Number(..) => "number",
             LiteralValue::String(..) => "string",
             LiteralValue::Array(..) => "array",
-            LiteralValue::Object(..) => "object",
             LiteralValue::Struct(..) => "struct",
-            LiteralValue::AnonymousFunction(..) => "function",
+            LiteralValue::AnonymousFunction(..) | Self::BakedAnonymousFunction(..) => "function",
         }
     }
 }
@@ -118,6 +124,11 @@ pub enum Expression {
         left_side: Box<Expression>,
         right_side: Box<Expression>,
     },
+    MemberAccess {
+        left_side: Box<Expression>,
+        right_side: Box<str>,
+        loc: Location,
+    },
     Assignment {
         left_side: Box<Expression>,
         right_side: Box<Expression>,
@@ -133,7 +144,7 @@ pub enum Expression {
         left_side: Box<Expression>,
         new_type: TypeRef,
         loc: Location,
-    }
+    },
 }
 
 impl Display for Expression {
@@ -186,6 +197,17 @@ impl Display for Expression {
                 Display::fmt(right_side, f)?;
                 f.write_char(')')
             }
+            Expression::MemberAccess {
+                left_side,
+                right_side,
+                ..
+            } => {
+                f.write_str("(member ")?;
+                Display::fmt(left_side, f)?;
+                f.write_char(' ')?;
+                f.write_str(&**right_side)?;
+                f.write_char(')')
+            }
             Expression::Assignment {
                 left_side,
                 right_side,
@@ -212,7 +234,11 @@ impl Display for Expression {
                 Display::fmt(right_side, f)?;
                 f.write_char(')')
             }
-            Expression::TypeCast { left_side, new_type, loc: _ } => {
+            Expression::TypeCast {
+                left_side,
+                new_type,
+                loc: _,
+            } => {
                 f.write_str("(type-cast ")?;
                 Display::fmt(left_side, f)?;
                 f.write_str(" -> ")?;
@@ -258,9 +284,58 @@ impl Expression {
             Self::Binary { operator, .. } => operator.location,
             Self::FunctionCall { identifier, .. } => identifier.loc(),
             Self::Indexing { right_side, .. } => right_side.loc(),
+            Self::MemberAccess { loc, .. } => *loc,
             Self::Assignment { loc, .. } => *loc,
             Self::Range { loc, .. } => *loc,
             Self::TypeCast { loc, .. } => *loc,
+        }
+    }
+
+    pub fn bake_functions(&mut self, module: &mut Module) {
+        match self {
+            Self::Literal(val, ..) => {
+                if let LiteralValue::AnonymousFunction(contract, statements) = val {
+                    let id = module.push_fn(contract.clone(), *(statements.clone()));
+                    *val = LiteralValue::BakedAnonymousFunction(id)
+                }
+            }
+            Self::Binary {
+                right_side,
+                left_side,
+                ..
+            }
+            | Self::Assignment {
+                left_side,
+                right_side,
+                ..
+            }
+            | Self::Indexing {
+                left_side,
+                right_side,
+            }
+            | Self::Range {
+                left_side,
+                right_side,
+                ..
+            } => {
+                left_side.bake_functions(module);
+                right_side.bake_functions(module);
+            }
+            Self::FunctionCall {
+                identifier,
+                arguments,
+            } => {
+                identifier.bake_functions(module);
+                arguments
+                    .iter_mut()
+                    .for_each(|el| el.bake_functions(module));
+            }
+            Self::MemberAccess { left_side, .. }
+            | Self::TypeCast { left_side, .. }
+            | Self::Unary {
+                right_side: left_side,
+                ..
+            } => left_side.bake_functions(module),
         }
     }
 
@@ -272,11 +347,6 @@ impl Expression {
                 LiteralValue::Array(array) => {
                     for val in array {
                         val.optimize()?;
-                    }
-                }
-                LiteralValue::Object(obj) | LiteralValue::Struct(obj, _) => {
-                    for v in obj.values_mut() {
-                        v.optimize()?;
                     }
                 }
                 _ => (),
@@ -348,6 +418,8 @@ impl Expression {
                                     )
                                 }
                             },
+                            TokenType::BitwiseAndOrReference => {}
+                            TokenType::MultiplyOrDeref => {}
                             tok @ _ => {
                                 return Err(ProgrammingLangParsingError::InvalidUnaryOperand {
                                     loc,
@@ -677,7 +749,6 @@ impl Expression {
                                 (
                                     LiteralValue::Dynamic(..)
                                     | LiteralValue::Array(..)
-                                    | LiteralValue::Object(..)
                                     | LiteralValue::Struct(..)
                                     | LiteralValue::AnonymousFunction(..),
                                     _,
@@ -686,7 +757,6 @@ impl Expression {
                                     _,
                                     LiteralValue::Dynamic(..)
                                     | LiteralValue::Array(..)
-                                    | LiteralValue::Object(..)
                                     | LiteralValue::Struct(..)
                                     | LiteralValue::AnonymousFunction(..),
                                 ) => {}
@@ -752,11 +822,6 @@ impl Expression {
                                     *self = Expression::Literal(LiteralValue::Null, real_loc);
                                 }
                             }
-                            (LiteralValue::Object(obj), LiteralValue::String(str)) => {
-                                if let Some(v) = obj.remove(str) {
-                                    *self = v;
-                                }
-                            }
                             _ => (),
                         }
                     }
@@ -787,7 +852,9 @@ impl Expression {
                 left_side.optimize()?;
                 right_side.optimize()?;
             }
-            Self::TypeCast { left_side, .. } => left_side.optimize()?,
+            Self::MemberAccess { left_side, .. } | Self::TypeCast { left_side, .. } => {
+                left_side.optimize()?
+            }
         })
     }
 }
@@ -815,7 +882,7 @@ impl Parser {
     }
 
     fn comparison(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
-        let mut expr = self.range()?;
+        let mut expr = self.pipe_operator()?;
 
         while self.matches(&[
             TokenType::Equals,
@@ -828,8 +895,32 @@ impl Parser {
             TokenType::LogicalOr,
         ]) {
             let operator = self.previous().clone();
-            let right = self.range()?;
+            let right = self.pipe_operator()?;
             expr = Expression::binary(operator, expr, right);
+        }
+
+        Ok(expr)
+    }
+
+    fn pipe_operator(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+        let mut expr = self.range()?;
+
+        while self.match_tok(TokenType::PipeOperator) {
+            let loc = self.peek().location;
+            let call = self.indexed()?;
+            match call {
+                Expression::FunctionCall {
+                    identifier,
+                    mut arguments,
+                } => {
+                    arguments.insert(0, expr);
+                    expr = Expression::FunctionCall {
+                        identifier,
+                        arguments,
+                    };
+                }
+                _ => return Err(ProgrammingLangParsingError::ExpectedFunctionCall { loc }),
+            }
         }
 
         Ok(expr)
@@ -963,15 +1054,35 @@ impl Parser {
     }
 
     fn type_cast(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
-        let mut expr = self.indexed()?;
+        let mut expr = self.references()?;
 
         while self.match_tok(TokenType::As) {
             let loc = self.previous().location;
             let new_type = TypeRef::parse(self)?;
-            expr = Expression::TypeCast { left_side: Box::new(expr), new_type, loc };
+            expr = Expression::TypeCast {
+                left_side: Box::new(expr),
+                new_type,
+                loc,
+            };
         }
 
         Ok(expr)
+    }
+
+    fn references(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+        if self.match_tok(TokenType::BitwiseAndOrReference) {
+            Ok(Expression::Unary {
+                operator: self.previous().clone(),
+                right_side: Box::new(self.references()?),
+            })
+        } else if self.match_tok(TokenType::MultiplyOrDeref) {
+            Ok(Expression::Unary {
+                operator: self.previous().clone(),
+                right_side: Box::new(self.references()?),
+            })
+        } else {
+            self.indexed()
+        }
     }
 
     fn indexed(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
@@ -1046,12 +1157,10 @@ impl Parser {
                         found: identifier.typ,
                     });
                 } else if let Some(Literal::String(str)) = &identifier.literal {
-                    expr = Expression::Indexing {
+                    expr = Expression::MemberAccess {
                         left_side: Box::new(expr),
-                        right_side: Box::new(Expression::Literal(
-                            LiteralValue::String(str.clone()),
-                            identifier.location,
-                        )),
+                        right_side: str.clone(),
+                        loc: identifier.location,
                     };
                 } else {
                     return Err(ProgrammingLangParsingError::InvalidTokenization {
@@ -1071,16 +1180,6 @@ impl Parser {
         match self.try_array() {
             Some(v) => return v,
             _ => (),
-        }
-
-        // objects
-        {
-            let loc = self.peek().location;
-            match self.try_object() {
-                Some(Ok(v)) => return Ok(Expression::Literal(LiteralValue::Object(v), loc)),
-                Some(Err(e)) => return Err(e),
-                _ => (),
-            }
         }
 
         // functions/callables
