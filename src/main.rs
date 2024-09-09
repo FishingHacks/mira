@@ -1,21 +1,19 @@
 use std::{
-    fmt::Debug,
-    fs::read_to_string,
-    io::{stdin, stdout, Write},
-    path::Path,
-    time::Instant,
+    fmt::Debug, fs::read_to_string, io::{stdin, stdout, Write}, path::{Path, PathBuf}, rc::Rc, time::Instant
 };
 
-use programming_lang::{error::ProgrammingLangError, globals::GlobalString, module::Module, tokenizer::Tokenizer};
+use programming_lang::{
+    error::ProgrammingLangError, module::Module, tokenizer::Tokenizer,
+};
 
 fn main() -> std::io::Result<()> {
     // if let Err(e) = run_file("./main.lang") {
     //     println!("Could not run file: {e:?}")
     // }
     // return Ok(());
-    let file = GlobalString::from("<stdin>");
+    let file: Rc<Path> = PathBuf::from("<stdin>").into();
     let mut module = Module::new();
-    
+
     loop {
         print!("> ");
         let _ = stdout().flush();
@@ -42,7 +40,7 @@ fn main() -> std::io::Result<()> {
         }
 
         let start = Instant::now();
-        let mut tokenizer = Tokenizer::new(&str, file);
+        let mut tokenizer = Tokenizer::new(&str, file.clone());
 
         println!(
             "Creating tokenizer: {}μs",
@@ -62,6 +60,13 @@ fn main() -> std::io::Result<()> {
             "Tokenization: {}μs",
             Instant::now().duration_since(start).as_micros()
         );
+
+        print!("Tokens: [");
+        for i in tokenizer.get_tokens().iter() {
+            print!("{i}, ");
+        }
+        println!("]");
+
         let start = Instant::now();
 
         let mut parser = tokenizer.to_parser();
@@ -132,12 +137,13 @@ impl Debug for ProgrammingLangIoError {
     }
 }
 
+#[allow(dead_code)]
 fn run_file<P: AsRef<Path>>(path: P) -> Result<(), ProgrammingLangIoError> {
-    let file: GlobalString = format!("{}", path.as_ref().display()).into();
+    let path = path.as_ref();
     let source_code = read_to_string(path)?;
 
     let start = Instant::now();
-    let mut tokenizer = Tokenizer::new(&source_code, file);
+    let mut tokenizer = Tokenizer::new(&source_code, path.into());
 
     println!(
         "Creating tokenizer: {}μs",

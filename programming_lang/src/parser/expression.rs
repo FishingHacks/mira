@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display, Write},
+    rc::Rc,
 };
 
 use crate::{
@@ -15,24 +16,85 @@ use super::{
     Parser, Statement,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Path {
+    entries: Vec<(Rc<str>, Vec<TypeRef>)>,
+    generics: Vec<TypeRef>,
+}
+
+impl Display for Path {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for i in 0..self.entries.len() {
+            if i != 0 {
+                f.write_str("::")?;
+            }
+
+            f.write_str(&*self.entries[i].0)?;
+            if self.entries[i].1.len() > 0 {
+                f.write_char('<')?;
+                for type_idx in 0..self.entries[i].1.len() {
+                    if type_idx != 0 {
+                        f.write_str(", ")?;
+                    }
+                    Display::fmt(&self.entries[i].1[type_idx], f)?;
+                }
+                f.write_char('>')?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Path {
+    pub fn push(&mut self, name: Rc<str>, generics: Vec<TypeRef>) {
+        self.entries.push((name, generics));
+    }
+    pub fn pop(&mut self) -> Option<(Rc<str>, Vec<TypeRef>)> {
+        // ensure this is at least 1 element
+        if self.entries.len() > 1 {
+            self.entries.pop()
+        } else {
+            None
+        }
+    }
+    pub fn new(entry: Rc<str>, generics: Vec<TypeRef>) -> Self {
+        Self {
+            entries: vec![(entry, generics)],
+            generics: vec![],
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum LiteralValue {
-    String(Box<str>),
+    String(Rc<str>),
     Array(Vec<Expression>),
-    Struct(HashMap<Box<str>, Expression>, Box<str>),
-    Number(f64),
+    Struct(HashMap<Rc<str>, Expression>, Path),
+    Float(f64),
+    SInt(i64),
+    UInt(u64),
     Bool(bool),
-    Dynamic(Box<str>),
+    Dynamic(Path),
     AnonymousFunction(FunctionContract, Box<Statement>),
     BakedAnonymousFunction(FunctionId),
-    Null,
 }
 
 impl PartialEq for LiteralValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::String(l), Self::String(r)) => l == r,
-            (Self::Number(l), Self::Number(r)) => l == r,
+            (Self::SInt(l), Self::SInt(r)) => *l == *r,
+            (Self::UInt(l), Self::UInt(r)) => *l == *r,
+            (Self::Float(l), Self::Float(r)) => *l == *r,
+            (Self::UInt(l), Self::SInt(r)) | (Self::SInt(r), Self::UInt(l)) => {
+                *r >= 0 && (*r as u64) == *l
+            }
+            (Self::Float(l), Self::SInt(r)) | (Self::SInt(r), Self::Float(l)) => {
+                (*l == l.floor()) && (*l as i64) == *r
+            }
+            (Self::Float(l), Self::UInt(r)) | (Self::UInt(r), Self::Float(l)) => {
+                (*l >= 0.0) && (*l == l.floor()) && (*l as u64) == *r
+            }
             (Self::Bool(l), Self::Bool(r)) => l == r,
             (Self::Dynamic(l), Self::Dynamic(r)) => l == r,
             _ => false,
@@ -42,18 +104,15 @@ impl PartialEq for LiteralValue {
 
 impl Display for LiteralValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let LiteralValue::Struct(_, name) = &self {
-            f.write_str(&**name)?;
-            f.write_char(' ')?;
-        }
         match self {
             LiteralValue::BakedAnonymousFunction(id) => {
                 f.write_fmt(format_args!("(module-fn {id})"))
             }
             LiteralValue::Bool(b) => f.write_str(if *b { "true" } else { "false" }),
-            LiteralValue::Dynamic(d) => f.write_str(&**d),
-            LiteralValue::Null => f.write_str("null"),
-            LiteralValue::Number(v) => f.write_fmt(format_args!("{}", *v)),
+            LiteralValue::Dynamic(d) => Display::fmt(d, f),
+            LiteralValue::UInt(v) => f.write_fmt(format_args!("{}", *v)),
+            LiteralValue::SInt(v) => f.write_fmt(format_args!("{}", *v)),
+            LiteralValue::Float(v) => f.write_fmt(format_args!("{}", *v)),
             LiteralValue::String(v) => f.write_fmt(format_args!("\"{}\"", &**v)),
             LiteralValue::Array(v) => {
                 f.write_char('[')?;
@@ -66,7 +125,7 @@ impl Display for LiteralValue {
                 f.write_char(']')
             }
             LiteralValue::Struct(v, name) => {
-                f.write_str(&**name)?;
+                Display::fmt(name, f)?;
                 f.write_str(" {")?;
 
                 for (k, v) in v {
@@ -94,8 +153,7 @@ impl LiteralValue {
         match self {
             Self::Bool(..) => "boolean",
             LiteralValue::Dynamic(..) => "{unknown}",
-            LiteralValue::Null => "null",
-            LiteralValue::Number(..) => "number",
+            LiteralValue::Float(..) | LiteralValue::SInt(..) | LiteralValue::UInt(..) => "number",
             LiteralValue::String(..) => "string",
             LiteralValue::Array(..) => "array",
             LiteralValue::Struct(..) => "struct",
@@ -126,7 +184,7 @@ pub enum Expression {
     },
     MemberAccess {
         left_side: Box<Expression>,
-        right_side: Box<str>,
+        right_side: Rc<str>,
         loc: Location,
     },
     Assignment {
@@ -254,11 +312,18 @@ impl Expression {
         Self::Literal(LiteralValue::Bool(value), loc)
     }
 
-    pub fn number(value: f64, loc: Location) -> Self {
-        Self::Literal(LiteralValue::Number(value), loc)
+    pub fn float(value: f64, loc: Location) -> Self {
+        Self::Literal(LiteralValue::Float(value), loc)
     }
 
-    pub fn string(value: Box<str>, loc: Location) -> Self {
+    pub fn signed_int(value: i64, loc: Location) -> Self {
+        Self::Literal(LiteralValue::SInt(value), loc)
+    }
+    pub fn unsigned_int(value: u64, loc: Location) -> Self {
+        Self::Literal(LiteralValue::UInt(value), loc)
+    }
+
+    pub fn string(value: Rc<str>, loc: Location) -> Self {
         Self::Literal(LiteralValue::String(value), loc)
     }
 
@@ -277,17 +342,19 @@ impl Expression {
         }
     }
 
-    pub fn loc(&self) -> Location {
+    pub fn loc(&self) -> &Location {
         match self {
-            Self::Literal(_, v) => *v,
-            Self::Unary { operator, .. } => operator.location,
-            Self::Binary { operator, .. } => operator.location,
-            Self::FunctionCall { identifier, .. } => identifier.loc(),
-            Self::Indexing { right_side, .. } => right_side.loc(),
-            Self::MemberAccess { loc, .. } => *loc,
-            Self::Assignment { loc, .. } => *loc,
-            Self::Range { loc, .. } => *loc,
-            Self::TypeCast { loc, .. } => *loc,
+            Self::Literal(_, v) => v,
+            Self::Unary { operator, .. } | Self::Binary { operator, .. } => &operator.location,
+            Self::Indexing {
+                right_side: identifier,
+                ..
+            }
+            | Self::FunctionCall { identifier, .. } => identifier.loc(),
+            Self::MemberAccess { loc, .. }
+            | Self::Assignment { loc, .. }
+            | Self::Range { loc, .. }
+            | Self::TypeCast { loc, .. } => loc,
         }
     }
 
@@ -365,7 +432,9 @@ impl Expression {
                         match operator.typ {
                             TokenType::Plus => match v {
                                 LiteralValue::Dynamic(..) => (),
-                                LiteralValue::Number(..) => (),
+                                LiteralValue::Float(..)
+                                | LiteralValue::SInt(..)
+                                | LiteralValue::UInt(..) => (),
                                 v @ _ => {
                                     return Err(
                                         ProgrammingLangParsingError::CannotDoUnaryOperation {
@@ -378,7 +447,9 @@ impl Expression {
                             },
                             TokenType::Minus => match v {
                                 LiteralValue::Dynamic(..) => (),
-                                LiteralValue::Number(v) => *self = Self::number(-*v, loc),
+                                LiteralValue::Float(..)
+                                | LiteralValue::SInt(..)
+                                | LiteralValue::UInt(..) => (),
                                 v @ _ => {
                                     return Err(
                                         ProgrammingLangParsingError::CannotDoUnaryOperation {
@@ -391,9 +462,9 @@ impl Expression {
                             },
                             TokenType::BitwiseNot => match v {
                                 LiteralValue::Dynamic(..) => (),
-                                LiteralValue::Number(v) => {
-                                    *self = Self::number(!(v.floor() as i64) as f64, loc)
-                                }
+                                LiteralValue::Float(..)
+                                | LiteralValue::SInt(..)
+                                | LiteralValue::UInt(..) => (),
                                 LiteralValue::Bool(v) => *self = Self::bool(!*v, loc),
                                 v @ _ => {
                                     return Err(
@@ -418,8 +489,8 @@ impl Expression {
                                     )
                                 }
                             },
-                            TokenType::BitwiseAndOrReference => {}
-                            TokenType::MultiplyOrDeref => {}
+                            TokenType::Ampersand => {}
+                            TokenType::Asterix => {}
                             tok @ _ => {
                                 return Err(ProgrammingLangParsingError::InvalidUnaryOperand {
                                     loc,
@@ -446,123 +517,12 @@ impl Expression {
                     (Expression::Literal(left, ..), Expression::Literal(right, ..)) => {
                         // +, -, *, /, %, &, |, ^, &&, ||, idiv, >=, <=, >, <, ==, !=
                         match operator.typ {
-                            TokenType::Plus => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(left), LiteralValue::Number(right)) => {
-                                    *self = Self::number(*left + *right, loc);
-                                }
-                                (LiteralValue::String(left), LiteralValue::String(right)) => {
-                                    let mut new_str = String::from(&**left);
-                                    new_str.push_str(&*right);
-                                    *self = Self::string(new_str.into_boxed_str(), loc);
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::Plus,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
-                            TokenType::Minus => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(left), LiteralValue::Number(right)) => {
-                                    *self = Self::number(*left - *right, loc);
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::Minus,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
-                            TokenType::MultiplyOrDeref => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(left), LiteralValue::Number(right)) => {
-                                    *self = Self::number((*left) * (*right), loc);
-                                }
-                                (LiteralValue::String(left), LiteralValue::Number(right))
-                                | (LiteralValue::Number(right), LiteralValue::String(left)) => {
-                                    let mut str =
-                                        String::with_capacity(left.len() * right.floor() as usize);
-                                    for _ in 0..right.floor() as usize {
-                                        str.push_str(&left);
-                                    }
-
-                                    *self = Self::string(str.into_boxed_str(), loc);
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::Multiply,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
-                            TokenType::Divide => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(left), LiteralValue::Number(right)) => {
-                                    *self = Self::number(*left / *right, loc);
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::Divide,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
-                            TokenType::Modulo => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(left), LiteralValue::Number(right)) => {
-                                    *self = Self::number(*left % *right, loc);
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::Divide,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
-                            TokenType::IntegerDivide => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(left), LiteralValue::Number(right)) => {
-                                    *self = Self::number((*left / *right).floor(), loc);
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::IntDivide,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
+                            TokenType::Plus => (),
+                            TokenType::Minus => (),
+                            TokenType::Asterix => (),
+                            TokenType::Divide => (),
+                            TokenType::Modulo => (),
+                            TokenType::IntegerDivide => (),
                             TokenType::LogicalAnd => match (left, right) {
                                 (LiteralValue::Bool(false), _) | (_, LiteralValue::Bool(false)) => {
                                     *self = Self::bool(false, loc)
@@ -570,180 +530,35 @@ impl Expression {
                                 (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
                                     *self = Self::bool(*left && *right, loc)
                                 }
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                    ()
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::LogicalAnd,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
+                                _ => (),
                             },
                             TokenType::LogicalOr => match (left, right) {
                                 (LiteralValue::Bool(true), _) | (_, LiteralValue::Bool(true)) => {
                                     *self = Self::bool(true, loc)
                                 }
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                    ()
-                                }
-
                                 (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
                                     *self = Self::bool(*left && *right, loc);
                                 }
-
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::LogicalOr,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
+                                _ => (),
                             },
                             TokenType::BitwiseXor => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
                                 (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
                                     *self = Self::bool(*left ^ *right, loc);
                                 }
-                                (LiteralValue::Number(left), LiteralValue::Number(right)) => {
-                                    *self = Self::number(
-                                        (left.floor() as i64 ^ right.floor() as i64) as f64,
-                                        loc,
-                                    );
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::BitwiseXor,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
+                                _ => (),
                             },
-                            TokenType::BitwiseAndOrReference => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
-                                    *self = Self::bool(*left & *right, loc)
-                                }
-                                (LiteralValue::Number(left), LiteralValue::Number(right)) => {
-                                    *self = Self::number(
-                                        (left.floor() as i64 & right.floor() as i64) as f64,
-                                        loc,
-                                    );
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::BitwiseAnd,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
+                            TokenType::BitwiseLShift => (),
+                            TokenType::Ampersand => (),
                             TokenType::BitwiseOr => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
                                 (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
                                     *self = Self::bool(*left | *right, loc)
                                 }
-                                (LiteralValue::Number(left), LiteralValue::Number(right)) => {
-                                    *self = Self::number(
-                                        (left.floor() as i64 | right.floor() as i64) as f64,
-                                        loc,
-                                    );
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::BitwiseOr,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
+                                _ => (),
                             },
-                            TokenType::GreaterThan => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(l), LiteralValue::Number(r)) => {
-                                    *self = Self::bool(*l > *r, loc)
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::GreaterThan,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
-                            TokenType::LessThan => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(l), LiteralValue::Number(r)) => {
-                                    *self = Self::bool(*l < *r, loc)
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::LessThan,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
-                            TokenType::GreaterThanEquals => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(l), LiteralValue::Number(r)) => {
-                                    *self = Self::bool(*l >= *r, loc)
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::GreaterThanEquals,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
-                            TokenType::LessThanEquals => match (left, right) {
-                                (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => {
-                                }
-                                (LiteralValue::Number(l), LiteralValue::Number(r)) => {
-                                    *self = Self::bool(*l <= *r, loc)
-                                }
-                                (left, right) => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoBinaryOperation {
-                                            loc,
-                                            operation_type: OperationType::LessThanEquals,
-                                            left: left.type_name(),
-                                            right: right.type_name(),
-                                        },
-                                    )
-                                }
-                            },
+                            TokenType::GreaterThan => (),
+                            TokenType::LessThan => (),
+                            TokenType::GreaterThanEquals => (),
+                            TokenType::LessThanEquals => (),
                             e @ (TokenType::Equals | TokenType::NotEquals) => match (left, right) {
                                 // dynamic values, functions, arrays, objects and structs cannot be compared at compile time
                                 (
@@ -797,30 +612,13 @@ impl Expression {
             } => {
                 left_side.optimize()?;
                 right_side.optimize()?;
-                let real_loc = left_side.loc();
 
                 match (&mut **left_side, &mut **right_side) {
                     (Expression::Literal(left_side, ..), Expression::Literal(right_side, ..)) => {
                         match (left_side, right_side) {
                             (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => (),
-                            (LiteralValue::String(str), LiteralValue::Number(num)) => {
-                                if *num < 0.0 || *num != num.floor() || *num as usize >= str.len() {
-                                    *self = Self::Literal(LiteralValue::Null, real_loc)
-                                } else {
-                                    if let Some(c) = str.chars().nth(*num as usize) {
-                                        *self =
-                                            Self::string(String::from(c).into_boxed_str(), real_loc)
-                                    } else {
-                                        *self = Self::Literal(LiteralValue::Null, real_loc)
-                                    }
-                                }
-                            }
-                            (LiteralValue::Array(a), LiteralValue::Number(idx)) => {
-                                if idx.floor() == *idx && *idx >= 0.0 {
-                                    *self = a[*idx as usize].clone();
-                                } else {
-                                    *self = Expression::Literal(LiteralValue::Null, real_loc);
-                                }
+                            (LiteralValue::Array(a), LiteralValue::UInt(idx)) => {
+                                *self = a[*idx as usize].clone();
                             }
                             _ => (),
                         }
@@ -838,7 +636,7 @@ impl Expression {
                         LiteralValue::Dynamic(..) => (),
                         _ => {
                             return Err(ProgrammingLangParsingError::AssignmentInvalidLeftSide {
-                                loc: *loc,
+                                loc: loc.clone(),
                             })
                         }
                     }
@@ -861,7 +659,7 @@ impl Expression {
 
 macro_rules! assign_set {
     ($expr: expr, $right: expr, $operator: expr) => {
-        let loc = $operator.location;
+        let loc = $operator.location.clone();
         $expr = Expression::Assignment {
             left_side: Box::new($expr.clone()),
             right_side: Box::new(Expression::binary($operator, $expr, $right)),
@@ -906,7 +704,7 @@ impl Parser {
         let mut expr = self.range()?;
 
         while self.match_tok(TokenType::PipeOperator) {
-            let loc = self.peek().location;
+            let loc = self.peek().location.clone();
             let call = self.indexed()?;
             match call {
                 Expression::FunctionCall {
@@ -931,7 +729,7 @@ impl Parser {
 
         while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
             let inclusive = self.previous().typ == TokenType::RangeInclusive;
-            let loc = self.previous().location;
+            let loc = self.previous().location.clone();
             let right_side = Box::new(self.expression()?);
             expr = Expression::Range {
                 left_side: Box::new(expr),
@@ -979,16 +777,20 @@ impl Parser {
             TokenType::Divide,
             TokenType::IntegerDivide,
             TokenType::Modulo,
-            TokenType::MultiplyOrDeref,
-            TokenType::BitwiseAndOrReference,
+            TokenType::Asterix,
+            TokenType::Ampersand,
             TokenType::BitwiseOr,
             TokenType::BitwiseXor,
+            TokenType::BitwiseLShift,
+            TokenType::BitwiseRShift,
             TokenType::DivideAssign,
             TokenType::ModuloAssign,
             TokenType::MultiplyAssign,
             TokenType::BitwiseAndAssign,
             TokenType::BitwiseOrAssign,
             TokenType::BitwiseXorAssign,
+            TokenType::BitwiseLShiftAssign,
+            TokenType::BitwiseRShiftAssign,
         ]) {
             let mut operator = self.previous().clone();
             let right = self.unary()?;
@@ -1003,11 +805,11 @@ impl Parser {
                     assign_set!(expr, right, operator);
                 }
                 TokenType::MultiplyAssign => {
-                    operator.typ = TokenType::MultiplyOrDeref;
+                    operator.typ = TokenType::Asterix;
                     assign_set!(expr, right, operator);
                 }
                 TokenType::BitwiseAndAssign => {
-                    operator.typ = TokenType::BitwiseAndOrReference;
+                    operator.typ = TokenType::Ampersand;
                     assign_set!(expr, right, operator);
                 }
                 TokenType::BitwiseOrAssign => {
@@ -1016,6 +818,14 @@ impl Parser {
                 }
                 TokenType::BitwiseXorAssign => {
                     operator.typ = TokenType::BitwiseXor;
+                    assign_set!(expr, right, operator);
+                }
+                TokenType::BitwiseLShiftAssign => {
+                    operator.typ = TokenType::BitwiseLShift;
+                    assign_set!(expr, right, operator);
+                }
+                TokenType::BitwiseRShiftAssign => {
+                    operator.typ = TokenType::BitwiseRShift;
                     assign_set!(expr, right, operator);
                 }
                 _ => expr = Expression::binary(operator, expr, right),
@@ -1042,7 +852,7 @@ impl Parser {
     fn assignment(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
         let expr = self.type_cast()?;
         if self.match_tok(TokenType::AssignValue) {
-            let loc = self.previous().location;
+            let loc = self.previous().location.clone();
             let value = self.expression()?;
             return Ok(Expression::Assignment {
                 left_side: Box::new(expr),
@@ -1057,7 +867,7 @@ impl Parser {
         let mut expr = self.references()?;
 
         while self.match_tok(TokenType::As) {
-            let loc = self.previous().location;
+            let loc = self.previous().location.clone();
             let new_type = TypeRef::parse(self)?;
             expr = Expression::TypeCast {
                 left_side: Box::new(expr),
@@ -1070,12 +880,12 @@ impl Parser {
     }
 
     fn references(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
-        if self.match_tok(TokenType::BitwiseAndOrReference) {
+        if self.match_tok(TokenType::Ampersand) {
             Ok(Expression::Unary {
                 operator: self.previous().clone(),
                 right_side: Box::new(self.references()?),
             })
-        } else if self.match_tok(TokenType::MultiplyOrDeref) {
+        } else if self.match_tok(TokenType::Asterix) {
             Ok(Expression::Unary {
                 operator: self.previous().clone(),
                 right_side: Box::new(self.references()?),
@@ -1100,13 +910,13 @@ impl Parser {
                         // , or ), but ) is alr handled by the thing above
                         if self.advance().typ != TokenType::Comma {
                             return Err(ProgrammingLangParsingError::ExpectedFunctionArgument {
-                                loc: self.previous().location,
+                                loc: self.previous().location.clone(),
                                 found: self.previous().typ,
                             });
                         }
                     }
 
-                    let next_loc = self.peek().location;
+                    let next_loc = self.peek().location.clone();
                     let next_typ = self.peek().typ;
                     if let Ok(expr) = self.expression() {
                         arguments.push(expr);
@@ -1124,7 +934,7 @@ impl Parser {
                     arguments,
                 };
             } else if self.previous().typ == TokenType::BracketLeft {
-                let next_loc = self.peek().location;
+                let next_loc = self.peek().location.clone();
                 let next_typ = self.peek().typ;
                 let Ok(indexing_expr) = self.expression() else {
                     return Err(
@@ -1145,7 +955,7 @@ impl Parser {
 
                 let found_token = self.peek();
                 return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                    loc: found_token.location,
+                    loc: found_token.location.clone(),
                     found: found_token.typ,
                     expected: TokenType::BracketRight,
                 });
@@ -1153,18 +963,18 @@ impl Parser {
                 let identifier = self.advance();
                 if identifier.typ != TokenType::IdentifierLiteral {
                     return Err(ProgrammingLangParsingError::ExpectedIdentifier {
-                        loc: identifier.location,
+                        loc: identifier.location.clone(),
                         found: identifier.typ,
                     });
                 } else if let Some(Literal::String(str)) = &identifier.literal {
                     expr = Expression::MemberAccess {
                         left_side: Box::new(expr),
                         right_side: str.clone(),
-                        loc: identifier.location,
+                        loc: identifier.location.clone(),
                     };
                 } else {
                     return Err(ProgrammingLangParsingError::InvalidTokenization {
-                        loc: identifier.location,
+                        loc: identifier.location.clone(),
                     });
                 }
             } else {
@@ -1184,7 +994,7 @@ impl Parser {
 
         // functions/callables
         if self.peek().typ == TokenType::Fn {
-            let loc = self.peek().location;
+            let loc = self.peek().location.clone();
             return Ok(Expression::Literal(
                 self.parse_callable(true)
                     .map(|(contract, body)| LiteralValue::AnonymousFunction(contract, body))?,
@@ -1192,23 +1002,26 @@ impl Parser {
             ));
         }
 
-        if let Some(val) = self.peek().to_literal_value() {
-            if let LiteralValue::Dynamic(identifier) = val {
-                // StructName { ... };
-                let loc = self.advance().location;
-                if let Some(obj) = self.try_object() {
-                    return match obj {
-                        Ok(v) => Ok(Expression::Literal(
-                            LiteralValue::Struct(v, identifier),
-                            loc,
-                        )),
-                        Err(e) => Err(e),
-                    };
-                }
-                return Ok(Expression::Literal(LiteralValue::Dynamic(identifier), loc));
+        if matches!(self.peek().typ, TokenType::IdentifierLiteral) {
+            let identifier = self.parse_identifier()?;
+
+            // StructName { ... };
+            let loc = self.peek().location.clone();
+            if let Some(obj) = self.try_object() {
+                return match obj {
+                    Ok(v) => Ok(Expression::Literal(
+                        LiteralValue::Struct(v, identifier),
+                        loc,
+                    )),
+                    Err(e) => Err(e),
+                };
             } else {
-                return Ok(Expression::Literal(val, self.advance().location));
+                return Ok(Expression::Literal(LiteralValue::Dynamic(identifier), loc));
             }
+        }
+
+        if let Some(lit) = self.peek().to_literal_value() {
+            return Ok(Expression::Literal(lit, self.advance().location.clone()));
         }
 
         if self.match_tok(TokenType::ParenLeft) {
@@ -1219,7 +1032,7 @@ impl Parser {
 
             let found_token = self.peek();
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                loc: found_token.location,
+                loc: found_token.location.clone(),
                 found: found_token.typ,
                 expected: TokenType::ParenRight,
             });
@@ -1227,21 +1040,86 @@ impl Parser {
 
         let found_token = self.peek();
         return Err(ProgrammingLangParsingError::ExpectedExpression {
-            loc: found_token.location,
+            loc: found_token.location.clone(),
             found: found_token.typ,
         });
     }
 
+    fn parse_identifier(&mut self) -> Result<Path, ProgrammingLangParsingError> {
+        let Some(Literal::String(ref identifier)) = self.advance().literal else {
+            return Err(ProgrammingLangParsingError::InvalidTokenization {
+                loc: self.tokens[self.current].location.clone(),
+            });
+        };
+        let identifier = identifier.clone();
+
+        let generics = if self.peek().typ == TokenType::LessThan {
+            self.parse_generics()?
+        } else {
+            Vec::new()
+        };
+        let mut path = Path::new(identifier, generics);
+        
+        while self.match_tok(TokenType::NamespaceAccess) {
+            match self.peek().typ {
+                TokenType::IdentifierLiteral => {}
+                _ => {
+                    return Err(ProgrammingLangParsingError::ExpectedIdentifier {
+                        loc: self.peek().location.clone(),
+                        found: self.peek().typ,
+                    })
+                }
+            }
+
+            let Some(Literal::String(ref identifier)) = self.advance().literal else {
+                return Err(ProgrammingLangParsingError::InvalidTokenization {
+                    loc: self.tokens[self.current].location.clone(),
+                });
+            };
+            let identifier = identifier.clone();
+            let generics = if self.peek().typ == TokenType::LessThan {
+                self.parse_generics()?
+            } else {
+                Vec::new()
+            };
+            path.push(identifier, generics);
+        }
+        Ok(path)
+    }
+
+    fn parse_generics(&mut self) -> Result<Vec<TypeRef>, ProgrammingLangParsingError> {
+        if !self.match_tok(TokenType::LessThan) {
+            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                loc: self.peek().location.clone(),
+                expected: TokenType::LessThan,
+                found: self.peek().typ,
+            });
+        }
+        let mut types = vec![];
+
+        while !self.match_tok(TokenType::GreaterThan) {
+            if types.len() > 0 && !self.match_tok(TokenType::Comma) {
+                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                    loc: self.peek().location.clone(),
+                    expected: TokenType::Comma,
+                    found: self.peek().typ,
+                });
+            }
+            types.push(TypeRef::parse(self)?);
+        }
+        Ok(types)
+    }
+
     fn try_array(&mut self) -> Option<Result<Expression, ProgrammingLangParsingError>> {
         if self.match_tok(TokenType::BracketLeft) {
-            let loc = self.previous().location;
+            let loc = self.previous().location.clone();
             let mut arr = vec![];
             while !self.match_tok(TokenType::BracketRight) {
                 if arr.len() > 0 {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
                         return Some(Err(ProgrammingLangParsingError::ExpectedArrayElement {
-                            loc: self.peek().location,
+                            loc: self.peek().location.clone(),
                             found: self.peek().typ,
                         }));
                     }
@@ -1266,7 +1144,7 @@ impl Parser {
     // { key : value, }
     fn try_object(
         &mut self,
-    ) -> Option<Result<HashMap<Box<str>, Expression>, ProgrammingLangParsingError>> {
+    ) -> Option<Result<HashMap<Rc<str>, Expression>, ProgrammingLangParsingError>> {
         if self.match_tok(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
             while !self.match_tok(TokenType::CurlyRight) {
@@ -1274,7 +1152,7 @@ impl Parser {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
                         return Some(Err(ProgrammingLangParsingError::ExpectedObjectElement {
-                            loc: self.peek().location,
+                            loc: self.peek().location.clone(),
                             found: self.peek().typ,
                         }));
                     }
@@ -1288,28 +1166,28 @@ impl Parser {
                 let key = if !self.matches(&[
                     TokenType::StringLiteral,
                     TokenType::IdentifierLiteral,
-                    TokenType::NumberLiteral,
+                    TokenType::FloatLiteral,
                 ]) {
                     return Some(Err(ProgrammingLangParsingError::ExpectedKey {
-                        loc: self.peek().location,
+                        loc: self.peek().location.clone(),
                         found: self.peek().typ,
                     }));
                 } else {
                     match self.previous().literal {
                         Some(Literal::String(ref v)) => v.clone(),
-                        Some(Literal::Number(v)) => v.to_string().into_boxed_str(),
+                        Some(Literal::UInt(v)) => v.to_string().into(),
                         _ => {
                             return Some(Err(ProgrammingLangParsingError::InvalidTokenization {
-                                loc: self.previous().location,
+                                loc: self.previous().location.clone(),
                             }))
                         }
                     }
                 };
 
-                if !self.match_tok(TokenType::AssignTypeOrStructValue) {
+                if !self.match_tok(TokenType::Colon) {
                     return Some(Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                        loc: self.peek().location,
-                        expected: TokenType::AssignTypeOrStructValue,
+                        loc: self.peek().location.clone(),
+                        expected: TokenType::Colon,
                         found: self.peek().typ,
                     }));
                 }
@@ -1319,7 +1197,6 @@ impl Parser {
                     Err(e) => return Some(Err(e)),
                 };
             }
-
             return Some(Ok(obj));
         } else {
             None
@@ -1327,6 +1204,10 @@ impl Parser {
     }
 
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, current: 0 }
+        Self {
+            tokens,
+            current: 0,
+            current_annotations: vec![],
+        }
     }
 }

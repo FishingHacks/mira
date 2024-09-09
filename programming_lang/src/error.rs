@@ -1,8 +1,8 @@
-use std::fmt::{Debug, Display};
+use std::{fmt::{Debug, Display}, rc::Rc};
 
 use crate::tokenizer::{Location, TokenType};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum ProgrammingLangError {
     Parsing(ProgrammingLangParsingError),
     Tokenization(ProgrammingLangTokenizationError),
@@ -33,7 +33,7 @@ impl From<ProgrammingLangTokenizationError> for ProgrammingLangError {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum ProgrammingLangParsingError {
     ExpectedType {
         loc: Location,
@@ -70,9 +70,6 @@ pub enum ProgrammingLangParsingError {
         loc: Location,
         found: TokenType,
     },
-    ExpectedUnsignedIntegerOnly {
-        loc: Location,
-    },
     CannotDoUnaryOperation {
         loc: Location,
         operation_type: OperationType,
@@ -105,6 +102,22 @@ pub enum ProgrammingLangParsingError {
     },
     InvalidKeyword {
         keyword: &'static str,
+        loc: Location,
+    },
+    FunctionAlreadyDefined {
+        loc: Location,
+        name: Rc<str>,
+        first_func_loc: Location,
+    },
+    StructImplRegionExpect {
+        loc: Location,
+        found: TokenType,
+        is_trait_impl: bool,
+    },
+    Eof {
+        loc: Location,
+    },
+    ExpectedStatement {
         loc: Location,
     },
 }
@@ -174,9 +187,12 @@ impl ProgrammingLangParsingError {
             | Self::ExpectedFunctionCall { loc }
             | Self::InvalidTokenization { loc }
             | Self::AssignmentInvalidLeftSide { loc }
-            | Self::ExpectedUnsignedIntegerOnly { loc }
+            | Self::Eof { loc }
+            | Self::StructImplRegionExpect { loc, .. }
             | Self::ExpectedArbitrary { loc, .. }
             | Self::InvalidUnaryOperand { loc, .. }
+            | Self::FunctionAlreadyDefined { loc, .. }
+            | Self::ExpectedStatement { loc, .. }
             | Self::InvalidKeyword { loc, .. } => loc,
         }
     }
@@ -245,20 +261,28 @@ impl Debug for ProgrammingLangParsingError {
             Self::ExpectedKey { loc, found } => f.write_fmt(format_args!(
                 "{loc}: Expected a key (a string, number or identifier), but found {found:?}"
             )),
-            Self::ExpectedUnsignedIntegerOnly { loc } => f.write_fmt(format_args!(
-                "{loc}: You can only use positive integers here"
-            )),
             Self::ExpectedType { loc, found } => {
                 f.write_fmt(format_args!("{loc}: Expected a type, but found {found:?}"))
             }
             Self::InvalidKeyword { keyword, loc } => {
                 f.write_fmt(format_args!("{loc}: {keyword:?} is not allowed here"))
             }
+            Self::FunctionAlreadyDefined { loc, name, first_func_loc } => {
+                f.write_fmt(format_args!("{loc}: Function `{name}` is already defined\n{first_func_loc}: `{name}` is already defined here"))
+            }
+            Self::StructImplRegionExpect { loc, found, is_trait_impl: false } => {
+                f.write_fmt(format_args!("{loc}: Expected impl, fn or }}, but found {found:?}"))
+            }
+            Self::StructImplRegionExpect { loc, found, is_trait_impl: true } => {
+                f.write_fmt(format_args!("{loc}: Expected fn or }}, but found {found:?}"))
+            }
+            Self::Eof { loc } => f.write_fmt(format_args!("{loc}: End-of-file")),
+            Self::ExpectedStatement { loc }  => f.write_fmt(format_args!("{loc}: Expected a statement")),
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum ProgrammingLangTokenizationError {
     UnknownTokenError { loc: Location, character: char },
     InvalidNumberError { loc: Location },
@@ -299,7 +323,7 @@ impl Debug for ProgrammingLangTokenizationError {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum ProgrammingLangProgramFormingError {
     NoCodeOutsideOfFunctions(Location),
     AnonymousFunctionAtGlobalLevel(Location),
@@ -315,13 +339,13 @@ impl Debug for ProgrammingLangProgramFormingError {
             }
             Self::AnonymousFunctionAtGlobalLevel(loc) => f.write_fmt(format_args!(
                 "{loc}: There are no anonymous functions at global level allowed"
-           )),
-           Self::GlobalValueNoLiteral(loc) => f.write_fmt(format_args!(
+            )),
+            Self::GlobalValueNoLiteral(loc) => f.write_fmt(format_args!(
                 "{loc}: global-level let or const expects you to pass a literal"
-           )),
-           Self::GlobalValueNoType(loc) => f.write_fmt(format_args!(
+            )),
+            Self::GlobalValueNoType(loc) => f.write_fmt(format_args!(
                 "{loc}: global-level const expects you to pass a type"
-           )),
+            )),
         }
     }
 }

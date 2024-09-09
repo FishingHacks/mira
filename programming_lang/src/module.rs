@@ -1,20 +1,21 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     error::ProgrammingLangProgramFormingError,
-    globals::GlobalString,
-    parser::{Expression, FunctionContract, LiteralValue, Statement, Type, TypeRef},
+    parser::{
+        Expression, FunctionContract, Implementation, LiteralValue, Statement,
+        Struct, Type, TypeRef,
+    },
 };
 
 pub type FunctionId = usize;
 
 #[derive(Debug, Default)]
 pub struct Scope {
-    types: HashMap<GlobalString, Type>,
-    functions: HashMap<GlobalString, FunctionId>,
-    external_functions: HashMap<GlobalString, FunctionContract>,
-    static_values: HashMap<GlobalString, (TypeRef, LiteralValue)>,
-    constant_values: HashMap<GlobalString, (TypeRef, LiteralValue)>,
+    types: HashMap<Rc<str>, Type>,
+    functions: HashMap<Rc<str>, FunctionId>,
+    external_functions: HashMap<Rc<str>, FunctionContract>,
+    static_values: HashMap<Rc<str>, (TypeRef, LiteralValue)>,
 }
 
 #[derive(Debug)]
@@ -61,10 +62,10 @@ impl Module {
         &mut self,
         statement: Statement,
     ) -> Result<(), ProgrammingLangProgramFormingError> {
-        let loc = statement.loc();
+        let loc = statement.loc().clone();
         match statement {
             Statement::Function(contract, mut statement) => {
-                let Some(name) = contract.name else {
+                let Some(name) = contract.name.clone() else {
                     return Err(
                         ProgrammingLangProgramFormingError::AnonymousFunctionAtGlobalLevel(loc),
                     );
@@ -76,16 +77,42 @@ impl Module {
             }
             Statement::Struct {
                 name,
-                elements,
+                elements: fields,
                 location: _,
+                global_impl,
+                impls,
             } => {
-                self.global_scope
-                    .types
-                    .insert(name, Type::Struct(name, elements));
+                let mut struct_global_impl: Implementation = HashMap::new();
+
+                for (function_name, mut function) in global_impl.into_iter() {
+                    function.bake(self);
+                    struct_global_impl.insert(function_name, function.get_baked_id());
+                }
+
+                let mut struct_impls: Vec<(Rc<str>, Implementation)> = Vec::new();
+
+                for (trait_name, trait_impl) in impls.into_iter() {
+                    let mut cur_impl: Implementation = HashMap::new();
+
+                    for (function_name, mut function) in trait_impl.into_iter() {
+                        function.bake(self);
+                        cur_impl.insert(function_name, function.get_baked_id());
+                    }
+
+                    struct_impls.push((trait_name, cur_impl));
+                }
+
+                let typ = Type::Struct(Box::new(Struct {
+                    name: name.clone(),
+                    fields,
+                    global_impl: struct_global_impl,
+                    trait_impls: struct_impls,
+                }));
+                self.global_scope.types.insert(name, typ);
             }
-            Statement::Var(_, expr, None, _) | Statement::Const(_, expr, None, _) => {
+            Statement::Var(_, expr, None, _) => {
                 return Err(ProgrammingLangProgramFormingError::GlobalValueNoType(
-                    expr.loc(),
+                    expr.loc().clone(),
                 ))
             }
             Statement::Var(name, expr, Some(typ), _) => {
@@ -93,21 +120,12 @@ impl Module {
                     self.global_scope.static_values.insert(name, (typ, val));
                 } else {
                     return Err(ProgrammingLangProgramFormingError::GlobalValueNoLiteral(
-                        expr.loc(),
-                    ));
-                }
-            }
-            Statement::Const(name, expr, Some(typ), _) => {
-                if let Expression::Literal(val, _) = expr {
-                    self.global_scope.constant_values.insert(name, (typ, val));
-                } else {
-                    return Err(ProgrammingLangProgramFormingError::GlobalValueNoLiteral(
-                        expr.loc(),
+                        expr.loc().clone(),
                     ));
                 }
             }
             Statement::ExternalFunction(contract) => {
-                if let Some(name) = contract.name {
+                if let Some(name) = contract.name.clone() {
                     self.global_scope.external_functions.insert(name, contract);
                 } else {
                     return Err(

@@ -1,0 +1,299 @@
+---
+source: programming_lang/src/tokenizer.rs
+expression: "(errs, tokens)"
+---
+(
+    [
+        text:8:4: Could not parse the number,
+        text:9:5: Could not parse the number,
+        text:13:5: Could not parse the number,
+        text:14:6: Could not parse the number,
+        text:18:5: Could not parse the number,
+        text:19:6: Could not parse the number,
+    ],
+    [
+        Token {
+            typ: UIntLiteral,
+            literal: Some(
+                UInt(
+                    12,
+                ),
+            ),
+            location: Location {
+                line: 1,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 1,
+                column: 2,
+                file: "text",
+            },
+        },
+        Token {
+            typ: SIntLiteral,
+            literal: Some(
+                SInt(
+                    -23,
+                ),
+            ),
+            location: Location {
+                line: 2,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 2,
+                column: 3,
+                file: "text",
+            },
+        },
+        Token {
+            typ: FloatLiteral,
+            literal: Some(
+                Float(
+                    23.9,
+                ),
+            ),
+            location: Location {
+                line: 3,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 3,
+                column: 4,
+                file: "text",
+            },
+        },
+        Token {
+            typ: FloatLiteral,
+            literal: Some(
+                Float(
+                    -29.3,
+                ),
+            ),
+            location: Location {
+                line: 4,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 4,
+                column: 5,
+                file: "text",
+            },
+        },
+        Token {
+            typ: UIntLiteral,
+            literal: Some(
+                UInt(
+                    1,
+                ),
+            ),
+            location: Location {
+                line: 6,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 6,
+                column: 3,
+                file: "text",
+            },
+        },
+        Token {
+            typ: SIntLiteral,
+            literal: Some(
+                SInt(
+                    -1,
+                ),
+            ),
+            location: Location {
+                line: 7,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 7,
+                column: 4,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 8,
+                column: 5,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 9,
+                column: 6,
+                file: "text",
+            },
+        },
+        Token {
+            typ: UIntLiteral,
+            literal: Some(
+                UInt(
+                    13,
+                ),
+            ),
+            location: Location {
+                line: 11,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 11,
+                column: 6,
+                file: "text",
+            },
+        },
+        Token {
+            typ: SIntLiteral,
+            literal: Some(
+                SInt(
+                    -5,
+                ),
+            ),
+            location: Location {
+                line: 12,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 12,
+                column: 6,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 13,
+                column: 6,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 14,
+                column: 7,
+                file: "text",
+            },
+        },
+        Token {
+            typ: UIntLiteral,
+            literal: Some(
+                UInt(
+                    5,
+                ),
+            ),
+            location: Location {
+                line: 16,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 16,
+                column: 3,
+                file: "text",
+            },
+        },
+        Token {
+            typ: SIntLiteral,
+            literal: Some(
+                SInt(
+                    -34,
+                ),
+            ),
+            location: Location {
+                line: 17,
+                column: 0,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 17,
+                column: 5,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 18,
+                column: 6,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Semicolon,
+            literal: None,
+            location: Location {
+                line: 19,
+                column: 7,
+                file: "text",
+            },
+        },
+        Token {
+            typ: Eof,
+            literal: None,
+            location: Location {
+                line: 20,
+                column: 0,
+                file: "text",
+            },
+        },
+    ],
+)

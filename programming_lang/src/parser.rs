@@ -1,14 +1,36 @@
-use crate::tokenizer::{Token, TokenType};
-pub use expression::{Expression, LiteralValue};
-pub use statement::{Statement, FunctionContract, Argument};
-pub use types::{RESERVED_TYPE_NAMES, Type, TypeRef};
+use std::{fmt::{Display, Write}, rc::Rc};
+
+use crate::tokenizer::{Location, Token, TokenType};
+pub use expression::{Expression, LiteralValue, Path};
+pub use statement::{Statement, FunctionContract, Argument, BakableFunction};
+pub use types::{RESERVED_TYPE_NAMES, Type, TypeRef, Struct, Implementation};
 mod expression;
 mod statement;
 mod types;
 
+#[derive(Debug)]
+pub struct Annotation {
+    loc: Location,
+    name: Rc<str>,
+    args: Vec<Token>,
+}
+
+impl Display for Annotation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('@')?;
+        Display::fmt(&self.name, f)?;
+        f.write_char('(')?;
+        for arg in self.args.iter() {
+            Display::fmt(arg, f)?;
+        }
+        f.write_char(')')
+    }
+}
+
 pub struct Parser {
     pub tokens: Vec<Token>,
     pub current: usize,
+    current_annotations: Vec<Annotation>
 }
 
 impl Parser {
@@ -91,11 +113,9 @@ impl Parser {
                 | TokenType::If
                 | TokenType::While
                 | TokenType::For
-                | TokenType::Impl
                 | TokenType::Trait
                 | TokenType::Let
-                | TokenType::Return
-                | TokenType::Const => break,
+                | TokenType::Return => break,
                 _ => (),
             }
 

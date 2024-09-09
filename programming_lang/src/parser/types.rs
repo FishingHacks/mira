@@ -1,6 +1,6 @@
-use std::fmt::{Display, Write};
+use std::{collections::HashMap, fmt::{Display, Write}, rc::Rc};
 
-use crate::{error::ProgrammingLangParsingError, globals::GlobalString, tokenizer::{Literal, TokenType}};
+use crate::{error::ProgrammingLangParsingError, module::FunctionId, tokenizer::{Literal, TokenType}};
 
 use super::Parser;
 
@@ -13,7 +13,7 @@ pub static RESERVED_TYPE_NAMES: &[&'static str] = &[
 pub enum TypeRef {
     Reference {
         number_of_references: u8,
-        type_name: GlobalString,
+        type_name: Rc<str>,
     },
     UnsizedArray {
         number_of_references: u8,
@@ -50,7 +50,7 @@ impl Display for TypeRef {
 }
 
 impl TypeRef {
-    pub fn try_clone_deref(&self) -> Option<Self> {
+    pub fn try_clone_deref(self) -> Option<Self> {
         if self.get_ref_count() > 0 {
             return None;
         }
@@ -59,14 +59,14 @@ impl TypeRef {
                 number_of_references,
                 type_name,
             } => Self::Reference {
-                number_of_references: *number_of_references - 1,
-                type_name: *type_name,
+                number_of_references: number_of_references - 1,
+                type_name: type_name,
             },
             Self::UnsizedArray {
                 number_of_references,
                 child,
             } => Self::UnsizedArray {
-                number_of_references: *number_of_references - 1,
+                number_of_references: number_of_references - 1,
                 child: child.clone(),
             },
             Self::SizedArray {
@@ -74,9 +74,9 @@ impl TypeRef {
                 child,
                 amount_of_elements,
             } => Self::SizedArray {
-                number_of_references: *number_of_references - 1,
+                number_of_references: number_of_references - 1,
                 child: child.clone(),
-                amount_of_elements: *amount_of_elements,
+                amount_of_elements: amount_of_elements,
             },
         })
     }
@@ -111,7 +111,7 @@ impl TypeRef {
             // <subtype> = [<sized-or-unsized>] | <identifier>
             // <sized-or-unsized> = <type>; <number> | <type>
 
-            if parser.match_tok(TokenType::BitwiseAndOrReference) {
+            if parser.match_tok(TokenType::Ampersand) {
                 number_of_references += 1;
                 continue;
             }
@@ -124,36 +124,33 @@ impl TypeRef {
                 let child = Box::new(Self::parse(parser)?);
                 if parser.match_tok(TokenType::Semicolon) {
                     // case [<type>; <amount>]
-                    if !parser.match_tok(TokenType::NumberLiteral) {
-                        return Err(ProgrammingLangParsingError::ExpectedArbitrary { loc: parser.peek().location, expected: TokenType::NumberLiteral, found: parser.peek().typ });
+                    if !parser.match_tok(TokenType::FloatLiteral) {
+                        return Err(ProgrammingLangParsingError::ExpectedArbitrary { loc: parser.peek().location.clone(), expected: TokenType::FloatLiteral, found: parser.peek().typ });
                     }
-                    let Some(Literal::Number(lit)) = parser.previous().literal else {
-                        return Err(ProgrammingLangParsingError::InvalidTokenization { loc: parser.previous().location });
+                    let Some(Literal::UInt(lit)) = parser.previous().literal else {
+                        return Err(ProgrammingLangParsingError::InvalidTokenization { loc: parser.previous().location.clone() });
                     };
-                    if lit.floor() != lit || lit < 0.0 {
-                        return Err(ProgrammingLangParsingError::ExpectedUnsignedIntegerOnly { loc: parser.previous().location });
-                    }
                     
                     if !parser.match_tok(TokenType::BracketRight) {
-                        return Err(ProgrammingLangParsingError::ExpectedArbitrary { loc: parser.peek().location, expected: TokenType::BracketRight, found: parser.peek().typ });
+                        return Err(ProgrammingLangParsingError::ExpectedArbitrary { loc: parser.peek().location.clone(), expected: TokenType::BracketRight, found: parser.peek().typ });
                     }
 
-                    return Ok(Self::SizedArray { number_of_references, child, amount_of_elements: lit.floor() as usize });
+                    return Ok(Self::SizedArray { number_of_references, child, amount_of_elements: lit as usize });
                 } else if !parser.match_tok(TokenType::BracketRight) {
-                    return Err(ProgrammingLangParsingError::ExpectedArbitrary { loc: parser.peek().location, expected: TokenType::BracketRight, found: parser.peek().typ });
+                    return Err(ProgrammingLangParsingError::ExpectedArbitrary { loc: parser.peek().location.clone(), expected: TokenType::BracketRight, found: parser.peek().typ });
                 } else {
                     return Ok(Self::UnsizedArray { number_of_references, child });
                 }
             } else if parser.match_tok(TokenType::LogicalNot) {
                 return Ok(Self::Reference { number_of_references, type_name: "!".into() });
             } else if let Some(ident) = parser.expect_identifier().ok() {
-                return Ok(Self::Reference { number_of_references, type_name: (&**ident).into() });
+                return Ok(Self::Reference { number_of_references, type_name: ident });
             } else {
-                return Err(ProgrammingLangParsingError::ExpectedType { loc: parser.peek().location, found: parser.peek().typ });
+                return Err(ProgrammingLangParsingError::ExpectedType { loc: parser.peek().location.clone(), found: parser.peek().typ });
             }
         }
 
-        return Err(ProgrammingLangParsingError::ExpectedType { loc: parser.peek().location, found: TokenType::Eof });
+        return Err(ProgrammingLangParsingError::ExpectedType { loc: parser.peek().location.clone(), found: TokenType::Eof });
     }
 }
 
@@ -200,6 +197,16 @@ impl PartialEq for TypeRef {
     }
 }
 
+pub type Implementation = HashMap<Rc<str>, FunctionId>;
+
+#[derive(Debug)]
+pub struct Struct {
+    pub name: Rc<str>,
+    pub fields: Vec<(Rc<str>, TypeRef)>,
+    pub global_impl: Implementation,
+    pub trait_impls: Vec<(Rc<str>, Implementation)>,
+}
+
 #[derive(Debug)]
 pub enum Type {
     Reference(TypeRef),
@@ -208,7 +215,7 @@ pub enum Type {
     /// An Array of known size
     SizedArray(TypeRef, usize),
     /// A reference to some other type
-    Struct(GlobalString, Vec<(GlobalString, TypeRef)>),
+    Struct(Box<Struct>),
     /// Equivalent to: `struct str { length: usize; bytes: &[u8] }`
     ///
     /// Stores the length and the contents of a string
