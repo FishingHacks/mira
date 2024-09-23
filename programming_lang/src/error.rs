@@ -1,4 +1,7 @@
-use std::{fmt::{Debug, Display}, rc::Rc};
+use std::{
+    fmt::{Debug, Display},
+    rc::Rc,
+};
 
 use crate::tokenizer::{Location, TokenType};
 
@@ -62,6 +65,10 @@ pub enum ProgrammingLangParsingError {
         loc: Location,
         found: TokenType,
     },
+    ExpectedFunctionBody {
+        loc: Location,
+        found: TokenType,
+    },
     ExpectedExpression {
         loc: Location,
         found: TokenType,
@@ -118,6 +125,9 @@ pub enum ProgrammingLangParsingError {
         loc: Location,
     },
     ExpectedStatement {
+        loc: Location,
+    },
+    ExpectedAnnotationStatement {
         loc: Location,
     },
 }
@@ -184,10 +194,12 @@ impl ProgrammingLangParsingError {
             | Self::ExpectedKey { loc, .. }
             | Self::ExpectedFunctionArgument { loc, .. }
             | Self::ExpectedFunctionArgumentExpression { loc, .. }
+            | Self::ExpectedFunctionBody { loc, .. }
             | Self::ExpectedFunctionCall { loc }
             | Self::InvalidTokenization { loc }
             | Self::AssignmentInvalidLeftSide { loc }
             | Self::Eof { loc }
+            | Self::ExpectedAnnotationStatement { loc }
             | Self::StructImplRegionExpect { loc, .. }
             | Self::ExpectedArbitrary { loc, .. }
             | Self::InvalidUnaryOperand { loc, .. }
@@ -232,6 +244,9 @@ impl Debug for ProgrammingLangParsingError {
             )),
             Self::ExpectedFunctionArgumentExpression { loc, found } => f.write_fmt(format_args!(
                 "{loc}: Expected an expression or `)`, but found {found:?}"
+            )),
+            Self::ExpectedFunctionBody { loc, found } => f.write_fmt(format_args!(
+                "{loc}: `=` or `{{`, but found {found:?}"
             )),
             Self::ExpectedFunctionCall { loc } => f.write_fmt(format_args!(
                 "{loc}: Expected a function call"
@@ -278,6 +293,7 @@ impl Debug for ProgrammingLangParsingError {
             }
             Self::Eof { loc } => f.write_fmt(format_args!("{loc}: End-of-file")),
             Self::ExpectedStatement { loc }  => f.write_fmt(format_args!("{loc}: Expected a statement")),
+            Self::ExpectedAnnotationStatement { loc } => f.write_fmt(format_args!("{loc}: Expected a while, if, for, block, function or struct statement")),
         }
     }
 }

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    fmt::{Debug, Display, Write}, rc::Rc,
+    fmt::{Debug, Display, Write},
+    rc::Rc,
 };
 
 use crate::{
@@ -10,7 +11,31 @@ use crate::{
     tokenizer::{Literal, Location, TokenType},
 };
 
-use super::{types::TypeRef, Expression, Parser};
+use super::{
+    types::{Generic, TypeRef},
+    Expression, Parser, Path,
+};
+
+#[derive(Default, Debug, Clone)]
+pub struct Annotations(pub Vec<Annotation>);
+
+impl Display for Annotations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for annotation in self.0.iter() {
+            f.write_char('@')?;
+            f.write_str(&annotation.name)?;
+            f.write_char('(')?;
+            for i in 0..annotation.args.len() {
+                if i != 0 {
+                    f.write_char(' ')?;
+                }
+                Display::fmt(&annotation.args[i], f)?;
+            }
+            f.write_str(")\n")?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum BakableFunction {
@@ -56,20 +81,23 @@ pub enum Statement {
         if_stmt: Box<Statement>,
         else_stmt: Option<Box<Statement>>,
         location: Location,
+        annotations: Annotations,
     },
     While {
         condition: Expression,
         child: Box<Statement>,
         location: Location,
+        annotations: Annotations,
     },
     For {
         iterator: Expression,
         var_name: Rc<str>,
         child: Box<Statement>,
         location: Location,
+        annotations: Annotations,
     },
     Return(Option<Expression>, Location),
-    Block(Box<[Statement]>, Location),
+    Block(Box<[Statement]>, Location, Annotations),
     Var(Rc<str>, Expression, Option<TypeRef>, Location),
     Expression(Expression),
     Function(FunctionContract, Box<Statement>),
@@ -81,6 +109,7 @@ pub enum Statement {
         location: Location,
         global_impl: HashMap<Rc<str>, BakableFunction>,
         impls: Vec<(Rc<str>, HashMap<Rc<str>, BakableFunction>)>,
+        annotations: Annotations,
     },
 }
 
@@ -91,7 +120,7 @@ impl Statement {
             Self::ExternalFunction(c) | Self::Function(c, _) => &c.location,
 
             Self::BakedFunction(_, location)
-            | Self::Block(_, location)
+            | Self::Block(_, location, _)
             | Self::For { location, .. }
             | Self::If { location, .. }
             | Self::Return(_, location)
@@ -109,7 +138,23 @@ impl Statement {
             }
             Self::Function(contract, statement) => {
                 let location = contract.location.clone();
-                let id = module.push_fn(contract.clone(), (&**statement).clone());
+
+                let dummy_contract: FunctionContract = FunctionContract {
+                    annotations: Default::default(),
+                    arguments: Default::default(),
+                    generics: Default::default(),
+                    location: location.clone(),
+                    name: None,
+                    return_type: None,
+                };
+                let dummy_statement: Statement =
+                    Statement::ExternalFunction(dummy_contract.clone());
+
+                let id = module.push_fn(
+                    std::mem::replace(contract, dummy_contract),
+                    std::mem::replace(statement, dummy_statement),
+                );
+
                 *self = Self::BakedFunction(id, location);
             }
             Self::Block(statements, ..) => statements
@@ -145,7 +190,11 @@ impl Statement {
         }
     }
 
-    pub fn mod_fmt(&self, f: &mut std::fmt::Formatter<'_>, module: &Module) -> std::fmt::Result {
+    pub fn display_module(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        module: &Module,
+    ) -> std::fmt::Result {
         match self {
             Self::BakedFunction(id, _) => {
                 if let Some((contract, body)) = module.get_fn(*id) {
@@ -164,7 +213,9 @@ impl Statement {
             Self::Var(left_hand, right_hand, Some(typ), _) => {
                 f.write_fmt(format_args!("(var-assign {left_hand} {typ} {right_hand})"))
             }
-            Self::Block(stmts, _) => {
+            Self::Block(stmts, _, annotations) => {
+                Display::fmt(annotations, f)?;
+
                 f.write_char('{')?;
                 for stmt in &**stmts {
                     f.write_char('\n')?;
@@ -188,24 +239,32 @@ impl Statement {
                 if_stmt,
                 else_stmt: Some(else_stmt),
                 location: _,
-            } => f.write_fmt(format_args!("(if {condition} {if_stmt} {else_stmt})")),
+                annotations,
+            } => f.write_fmt(format_args!(
+                "{annotations}(if {condition} {if_stmt} {else_stmt})"
+            )),
             Self::If {
                 condition,
                 if_stmt,
                 else_stmt: None,
                 location: _,
-            } => f.write_fmt(format_args!("(if {condition} {if_stmt})")),
+                annotations,
+            } => f.write_fmt(format_args!("{annotations}(if {condition} {if_stmt})")),
             Self::For {
                 iterator,
                 var_name,
                 child,
                 location: _,
-            } => f.write_fmt(format_args!("(for {var_name} {iterator} {child})")),
+                annotations,
+            } => f.write_fmt(format_args!(
+                "{annotations}(for {var_name} {iterator} {child})"
+            )),
             Self::While {
                 condition,
                 child,
                 location: _,
-            } => f.write_fmt(format_args!("(while {condition} {child})")),
+                annotations,
+            } => f.write_fmt(format_args!("{annotations}(while {condition} {child})")),
             Self::Struct {
                 name,
                 elements: arguments,
@@ -245,7 +304,9 @@ impl Display for Statement {
             Self::Var(left_hand, right_hand, Some(typ), _) => {
                 f.write_fmt(format_args!("(var-assign {left_hand} {typ} {right_hand})"))
             }
-            Self::Block(stmts, _) => {
+            Self::Block(stmts, _, annotations) => {
+                Display::fmt(annotations, f)?;
+
                 f.write_char('{')?;
                 for stmt in &**stmts {
                     f.write_char('\n')?;
@@ -269,24 +330,32 @@ impl Display for Statement {
                 if_stmt,
                 else_stmt: Some(else_stmt),
                 location: _,
-            } => f.write_fmt(format_args!("(if {condition} {if_stmt} {else_stmt})")),
+                annotations,
+            } => f.write_fmt(format_args!(
+                "{annotations}(if {condition} {if_stmt} {else_stmt})"
+            )),
             Self::If {
                 condition,
                 if_stmt,
                 else_stmt: None,
                 location: _,
-            } => f.write_fmt(format_args!("(if {condition} {if_stmt})")),
+                annotations,
+            } => f.write_fmt(format_args!("{annotations}(if {condition} {if_stmt})")),
             Self::For {
                 iterator,
                 var_name,
                 child,
                 location: _,
-            } => f.write_fmt(format_args!("(for {var_name} {iterator} {child})")),
+                annotations,
+            } => f.write_fmt(format_args!(
+                "{annotations}(for {var_name} {iterator} {child})"
+            )),
             Self::While {
                 condition,
                 child,
                 location: _,
-            } => f.write_fmt(format_args!("(while {condition} {child})")),
+                annotations,
+            } => f.write_fmt(format_args!("{annotations}(while {condition} {child})")),
             Self::Struct {
                 name,
                 elements: arguments,
@@ -321,11 +390,35 @@ pub fn display_contract(
     contract: &FunctionContract,
     is_external: bool,
 ) -> std::fmt::Result {
+    Display::fmt(&contract.annotations, f)?;
+
     if is_external {
         f.write_str("(external callable ")?;
     } else {
         f.write_str("(callable ")?;
     }
+
+    if contract.generics.len() > 0 {
+        f.write_char('<')?;
+        for i in 0..contract.generics.len() {
+            let generic = &contract.generics[i];
+            if i != 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(&generic.name)?;
+            if generic.bounds.len() > 0 {
+                f.write_str(": ")?;
+                for i in 0..generic.bounds.len() {
+                    if i != 0 {
+                        f.write_str(" + ")?;
+                    }
+                    Display::fmt(&generic.bounds[i], f)?;
+                }
+            }
+        }
+        f.write_str("> ")?;
+    }
+
     if let Some(name) = &contract.name {
         Display::fmt(name, f)?;
         f.write_char(' ')?;
@@ -362,19 +455,6 @@ impl Parser {
         Ok(())
     }
 
-    pub fn is_statement(typ: TokenType) -> bool {
-        matches!(
-            typ,
-            TokenType::Let
-                | TokenType::CurlyLeft
-                | TokenType::Return
-                | TokenType::If
-                | TokenType::While
-                | TokenType::For
-                | TokenType::Fn
-        )
-    }
-
     pub fn parse_all(&mut self) -> Result<Vec<Statement>, Vec<ProgrammingLangParsingError>> {
         let mut statements = vec![];
         let mut errors = vec![];
@@ -386,11 +466,11 @@ impl Parser {
                     self.bail();
                 }
                 Ok(Some(statement)) => statements.push(statement),
-                Ok(None) => {},
+                Ok(None) => {}
             }
         }
 
-        if !self.current_annotations.is_empty() {
+        if !self.current_annotations.0.is_empty() {
             errors.push(ProgrammingLangParsingError::ExpectedStatement {
                 loc: self.peek().location.clone(),
             });
@@ -403,14 +483,19 @@ impl Parser {
         }
     }
 
-    pub fn parse_statement(&mut self, is_global: bool) -> Result<Statement, ProgrammingLangParsingError> {
+    pub fn parse_statement(
+        &mut self,
+        is_global: bool,
+    ) -> Result<Statement, ProgrammingLangParsingError> {
         while self.current < self.tokens.len() - 1 {
             match self.parse_statement_part(is_global)? {
                 Some(statement) => return Ok(statement),
-                None => {},
+                None => {}
             }
         }
-        return Err(ProgrammingLangParsingError::ExpectedStatement { loc: self.peek().location.clone() })
+        return Err(ProgrammingLangParsingError::ExpectedStatement {
+            loc: self.peek().location.clone(),
+        });
     }
 
     pub fn parse_statement_part(
@@ -426,8 +511,26 @@ impl Parser {
             };
         }
 
-        match self.peek().typ {
-            TokenType::Impl if !is_global => invalid_kw!("impl block"),
+        if self.current_annotations.0.len() > 0
+            && match self.peek().typ {
+                TokenType::AnnotationIntroducer
+                | TokenType::Extern
+                | TokenType::Fn
+                | TokenType::CurlyLeft
+                | TokenType::Struct
+                | TokenType::For
+                | TokenType::While
+                | TokenType::If => false,
+
+                _ => true,
+            }
+        {
+            return Err(ProgrammingLangParsingError::ExpectedAnnotationStatement {
+                loc: self.peek().location.clone(),
+            });
+        }
+
+        let maybe_statement = match self.peek().typ {
             TokenType::Extern if !is_global => invalid_kw!("external value/function"),
             TokenType::Struct if !is_global => invalid_kw!("struct definition"),
 
@@ -459,7 +562,16 @@ impl Parser {
                 })
             }
             _ => self.parse_expression_stmt().map(Some),
+        }?;
+        if maybe_statement.is_some() {
+            assert_eq!(
+                self.current_annotations.0.len(),
+                0,
+                "more than 0 annotations left after parsing a statement"
+            );
         }
+
+        Ok(maybe_statement)
     }
 
     fn parse_expression_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
@@ -480,10 +592,10 @@ impl Parser {
             None
         };
 
-        if !self.match_tok(TokenType::AssignValue) {
+        if !self.match_tok(TokenType::Equal) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
-                expected: TokenType::AssignValue,
+                expected: TokenType::Equal,
                 found: self.peek().typ,
             });
         }
@@ -492,6 +604,8 @@ impl Parser {
         Ok(Statement::Var(name, expr, typ, location))
     }
     fn parse_block_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+        let annotations = std::mem::take(&mut self.current_annotations);
+
         // { <...statements...> }
         let location = self.advance().location.clone(); // skip `{`
         let mut statements = vec![];
@@ -500,7 +614,11 @@ impl Parser {
             statements.push(self.parse_statement(false)?);
         }
 
-        Ok(Statement::Block(statements.into_boxed_slice(), location))
+        Ok(Statement::Block(
+            statements.into_boxed_slice(),
+            location,
+            annotations,
+        ))
     }
     fn parse_return_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         // return;
@@ -514,6 +632,8 @@ impl Parser {
         Ok(Statement::Return(Some(expr), location))
     }
     fn parse_if_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+        let annotations = std::mem::take(&mut self.current_annotations);
+
         // if (<expr>) <stmt>
         // if (<expr>) <stmt> else <stmt>
         // we have else if support, because else <stmt>, the stmt can be another if expression!
@@ -540,6 +660,7 @@ impl Parser {
                 if_stmt: Box::new(if_stmt),
                 else_stmt: Some(Box::new(self.parse_statement(false)?)),
                 location,
+                annotations: std::mem::take(&mut self.current_annotations),
             });
         }
         Ok(Statement::If {
@@ -547,9 +668,12 @@ impl Parser {
             if_stmt: Box::new(if_stmt),
             else_stmt: None,
             location,
+            annotations,
         })
     }
     fn parse_while_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+        let annotations = std::mem::take(&mut self.current_annotations);
+
         // while (<expr>) <stmt>
         // we have else if support, because else <stmt>, the stmt can be another if expression!
         let location = self.advance().location.clone(); // skip `while`
@@ -572,9 +696,12 @@ impl Parser {
             condition,
             child: Box::new(self.parse_statement(false)?),
             location,
+            annotations,
         })
     }
     fn parse_for_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+        let annotations = std::mem::take(&mut self.current_annotations);
+
         // for (<identifier> in <expr>) <stmt>
         let location = self.advance().location.clone(); // skip over `for`
 
@@ -609,9 +736,12 @@ impl Parser {
             var_name,
             child,
             location,
+            annotations,
         })
     }
     fn parse_struct(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+        let annotations = std::mem::take(&mut self.current_annotations);
+
         // struct Name { ... fields ...; implementation area }
         // fields: field: type,[...]
         // implementation area: fn implementation area | impl TraitName { implementation area no trait } implementation area | ""
@@ -664,7 +794,12 @@ impl Parser {
                 match self.peek().typ {
                     TokenType::Fn => {
                         let func = self.parse_callable(false)?;
-                        let name = func.0.name.as_ref().cloned().expect("non-anonymous function without name");
+                        let name = func
+                            .0
+                            .name
+                            .as_ref()
+                            .cloned()
+                            .expect("non-anonymous function without name");
                         if let Some(other_func) = global_impl.get(&name) {
                             return Err(ProgrammingLangParsingError::FunctionAlreadyDefined {
                                 loc: func.0.location.clone(),
@@ -672,8 +807,10 @@ impl Parser {
                                 first_func_loc: other_func.get_contract_unbaked().location.clone(),
                             });
                         }
-                        global_impl
-                            .insert(name, BakableFunction::Function(Box::new((func.0.clone(), *func.1))));
+                        global_impl.insert(
+                            name,
+                            BakableFunction::Function(Box::new((func.0.clone(), *func.1))),
+                        );
                     }
                     TokenType::Impl => {
                         self.advance();
@@ -696,12 +833,20 @@ impl Parser {
                                 });
                             }
                             let func = self.parse_callable(false)?;
-                            let name = func.0.name.as_ref().cloned().expect("non-anonymous function without name");
+                            let name = func
+                                .0
+                                .name
+                                .as_ref()
+                                .cloned()
+                                .expect("non-anonymous function without name");
                             if let Some(other_func) = current_impl.get(&name) {
                                 return Err(ProgrammingLangParsingError::FunctionAlreadyDefined {
                                     loc: func.0.location,
                                     name: name,
-                                    first_func_loc: other_func.get_contract_unbaked().location.clone(),
+                                    first_func_loc: other_func
+                                        .get_contract_unbaked()
+                                        .location
+                                        .clone(),
                                 });
                             }
                             current_impl.insert(
@@ -728,6 +873,7 @@ impl Parser {
             location,
             global_impl,
             impls,
+            annotations,
         })
     }
 
@@ -745,11 +891,40 @@ impl Parser {
         };
         Ok(str.clone())
     }
-
     pub fn parse_annotation(&mut self) -> Result<(), ProgrammingLangParsingError> {
         let loc = self.peek().location.clone();
         assert_eq!(self.advance().typ, TokenType::AnnotationIntroducer);
-        let name = self.expect_identifier()?.into();
+
+        let name = match self.peek().typ {
+            TokenType::If => "if".into(),
+            TokenType::While => "while".into(),
+            TokenType::For => "for".into(),
+            TokenType::As => "as".into(),
+            TokenType::Else => "else".into(),
+            TokenType::Impl => "impl".into(),
+            TokenType::Fn => "fn".into(),
+            TokenType::In => "in".into(),
+            TokenType::Struct => "struct".into(),
+            TokenType::Trait => "trait".into(),
+
+            TokenType::IdentifierLiteral => match &self.peek().literal {
+                Some(Literal::String(v)) => v.clone(),
+                _ => {
+                    return Err(ProgrammingLangParsingError::InvalidTokenization {
+                        loc: self.peek().location.clone(),
+                    })
+                }
+            },
+
+            _ => {
+                return Err(ProgrammingLangParsingError::ExpectedIdentifier {
+                    loc: self.peek().location.clone(),
+                    found: self.peek().typ,
+                })
+            }
+        };
+        self.advance();
+
         if !self.match_tok(TokenType::ParenLeft) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
@@ -781,9 +956,10 @@ impl Parser {
         }
 
         self.current_annotations
+            .0
             .push(Annotation { args, loc, name });
 
-        println!("{}", self.current_annotations.last().unwrap());
+        println!("{}", self.current_annotations.0.last().unwrap());
 
         Ok(())
     }
@@ -815,6 +991,8 @@ pub struct FunctionContract {
     pub arguments: Vec<Argument>,
     pub return_type: Option<TypeRef>,
     pub location: Location,
+    pub annotations: Annotations,
+    pub generics: Vec<Generic>,
 }
 
 /*
@@ -921,6 +1099,8 @@ impl Parser {
                 name: Some(name),
                 return_type,
                 location,
+                annotations: std::mem::take(&mut self.current_annotations),
+                generics: vec![],
             }))
         }
     }
@@ -929,6 +1109,8 @@ impl Parser {
         &mut self,
         anonymous: bool,
     ) -> Result<(FunctionContract, Box<Statement>), ProgrammingLangParsingError> {
+        let annotations = std::mem::take(&mut self.current_annotations);
+
         let location = self.peek().location.clone();
         if !self.match_tok(TokenType::Fn) {
             return Err(ProgrammingLangParsingError::ExpectedArbitrary {
@@ -964,6 +1146,12 @@ impl Parser {
                 });
             };
             Some(name.clone())
+        };
+
+        let generics = if self.match_tok(TokenType::LessThan) {
+            self.parse_function_generics()?
+        } else {
+            vec![]
         };
 
         let mut arguments = vec![];
@@ -1010,18 +1198,21 @@ impl Parser {
         };
 
         // body:
-        // - an expression
-        // - a statement
-        let body = if Self::is_statement(self.peek().typ) {
-            Box::new(self.parse_statement(false)?)
-        } else {
-            let expr = self.parse_expression()?;
-            let return_location = expr.loc().clone();
-            if !anonymous {
-                // needs a semicolon if this isnt anonymous
-                self.consume_semicolon()?;
-            }
-            Box::new(Statement::Return(Some(expr), return_location))
+        // - a block
+        // - equal and then an expression
+        let body = match self.peek().typ {
+            TokenType::CurlyLeft => self.parse_block_stmt().map(Box::new)?,
+            TokenType::Equal => {
+                self.advance();
+                let expr = self.parse_expression()?;
+                let return_location = expr.loc().clone();
+                if !anonymous {
+                    // needs a semicolon if this isnt anonymous
+                    self.consume_semicolon()?;
+                }
+                Box::new(Statement::Return(Some(expr), return_location))
+            },
+            _ => return Err(ProgrammingLangParsingError::ExpectedFunctionBody { loc: self.peek().location.clone(), found: self.peek().typ }),
         };
 
         Ok((
@@ -1030,8 +1221,63 @@ impl Parser {
                 arguments,
                 return_type,
                 location,
+                annotations,
+                generics,
             },
             body,
         ))
+    }
+
+    pub fn parse_function_generics(&mut self) -> Result<Vec<Generic>, ProgrammingLangParsingError> {
+        let mut generics = vec![];
+
+        while !self.match_tok(TokenType::GreaterThan) {
+            if generics.len() > 0 {
+                if !self.match_tok(TokenType::Comma) {
+                    return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                        loc: self.peek().location.clone(),
+                        expected: TokenType::Comma,
+                        found: self.peek().typ,
+                    });
+                }
+
+                // trailing comma
+                if self.match_tok(TokenType::GreaterThan) {
+                    break;
+                }
+            }
+
+            let name = self.expect_identifier()?;
+
+            if self.match_tok(TokenType::Colon) {
+                // trait bounds
+                let mut bounds = vec![];
+
+                loop {
+                    if matches!(self.peek().typ, TokenType::Comma | TokenType::GreaterThan) {
+                        break;
+                    }
+
+                    // expect `+` between bounds
+                    if bounds.len() > 0 && !self.match_tok(TokenType::Plus) {
+                        return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                            loc: self.peek().location.clone(),
+                            found: self.peek().typ,
+                            expected: TokenType::Plus,
+                        });
+                    }
+
+                    bounds.push(Path::parse(self)?);
+                }
+                generics.push(Generic { name, bounds });
+            } else {
+                generics.push(Generic {
+                    name,
+                    bounds: vec![],
+                });
+            }
+        }
+
+        Ok(generics)
     }
 }

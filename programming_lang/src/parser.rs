@@ -2,13 +2,14 @@ use std::{fmt::{Display, Write}, rc::Rc};
 
 use crate::tokenizer::{Location, Token, TokenType};
 pub use expression::{Expression, LiteralValue, Path};
+use statement::Annotations;
 pub use statement::{Statement, FunctionContract, Argument, BakableFunction};
 pub use types::{RESERVED_TYPE_NAMES, Type, TypeRef, Struct, Implementation};
 mod expression;
 mod statement;
 mod types;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Annotation {
     loc: Location,
     name: Rc<str>,
@@ -30,7 +31,7 @@ impl Display for Annotation {
 pub struct Parser {
     pub tokens: Vec<Token>,
     pub current: usize,
-    current_annotations: Vec<Annotation>
+    current_annotations: Annotations,
 }
 
 impl Parser {

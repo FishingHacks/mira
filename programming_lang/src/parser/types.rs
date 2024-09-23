@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::{Display, Write}, rc::Rc};
 
 use crate::{error::ProgrammingLangParsingError, module::FunctionId, tokenizer::{Literal, TokenType}};
 
-use super::Parser;
+use super::{statement::Annotations, Parser, Path};
 
 pub static RESERVED_TYPE_NAMES: &[&'static str] = &[
     "str", "bool", "char", "void", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
@@ -205,6 +205,7 @@ pub struct Struct {
     pub fields: Vec<(Rc<str>, TypeRef)>,
     pub global_impl: Implementation,
     pub trait_impls: Vec<(Rc<str>, Implementation)>,
+    pub annotations: Annotations,
 }
 
 #[derive(Debug)]
@@ -284,4 +285,10 @@ impl Type {
             _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Generic {
+    pub name: Rc<str>,
+    pub bounds: Vec<Path>,
 }

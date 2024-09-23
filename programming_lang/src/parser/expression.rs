@@ -63,6 +63,45 @@ impl Path {
             generics: vec![],
         }
     }
+
+    fn parse_generics(parser: &mut Parser) -> Result<Vec<TypeRef>, ProgrammingLangParsingError> {
+        let mut types = vec![];
+
+        while !parser.match_tok(TokenType::GreaterThan) {
+            if types.len() > 0 && !parser.match_tok(TokenType::Comma) {
+                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                    loc: parser.peek().location.clone(),
+                    expected: TokenType::Comma,
+                    found: parser.peek().typ,
+                });
+            }
+            types.push(TypeRef::parse(parser)?);
+        }
+        Ok(types)
+    }
+
+    pub fn parse(parser: &mut Parser) -> Result<Self, ProgrammingLangParsingError> {
+        let generics = if parser.match_tok(TokenType::LessThan) {
+            Self::parse_generics(parser)?
+        } else {
+            Default::default()
+        };
+
+        let mut path = Self::new(parser.expect_identifier()?, generics);
+
+        while parser.match_tok(TokenType::NamespaceAccess) {
+            let subpath = parser.expect_identifier()?;
+            let generics = if parser.match_tok(TokenType::LessThan) {
+                Self::parse_generics(parser)?
+            } else {
+                Default::default()
+            };
+
+            path.push(subpath, generics);
+        }
+
+        Ok(path)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -522,7 +561,6 @@ impl Expression {
                             TokenType::Asterix => (),
                             TokenType::Divide => (),
                             TokenType::Modulo => (),
-                            TokenType::IntegerDivide => (),
                             TokenType::LogicalAnd => match (left, right) {
                                 (LiteralValue::Bool(false), _) | (_, LiteralValue::Bool(false)) => {
                                     *self = Self::bool(false, loc)
@@ -559,7 +597,7 @@ impl Expression {
                             TokenType::LessThan => (),
                             TokenType::GreaterThanEquals => (),
                             TokenType::LessThanEquals => (),
-                            e @ (TokenType::Equals | TokenType::NotEquals) => match (left, right) {
+                            e @ (TokenType::EqualEqual | TokenType::NotEquals) => match (left, right) {
                                 // dynamic values, functions, arrays, objects and structs cannot be compared at compile time
                                 (
                                     LiteralValue::Dynamic(..)
@@ -577,7 +615,7 @@ impl Expression {
                                 ) => {}
                                 (l, r) => {
                                     *self = Self::bool(
-                                        (*l == *r) == (e == TokenType::Equals), /* this basically does the same as (e == TokenType::Equals) ? (*l == *r) : (*l != *r) */
+                                        (*l == *r) == (e == TokenType::EqualEqual), /* this basically does the same as (e == TokenType::Equals) ? (*l == *r) : (*l != *r) */
                                         // false == false (l != r && e == not-equals) => true
                                         // true == false (l == r && e == not-equals) => false
                                         // false == true ( l != r && e == equals) => false
@@ -683,7 +721,7 @@ impl Parser {
         let mut expr = self.pipe_operator()?;
 
         while self.matches(&[
-            TokenType::Equals,
+            TokenType::EqualEqual,
             TokenType::NotEquals,
             TokenType::LessThan,
             TokenType::GreaterThan,
@@ -775,7 +813,6 @@ impl Parser {
 
         while self.matches(&[
             TokenType::Divide,
-            TokenType::IntegerDivide,
             TokenType::Modulo,
             TokenType::Asterix,
             TokenType::Ampersand,
@@ -851,7 +888,7 @@ impl Parser {
 
     fn assignment(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
         let expr = self.type_cast()?;
-        if self.match_tok(TokenType::AssignValue) {
+        if self.match_tok(TokenType::Equal) {
             let loc = self.previous().location.clone();
             let value = self.expression()?;
             return Ok(Expression::Assignment {
@@ -1003,20 +1040,17 @@ impl Parser {
         }
 
         if matches!(self.peek().typ, TokenType::IdentifierLiteral) {
-            let identifier = self.parse_identifier()?;
+            let path = Path::parse(self)?;
 
             // StructName { ... };
             let loc = self.peek().location.clone();
             if let Some(obj) = self.try_object() {
                 return match obj {
-                    Ok(v) => Ok(Expression::Literal(
-                        LiteralValue::Struct(v, identifier),
-                        loc,
-                    )),
+                    Ok(v) => Ok(Expression::Literal(LiteralValue::Struct(v, path), loc)),
                     Err(e) => Err(e),
                 };
             } else {
-                return Ok(Expression::Literal(LiteralValue::Dynamic(identifier), loc));
+                return Ok(Expression::Literal(LiteralValue::Dynamic(path), loc));
             }
         }
 
@@ -1043,71 +1077,6 @@ impl Parser {
             loc: found_token.location.clone(),
             found: found_token.typ,
         });
-    }
-
-    fn parse_identifier(&mut self) -> Result<Path, ProgrammingLangParsingError> {
-        let Some(Literal::String(ref identifier)) = self.advance().literal else {
-            return Err(ProgrammingLangParsingError::InvalidTokenization {
-                loc: self.tokens[self.current].location.clone(),
-            });
-        };
-        let identifier = identifier.clone();
-
-        let generics = if self.peek().typ == TokenType::LessThan {
-            self.parse_generics()?
-        } else {
-            Vec::new()
-        };
-        let mut path = Path::new(identifier, generics);
-        
-        while self.match_tok(TokenType::NamespaceAccess) {
-            match self.peek().typ {
-                TokenType::IdentifierLiteral => {}
-                _ => {
-                    return Err(ProgrammingLangParsingError::ExpectedIdentifier {
-                        loc: self.peek().location.clone(),
-                        found: self.peek().typ,
-                    })
-                }
-            }
-
-            let Some(Literal::String(ref identifier)) = self.advance().literal else {
-                return Err(ProgrammingLangParsingError::InvalidTokenization {
-                    loc: self.tokens[self.current].location.clone(),
-                });
-            };
-            let identifier = identifier.clone();
-            let generics = if self.peek().typ == TokenType::LessThan {
-                self.parse_generics()?
-            } else {
-                Vec::new()
-            };
-            path.push(identifier, generics);
-        }
-        Ok(path)
-    }
-
-    fn parse_generics(&mut self) -> Result<Vec<TypeRef>, ProgrammingLangParsingError> {
-        if !self.match_tok(TokenType::LessThan) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                loc: self.peek().location.clone(),
-                expected: TokenType::LessThan,
-                found: self.peek().typ,
-            });
-        }
-        let mut types = vec![];
-
-        while !self.match_tok(TokenType::GreaterThan) {
-            if types.len() > 0 && !self.match_tok(TokenType::Comma) {
-                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                    loc: self.peek().location.clone(),
-                    expected: TokenType::Comma,
-                    found: self.peek().typ,
-                });
-            }
-            types.push(TypeRef::parse(self)?);
-        }
-        Ok(types)
     }
 
     fn try_array(&mut self) -> Option<Result<Expression, ProgrammingLangParsingError>> {
@@ -1207,7 +1176,7 @@ impl Parser {
         Self {
             tokens,
             current: 0,
-            current_annotations: vec![],
+            current_annotations: Default::default(),
         }
     }
 }

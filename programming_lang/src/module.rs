@@ -3,8 +3,8 @@ use std::{collections::HashMap, rc::Rc};
 use crate::{
     error::ProgrammingLangProgramFormingError,
     parser::{
-        Expression, FunctionContract, Implementation, LiteralValue, Statement,
-        Struct, Type, TypeRef,
+        Expression, FunctionContract, Implementation, LiteralValue, Statement, Struct, Type,
+        TypeRef,
     },
 };
 
@@ -81,6 +81,7 @@ impl Module {
                 location: _,
                 global_impl,
                 impls,
+                annotations,
             } => {
                 let mut struct_global_impl: Implementation = HashMap::new();
 
@@ -107,6 +108,7 @@ impl Module {
                     fields,
                     global_impl: struct_global_impl,
                     trait_impls: struct_impls,
+                    annotations,
                 }));
                 self.global_scope.types.insert(name, typ);
             }

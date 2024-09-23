@@ -13,7 +13,7 @@ use crate::{
 pub enum TokenType {
     // Tokenization, Parsing ; *: no types
     Let,                  // done, done
-    Equals,               // done, done
+    EqualEqual,               // done, done
     NotEquals,            // done, done
     LessThan,             // done, done
     GreaterThan,          // done, done
@@ -28,7 +28,7 @@ pub enum TokenType {
     UIntLiteral,          // done, done
     BooleanLiteral,       // done, done
     IdentifierLiteral,    // done, done
-    AssignValue,          // done, done
+    Equal,          // done, done
     Colon,                // done, done
     Semicolon,            // done, done
     ParenLeft,            // done, done
@@ -43,7 +43,6 @@ pub enum TokenType {
     Divide,               // done, done
     Modulo,               // done, done
     ModuloAssign,         // done, done
-    IntegerDivide,        // done, done
     BitwiseNot,           // done, done
     Ampersand,            // done, done
     BitwiseOr,            // done, done
@@ -138,7 +137,7 @@ impl Display for Token {
         match self.typ {
             TokenType::As => f.write_str("as"),
             TokenType::Colon => f.write_str(":"),
-            TokenType::AssignValue => f.write_str("="),
+            TokenType::Equal => f.write_str("="),
             TokenType::BitwiseAndAssign => f.write_str("&="),
             TokenType::Ampersand => f.write_str("&"),
             TokenType::BitwiseNot => f.write_str("~"),
@@ -164,7 +163,7 @@ impl Display for Token {
             TokenType::Dot => f.write_str("."),
             TokenType::Else => f.write_str("else"),
             TokenType::Eof => f.write_str("<EOF>"),
-            TokenType::Equals => f.write_str("=="),
+            TokenType::EqualEqual => f.write_str("=="),
             TokenType::Extern => f.write_str("extern"),
             TokenType::Fn => f.write_str("fn"),
             TokenType::For => f.write_str("for"),
@@ -177,7 +176,6 @@ impl Display for Token {
             TokenType::If => f.write_str("if"),
             TokenType::Impl => f.write_str("impl"),
             TokenType::In => f.write_str("in"),
-            TokenType::IntegerDivide => f.write_str("idiv"),
             TokenType::LessThan => f.write_str("<"),
             TokenType::LessThanEquals => f.write_str("<="),
             TokenType::Let => f.write_str("let"),
@@ -416,7 +414,7 @@ impl Tokenizer {
             '/' if self.peek() != '/' => token!(Divide, DivideAssign, '='),
             '%' => token!(Modulo, ModuloAssign, '='),
             '*' => token!(Asterix, MultiplyAssign, '='),
-            '=' => token!(AssignValue, Equals, '='),
+            '=' => token!(Equal, EqualEqual, '='),
             '<' if self.peek() != '<' => token!(LessThan, LessThanEquals, '='),
             '<' if self.if_char_advance('<') => token!(BitwiseLShift, BitwiseLShiftAssign, '='),
             '>' if self.peek() != '>' => token!(GreaterThan, GreaterThanEquals, '='),
@@ -848,7 +846,6 @@ impl Tokenizer {
             "while" => Some(TokenType::While),
             "for" => Some(TokenType::For),
             "in" => Some(TokenType::In),
-            "idiv" => Some(TokenType::IntegerDivide),
             "struct" => Some(TokenType::Struct),
             "impl" => Some(TokenType::Impl),
             "trait" => Some(TokenType::Trait),
