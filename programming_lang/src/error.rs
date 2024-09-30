@@ -3,13 +3,14 @@ use std::{
     rc::Rc,
 };
 
-use crate::tokenizer::{Location, TokenType};
+use crate::{tokenizer::{Location, TokenType}, typechecking::error::ProgrammingLangTypecheckingError};
 
 #[derive(Clone)]
 pub enum ProgrammingLangError {
     Parsing(ProgrammingLangParsingError),
     Tokenization(ProgrammingLangTokenizationError),
     ProgramForming(ProgrammingLangProgramFormingError),
+    Typechecking(ProgrammingLangTypecheckingError),
     Generic(&'static str),
 }
 
@@ -19,6 +20,7 @@ impl Debug for ProgrammingLangError {
             Self::Parsing(v) => Debug::fmt(v, f),
             Self::Tokenization(v) => Debug::fmt(v, f),
             Self::ProgramForming(v) => Debug::fmt(v, f),
+            Self::Typechecking(v) => Debug::fmt(v, f),
             Self::Generic(v) => f.write_str(v),
         }
     }

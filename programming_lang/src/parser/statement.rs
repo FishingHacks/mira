@@ -13,29 +13,8 @@ use crate::{
 
 use super::{
     types::{Generic, TypeRef},
-    Expression, Parser, Path,
+    Annotations, Expression, Parser, Path,
 };
-
-#[derive(Default, Debug, Clone)]
-pub struct Annotations(pub Vec<Annotation>);
-
-impl Display for Annotations {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for annotation in self.0.iter() {
-            f.write_char('@')?;
-            f.write_str(&annotation.name)?;
-            f.write_char('(')?;
-            for i in 0..annotation.args.len() {
-                if i != 0 {
-                    f.write_char(' ')?;
-                }
-                Display::fmt(&annotation.args[i], f)?;
-            }
-            f.write_str(")\n")?;
-        }
-        Ok(())
-    }
-}
 
 #[derive(Clone, Debug)]
 pub enum BakableFunction {
@@ -145,7 +124,7 @@ impl Statement {
                     generics: Default::default(),
                     location: location.clone(),
                     name: None,
-                    return_type: None,
+                    return_type: TypeRef::Void(location.clone()),
                 };
                 let dummy_statement: Statement =
                     Statement::ExternalFunction(dummy_contract.clone());
@@ -431,9 +410,10 @@ pub fn display_contract(
         Display::fmt(&contract.arguments[i], f)?;
     }
     f.write_char(')')?;
-    if let Some(return_type) = &contract.return_type {
+    if let TypeRef::Void(_) = &contract.return_type {
+    } else {
         f.write_str(" returns ")?;
-        Display::fmt(return_type, f)?;
+        Display::fmt(&contract.return_type, f)?;
     }
     if is_external {
         f.write_char(')')
@@ -989,7 +969,7 @@ impl Display for Argument {
 pub struct FunctionContract {
     pub name: Option<Rc<str>>,
     pub arguments: Vec<Argument>,
-    pub return_type: Option<TypeRef>,
+    pub return_type: TypeRef,
     pub location: Location,
     pub annotations: Annotations,
     pub generics: Vec<Generic>,
@@ -1082,9 +1062,9 @@ impl Parser {
         }
 
         let return_type = if self.match_tok(TokenType::ReturnType) {
-            Some(TypeRef::parse(self)?)
+            TypeRef::parse(self)?
         } else {
-            None
+            TypeRef::Void(self.peek().location.clone())
         };
 
         if !self.match_tok(TokenType::Semicolon) {
@@ -1192,9 +1172,9 @@ impl Parser {
         }
 
         let return_type = if self.match_tok(TokenType::ReturnType) {
-            Some(TypeRef::parse(self)?)
+            TypeRef::parse(self)?
         } else {
-            None
+            TypeRef::Void(self.peek().location.clone())
         };
 
         // body:
@@ -1211,8 +1191,13 @@ impl Parser {
                     self.consume_semicolon()?;
                 }
                 Box::new(Statement::Return(Some(expr), return_location))
-            },
-            _ => return Err(ProgrammingLangParsingError::ExpectedFunctionBody { loc: self.peek().location.clone(), found: self.peek().typ }),
+            }
+            _ => {
+                return Err(ProgrammingLangParsingError::ExpectedFunctionBody {
+                    loc: self.peek().location.clone(),
+                    found: self.peek().typ,
+                })
+            }
         };
 
         Ok((

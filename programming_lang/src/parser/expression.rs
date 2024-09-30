@@ -597,33 +597,35 @@ impl Expression {
                             TokenType::LessThan => (),
                             TokenType::GreaterThanEquals => (),
                             TokenType::LessThanEquals => (),
-                            e @ (TokenType::EqualEqual | TokenType::NotEquals) => match (left, right) {
-                                // dynamic values, functions, arrays, objects and structs cannot be compared at compile time
-                                (
-                                    LiteralValue::Dynamic(..)
-                                    | LiteralValue::Array(..)
-                                    | LiteralValue::Struct(..)
-                                    | LiteralValue::AnonymousFunction(..),
-                                    _,
-                                )
-                                | (
-                                    _,
-                                    LiteralValue::Dynamic(..)
-                                    | LiteralValue::Array(..)
-                                    | LiteralValue::Struct(..)
-                                    | LiteralValue::AnonymousFunction(..),
-                                ) => {}
-                                (l, r) => {
-                                    *self = Self::bool(
-                                        (*l == *r) == (e == TokenType::EqualEqual), /* this basically does the same as (e == TokenType::Equals) ? (*l == *r) : (*l != *r) */
-                                        // false == false (l != r && e == not-equals) => true
-                                        // true == false (l == r && e == not-equals) => false
-                                        // false == true ( l != r && e == equals) => false
-                                        // true == true ( l == r && e == equals) => true
-                                        loc,
+                            e @ (TokenType::EqualEqual | TokenType::NotEquals) => {
+                                match (left, right) {
+                                    // dynamic values, functions, arrays, objects and structs cannot be compared at compile time
+                                    (
+                                        LiteralValue::Dynamic(..)
+                                        | LiteralValue::Array(..)
+                                        | LiteralValue::Struct(..)
+                                        | LiteralValue::AnonymousFunction(..),
+                                        _,
                                     )
+                                    | (
+                                        _,
+                                        LiteralValue::Dynamic(..)
+                                        | LiteralValue::Array(..)
+                                        | LiteralValue::Struct(..)
+                                        | LiteralValue::AnonymousFunction(..),
+                                    ) => {}
+                                    (l, r) => {
+                                        *self = Self::bool(
+                                            (*l == *r) == (e == TokenType::EqualEqual), /* this basically does the same as (e == TokenType::Equals) ? (*l == *r) : (*l != *r) */
+                                            // false == false (l != r && e == not-equals) => true
+                                            // true == false (l == r && e == not-equals) => false
+                                            // false == true ( l != r && e == equals) => false
+                                            // true == true ( l == r && e == equals) => true
+                                            loc,
+                                        )
+                                    }
                                 }
-                            },
+                            }
                             tok @ _ => {
                                 return Err(ProgrammingLangParsingError::InvalidOperand {
                                     loc,

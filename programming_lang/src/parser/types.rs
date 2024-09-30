@@ -1,8 +1,17 @@
-use std::{collections::HashMap, fmt::{Display, Write}, rc::Rc};
+use std::{
+    collections::HashMap,
+    fmt::{Display, Write},
+    rc::Rc,
+};
 
-use crate::{error::ProgrammingLangParsingError, module::FunctionId, tokenizer::{Literal, TokenType}};
+use crate::{
+    error::ProgrammingLangParsingError,
+    module::FunctionId,
+    parser::Location,
+    tokenizer::{Literal, TokenType},
+};
 
-use super::{statement::Annotations, Parser, Path};
+use super::{Annotations, Parser, Path};
 
 pub static RESERVED_TYPE_NAMES: &[&'static str] = &[
     "str", "bool", "char", "void", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
@@ -14,15 +23,20 @@ pub enum TypeRef {
     Reference {
         number_of_references: u8,
         type_name: Rc<str>,
+        loc: Location,
     },
+    Void(Location),
+    Never(Location),
     UnsizedArray {
         number_of_references: u8,
         child: Box<TypeRef>,
+        loc: Location,
     },
     SizedArray {
-        number_of_references: u8,
+        num_references: u8,
         child: Box<TypeRef>,
-        amount_of_elements: usize,
+        number_elements: usize,
+        loc: Location,
     },
 }
 
@@ -38,13 +52,19 @@ impl Display for TypeRef {
                 Display::fmt(&**child, f)?;
                 f.write_char(']')
             }
-            Self::SizedArray { child, amount_of_elements, .. } => {
+            Self::SizedArray {
+                child,
+                number_elements: amount_of_elements,
+                ..
+            } => {
                 f.write_char('[')?;
                 Display::fmt(&**child, f)?;
                 f.write_str("; ")?;
                 Display::fmt(&amount_of_elements, f)?;
                 f.write_char(']')
             }
+            Self::Void(_) => f.write_str("void"),
+            Self::Never(_) => f.write_str("!"),
         }
     }
 }
@@ -58,26 +78,34 @@ impl TypeRef {
             Self::Reference {
                 number_of_references,
                 type_name,
+                loc,
             } => Self::Reference {
                 number_of_references: number_of_references - 1,
                 type_name: type_name,
+                loc,
             },
             Self::UnsizedArray {
                 number_of_references,
                 child,
+                loc,
             } => Self::UnsizedArray {
                 number_of_references: number_of_references - 1,
                 child: child.clone(),
+                loc,
             },
             Self::SizedArray {
-                number_of_references,
+                num_references: number_of_references,
                 child,
-                amount_of_elements,
+                number_elements: amount_of_elements,
+                loc,
             } => Self::SizedArray {
-                number_of_references: number_of_references - 1,
+                num_references: number_of_references - 1,
                 child: child.clone(),
-                amount_of_elements: amount_of_elements,
+                number_elements: amount_of_elements,
+                loc,
             },
+            // Self::Void and Self::Never cannot be dereferenced
+            Self::Void(_) | Self::Never(_) => unreachable!(),
         })
     }
 
@@ -96,15 +124,15 @@ impl TypeRef {
                 ..
             }
             | Self::SizedArray {
-                number_of_references,
+                num_references: number_of_references,
                 ..
             } => *number_of_references,
+            Self::Void(_) | Self::Never(_) => 0,
         }
     }
 
     pub fn parse(parser: &mut Parser) -> Result<Self, ProgrammingLangParsingError> {
         let mut number_of_references = 0;
-
 
         while !parser.is_at_end() {
             // <type> = <subtype> | &<type>
@@ -120,37 +148,85 @@ impl TypeRef {
                 continue;
             }
 
+            let loc = parser.peek().location.clone();
             if parser.match_tok(TokenType::BracketLeft) {
                 let child = Box::new(Self::parse(parser)?);
                 if parser.match_tok(TokenType::Semicolon) {
                     // case [<type>; <amount>]
                     if !parser.match_tok(TokenType::FloatLiteral) {
-                        return Err(ProgrammingLangParsingError::ExpectedArbitrary { loc: parser.peek().location.clone(), expected: TokenType::FloatLiteral, found: parser.peek().typ });
+                        return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                            loc: parser.peek().location.clone(),
+                            expected: TokenType::FloatLiteral,
+                            found: parser.peek().typ,
+                        });
                     }
                     let Some(Literal::UInt(lit)) = parser.previous().literal else {
-                        return Err(ProgrammingLangParsingError::InvalidTokenization { loc: parser.previous().location.clone() });
+                        return Err(ProgrammingLangParsingError::InvalidTokenization {
+                            loc: parser.previous().location.clone(),
+                        });
                     };
-                    
+
                     if !parser.match_tok(TokenType::BracketRight) {
-                        return Err(ProgrammingLangParsingError::ExpectedArbitrary { loc: parser.peek().location.clone(), expected: TokenType::BracketRight, found: parser.peek().typ });
+                        return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                            loc: parser.peek().location.clone(),
+                            expected: TokenType::BracketRight,
+                            found: parser.peek().typ,
+                        });
                     }
 
-                    return Ok(Self::SizedArray { number_of_references, child, amount_of_elements: lit as usize });
+                    return Ok(Self::SizedArray {
+                        num_references: number_of_references,
+                        child,
+                        number_elements: lit as usize,
+                        loc,
+                    });
                 } else if !parser.match_tok(TokenType::BracketRight) {
-                    return Err(ProgrammingLangParsingError::ExpectedArbitrary { loc: parser.peek().location.clone(), expected: TokenType::BracketRight, found: parser.peek().typ });
+                    return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                        loc: parser.peek().location.clone(),
+                        expected: TokenType::BracketRight,
+                        found: parser.peek().typ,
+                    });
                 } else {
-                    return Ok(Self::UnsizedArray { number_of_references, child });
+                    return Ok(Self::UnsizedArray {
+                        number_of_references,
+                        child,
+                        loc,
+                    });
                 }
             } else if parser.match_tok(TokenType::LogicalNot) {
-                return Ok(Self::Reference { number_of_references, type_name: "!".into() });
+                return Ok(Self::Reference {
+                    number_of_references,
+                    type_name: "!".into(),
+                    loc,
+                });
             } else if let Some(ident) = parser.expect_identifier().ok() {
-                return Ok(Self::Reference { number_of_references, type_name: ident });
+                return Ok(Self::Reference {
+                    number_of_references,
+                    type_name: ident,
+                    loc,
+                });
             } else {
-                return Err(ProgrammingLangParsingError::ExpectedType { loc: parser.peek().location.clone(), found: parser.peek().typ });
+                return Err(ProgrammingLangParsingError::ExpectedType {
+                    loc: parser.peek().location.clone(),
+                    found: parser.peek().typ,
+                });
             }
         }
 
-        return Err(ProgrammingLangParsingError::ExpectedType { loc: parser.peek().location.clone(), found: TokenType::Eof });
+        return Err(ProgrammingLangParsingError::ExpectedType {
+            loc: parser.peek().location.clone(),
+            found: TokenType::Eof,
+        });
+    }
+
+    pub fn loc(&self) -> &Location {
+        match self {
+            Self::Never(loc)
+            | Self::Void(loc)
+            | Self::Reference { loc, .. }
+            | Self::SizedArray { loc, .. }
+            | Self::UnsizedArray { loc, .. } => loc,
+        }
     }
 }
 
@@ -160,22 +236,26 @@ impl PartialEq for TypeRef {
             Self::Reference {
                 number_of_references: self_nor,
                 type_name: self_type,
+                loc: _,
             } => match other {
                 Self::Reference {
                     number_of_references: other_nor,
                     type_name: other_type,
+                    loc: _,
                 } => *other_nor == *self_nor && self_type == other_type,
                 _ => false,
             },
             Self::SizedArray {
-                number_of_references: self_nor,
+                num_references: self_nor,
                 child: self_child,
-                amount_of_elements: self_aoe,
+                number_elements: self_aoe,
+                loc: _,
             } => match other {
                 Self::SizedArray {
-                    number_of_references: other_nor,
+                    num_references: other_nor,
                     child: other_child,
-                    amount_of_elements: other_aoe,
+                    number_elements: other_aoe,
+                    loc: _,
                 } => {
                     *other_nor == *self_nor
                         && *other_aoe == *self_aoe
@@ -186,13 +266,17 @@ impl PartialEq for TypeRef {
             Self::UnsizedArray {
                 number_of_references: self_nor,
                 child: self_child,
+                loc: _,
             } => match other {
                 Self::UnsizedArray {
                     number_of_references: other_nor,
                     child: other_child,
+                    loc: _,
                 } => *other_nor == *self_nor && (&**other_child) == (&**self_child),
                 _ => false,
             },
+            Self::Never(_) => matches!(other, Self::Never(_)),
+            Self::Void(_) => matches!(other, Self::Void(_)),
         }
     }
 }
@@ -206,85 +290,6 @@ pub struct Struct {
     pub global_impl: Implementation,
     pub trait_impls: Vec<(Rc<str>, Implementation)>,
     pub annotations: Annotations,
-}
-
-#[derive(Debug)]
-pub enum Type {
-    Reference(TypeRef),
-    /// An Array of unknown size
-    UnsizedArray(TypeRef),
-    /// An Array of known size
-    SizedArray(TypeRef, usize),
-    /// A reference to some other type
-    Struct(Box<Struct>),
-    /// Equivalent to: `struct str { length: usize; bytes: &[u8] }`
-    ///
-    /// Stores the length and the contents of a string
-    PrimitiveStr,
-    /// A 1-byte boolean
-    PrimitiveBool,
-    /// A single UTF-8 Character, at most 4 bytes, so sizeof(char) == 4 == sizeof(u32)
-    PrimitiveChar,
-    /**
-    For when a function never returns, 0-sized, can be cast to anything.
-    Example:
-    ```rs
-    extern fn exit(exit_code: i32) -> !;
-    fn a() -> u32 {
-        exit(12); // This returns the never type (!), so it is valid for u32, or anything else
-    }
-    ```
-    */
-    PrimitiveNever,
-    /// For when a function returns nothing, 0-sized
-    PrimitiveVoid,
-
-    PrimitiveI8,
-    PrimitiveI16,
-    PrimitiveI32,
-    PrimitiveI64,
-    PrimitiveISize,
-
-    PrimitiveU8,
-    PrimitiveU16,
-    PrimitiveU32,
-    PrimitiveU64,
-    PrimitiveUSize,
-
-    /// 16-bit float (half)
-    PrimitiveF16,
-    /// 32-bit float (single)
-    PrimitiveF32,
-    /// 64-bit float (double)
-    PrimitiveF64,
-}
-
-impl Type {
-    pub fn primitive_name_to_type(name: &str) -> Option<Self> {
-        match name {
-            "str" => Some(Self::PrimitiveStr),
-            "bool" => Some(Self::PrimitiveBool),
-            "char" => Some(Self::PrimitiveChar),
-            "void" => Some(Self::PrimitiveVoid),
-            "!" => Some(Self::PrimitiveNever),
-
-            "i8" => Some(Self::PrimitiveI8),
-            "i16" => Some(Self::PrimitiveI16),
-            "i32" => Some(Self::PrimitiveI32),
-            "i64" => Some(Self::PrimitiveI64),
-            "isize" => Some(Self::PrimitiveISize),
-            "u8" => Some(Self::PrimitiveU8),
-            "u16" => Some(Self::PrimitiveU16),
-            "u32" => Some(Self::PrimitiveU32),
-            "u64" => Some(Self::PrimitiveU64),
-            "usize" => Some(Self::PrimitiveUSize),
-
-            "f16" => Some(Self::PrimitiveF16),
-            "f32" => Some(Self::PrimitiveF32),
-            "f64" => Some(Self::PrimitiveF64),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

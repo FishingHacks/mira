@@ -1,9 +1,15 @@
 use std::{
-    fmt::Debug, fs::read_to_string, io::{stdin, stdout, Write}, path::{Path, PathBuf}, rc::Rc, time::Instant
+    fmt::Debug,
+    fs::read_to_string,
+    io::{stdin, stdout, Write},
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::Instant,
 };
 
 use programming_lang::{
     error::ProgrammingLangError, module::Module, tokenizer::Tokenizer,
+    typechecking::{typecheck_module, TypecheckedModule},
 };
 
 fn main() -> std::io::Result<()> {
@@ -13,6 +19,7 @@ fn main() -> std::io::Result<()> {
     // return Ok(());
     let file: Rc<Path> = PathBuf::from("<stdin>").into();
     let mut module = Module::new();
+    let mut typechecked_module = TypecheckedModule { structs: Default::default() };
 
     loop {
         print!("> ");
@@ -106,6 +113,25 @@ fn main() -> std::io::Result<()> {
             "Module Creation: {}μs",
             Instant::now().duration_since(start).as_micros()
         );
+
+        let start = Instant::now();
+
+        (typechecked_module, module) = match typecheck_module(module, typechecked_module) {
+            Ok(v) => v,
+            Err((err, typed_module, old_module)) => {
+                typechecked_module = typed_module;
+                module = old_module;
+                println!("{err:?}");
+                continue;
+            }
+        };
+
+        println!(
+            "Type Checking: {}μs",
+            Instant::now().duration_since(start).as_micros()
+        );
+
+        println!("{typechecked_module:?}");
     }
 
     Ok(())

@@ -2,12 +2,32 @@ use std::{fmt::{Display, Write}, rc::Rc};
 
 use crate::tokenizer::{Location, Token, TokenType};
 pub use expression::{Expression, LiteralValue, Path};
-use statement::Annotations;
 pub use statement::{Statement, FunctionContract, Argument, BakableFunction};
-pub use types::{RESERVED_TYPE_NAMES, Type, TypeRef, Struct, Implementation};
+pub use types::{RESERVED_TYPE_NAMES, TypeRef, Struct, Implementation};
 mod expression;
 mod statement;
 mod types;
+
+#[derive(Default, Debug, Clone)]
+pub struct Annotations(pub Vec<Annotation>);
+
+impl Display for Annotations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for annotation in self.0.iter() {
+            f.write_char('@')?;
+            f.write_str(&annotation.name)?;
+            f.write_char('(')?;
+            for i in 0..annotation.args.len() {
+                if i != 0 {
+                    f.write_char(' ')?;
+                }
+                Display::fmt(&annotation.args[i], f)?;
+            }
+            f.write_str(")\n")?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Annotation {
