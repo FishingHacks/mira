@@ -1,10 +1,11 @@
 use crate::{
+    globals::GlobalStr,
     module::Module,
     parser::{Annotations, Implementation, TypeRef},
 };
 use std::{
     collections::HashMap,
-    fmt::{Debug, Display, Write},
+    fmt::{Display, Write},
     rc::Rc,
 };
 
@@ -12,10 +13,10 @@ use super::error::ProgrammingLangTypecheckingError;
 
 #[derive(Debug)]
 pub struct TypecheckedModule {
-    pub structs: HashMap<Rc<str>, Rc<ResolvedStruct>>,
+    pub structs: HashMap<GlobalStr, Rc<ResolvedStruct>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Type {
     Struct {
         structure: Rc<ResolvedStruct>,
@@ -51,6 +52,66 @@ pub enum Type {
 
     PrimitiveStr(u8),
     PrimitiveBool(u8),
+}
+
+// TODO: type resolution to match the qualified name for the type
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        if self.get_ref_count() != other.get_ref_count() {
+            return false;
+        }
+
+        match self {
+            Self::Struct {
+                structure,
+                num_references: _,
+            } => match other {
+                Self::Struct {
+                    structure: other_structure,
+                    num_references: _,
+                } => structure.name == other_structure.name,
+                _ => false,
+            },
+            Self::SizedArray {
+                typ,
+                num_references: _,
+                number_elements,
+            } => match other {
+                Self::SizedArray {
+                    typ: other_typ,
+                    num_references: _,
+                    number_elements: other_number_elements,
+                } => number_elements == other_number_elements && typ == other_typ,
+                _ => false,
+            },
+            Self::UnsizedArray {
+                typ,
+                num_references: _,
+            } => match other {
+                Self::UnsizedArray {
+                    typ: other_typ,
+                    num_references: _,
+                } => typ == other_typ,
+                _ => false,
+            },
+            Self::PrimitiveNever => matches!(other, Self::PrimitiveNever),
+            Self::PrimitiveVoid(_) => matches!(other, Self::PrimitiveVoid(_)),
+            Self::PrimitiveI8(_) => matches!(other, Self::PrimitiveI8(_)),
+            Self::PrimitiveI16(_) => matches!(other, Self::PrimitiveI16(_)),
+            Self::PrimitiveI32(_) => matches!(other, Self::PrimitiveI32(_)),
+            Self::PrimitiveI64(_) => matches!(other, Self::PrimitiveI64(_)),
+            Self::PrimitiveISize(_) => matches!(other, Self::PrimitiveISize(_)),
+            Self::PrimitiveU8(_) => matches!(other, Self::PrimitiveU8(_)),
+            Self::PrimitiveU16(_) => matches!(other, Self::PrimitiveU16(_)),
+            Self::PrimitiveU32(_) => matches!(other, Self::PrimitiveU32(_)),
+            Self::PrimitiveU64(_) => matches!(other, Self::PrimitiveU64(_)),
+            Self::PrimitiveUSize(_) => matches!(other, Self::PrimitiveUSize(_)),
+            Self::PrimitiveF32(_) => matches!(other, Self::PrimitiveF32(_)),
+            Self::PrimitiveF64(_) => matches!(other, Self::PrimitiveF64(_)),
+            Self::PrimitiveStr(_) => matches!(other, Self::PrimitiveStr(_)),
+            Self::PrimitiveBool(_) => matches!(other, Self::PrimitiveBool(_)),
+        }
+    }
 }
 
 fn put_refcount(refcount: u8, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -99,11 +160,11 @@ impl Display for Type {
             }
             Self::Struct { structure, .. } => {
                 f.write_str("struct ")?;
-                f.write_str(&*structure.name)?;
+                Display::fmt(&structure.name, f)?;
                 f.write_str(" {")?;
                 for (index, (field_name, field_type)) in structure.fields.iter().enumerate() {
                     f.write_char(' ')?;
-                    f.write_str(&**field_name)?;
+                    Display::fmt(field_name, f)?;
                     f.write_str(": ")?;
                     Display::fmt(&field_type, f)?;
                     if index < structure.fields.len() - 1 {
@@ -119,6 +180,50 @@ impl Display for Type {
 }
 
 const PTR_SIZE: usize = 8;
+
+pub struct TypeName<'a>(pub &'a Type);
+
+impl Display for TypeName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        put_refcount(self.0.get_ref_count(), f)?;
+
+        match self.0 {
+            Type::PrimitiveBool(_) => f.write_str("bool"),
+            Type::PrimitiveI8(_) => f.write_str("i8"),
+            Type::PrimitiveI16(_) => f.write_str("i16"),
+            Type::PrimitiveI32(_) => f.write_str("i32"),
+            Type::PrimitiveI64(_) => f.write_str("i64"),
+            Type::PrimitiveU8(_) => f.write_str("u8"),
+            Type::PrimitiveU16(_) => f.write_str("u16"),
+            Type::PrimitiveU32(_) => f.write_str("u32"),
+            Type::PrimitiveU64(_) => f.write_str("u64"),
+            Type::PrimitiveISize(_) => f.write_str("isize"),
+            Type::PrimitiveUSize(_) => f.write_str("usize"),
+            Type::PrimitiveStr(_) => f.write_str("str"),
+            Type::PrimitiveNever => f.write_str("!"),
+            Type::PrimitiveVoid(_) => f.write_str("void"),
+            Type::PrimitiveF32(_) => f.write_str("f32"),
+            Type::PrimitiveF64(_) => f.write_str("f64"),
+            Type::SizedArray {
+                typ,
+                number_elements,
+                ..
+            } => {
+                f.write_char('[')?;
+                Display::fmt(&Self(typ), f)?;
+                f.write_str("; ")?;
+                Display::fmt(number_elements, f)?;
+                f.write_char(']')
+            }
+            Type::UnsizedArray { typ, .. } => {
+                f.write_char('[')?;
+                Display::fmt(&Self(typ), f)?;
+                f.write_char(']')
+            }
+            Type::Struct { structure, .. } => Display::fmt(&structure.name, f),
+        }
+    }
+}
 
 impl Type {
     /// Returns the size of the current type in bytes.
@@ -205,10 +310,10 @@ fn get_struct_size(structure: &ResolvedStruct) -> Option<usize> {
 
 #[derive(Debug)]
 pub struct ResolvedStruct {
-    pub name: Rc<str>,
-    pub fields: Vec<(Rc<str>, Type)>,
+    pub name: GlobalStr,
+    pub fields: Vec<(GlobalStr, Type)>,
     pub global_impl: Implementation,
-    pub trait_impls: Vec<(Rc<str>, Implementation)>,
+    pub trait_impls: Vec<(GlobalStr, Implementation)>,
     pub annotations: Annotations,
 }
 
@@ -302,7 +407,7 @@ fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
             number_of_references,
             type_name,
             loc: _,
-        } => match &**type_name {
+        } => type_name.with(|type_name| match type_name {
             "!" => Some(Type::PrimitiveNever),
             "void" => Some(Type::PrimitiveVoid(*number_of_references)),
             "i8" => Some(Type::PrimitiveI8(*number_of_references)),
@@ -320,7 +425,7 @@ fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
             "isize" => Some(Type::PrimitiveISize(*number_of_references)),
             "usize" => Some(Type::PrimitiveUSize(*number_of_references)),
             _ => None,
-        },
+        }),
         TypeRef::SizedArray { .. } | TypeRef::UnsizedArray { .. } => None,
     }
 }

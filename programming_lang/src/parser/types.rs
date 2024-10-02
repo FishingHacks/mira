@@ -1,11 +1,11 @@
 use std::{
     collections::HashMap,
     fmt::{Display, Write},
-    rc::Rc,
 };
 
 use crate::{
     error::ProgrammingLangParsingError,
+    globals::GlobalStr,
     module::FunctionId,
     parser::Location,
     tokenizer::{Literal, TokenType},
@@ -22,7 +22,7 @@ pub static RESERVED_TYPE_NAMES: &[&'static str] = &[
 pub enum TypeRef {
     Reference {
         number_of_references: u8,
-        type_name: Rc<str>,
+        type_name: GlobalStr,
         loc: Location,
     },
     Void(Location),
@@ -196,7 +196,7 @@ impl TypeRef {
             } else if parser.match_tok(TokenType::LogicalNot) {
                 return Ok(Self::Reference {
                     number_of_references,
-                    type_name: "!".into(),
+                    type_name: GlobalStr::new("!"),
                     loc,
                 });
             } else if let Some(ident) = parser.expect_identifier().ok() {
@@ -281,19 +281,19 @@ impl PartialEq for TypeRef {
     }
 }
 
-pub type Implementation = HashMap<Rc<str>, FunctionId>;
+pub type Implementation = HashMap<GlobalStr, FunctionId>;
 
 #[derive(Debug)]
 pub struct Struct {
-    pub name: Rc<str>,
-    pub fields: Vec<(Rc<str>, TypeRef)>,
+    pub name: GlobalStr,
+    pub fields: Vec<(GlobalStr, TypeRef)>,
     pub global_impl: Implementation,
-    pub trait_impls: Vec<(Rc<str>, Implementation)>,
+    pub trait_impls: Vec<(GlobalStr, Implementation)>,
     pub annotations: Annotations,
 }
 
 #[derive(Debug, Clone)]
 pub struct Generic {
-    pub name: Rc<str>,
+    pub name: GlobalStr,
     pub bounds: Vec<Path>,
 }

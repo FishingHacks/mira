@@ -1,10 +1,19 @@
-use std::{fmt::{Display, Write}, rc::Rc};
+use std::{
+    collections::HashMap,
+    fmt::{Display, Write},
+    rc::Rc,
+    sync::RwLock,
+};
 
-use crate::tokenizer::{Location, Token, TokenType};
+use crate::{
+    globals::GlobalStr,
+    tokenizer::{Location, Token, TokenType},
+};
 pub use expression::{Expression, LiteralValue, Path};
-pub use statement::{Statement, FunctionContract, Argument, BakableFunction};
-pub use types::{RESERVED_TYPE_NAMES, TypeRef, Struct, Implementation};
+pub use statement::{Argument, BakableFunction, FunctionContract, Statement};
+pub use types::{Implementation, Struct, TypeRef, RESERVED_TYPE_NAMES};
 mod expression;
+mod module_resolution;
 mod statement;
 mod types;
 
@@ -15,7 +24,7 @@ impl Display for Annotations {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for annotation in self.0.iter() {
             f.write_char('@')?;
-            f.write_str(&annotation.name)?;
+            Display::fmt(&annotation.name, f)?;
             f.write_char('(')?;
             for i in 0..annotation.args.len() {
                 if i != 0 {
@@ -32,7 +41,7 @@ impl Display for Annotations {
 #[derive(Debug, Clone)]
 pub struct Annotation {
     loc: Location,
-    name: Rc<str>,
+    name: GlobalStr,
     args: Vec<Token>,
 }
 
@@ -48,10 +57,27 @@ impl Display for Annotation {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ParserQueueEntry {
+    pub file: Rc<std::path::Path>,
+    pub root: Rc<std::path::Path>,
+}
+
+#[derive(Debug)]
 pub struct Parser {
+    file: Rc<std::path::Path>,
+    root_directory: Rc<std::path::Path>,
+
     pub tokens: Vec<Token>,
     pub current: usize,
     current_annotations: Annotations,
+    /// The modules, the index is their id. The second boolean dictates if they already started
+    /// parsing. there's no reference to whether or not they finished. it is assumed they all
+    /// finished when typechecking.
+    pub modules: Rc<RwLock<Vec<ParserQueueEntry>>>,
+    /// a map of idents => imports. if the size of the vec is 0, the identifier refers to the
+    /// module itself. otherwise, it refers to something in it.
+    pub imports: HashMap<GlobalStr, (usize, Vec<GlobalStr>)>,
 }
 
 impl Parser {
@@ -60,7 +86,15 @@ impl Parser {
     }
 
     pub fn is_at_end(&self) -> bool {
-        self.current >= self.tokens.len()
+        if self.current >= self.tokens.len() - 1 {
+            return true;
+        }
+        assert_ne!(
+            self.tokens[self.current].typ,
+            TokenType::Eof,
+            "TokenType::Eof inside file"
+        );
+        false
     }
 
     fn peek(&self) -> &Token {

@@ -2,10 +2,12 @@ use std::{
     collections::HashMap,
     fmt::{Debug, Display, Write},
     rc::Rc,
+    sync::RwLock,
 };
 
 use crate::{
     error::{OperationType, ProgrammingLangParsingError},
+    globals::GlobalStr,
     module::{FunctionId, Module},
     tokenizer::{Literal, Location, Token, TokenType},
 };
@@ -13,12 +15,12 @@ use crate::{
 use super::{
     statement::{display_contract, FunctionContract},
     types::TypeRef,
-    Parser, Statement,
+    Parser, ParserQueueEntry, Statement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path {
-    entries: Vec<(Rc<str>, Vec<TypeRef>)>,
+    entries: Vec<(GlobalStr, Vec<TypeRef>)>,
     generics: Vec<TypeRef>,
 }
 
@@ -29,7 +31,7 @@ impl Display for Path {
                 f.write_str("::")?;
             }
 
-            f.write_str(&*self.entries[i].0)?;
+            Display::fmt(&self.entries[i].0, f)?;
             if self.entries[i].1.len() > 0 {
                 f.write_char('<')?;
                 for type_idx in 0..self.entries[i].1.len() {
@@ -46,10 +48,10 @@ impl Display for Path {
 }
 
 impl Path {
-    pub fn push(&mut self, name: Rc<str>, generics: Vec<TypeRef>) {
+    pub fn push(&mut self, name: GlobalStr, generics: Vec<TypeRef>) {
         self.entries.push((name, generics));
     }
-    pub fn pop(&mut self) -> Option<(Rc<str>, Vec<TypeRef>)> {
+    pub fn pop(&mut self) -> Option<(GlobalStr, Vec<TypeRef>)> {
         // ensure this is at least 1 element
         if self.entries.len() > 1 {
             self.entries.pop()
@@ -57,7 +59,7 @@ impl Path {
             None
         }
     }
-    pub fn new(entry: Rc<str>, generics: Vec<TypeRef>) -> Self {
+    pub fn new(entry: GlobalStr, generics: Vec<TypeRef>) -> Self {
         Self {
             entries: vec![(entry, generics)],
             generics: vec![],
@@ -106,9 +108,9 @@ impl Path {
 
 #[derive(Debug, Clone)]
 pub enum LiteralValue {
-    String(Rc<str>),
+    String(GlobalStr),
     Array(Vec<Expression>),
-    Struct(HashMap<Rc<str>, Expression>, Path),
+    Struct(HashMap<GlobalStr, Expression>, Path),
     Float(f64),
     SInt(i64),
     UInt(u64),
@@ -152,7 +154,7 @@ impl Display for LiteralValue {
             LiteralValue::UInt(v) => f.write_fmt(format_args!("{}", *v)),
             LiteralValue::SInt(v) => f.write_fmt(format_args!("{}", *v)),
             LiteralValue::Float(v) => f.write_fmt(format_args!("{}", *v)),
-            LiteralValue::String(v) => f.write_fmt(format_args!("\"{}\"", &**v)),
+            LiteralValue::String(v) => Debug::fmt(v, f),
             LiteralValue::Array(v) => {
                 f.write_char('[')?;
                 for i in 0..v.len() {
@@ -169,7 +171,7 @@ impl Display for LiteralValue {
 
                 for (k, v) in v {
                     f.write_char(' ')?;
-                    f.write_str(&**k)?;
+                    Display::fmt(k, f)?;
                     f.write_str(": ")?;
                     Display::fmt(v, f)?;
                     f.write_char(',')?;
@@ -223,7 +225,7 @@ pub enum Expression {
     },
     MemberAccess {
         left_side: Box<Expression>,
-        right_side: Rc<str>,
+        right_side: GlobalStr,
         loc: Location,
     },
     Assignment {
@@ -302,7 +304,7 @@ impl Display for Expression {
                 f.write_str("(member ")?;
                 Display::fmt(left_side, f)?;
                 f.write_char(' ')?;
-                f.write_str(&**right_side)?;
+                Display::fmt(right_side, f)?;
                 f.write_char(')')
             }
             Expression::Assignment {
@@ -362,7 +364,7 @@ impl Expression {
         Self::Literal(LiteralValue::UInt(value), loc)
     }
 
-    pub fn string(value: Rc<str>, loc: Location) -> Self {
+    pub fn string(value: GlobalStr, loc: Location) -> Self {
         Self::Literal(LiteralValue::String(value), loc)
     }
 
@@ -1115,7 +1117,7 @@ impl Parser {
     // { key : value, }
     fn try_object(
         &mut self,
-    ) -> Option<Result<HashMap<Rc<str>, Expression>, ProgrammingLangParsingError>> {
+    ) -> Option<Result<HashMap<GlobalStr, Expression>, ProgrammingLangParsingError>> {
         if self.match_tok(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
             while !self.match_tok(TokenType::CurlyRight) {
@@ -1146,7 +1148,9 @@ impl Parser {
                 } else {
                     match self.previous().literal {
                         Some(Literal::String(ref v)) => v.clone(),
-                        Some(Literal::UInt(v)) => v.to_string().into(),
+                        Some(Literal::UInt(v)) => {
+                            GlobalStr::new_boxed(v.to_string().into_boxed_str())
+                        }
                         _ => {
                             return Some(Err(ProgrammingLangParsingError::InvalidTokenization {
                                 loc: self.previous().location.clone(),
@@ -1174,11 +1178,20 @@ impl Parser {
         }
     }
 
-    pub fn new(tokens: Vec<Token>) -> Self {
+    pub fn new(
+        tokens: Vec<Token>,
+        modules: Rc<RwLock<Vec<ParserQueueEntry>>>,
+        file: Rc<std::path::Path>,
+        root_directory: Rc<std::path::Path>,
+    ) -> Self {
         Self {
             tokens,
             current: 0,
             current_annotations: Default::default(),
+            imports: HashMap::new(),
+            modules,
+            file,
+            root_directory,
         }
     }
 }

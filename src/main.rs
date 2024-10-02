@@ -1,216 +1,402 @@
 use std::{
+    collections::HashMap,
     fmt::Debug,
-    fs::read_to_string,
-    io::{stdin, stdout, Write},
+    fs::{read_to_string, OpenOptions},
+    io::{stdin, stdout, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     rc::Rc,
+    sync::RwLock,
     time::Instant,
 };
 
 use programming_lang::{
-    error::ProgrammingLangError, module::Module, tokenizer::Tokenizer,
+    error::ProgrammingLangError,
+    module::Module,
+    parser::ParserQueueEntry,
+    tokenizer::Tokenizer,
     typechecking::{typecheck_module, TypecheckedModule},
 };
 
+fn print_help() {
+    //┌─┐└┘│├┬┴┼┴┤
+    // TODO: Better help menu
+    println!("┌─[ commands ]─────┬───────────────────────────────────────────┐");
+    println!("│ .^ <line> <code> │ inserts code after the specified line     │");
+    println!("│ .v <line> <code> │ inserts code before the specified line    │");
+    println!("│ .% <line> <code> │ replaces the specified line with the code │");
+    println!("│ .[ <line> <code> │ prepends the code to the specified line   │");
+    println!("│ .] <line> <code> │ appends the code to the specified line    │");
+    println!("│ .esc <code>      │ appends the code to the buffer            │");
+    println!("│ .dd <line>       │ deletes the specified line                │");
+    println!("│ .del <line>      │ deletes the specified line                │");
+    println!("│ .delete <line>   │ deletes the specified line                │");
+    println!("│ .clear           │ clears the current buffer                 │");
+    println!("│ .list [-l]       │ lists the code; -l: with line numbers     │");
+    println!("│ .load <path>     │ loads the path into the buffer            │");
+    println!("│ .run             │ runs the code                             │");
+    println!("│ .help            │ prints the help menu                      │");
+    println!("│ .exit            │ exits the repl                            │");
+    println!("└──────────────────┴───────────────────────────────────────────┘");
+}
+
+/// Returns the start index of the line or the number of lines
+fn get_line_start(mut line: usize, buffer: &String) -> Result<usize, usize> {
+    let mut lines = 0;
+    for (idx, c) in buffer.char_indices() {
+        if line == 0 {
+            return Ok(idx);
+        }
+        if c == '\n' {
+            line -= 1;
+            lines += 1;
+        }
+    }
+    Err(lines)
+}
+
 fn main() -> std::io::Result<()> {
-    // if let Err(e) = run_file("./main.lang") {
-    //     println!("Could not run file: {e:?}")
-    // }
-    // return Ok(());
-    let file: Rc<Path> = PathBuf::from("<stdin>").into();
-    let mut module = Module::new();
-    let mut typechecked_module = TypecheckedModule { structs: Default::default() };
+    let current_dir: Rc<Path> = std::env::current_dir()?.into();
+    let file: Rc<Path> = current_dir.join("stdin_buffer").into();
+    let mut buffer = String::new();
+    let mut stdout = stdout();
+    let stdin = stdin();
 
     loop {
-        print!("> ");
-        let _ = stdout().flush();
-        let mut str = String::with_capacity(50);
-        let Ok(_) = stdin().read_line(&mut str) else {
-            continue;
-        };
-
-        if str == "\n" || str == "\r\n" {
-            continue;
-        }
-        if str.trim() == ".exit" {
-            break;
-        }
-        if str.trim() == ".help" {
-            //┌─┐└┘│├┬┴┼┴┤
-            // TODO: Better help menu
-            println!("┌───────┬──────────────────────┐");
-            println!("│ .help │ Prints the help menu │");
-            println!("│ .exit │ Exits the repl       │");
-            println!("└───────┴──────────────────────┘");
-
+        write!(stdout, "> ")?;
+        stdout.flush()?;
+        let mut input = String::with_capacity(50);
+        stdin.read_line(&mut input)?;
+        let input = input.trim_end();
+        if input.len() < 1 {
             continue;
         }
 
-        let start = Instant::now();
-        let mut tokenizer = Tokenizer::new(&str, file.clone());
-
-        println!(
-            "Creating tokenizer: {}μs",
-            Instant::now().duration_since(start).as_micros()
-        );
-        let start = Instant::now();
-
-        if let Err(errors) = tokenizer.scan_tokens() {
-            println!("Errors occurred during tokenization:");
-            for error in errors {
-                println!("{error:?}");
-            }
-            continue;
-        }
-
-        println!(
-            "Tokenization: {}μs",
-            Instant::now().duration_since(start).as_micros()
-        );
-
-        print!("Tokens: [");
-        for i in tokenizer.get_tokens().iter() {
-            print!("{i}, ");
-        }
-        println!("]");
-
-        let start = Instant::now();
-
-        let mut parser = tokenizer.to_parser();
-        let parsed = match parser.parse_all() {
-            Ok(statements) => {
-                for stmt in &statements {
-                    println!("parsed: {stmt}");
+        if input.starts_with(".") {
+            let input = &input[1..];
+            let (cmd, rest) = {
+                let mut chars = input.chars();
+                let first_char = chars.next();
+                let second_char = chars.next();
+                if matches!(first_char, Some('^' | 'v' | '=' | '%' | ']' | '['))
+                    && matches!(second_char, Some('0'..='9'))
+                {
+                    input.split_at(1)
+                } else {
+                    input.split_once(' ').unwrap_or((input, ""))
                 }
-                statements
-            }
-            Err(errors) => {
-                for error in &errors {
-                    println!("{error:?}");
+            };
+
+            match cmd {
+                "]" => {
+                    let rest = rest.trim();
+                    let (line, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                    let line = line.trim();
+                    let line: usize = match line.trim().parse() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            writeln!(stdout, "Could not parse {line:?} as number: {e:?}")?;
+                            continue;
+                        }
+                    };
+
+                    match get_line_start(line + 1, &buffer) {
+                        Ok(idx) => buffer.insert_str(idx - 1, rest),
+                        Err(lines) if lines == line + 1 => {
+                            buffer.insert_str(buffer.len().saturating_sub(1), rest);
+                        }
+                        Err(lines) => writeln!(
+                            stdout,
+                            "line {line} doesn't exist (buffer has {lines} lines)"
+                        )?,
+                    }
                 }
-                continue;
-            }
-        };
+                "[" => {
+                    let rest = rest.trim();
+                    let (line, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                    let line = line.trim();
+                    let line: usize = match line.trim().parse() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            writeln!(stdout, "Could not parse {line:?} as number: {e:?}")?;
+                            continue;
+                        }
+                    };
 
-        println!(
-            "Parsing: {}μs",
-            Instant::now().duration_since(start).as_micros()
-        );
-
-        let start = Instant::now();
-
-        match module.push_all(parsed) {
-            Ok(_) => (),
-            Err(errors) => {
-                for err in &errors {
-                    println!("{err:?}");
+                    if line == 0 {
+                        buffer.insert_str(0, rest);
+                    } else {
+                        match get_line_start(line, &buffer) {
+                            Ok(idx) => buffer.insert_str(idx, rest),
+                            Err(lines) => writeln!(
+                                stdout,
+                                "line {line} doesn't exist (buffer has {lines} lines)"
+                            )?,
+                        }
+                    }
                 }
-                continue;
-            }
+                "%" => {
+                    let rest = rest.trim();
+                    let (line, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                    let line = line.trim();
+                    let line: usize = match line.trim().parse() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            writeln!(stdout, "Could not parse {line:?} as number: {e:?}")?;
+                            continue;
+                        }
+                    };
+                    let (start, end) = {
+                        let mut start = usize::MAX;
+                        let mut end = usize::MAX;
+                        let mut lines = 0;
+                        let mut num = line;
+                        for (idx, c) in buffer.char_indices() {
+                            if c == '\n' {
+                                lines += 1;
+                            }
+                            if num == 0 && start == usize::MAX {
+                                start = idx;
+                            }
+                            if c == '\n' && num == 0 {
+                                end = idx;
+                                break;
+                            } else if c == '\n' {
+                                num -= 1;
+                            }
+                        }
+                        if start == usize::MAX {
+                            writeln!(
+                                stdout,
+                                "line {line} doesn't exist (buffer has {lines} lines)"
+                            )?;
+                            continue;
+                        } else {
+                            if end == usize::MAX {
+                                end = buffer.len() - 1;
+                            }
+                            (start, end)
+                        }
+                    };
+                    buffer.replace_range(start..end, rest);
+                }
+                "v" => {
+                    let rest = rest.trim();
+                    let (line, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                    let line = line.trim();
+                    let line: usize = match line.trim().parse() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            writeln!(stdout, "Could not parse {line:?} as number: {e:?}")?;
+                            continue;
+                        }
+                    };
+
+                    if line == 0 {
+                        buffer.insert_str(0, rest);
+                        buffer.insert(rest.len(), '\n');
+                    } else {
+                        match get_line_start(line, &buffer) {
+                            Ok(idx) => {
+                                buffer.insert_str(idx, rest);
+                                buffer.insert(idx + rest.len(), '\n');
+                            }
+                            Err(lines) => writeln!(
+                                stdout,
+                                "line {line} doesn't exist (buffer has {lines} lines)"
+                            )?,
+                        }
+                    }
+                }
+                "^" => {
+                    let rest = rest.trim();
+                    let (line, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                    let line = line.trim();
+                    let line: usize = match line.trim().parse() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            writeln!(stdout, "Could not parse {line:?} as number: {e:?}")?;
+                            continue;
+                        }
+                    };
+                    match get_line_start(line + 1, &buffer) {
+                        Ok(idx) => {
+                            buffer.insert_str(idx, rest);
+                            buffer.insert(idx + rest.len(), '\n');
+                        }
+                        Err(lines) if lines == line + 1 => {
+                            buffer.push_str(rest);
+                            buffer.push('\n');
+                        }
+                        Err(lines) => writeln!(
+                            stdout,
+                            "line {line} doesn't exist (buffer has {lines} lines)"
+                        )?,
+                    }
+                }
+                "dd" | "del" | "delete" => {
+                    let num: usize = match rest.trim().parse() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            writeln!(stdout, "Could not parse {rest:?} as number: {e:?}")?;
+                            continue;
+                        }
+                    };
+                    let (start, end) = {
+                        let mut start = usize::MAX;
+                        let mut end = usize::MAX;
+                        let mut lines = 0;
+                        let mut line = num;
+                        for (idx, c) in buffer.char_indices() {
+                            if c == '\n' {
+                                lines += 1;
+                            }
+                            if line == 0 && start == usize::MAX {
+                                start = idx;
+                            }
+                            if c == '\n' && line == 0 {
+                                end = idx;
+                                break;
+                            } else if c == '\n' {
+                                line -= 1;
+                            }
+                        }
+                        if start == usize::MAX {
+                            writeln!(
+                                stdout,
+                                "line {num} doesn't exist (buffer has {lines} lines)"
+                            )?;
+                            continue;
+                        } else {
+                            if end == usize::MAX {
+                                end = buffer.len() - 1;
+                            }
+                            (start, end)
+                        }
+                    };
+                    buffer.replace_range(start..=end, "");
+                }
+                "esc" => {
+                    buffer.push_str(rest);
+                    buffer.push('\n');
+                }
+                "clear" => {
+                    buffer.clear();
+                    writeln!(stdout, "cleared buffer")?;
+                }
+                "list" => {
+                    let rest = rest.trim();
+                    let with_line_numbers = rest == "-l" || rest.starts_with("-l ");
+                    for (idx, line) in buffer.lines().enumerate() {
+                        if with_line_numbers {
+                            write!(stdout, "{idx: <4} ")?;
+                        }
+                        writeln!(stdout, "{}", line)?;
+                    }
+                }
+                "load" => {
+                    buffer.clear();
+                    let rest = rest.trim();
+                    let path = PathBuf::from(rest);
+                    let mut file = match OpenOptions::new().read(true).open(path) {
+                        Ok(v) => v,
+                        Err(e) if e.kind() == ErrorKind::NotFound => {
+                            writeln!(stdout, "Could not find file `{}`", rest)?;
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    let bytes_read = file.read_to_string(&mut buffer)?;
+                    assert_eq!(bytes_read, buffer.len());
+                    drop(file);
+                    writeln!(stdout, "read {} b", bytes_read)?;
+                }
+                "run" => {
+                    if let Err(errs) = run(file.clone(), current_dir.clone(), &buffer) {
+                        for e in errs.into_iter() {
+                            writeln!(stdout, "{e:?}")?;
+                        }
+                    }
+                }
+                "exit" => break Ok(()),
+                "help" => print_help(),
+                _ => {
+                    writeln!(stdout, "Unknown command `{cmd}`.")?;
+                    print_help();
+                }
+            };
+
+            continue;
         }
 
-        println!(
-            "Module Creation: {}μs",
-            Instant::now().duration_since(start).as_micros()
-        );
-
-        let start = Instant::now();
-
-        (typechecked_module, module) = match typecheck_module(module, typechecked_module) {
-            Ok(v) => v,
-            Err((err, typed_module, old_module)) => {
-                typechecked_module = typed_module;
-                module = old_module;
-                println!("{err:?}");
-                continue;
-            }
-        };
-
-        println!(
-            "Type Checking: {}μs",
-            Instant::now().duration_since(start).as_micros()
-        );
-
-        println!("{typechecked_module:?}");
+        buffer.push_str(input);
+        buffer.push('\n');
     }
+}
+
+fn run(
+    file: impl Into<Rc<Path>>,
+    root_directory: impl Into<Rc<Path>>,
+    source: impl AsRef<str>,
+) -> Result<(), Vec<ProgrammingLangError>> {
+    let modules = parse_all(file.into(), root_directory.into(), source.as_ref())?;
+
+    println!("{modules:?}");
 
     Ok(())
 }
 
-enum ProgrammingLangIoError {
-    ProgrammingLangError(Vec<ProgrammingLangError>),
-    Io(std::io::Error),
-}
+fn parse_all(
+    file: Rc<Path>,
+    root_directory: Rc<Path>,
+    source: &str,
+) -> Result<Vec<Module>, Vec<ProgrammingLangError>> {
+    let mut errors = vec![];
 
-impl From<std::io::Error> for ProgrammingLangIoError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
+    let mut tokenizer = Tokenizer::new(source.as_ref(), file.clone());
+    if let Err(errs) = tokenizer.scan_tokens() {
+        errors.extend(errs.into_iter().map(ProgrammingLangError::Tokenization));
     }
-}
 
-impl From<Vec<ProgrammingLangError>> for ProgrammingLangIoError {
-    fn from(value: Vec<ProgrammingLangError>) -> Self {
-        Self::ProgrammingLangError(value)
-    }
-}
+    let modules = Rc::new(RwLock::new(vec![ParserQueueEntry {
+        file,
+        root: root_directory.clone(),
+    }]));
+    let mut parsed_modules = vec![];
+    let mut current_parser = tokenizer.to_parser(modules.clone(), root_directory);
 
-impl Debug for ProgrammingLangIoError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(v) => Debug::fmt(v, f),
-            Self::ProgrammingLangError(v) => Debug::fmt(v, f),
+    loop {
+        let (statements, parsing_errors) = current_parser.parse_all();
+        errors.extend(
+            parsing_errors
+                .into_iter()
+                .map(ProgrammingLangError::Parsing),
+        );
+        let mut module = Module::new(current_parser.imports);
+        if let Err(errs) = module.push_all(statements) {
+            errors.extend(errs.into_iter().map(ProgrammingLangError::ProgramForming));
+        }
+        parsed_modules.push(module);
+
+        let read_modules = modules.read().expect("read-write lock was poisoned");
+        if read_modules.len() > parsed_modules.len() {
+            let entry = read_modules[parsed_modules.len()].clone();
+            drop(read_modules);
+            let mut tokenizer = Tokenizer::new(
+                &std::fs::read_to_string(&entry.file).expect("failed to read module file"),
+                entry.file,
+            );
+            if let Err(errs) = tokenizer.scan_tokens() {
+                errors.extend(errs.into_iter().map(ProgrammingLangError::Tokenization));
+            }
+            current_parser = tokenizer.to_parser(modules.clone(), entry.root);
+        } else {
+            break;
         }
     }
-}
 
-#[allow(dead_code)]
-fn run_file<P: AsRef<Path>>(path: P) -> Result<(), ProgrammingLangIoError> {
-    let path = path.as_ref();
-    let source_code = read_to_string(path)?;
-
-    let start = Instant::now();
-    let mut tokenizer = Tokenizer::new(&source_code, path.into());
-
-    println!(
-        "Creating tokenizer: {}μs",
-        Instant::now().duration_since(start).as_micros()
-    );
-    let start = Instant::now();
-
-    if let Err(errors) = tokenizer.scan_tokens() {
-        return Err(errors
-            .into_iter()
-            .map(|el| el.into())
-            .collect::<Vec<_>>()
-            .into());
-    }
-
-    println!(
-        "Tokenization: {}μs",
-        Instant::now().duration_since(start).as_micros()
-    );
-    let start = Instant::now();
-
-    let mut parser = tokenizer.to_parser();
-    let mut errors: Vec<ProgrammingLangError> = vec![];
-    while parser.current < parser.tokens.len() - 1 {
-        match parser.parse_statement(true) {
-            Ok(v) => {
-                println!("Parsed: {v}");
-            }
-            Err(e) => {
-                errors.push(e.into());
-                parser.bail();
-            }
-        }
-    }
-    println!(
-        "Parsing: {}μs",
-        Instant::now().duration_since(start).as_micros()
-    );
     if errors.len() > 0 {
-        Err(errors.into())
+        Err(errors)
     } else {
-        Ok(())
+        Ok(parsed_modules)
     }
 }

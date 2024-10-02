@@ -2,18 +2,19 @@ use std::{
     fmt::{Display, Write},
     path::Path,
     rc::Rc,
+    sync::RwLock,
 };
 
 use crate::{
     error::ProgrammingLangTokenizationError,
-    parser::{LiteralValue, Parser},
+    globals::GlobalStr,
+    parser::{LiteralValue, Parser, ParserQueueEntry},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenType {
-    // Tokenization, Parsing ; *: no types
     Let,                  // done, done
-    EqualEqual,               // done, done
+    EqualEqual,           // done, done
     NotEquals,            // done, done
     LessThan,             // done, done
     GreaterThan,          // done, done
@@ -28,7 +29,7 @@ pub enum TokenType {
     UIntLiteral,          // done, done
     BooleanLiteral,       // done, done
     IdentifierLiteral,    // done, done
-    Equal,          // done, done
+    Equal,                // done, done
     Colon,                // done, done
     Semicolon,            // done, done
     ParenLeft,            // done, done
@@ -53,6 +54,8 @@ pub enum TokenType {
     Return,               // done, done
     Fn,                   // done, done
     Extern,               // done, done
+    Use,                  // done, done
+    Export,               // done, done
     If,                   // done, done
     Else,                 // done, done
     While,                // done, done
@@ -87,7 +90,7 @@ pub enum Literal {
     Float(f64),
     SInt(i64),
     UInt(u64),
-    String(Rc<str>),
+    String(GlobalStr),
     Bool(bool),
 }
 
@@ -173,6 +176,8 @@ impl Display for Token {
                 Some(Literal::String(v)) => f.write_fmt(format_args!("identifier({v})")),
                 _ => f.write_str("identifier(malformed data)"),
             },
+            TokenType::Use => f.write_str("use"),
+            TokenType::Export => f.write_str("export"),
             TokenType::If => f.write_str("if"),
             TokenType::Impl => f.write_str("impl"),
             TokenType::In => f.write_str("in"),
@@ -221,10 +226,9 @@ impl Display for Token {
             TokenType::Struct => f.write_str("struct"),
             TokenType::Trait => f.write_str("trait"),
             TokenType::While => f.write_str("while"),
-        }?;
-        f.write_str(" @ ")?;
-        Display::fmt(&self.location, f)?;
-        f.write_char(' ')
+        }
+        //f.write_str(" at ")?;
+        //Display::fmt(&self.location, f)
     }
 }
 
@@ -259,9 +263,9 @@ impl Token {
             TokenType::IdentifierLiteral => {
                 if let Some(lit) = &self.literal {
                     return match &lit {
-                        Literal::String(v) => {
-                            Some(LiteralValue::Dynamic(crate::parser::Path::new(v.clone(), Vec::new())))
-                        }
+                        Literal::String(v) => Some(LiteralValue::Dynamic(
+                            crate::parser::Path::new(v.clone(), Vec::new()),
+                        )),
                         _ => None,
                     };
                 } else {
@@ -275,7 +279,7 @@ impl Token {
 
 pub struct Tokenizer {
     source: Vec<char>,
-    file: Rc<Path>,
+    pub file: Rc<Path>,
     tokens: Vec<Token>,
     start: usize,
     current: usize,
@@ -790,7 +794,11 @@ impl Tokenizer {
             ));
         }
 
-        self.add_token_lit_loc(TokenType::StringLiteral, Literal::String(str.into()), loc);
+        self.add_token_lit_loc(
+            TokenType::StringLiteral,
+            Literal::String(GlobalStr::new_boxed(str.into_boxed_str())),
+            loc,
+        );
         return Ok(());
     }
 
@@ -829,7 +837,7 @@ impl Tokenizer {
         }
         self.add_token_lit_loc(
             TokenType::IdentifierLiteral,
-            Literal::String(identifier.into()),
+            Literal::String(GlobalStr::new_boxed(identifier.into_boxed_str())),
             loc,
         );
     }
@@ -849,6 +857,8 @@ impl Tokenizer {
             "struct" => Some(TokenType::Struct),
             "impl" => Some(TokenType::Impl),
             "trait" => Some(TokenType::Trait),
+            "use" => Some(TokenType::Use),
+            "export" => Some(TokenType::Export),
             _ => None,
         }
     }
@@ -876,8 +886,8 @@ impl Tokenizer {
         &self.tokens
     }
 
-    pub fn to_parser(self) -> Parser {
-        Parser::new(self.tokens)
+    pub fn to_parser(self, modules: Rc<RwLock<Vec<ParserQueueEntry>>>, root: Rc<Path>) -> Parser {
+        Parser::new(self.tokens, modules, self.file, root)
     }
 }
 

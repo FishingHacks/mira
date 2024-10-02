@@ -23,7 +23,7 @@ fn volatile_read<T>(ptr: &T) -> T {}
 @primitive("volatile_write")
 fn volatile_read<T>(ptr: &T, val: T) {}
 @primitive("copy")
-fn copy<T>(src: &T, dst: &T, count: usize);
+fn copy<T>(src: &T, dst: &T, count: usize) {}
 @primitive("drop")
 fn drop<T>(val: T) {}
 @primitive("transmute")

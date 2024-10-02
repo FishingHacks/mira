@@ -1,7 +1,7 @@
 use std::boxed::Box;
 use std::cell::RefCell;
-use std::fmt::{Display, Write};
-use std::path::Path;
+use std::fmt::{Debug, Display, Write};
+use std::hash::Hash;
 
 struct GlobalValue<T> {
     refs: usize,
@@ -52,10 +52,6 @@ impl<T> Slab<T> {
         }
     }
 
-    pub fn capacity(&self) -> usize {
-        self.entries.capacity()
-    }
-
     pub fn get(&self, index: usize) -> Option<&T> {
         self.entries.get(index).map(Option::as_ref).flatten()
     }
@@ -65,13 +61,14 @@ impl<T> Slab<T> {
 }
 
 type GlobalStrs = Slab<GlobalValue<Box<str>>>;
-type GlobalPaths = Slab<GlobalValue<Box<Path>>>;
+//type GlobalPaths = Slab<GlobalValue<Box<Path>>>;
 
 thread_local! {
     static STRINGS: RefCell<GlobalStrs> = RefCell::new(Slab::new());
-    static PATHS: RefCell<GlobalPaths> = RefCell::new(Slab::new());
+    //static PATHS: RefCell<GlobalPaths> = RefCell::new(Slab::new());
 }
 
+#[derive(Eq)]
 pub struct GlobalStr(usize);
 
 impl PartialEq for GlobalStr {
@@ -150,6 +147,30 @@ impl GlobalStr {
             Self(strings.push(GlobalValue { refs: 0, value }))
         })
     }
+
+    pub fn with<T>(&self, func: impl Fn(&str) -> T) -> T {
+        STRINGS.with_borrow(|strings: &GlobalStrs| {
+            if let Some(v) = strings.get(self.0) {
+                func(&v.value)
+            } else {
+                func("")
+            }
+        })
+    }
+}
+
+impl Debug for GlobalStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        STRINGS.with_borrow(|strings: &GlobalStrs| {
+            if let Some(v) = strings.get(self.0) {
+                Debug::fmt(&*v.value, f)
+            } else {
+                f.write_str("GlobalStr<missing #")?;
+                Display::fmt(&self.0, f)?;
+                f.write_char('>')
+            }
+        })
+    }
 }
 
 impl Display for GlobalStr {
@@ -166,96 +187,123 @@ impl Display for GlobalStr {
     }
 }
 
-pub struct GlobalPath(usize);
-
-impl PartialEq for GlobalPath {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl PartialEq<Path> for GlobalPath {
-    fn eq(&self, other: &Path) -> bool {
-        PATHS.with_borrow(|paths: &GlobalPaths| {
-            if let Some(v) = paths.get(self.0) {
-                (*v.value).eq(other)
+impl Hash for GlobalStr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        STRINGS.with_borrow(|strings: &GlobalStrs| {
+            if let Some(v) = strings.get(self.0) {
+                v.value.hash(state);
             } else {
-                false
+                "".hash(state)
             }
         })
     }
 }
 
-impl Clone for GlobalPath {
-    fn clone(&self) -> Self {
-        PATHS.with_borrow_mut(|paths: &mut GlobalPaths| {
-            if let Some(v) = paths.get_mut(self.0) {
-                v.refs += 1;
-            } else {
-                panic!("tried to clone dropped GlobalStr");
-            }
-        });
-        Self(self.0)
-    }
-}
-
-impl Drop for GlobalPath {
-    fn drop(&mut self) {
-        PATHS.with_borrow_mut(|paths: &mut GlobalPaths| {
-            if let Some(v) = paths.get_mut(self.0) {
-                if v.refs == 0 {
-                    paths.remove(self.0);
-                } else {
-                    v.refs -= 1;
-                }
-            }
-        });
-    }
-}
-
-impl GlobalPath {
-    pub fn new(value: &Path) -> Self {
-        PATHS.with_borrow_mut(|paths: &mut GlobalPaths| {
-            for (idx, v) in paths.entries.iter_mut().enumerate() {
-                if let Some(v) = v {
-                    if (*v.value).eq(value) {
-                        v.refs += 1;
-                        return Self(idx);
-                    }
-                }
-            }
-            Self(paths.push(GlobalValue {
-                refs: 0,
-                value: value.into(),
-            }))
-        })
-    }
-
-    pub fn new_boxed(value: Box<Path>) -> Self {
-        PATHS.with_borrow_mut(|paths: &mut GlobalPaths| {
-            for (idx, v) in paths.entries.iter_mut().enumerate() {
-                if let Some(v) = v {
-                    if (*v.value).eq(&*value) {
-                        v.refs += 1;
-                        return Self(idx);
-                    }
-                }
-            }
-            Self(paths.push(GlobalValue { refs: 0, value }))
-        })
-    }
-}
-
-impl Display for GlobalPath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        PATHS.with_borrow(|paths: &GlobalPaths| {
-            if let Some(v) = paths.get(self.0) {
-                Display::fmt(&v.value.display(), f)
-            } else {
-                f.write_str("GlobalPath<missing #")?;
-                Display::fmt(&self.0, f)?;
-                f.write_char('>')
-            }
-        })
-    }
-}
+//#[derive(Eq)]
+//pub struct GlobalPath(usize);
+//
+//impl PartialEq for GlobalPath {
+//    fn eq(&self, other: &Self) -> bool {
+//        self.0 == other.0
+//    }
+//}
+//
+//impl PartialEq<Path> for GlobalPath {
+//    fn eq(&self, other: &Path) -> bool {
+//        PATHS.with_borrow(|paths: &GlobalPaths| {
+//            if let Some(v) = paths.get(self.0) {
+//                (*v.value).eq(other)
+//            } else {
+//                false
+//            }
+//        })
+//    }
+//}
+//
+//impl Clone for GlobalPath {
+//    fn clone(&self) -> Self {
+//        PATHS.with_borrow_mut(|paths: &mut GlobalPaths| {
+//            if let Some(v) = paths.get_mut(self.0) {
+//                v.refs += 1;
+//            } else {
+//                panic!("tried to clone dropped GlobalStr");
+//            }
+//        });
+//        Self(self.0)
+//    }
+//}
+//
+//impl Drop for GlobalPath {
+//    fn drop(&mut self) {
+//        PATHS.with_borrow_mut(|paths: &mut GlobalPaths| {
+//            if let Some(v) = paths.get_mut(self.0) {
+//                if v.refs == 0 {
+//                    paths.remove(self.0);
+//                } else {
+//                    v.refs -= 1;
+//                }
+//            }
+//        });
+//    }
+//}
+//
+//impl GlobalPath {
+//    pub fn new(value: &Path) -> Self {
+//        PATHS.with_borrow_mut(|paths: &mut GlobalPaths| {
+//            for (idx, v) in paths.entries.iter_mut().enumerate() {
+//                if let Some(v) = v {
+//                    if (*v.value).eq(value) {
+//                        v.refs += 1;
+//                        return Self(idx);
+//                    }
+//                }
+//            }
+//            Self(paths.push(GlobalValue {
+//                refs: 0,
+//                value: value.into(),
+//            }))
+//        })
+//    }
+//
+//    pub fn new_boxed(value: Box<Path>) -> Self {
+//        PATHS.with_borrow_mut(|paths: &mut GlobalPaths| {
+//            for (idx, v) in paths.entries.iter_mut().enumerate() {
+//                if let Some(v) = v {
+//                    if (*v.value).eq(&*value) {
+//                        v.refs += 1;
+//                        return Self(idx);
+//                    }
+//                }
+//            }
+//            Self(paths.push(GlobalValue { refs: 0, value }))
+//        })
+//    }
+//}
+//
+//impl Display for GlobalPath {
+//    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//        PATHS.with_borrow(|paths: &GlobalPaths| {
+//            if let Some(v) = paths.get(self.0) {
+//                Display::fmt(&v.value.display(), f)
+//            } else {
+//                f.write_str("GlobalPath<missing #")?;
+//                Display::fmt(&self.0, f)?;
+//                f.write_char('>')
+//            }
+//        })
+//    }
+//}
+//
+//impl Debug for GlobalPath {
+//    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//        PATHS.with_borrow(|paths: &GlobalPaths| {
+//            if let Some(v) = paths.get(self.0) {
+//                Debug::fmt(&v.value, f)
+//            } else {
+//                f.write_str("GlobalPath<missing #")?;
+//                Display::fmt(&self.0, f)?;
+//                f.write_char('>')
+//            }
+//        })
+//    }
+//}

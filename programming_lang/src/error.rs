@@ -1,9 +1,13 @@
 use std::{
-    fmt::{Debug, Display},
-    rc::Rc,
+    fmt::{Debug, Display, Write},
+    path::PathBuf,
 };
 
-use crate::{tokenizer::{Location, TokenType}, typechecking::error::ProgrammingLangTypecheckingError};
+use crate::{
+    globals::GlobalStr,
+    tokenizer::{Location, TokenType},
+    typechecking::error::ProgrammingLangTypecheckingError,
+};
 
 #[derive(Clone)]
 pub enum ProgrammingLangError {
@@ -36,6 +40,30 @@ impl From<ProgrammingLangTokenizationError> for ProgrammingLangError {
     fn from(value: ProgrammingLangTokenizationError) -> Self {
         Self::Tokenization(value)
     }
+}
+
+impl From<ProgrammingLangProgramFormingError> for ProgrammingLangError {
+    fn from(value: ProgrammingLangProgramFormingError) -> Self {
+        Self::ProgramForming(value)
+    }
+}
+
+impl From<ProgrammingLangTypecheckingError> for ProgrammingLangError {
+    fn from(value: ProgrammingLangTypecheckingError) -> Self {
+        Self::Typechecking(value)
+    }
+}
+
+impl From<&'static str> for ProgrammingLangError {
+    fn from(value: &'static str) -> Self {
+        Self::Generic(value)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ProgrammingLangResolveError {
+    FileNotFound(Location, PathBuf),
+    ModuleNotFound(Location, String),
 }
 
 #[derive(Clone)]
@@ -115,7 +143,7 @@ pub enum ProgrammingLangParsingError {
     },
     FunctionAlreadyDefined {
         loc: Location,
-        name: Rc<str>,
+        name: GlobalStr,
         first_func_loc: Location,
     },
     StructImplRegionExpect {
@@ -130,6 +158,10 @@ pub enum ProgrammingLangParsingError {
         loc: Location,
     },
     ExpectedAnnotationStatement {
+        loc: Location,
+    },
+    ModuleResolution(ProgrammingLangResolveError),
+    ExpressionAtTopLevel {
         loc: Location,
     },
 }
@@ -201,6 +233,7 @@ impl ProgrammingLangParsingError {
             | Self::InvalidTokenization { loc }
             | Self::AssignmentInvalidLeftSide { loc }
             | Self::Eof { loc }
+            | Self::ExpressionAtTopLevel { loc }
             | Self::ExpectedAnnotationStatement { loc }
             | Self::StructImplRegionExpect { loc, .. }
             | Self::ExpectedArbitrary { loc, .. }
@@ -208,6 +241,10 @@ impl ProgrammingLangParsingError {
             | Self::FunctionAlreadyDefined { loc, .. }
             | Self::ExpectedStatement { loc, .. }
             | Self::InvalidKeyword { loc, .. } => loc,
+            Self::ModuleResolution(err) => match err {
+                ProgrammingLangResolveError::FileNotFound(loc, _)
+                | ProgrammingLangResolveError::ModuleNotFound(loc, _) => loc,
+            },
         }
     }
 }
@@ -296,6 +333,8 @@ impl Debug for ProgrammingLangParsingError {
             Self::Eof { loc } => f.write_fmt(format_args!("{loc}: End-of-file")),
             Self::ExpectedStatement { loc }  => f.write_fmt(format_args!("{loc}: Expected a statement")),
             Self::ExpectedAnnotationStatement { loc } => f.write_fmt(format_args!("{loc}: Expected a while, if, for, block, function or struct statement")),
+            Self::ModuleResolution(err) => Debug::fmt(err, f),
+            Self::ExpressionAtTopLevel { loc } => f.write_fmt(format_args!("{loc}: expected a statement but found an expression")),
         }
     }
 }
@@ -347,6 +386,8 @@ pub enum ProgrammingLangProgramFormingError {
     AnonymousFunctionAtGlobalLevel(Location),
     GlobalValueNoLiteral(Location),
     GlobalValueNoType(Location),
+    IdentNotDefined(Location, GlobalStr),
+    IdentAlreadyDefined(Location, GlobalStr),
 }
 
 impl Debug for ProgrammingLangProgramFormingError {
@@ -363,6 +404,12 @@ impl Debug for ProgrammingLangProgramFormingError {
             )),
             Self::GlobalValueNoType(loc) => f.write_fmt(format_args!(
                 "{loc}: global-level const expects you to pass a type"
+            )),
+            Self::IdentNotDefined(loc, ident) => f.write_fmt(format_args!(
+                "{loc}: could not find `{ident}` in the current module"
+            )),
+            Self::IdentAlreadyDefined(loc, ident) => f.write_fmt(format_args!(
+                "{loc}: `{ident}` is already defined in the current module"
             )),
         }
     }
