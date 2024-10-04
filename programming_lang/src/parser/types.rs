@@ -21,14 +21,14 @@ pub static RESERVED_TYPE_NAMES: &[&'static str] = &[
 #[derive(Clone, Eq, Debug)]
 pub enum TypeRef {
     Reference {
-        number_of_references: u8,
+        num_references: u8,
         type_name: GlobalStr,
         loc: Location,
     },
     Void(Location),
     Never(Location),
     UnsizedArray {
-        number_of_references: u8,
+        num_references: u8,
         child: Box<TypeRef>,
         loc: Location,
     },
@@ -76,20 +76,20 @@ impl TypeRef {
         }
         Some(match self {
             Self::Reference {
-                number_of_references,
+                num_references: number_of_references,
                 type_name,
                 loc,
             } => Self::Reference {
-                number_of_references: number_of_references - 1,
+                num_references: number_of_references - 1,
                 type_name: type_name,
                 loc,
             },
             Self::UnsizedArray {
-                number_of_references,
+                num_references: number_of_references,
                 child,
                 loc,
             } => Self::UnsizedArray {
-                number_of_references: number_of_references - 1,
+                num_references: number_of_references - 1,
                 child: child.clone(),
                 loc,
             },
@@ -116,11 +116,11 @@ impl TypeRef {
     pub fn get_ref_count(&self) -> u8 {
         match self {
             Self::Reference {
-                number_of_references,
+                num_references: number_of_references,
                 ..
             }
             | Self::UnsizedArray {
-                number_of_references,
+                num_references: number_of_references,
                 ..
             }
             | Self::SizedArray {
@@ -188,20 +188,20 @@ impl TypeRef {
                     });
                 } else {
                     return Ok(Self::UnsizedArray {
-                        number_of_references,
+                        num_references: number_of_references,
                         child,
                         loc,
                     });
                 }
             } else if parser.match_tok(TokenType::LogicalNot) {
                 return Ok(Self::Reference {
-                    number_of_references,
+                    num_references: number_of_references,
                     type_name: GlobalStr::new("!"),
                     loc,
                 });
             } else if let Some(ident) = parser.expect_identifier().ok() {
                 return Ok(Self::Reference {
-                    number_of_references,
+                    num_references: number_of_references,
                     type_name: ident,
                     loc,
                 });
@@ -234,12 +234,12 @@ impl PartialEq for TypeRef {
     fn eq(&self, other: &Self) -> bool {
         match self {
             Self::Reference {
-                number_of_references: self_nor,
+                num_references: self_nor,
                 type_name: self_type,
                 loc: _,
             } => match other {
                 Self::Reference {
-                    number_of_references: other_nor,
+                    num_references: other_nor,
                     type_name: other_type,
                     loc: _,
                 } => *other_nor == *self_nor && self_type == other_type,
@@ -264,12 +264,12 @@ impl PartialEq for TypeRef {
                 _ => false,
             },
             Self::UnsizedArray {
-                number_of_references: self_nor,
+                num_references: self_nor,
                 child: self_child,
                 loc: _,
             } => match other {
                 Self::UnsizedArray {
-                    number_of_references: other_nor,
+                    num_references: other_nor,
                     child: other_child,
                     loc: _,
                 } => *other_nor == *self_nor && (&**other_child) == (&**self_child),
@@ -285,6 +285,7 @@ pub type Implementation = HashMap<GlobalStr, FunctionId>;
 
 #[derive(Debug)]
 pub struct Struct {
+    pub loc: Location,
     pub name: GlobalStr,
     pub fields: Vec<(GlobalStr, TypeRef)>,
     pub global_impl: Implementation,

@@ -1,25 +1,18 @@
 use std::{
-    collections::HashMap,
-    fmt::Debug,
-    fs::{read_to_string, OpenOptions},
+    fs::OpenOptions,
     io::{stdin, stdout, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     rc::Rc,
     sync::RwLock,
-    time::Instant,
 };
 
 use programming_lang::{
-    error::ProgrammingLangError,
-    module::Module,
-    parser::ParserQueueEntry,
-    tokenizer::Tokenizer,
-    typechecking::{typecheck_module, TypecheckedModule},
+    error::ProgrammingLangError, module::Module, parser::ParserQueueEntry, tokenizer::Tokenizer,
+    typechecking::resolve_modules,
 };
 
 fn print_help() {
     //┌─┐└┘│├┬┴┼┴┤
-    // TODO: Better help menu
     println!("┌─[ commands ]─────┬───────────────────────────────────────────┐");
     println!("│ .^ <line> <code> │ inserts code after the specified line     │");
     println!("│ .v <line> <code> │ inserts code before the specified line    │");
@@ -340,7 +333,14 @@ fn run(
 ) -> Result<(), Vec<ProgrammingLangError>> {
     let modules = parse_all(file.into(), root_directory.into(), source.as_ref())?;
 
-    println!("{modules:?}");
+    let resolved_modules = resolve_modules(modules).map_err(|errs| {
+        errs.into_iter()
+            .map(Into::<ProgrammingLangError>::into)
+            .collect::<Vec<_>>()
+    })?;
+
+    println!("Modules: {:?}", resolved_modules);
+    println!("Context: {:?}", resolved_modules.read().unwrap()[0].context);
 
     Ok(())
 }

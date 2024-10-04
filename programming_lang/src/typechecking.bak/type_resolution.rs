@@ -1,23 +1,19 @@
 use crate::{
     globals::GlobalStr,
+    module::Module,
     parser::{Annotations, Implementation, TypeRef},
 };
 use std::{
+    collections::HashMap,
     fmt::{Display, Write},
     rc::Rc,
 };
 
-use super::ModuleId;
+use super::error::ProgrammingLangTypecheckingError;
 
-/// TODO: add traits
 #[derive(Debug)]
-pub struct ResolvedStruct {
-    pub name: GlobalStr,
-    pub fields: Box<[(GlobalStr, Type)]>,
-    pub global_impl: Implementation,
-    pub annotations: Annotations,
-    pub id: usize,
-    pub module_id: ModuleId,
+pub struct TypecheckedModule {
+    pub structs: HashMap<GlobalStr, Rc<ResolvedStruct>>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +69,7 @@ impl PartialEq for Type {
                 Self::Struct {
                     structure: other_structure,
                     num_references: _,
-                } => structure.id == other_structure.id && structure.name == other_structure.name,
+                } => structure.name == other_structure.name,
                 _ => false,
             },
             Self::SizedArray {
@@ -312,12 +308,103 @@ fn get_struct_size(structure: &ResolvedStruct) -> Option<usize> {
     Some(size)
 }
 
+#[derive(Debug)]
+pub struct ResolvedStruct {
+    pub name: GlobalStr,
+    pub fields: Vec<(GlobalStr, Type)>,
+    pub global_impl: Implementation,
+    pub trait_impls: Vec<(GlobalStr, Implementation)>,
+    pub annotations: Annotations,
+}
+
+pub fn resolve_type(
+    typ: &TypeRef,
+    module: &mut Module,
+    typechecked_module: &mut TypecheckedModule,
+) -> Result<Type, ProgrammingLangTypecheckingError> {
+    if let Some(typ) = resolve_primitive_type(typ) {
+        return Ok(typ);
+    }
+
+    match typ {
+        TypeRef::Never(_) | TypeRef::Void(_) => unreachable!(), // should've been handled in resolve_type
+        TypeRef::SizedArray {
+            num_references,
+            child,
+            number_elements,
+            loc: _,
+        } => Ok(Type::SizedArray {
+            typ: Box::new(resolve_type(&**child, module, typechecked_module)?),
+            num_references: *num_references,
+            number_elements: *number_elements,
+        }),
+        TypeRef::UnsizedArray {
+            number_of_references,
+            child,
+            loc: _,
+        } => Ok(Type::UnsizedArray {
+            typ: Box::new(resolve_type(&**child, module, typechecked_module)?),
+            num_references: *number_of_references,
+        }),
+        TypeRef::Reference {
+            number_of_references,
+            type_name,
+            loc,
+        } => {
+            if let Some(structure) = typechecked_module.structs.get(type_name).cloned() {
+                return Ok(Type::Struct {
+                    structure,
+                    num_references: *number_of_references,
+                });
+            }
+
+            let structure = module
+                .global_scope
+                .structs
+                .remove(type_name)
+                .ok_or_else(|| ProgrammingLangTypecheckingError::UnboundType {
+                    loc: loc.clone(),
+                    type_name: type_name.clone(),
+                })?;
+            let mut resolved_struct = ResolvedStruct {
+                name: structure.name.clone(),
+                annotations: structure.annotations,
+                global_impl: structure.global_impl,
+                trait_impls: structure.trait_impls,
+                fields: Vec::with_capacity(structure.fields.len()),
+            };
+
+            for (index, (field_name, field_type)) in structure.fields.iter().enumerate() {
+                let resolved_type = resolve_type(field_type, module, typechecked_module)?;
+                if resolved_type.get_size().is_none() && index < structure.fields.len() - 1 {
+                    return Err(ProgrammingLangTypecheckingError::UnsizedTypeInsideStruct {
+                        loc: field_type.loc().clone(),
+                        field_name: field_name.clone(),
+                    });
+                }
+                resolved_struct
+                    .fields
+                    .push((field_name.clone(), resolved_type));
+            }
+
+            let rc_struct = Rc::new(resolved_struct);
+            typechecked_module
+                .structs
+                .insert(structure.name, rc_struct.clone());
+            Ok(Type::Struct {
+                structure: rc_struct,
+                num_references: *number_of_references,
+            })
+        }
+    }
+}
+
 fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
     match typ {
         TypeRef::Never(_) => Some(Type::PrimitiveNever),
         TypeRef::Void(_) => Some(Type::PrimitiveVoid(0)),
         TypeRef::Reference {
-            num_references: number_of_references,
+            number_of_references,
             type_name,
             loc: _,
         } => type_name.with(|type_name| match type_name {

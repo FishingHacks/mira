@@ -28,6 +28,7 @@ pub enum TokenType {
     SIntLiteral,          // done, done
     UIntLiteral,          // done, done
     BooleanLiteral,       // done, done
+    VoidLiteral,          // done, done
     IdentifierLiteral,    // done, done
     Equal,                // done, done
     Colon,                // done, done
@@ -152,6 +153,7 @@ impl Display for Token {
             TokenType::BitwiseLShiftAssign => f.write_str("<<="),
             TokenType::BitwiseRShift => f.write_str(">>"),
             TokenType::BitwiseRShiftAssign => f.write_str(">>="),
+            TokenType::VoidLiteral => f.write_str("void"),
             TokenType::BooleanLiteral => match &self.literal {
                 Some(Literal::Bool(v)) => f.write_fmt(format_args!("bool({v})")),
                 _ => f.write_str("bool(malformed data)"),
@@ -260,6 +262,7 @@ impl Token {
                 Literal::UInt(uint) => LiteralValue::UInt(*uint),
                 Literal::String(string) => LiteralValue::String(string.clone()),
             }),
+            TokenType::VoidLiteral => Some(LiteralValue::Void),
             TokenType::IdentifierLiteral => {
                 if let Some(lit) = &self.literal {
                     return match &lit {
@@ -830,6 +833,7 @@ impl Tokenizer {
             "false" => {
                 return self.add_token_lit_loc(TokenType::BooleanLiteral, Literal::Bool(false), loc)
             }
+            "void" => return self.add_token(TokenType::VoidLiteral),
             _ => (),
         }
         if let Some(typ) = Self::try_token_from_keyword(&identifier) {
@@ -878,7 +882,7 @@ impl Tokenizer {
     fn is_valid_identifier_char(character: char) -> bool {
         matches!(
             character,
-            '_' | '$' | '#' | ('a'..='z') | ('A'..='Z') | ('0'..='9') // TODO: generics / types: make TypeName::FunctionName use some custom token as :: instead of having that part of the type
+            '_' | '$' | '#' | ('a'..='z') | ('A'..='Z') | ('0'..='9')
         )
     }
 

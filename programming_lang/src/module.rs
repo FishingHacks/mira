@@ -9,15 +9,6 @@ use crate::{
 };
 
 pub type FunctionId = usize;
-
-#[derive(Debug, Default)]
-pub struct Scope {
-    pub structs: HashMap<GlobalStr, Struct>,
-    pub functions: HashMap<GlobalStr, FunctionId>,
-    pub external_functions: HashMap<GlobalStr, FunctionContract>,
-    pub static_values: HashMap<GlobalStr, (TypeRef, LiteralValue)>,
-}
-
 #[derive(Debug)]
 pub enum ExportItem {
     Function(usize),
@@ -29,8 +20,11 @@ pub enum ExportItem {
 
 #[derive(Debug)]
 pub struct Module {
-    pub global_scope: Scope,
-    pub functions: Vec<(FunctionContract, Statement)>,
+    pub structs: HashMap<GlobalStr, Struct>,
+    pub functions: HashMap<GlobalStr, FunctionId>,
+    pub external_functions: HashMap<GlobalStr, FunctionContract>,
+    pub static_values: HashMap<GlobalStr, (TypeRef, LiteralValue)>,
+    pub function_registry: Vec<(FunctionContract, Statement)>,
     pub imports: HashMap<GlobalStr, (usize, Vec<GlobalStr>)>,
     pub exports: HashMap<GlobalStr, ExportItem>,
 }
@@ -38,20 +32,24 @@ pub struct Module {
 impl Module {
     pub fn new(imports: HashMap<GlobalStr, (usize, Vec<GlobalStr>)>) -> Self {
         Self {
-            global_scope: Scope::default(),
-            functions: Vec::new(),
+            structs: HashMap::new(),
+            functions: HashMap::new(),
+            external_functions: HashMap::new(),
+            static_values: HashMap::new(),
+
+            function_registry: Vec::new(),
             imports,
             exports: HashMap::new(),
         }
     }
 
     pub fn push_fn(&mut self, contract: FunctionContract, statement: Statement) -> FunctionId {
-        self.functions.push((contract, statement));
-        return (self.functions.len() - 1) as FunctionId;
+        self.function_registry.push((contract, statement));
+        return (self.function_registry.len() - 1) as FunctionId;
     }
 
     pub fn get_fn(&self, id: FunctionId) -> Option<&(FunctionContract, Statement)> {
-        return self.functions.get(id);
+        return self.function_registry.get(id);
     }
 
     pub fn push_all(
@@ -86,7 +84,7 @@ impl Module {
 
                 statement.bake_functions(self);
                 let fn_id = self.push_fn(contract, *statement);
-                self.global_scope.functions.insert(name, fn_id);
+                self.functions.insert(name, fn_id);
             }
             Statement::Struct {
                 name,
@@ -123,13 +121,14 @@ impl Module {
                 }
 
                 let typ = Struct {
+                    loc: location,
                     name: name.clone(),
                     fields,
                     global_impl: struct_global_impl,
                     trait_impls: struct_impls,
                     annotations,
                 };
-                self.global_scope.structs.insert(name, typ);
+                self.structs.insert(name, typ);
             }
             Statement::Var(_, expr, None, _) => {
                 return Err(ProgrammingLangProgramFormingError::GlobalValueNoType(
@@ -143,7 +142,7 @@ impl Module {
                     ));
                 }
                 if let Expression::Literal(val, _) = expr {
-                    self.global_scope.static_values.insert(name, (typ, val));
+                    self.static_values.insert(name, (typ, val));
                 } else {
                     return Err(ProgrammingLangProgramFormingError::GlobalValueNoLiteral(
                         expr.loc().clone(),
@@ -158,9 +157,7 @@ impl Module {
                             name,
                         ));
                     }
-                    self.global_scope
-                        .external_functions
-                        .insert(name.clone(), contract);
+                    self.external_functions.insert(name.clone(), contract);
                 } else {
                     return Err(
                         ProgrammingLangProgramFormingError::AnonymousFunctionAtGlobalLevel(
@@ -170,9 +167,9 @@ impl Module {
                 }
             }
             Statement::Export(key, loc) => {
-                if let Some(func) = self.global_scope.functions.get(&key) {
+                if let Some(func) = self.functions.get(&key) {
                     self.exports.insert(key, ExportItem::Function(*func));
-                } else if let Some(external_func) = self.global_scope.external_functions.get(&key) {
+                } else if let Some(external_func) = self.external_functions.get(&key) {
                     self.exports.insert(
                         key,
                         ExportItem::ExternalFunction(
@@ -182,9 +179,9 @@ impl Module {
                                 .expect("external function without a name"),
                         ),
                     );
-                } else if self.global_scope.structs.contains_key(&key) {
+                } else if self.structs.contains_key(&key) {
                     self.exports.insert(key.clone(), ExportItem::Struct(key));
-                } else if self.global_scope.static_values.contains_key(&key) {
+                } else if self.static_values.contains_key(&key) {
                     self.exports
                         .insert(key.clone(), ExportItem::StaticValue(key));
                 } else if self.exports.contains_key(&key) {
@@ -203,9 +200,9 @@ impl Module {
 
     fn is_defined(&self, key: &GlobalStr) -> bool {
         self.imports.contains_key(key)
-            || self.global_scope.functions.contains_key(key)
-            || self.global_scope.structs.contains_key(key)
-            || self.global_scope.static_values.contains_key(key)
-            || self.global_scope.external_functions.contains_key(key)
+            || self.functions.contains_key(key)
+            || self.structs.contains_key(key)
+            || self.static_values.contains_key(key)
+            || self.external_functions.contains_key(key)
     }
 }

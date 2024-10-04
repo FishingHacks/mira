@@ -118,6 +118,7 @@ pub enum LiteralValue {
     Dynamic(Path),
     AnonymousFunction(FunctionContract, Box<Statement>),
     BakedAnonymousFunction(FunctionId),
+    Void,
 }
 
 impl PartialEq for LiteralValue {
@@ -138,6 +139,7 @@ impl PartialEq for LiteralValue {
             }
             (Self::Bool(l), Self::Bool(r)) => l == r,
             (Self::Dynamic(l), Self::Dynamic(r)) => l == r,
+            (Self::Void, Self::Void) => true,
             _ => false,
         }
     }
@@ -184,6 +186,7 @@ impl Display for LiteralValue {
                 Display::fmt(body, f)?;
                 f.write_char(')')
             }
+            LiteralValue::Void => f.write_str("void"),
         }
     }
 }
@@ -198,6 +201,7 @@ impl LiteralValue {
             LiteralValue::String(..) => "string",
             LiteralValue::Array(..) => "array",
             LiteralValue::Struct(..) => "struct",
+            LiteralValue::Void => "void",
             LiteralValue::AnonymousFunction(..) | Self::BakedAnonymousFunction(..) => "function",
         }
     }

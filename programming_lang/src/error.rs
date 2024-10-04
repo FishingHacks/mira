@@ -1,12 +1,12 @@
 use std::{
-    fmt::{Debug, Display, Write},
+    fmt::{Debug, Display},
     path::PathBuf,
 };
 
 use crate::{
     globals::GlobalStr,
     tokenizer::{Location, TokenType},
-    typechecking::error::ProgrammingLangTypecheckingError,
+    typechecking::ProgrammingLangTypecheckingError,
 };
 
 #[derive(Clone)]
