@@ -6,17 +6,10 @@ use crate::{
     parser::{
         Expression, FunctionContract, Implementation, LiteralValue, Statement, Struct, TypeRef,
     },
+    tokenizer::Location,
 };
 
 pub type FunctionId = usize;
-#[derive(Debug)]
-pub enum ExportItem {
-    Function(usize),
-    ExternalFunction(GlobalStr),
-    StaticValue(GlobalStr),
-    Struct(GlobalStr),
-    Import(GlobalStr),
-}
 
 #[derive(Debug)]
 pub struct Module {
@@ -25,12 +18,12 @@ pub struct Module {
     pub external_functions: HashMap<GlobalStr, FunctionContract>,
     pub static_values: HashMap<GlobalStr, (TypeRef, LiteralValue)>,
     pub function_registry: Vec<(FunctionContract, Statement)>,
-    pub imports: HashMap<GlobalStr, (usize, Vec<GlobalStr>)>,
-    pub exports: HashMap<GlobalStr, ExportItem>,
+    pub imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
+    pub exports: HashMap<GlobalStr, GlobalStr>,
 }
 
 impl Module {
-    pub fn new(imports: HashMap<GlobalStr, (usize, Vec<GlobalStr>)>) -> Self {
+    pub fn new(imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>) -> Self {
         Self {
             structs: HashMap::new(),
             functions: HashMap::new(),
@@ -166,31 +159,13 @@ impl Module {
                     );
                 }
             }
-            Statement::Export(key, loc) => {
-                if let Some(func) = self.functions.get(&key) {
-                    self.exports.insert(key, ExportItem::Function(*func));
-                } else if let Some(external_func) = self.external_functions.get(&key) {
-                    self.exports.insert(
-                        key,
-                        ExportItem::ExternalFunction(
-                            external_func
-                                .name
-                                .clone()
-                                .expect("external function without a name"),
-                        ),
-                    );
-                } else if self.structs.contains_key(&key) {
-                    self.exports.insert(key.clone(), ExportItem::Struct(key));
-                } else if self.static_values.contains_key(&key) {
-                    self.exports
-                        .insert(key.clone(), ExportItem::StaticValue(key));
-                } else if self.exports.contains_key(&key) {
-                    self.exports.insert(key.clone(), ExportItem::Import(key));
-                } else {
+            Statement::Export(key, exported_key, loc) => {
+                if !self.is_defined(&key) {
                     return Err(ProgrammingLangProgramFormingError::IdentNotDefined(
                         loc, key,
                     ));
                 }
+                self.exports.insert(exported_key, key);
             }
             _ => return Err(ProgrammingLangProgramFormingError::NoCodeOutsideOfFunctions(loc)),
         }

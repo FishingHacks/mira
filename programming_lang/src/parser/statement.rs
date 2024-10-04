@@ -90,7 +90,8 @@ pub enum Statement {
         impls: Vec<(GlobalStr, HashMap<GlobalStr, BakableFunction>)>,
         annotations: Annotations,
     },
-    Export(GlobalStr, Location),
+    /// key (the name of the thing in the module), export key (the name during import), location
+    Export(GlobalStr, GlobalStr, Location),
 }
 
 impl Statement {
@@ -99,7 +100,7 @@ impl Statement {
             Self::Expression(expr) => expr.loc(),
             Self::ExternalFunction(c) | Self::Function(c, _) => &c.location,
 
-            Self::Export(_, location)
+            Self::Export(_, _, location)
             | Self::BakedFunction(_, location)
             | Self::Block(_, location, _)
             | Self::For { location, .. }
@@ -274,9 +275,13 @@ impl Statement {
                 f.write_char(')')
             }
             Self::ExternalFunction(contract) => display_contract(f, contract, true),
-            Self::Export(name, _) => {
+            Self::Export(name, exported_name, _) => {
                 f.write_str("(export ")?;
                 Display::fmt(name, f)?;
+                if name != exported_name {
+                    f.write_str(" as ")?;
+                    Display::fmt(exported_name, f)?;
+                }
                 f.write_char(')')
             }
         }
@@ -370,9 +375,13 @@ impl Display for Statement {
                 f.write_char(')')
             }
             Self::ExternalFunction(contract) => display_contract(f, contract, true),
-            Self::Export(name, _) => {
+            Self::Export(name, exported_name, _) => {
                 f.write_str("(export ")?;
                 Display::fmt(name, f)?;
+                if name != exported_name {
+                    f.write_str(" as ")?;
+                    Display::fmt(exported_name, f)?;
+                }
                 f.write_char(')')
             }
         }
@@ -577,11 +586,14 @@ impl Parser {
 
     fn parse_export(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
         let loc = self.advance().location.clone();
-        let statement = self
-            .expect_identifier()
-            .map(|v| Statement::Export(v, loc))?;
+        let name = self.expect_identifier()?;
+        let exported_name = if self.match_tok(TokenType::As) {
+            self.expect_identifier()?
+        } else {
+            name.clone()
+        };
         self.consume_semicolon()?;
-        Ok(statement)
+        Ok(Statement::Export(name, exported_name, loc))
     }
 
     fn parse_use(&mut self) -> Result<(), ProgrammingLangParsingError> {
@@ -641,7 +653,7 @@ impl Parser {
 
         if self.match_tok(TokenType::As) {
             let name = self.expect_identifier()?;
-            self.imports.insert(name, (module_id, Vec::new()));
+            self.imports.insert(name, (location, module_id, Vec::new()));
             self.consume_semicolon()?;
             return Ok(());
         }
@@ -676,11 +688,12 @@ impl Parser {
 
                 if self.match_tok(TokenType::As) {
                     let alias_name = self.expect_identifier()?;
-                    self.imports.insert(alias_name, (module_id, import_name));
+                    self.imports
+                        .insert(alias_name, (location.clone(), module_id, import_name));
                 } else {
                     self.imports.insert(
                         import_name[import_name.len() - 1].clone(),
-                        (module_id, import_name),
+                        (location.clone(), module_id, import_name),
                     );
                 }
             }
@@ -692,14 +705,15 @@ impl Parser {
 
         if self.match_tok(TokenType::As) {
             let alias_name = self.expect_identifier()?;
-            self.imports.insert(alias_name, (module_id, import_name));
+            self.imports
+                .insert(alias_name, (location, module_id, import_name));
             self.consume_semicolon()?;
             return Ok(());
         }
 
         self.imports.insert(
             import_name[import_name.len() - 1].clone(),
-            (module_id, import_name),
+            (location, module_id, import_name),
         );
         self.consume_semicolon()?;
         Ok(())

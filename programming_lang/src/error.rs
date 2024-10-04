@@ -60,10 +60,11 @@ impl From<&'static str> for ProgrammingLangError {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum ProgrammingLangResolveError {
     FileNotFound(Location, PathBuf),
     ModuleNotFound(Location, String),
+    AbsolutePath(Location),
 }
 
 #[derive(Clone)]
@@ -243,7 +244,8 @@ impl ProgrammingLangParsingError {
             | Self::InvalidKeyword { loc, .. } => loc,
             Self::ModuleResolution(err) => match err {
                 ProgrammingLangResolveError::FileNotFound(loc, _)
-                | ProgrammingLangResolveError::ModuleNotFound(loc, _) => loc,
+                | ProgrammingLangResolveError::ModuleNotFound(loc, _)
+                | ProgrammingLangResolveError::AbsolutePath(loc) => loc,
             },
         }
     }
@@ -335,6 +337,23 @@ impl Debug for ProgrammingLangParsingError {
             Self::ExpectedAnnotationStatement { loc } => f.write_fmt(format_args!("{loc}: Expected a while, if, for, block, function or struct statement")),
             Self::ModuleResolution(err) => Debug::fmt(err, f),
             Self::ExpressionAtTopLevel { loc } => f.write_fmt(format_args!("{loc}: expected a statement but found an expression")),
+        }
+    }
+}
+
+impl Debug for ProgrammingLangResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FileNotFound(loc, path) => f.write_fmt(format_args!(
+                "{loc}: Could not find file at `{}`",
+                path.display()
+            )),
+            Self::ModuleNotFound(loc, module_name) => {
+                f.write_fmt(format_args!("{loc}: Could not find module `{module_name}`"))
+            }
+            Self::AbsolutePath(loc) => f.write_fmt(format_args!(
+                "{loc}: absolute paths in use statements are not allowed"
+            )),
         }
     }
 }

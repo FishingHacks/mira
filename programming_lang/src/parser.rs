@@ -77,7 +77,7 @@ pub struct Parser {
     pub modules: Rc<RwLock<Vec<ParserQueueEntry>>>,
     /// a map of idents => imports. if the size of the vec is 0, the identifier refers to the
     /// module itself. otherwise, it refers to something in it.
-    pub imports: HashMap<GlobalStr, (usize, Vec<GlobalStr>)>,
+    pub imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
 }
 
 impl Parser {

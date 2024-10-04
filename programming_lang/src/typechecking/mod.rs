@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fmt::{Debug, Display},
+    fmt::{Debug, Display, Write},
     rc::Rc,
     sync::{Arc, RwLock},
 };
@@ -17,6 +17,8 @@ pub use module_resolution::resolve_modules;
 
 mod module_resolution;
 mod type_resolution;
+mod typecheck;
+pub type TypecheckedModules = Arc<RwLock<Vec<TypecheckedModule>>>;
 
 #[derive(Clone)]
 pub enum ProgrammingLangTypecheckingError {
@@ -29,6 +31,10 @@ pub enum ProgrammingLangTypecheckingError {
         loc: Location,
         type_name: GlobalStr,
     },
+    UnboundExport {
+        loc: Location,
+        name: GlobalStr,
+    },
 }
 
 impl Debug for ProgrammingLangTypecheckingError {
@@ -36,6 +42,7 @@ impl Debug for ProgrammingLangTypecheckingError {
         match self {
             Self::UnsizedTypeInsideStruct { loc, field_name } => f.write_fmt(format_args!("{loc}: Unsized types are only valid as the last field of a struct (field `{field_name}` is unsized)")),
             Self::UnboundType { loc, type_name } => f.write_fmt(format_args!("{loc}: Unbound or recursive type `{type_name}`")),
+            Self::UnboundExport { loc, name } => f.write_fmt(format_args!("{loc}: No export named `{name}` found.")),
         }
     }
 }
@@ -102,7 +109,7 @@ pub struct TypecheckedModule {
     /// vec of (name, module id, path)
     pub scope: HashMap<GlobalStr, ScopeItem>,
     pub context: Arc<TypecheckingContext>,
-    pub modules: Arc<RwLock<Vec<TypecheckedModule>>>,
+    pub modules: TypecheckedModules,
 }
 
 impl Debug for TypecheckedModule {

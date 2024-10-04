@@ -9,15 +9,14 @@ use crate::{
     module::Module,
     parser::{Statement, TypeRef},
     tokenizer::Location,
-    typechecking::{ModuleId, ScopeItem, ScopeItemKind, TypecheckingContext},
+    typechecking::{ModuleId, ScopeItem, TypecheckingContext},
 };
 
 use super::{
     type_resolution::{ResolvedStruct, Type},
     ProgrammingLangTypecheckingError, ResolvedFunctionContract, TypecheckedModule,
+    TypecheckedModules,
 };
-
-type TypecheckedModules = Arc<RwLock<Vec<TypecheckedModule>>>;
 
 fn resolve_struct(
     name: &GlobalStr,
@@ -57,10 +56,10 @@ fn resolve_struct(
     }
 
     if let Some(v) = modules[module_id].imports.get(name) {
-        if v.1.len() > 0 {
+        if v.2.len() > 0 {
             todo!("paths with a length >1 are not supported");
         }
-        return resolve_struct(&v.1[0].clone(), v.0, modules, typechecked_modules, loc);
+        return resolve_struct(&v.2[0].clone(), v.1, modules, typechecked_modules, loc);
     }
 
     if let Some(structure) = modules[module_id].structs.remove(name) {
@@ -393,9 +392,9 @@ pub fn resolve_modules(
         }
     }
 
-    // +-------------------+
-    // | External Function |
-    // +-------------------+
+    // +---------------+
+    // | Static Values |
+    // +---------------+
     for id in 0..modules.len() {
         while let Some(key) = modules[id].static_values.keys().next().cloned() {
             let value = modules[id]
@@ -430,5 +429,74 @@ pub fn resolve_modules(
         }
     }
 
+    // +---------+
+    // | Imports |
+    // +---------+
+    for id in 0..modules.len() {
+        for import in modules[id].imports.keys() {
+            let item = match resolve_import(
+                &modules,
+                typechecked_modules.clone(),
+                id,
+                import,
+                &modules[id].imports[import].0,
+            ) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue,
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            };
+
+            typechecked_modules
+                .write()
+                .expect("read-write lock is poisoned")[id]
+                .scope
+                .insert(import.clone(), item);
+        }
+    }
+
+    if errors.len() > 0 {
+        return Err(errors);
+    }
     Ok(typechecked_modules)
+}
+
+pub fn resolve_import(
+    modules: &[Module],
+    typechecked_modules: TypecheckedModules,
+    module_id: usize,
+    import: &GlobalStr,
+    loc: &Location,
+) -> Result<Option<ScopeItem>, ProgrammingLangTypecheckingError> {
+    let (location, import_module_id, path) = modules[module_id]
+        .imports
+        .get(import)
+        .expect("import should always exist");
+    if path.len() > 1 {
+        todo!("paths with a length > 1 are not supported")
+    }
+    if modules[*import_module_id].imports.contains_key(&path[0]) {
+        return resolve_import(
+            modules,
+            typechecked_modules,
+            *import_module_id,
+            &path[0],
+            location,
+        );
+    }
+
+    let Some(key) = modules[*import_module_id].exports.get(&path[0]) else {
+        return Err(ProgrammingLangTypecheckingError::UnboundExport {
+            loc: loc.clone(),
+            name: path[0].clone(),
+        });
+    };
+    Ok(typechecked_modules
+        .read()
+        .expect("read-write lock is poisoned")[*import_module_id]
+        .scope
+        .get(key)
+        .copied())
 }
