@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    error::ProgrammingLangParsingError,
+    error::ParsingError,
     globals::GlobalStr,
     module::FunctionId,
     parser::Location,
@@ -25,7 +25,7 @@ pub enum TypeRef {
         type_name: GlobalStr,
         loc: Location,
     },
-    Void(Location),
+    Void(Location, u8),
     Never(Location),
     UnsizedArray {
         num_references: u8,
@@ -63,7 +63,7 @@ impl Display for TypeRef {
                 Display::fmt(&amount_of_elements, f)?;
                 f.write_char(']')
             }
-            Self::Void(_) => f.write_str("void"),
+            Self::Void(..) => f.write_str("void"),
             Self::Never(_) => f.write_str("!"),
         }
     }
@@ -104,8 +104,9 @@ impl TypeRef {
                 number_elements: amount_of_elements,
                 loc,
             },
-            // Self::Void and Self::Never cannot be dereferenced
-            Self::Void(_) | Self::Never(_) => unreachable!(),
+            Self::Void(loc, refcount) => Self::Void(loc, refcount - 1),
+            // Self::Never cannot be dereferenced
+            Self::Never(_) => unreachable!(),
         })
     }
 
@@ -115,7 +116,8 @@ impl TypeRef {
 
     pub fn get_ref_count(&self) -> u8 {
         match self {
-            Self::Reference {
+            Self::Void(_, number_of_references)
+            | Self::Reference {
                 num_references: number_of_references,
                 ..
             }
@@ -127,11 +129,11 @@ impl TypeRef {
                 num_references: number_of_references,
                 ..
             } => *number_of_references,
-            Self::Void(_) | Self::Never(_) => 0,
+            Self::Never(_) => 0,
         }
     }
 
-    pub fn parse(parser: &mut Parser) -> Result<Self, ProgrammingLangParsingError> {
+    pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
         let mut number_of_references = 0;
 
         while !parser.is_at_end() {
@@ -154,20 +156,20 @@ impl TypeRef {
                 if parser.match_tok(TokenType::Semicolon) {
                     // case [<type>; <amount>]
                     if !parser.match_tok(TokenType::FloatLiteral) {
-                        return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                        return Err(ParsingError::ExpectedArbitrary {
                             loc: parser.peek().location.clone(),
                             expected: TokenType::FloatLiteral,
                             found: parser.peek().typ,
                         });
                     }
-                    let Some(Literal::UInt(lit)) = parser.previous().literal else {
-                        return Err(ProgrammingLangParsingError::InvalidTokenization {
+                    let Some(Literal::UInt(lit, _)) = parser.previous().literal else {
+                        return Err(ParsingError::InvalidTokenization {
                             loc: parser.previous().location.clone(),
                         });
                     };
 
                     if !parser.match_tok(TokenType::BracketRight) {
-                        return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                        return Err(ParsingError::ExpectedArbitrary {
                             loc: parser.peek().location.clone(),
                             expected: TokenType::BracketRight,
                             found: parser.peek().typ,
@@ -181,7 +183,7 @@ impl TypeRef {
                         loc,
                     });
                 } else if !parser.match_tok(TokenType::BracketRight) {
-                    return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                    return Err(ParsingError::ExpectedArbitrary {
                         loc: parser.peek().location.clone(),
                         expected: TokenType::BracketRight,
                         found: parser.peek().typ,
@@ -199,6 +201,8 @@ impl TypeRef {
                     type_name: GlobalStr::new("!"),
                     loc,
                 });
+            } else if parser.match_tok(TokenType::VoidLiteral) {
+                return Ok(Self::Void(loc, number_of_references));
             } else if let Some(ident) = parser.expect_identifier().ok() {
                 return Ok(Self::Reference {
                     num_references: number_of_references,
@@ -206,14 +210,14 @@ impl TypeRef {
                     loc,
                 });
             } else {
-                return Err(ProgrammingLangParsingError::ExpectedType {
+                return Err(ParsingError::ExpectedType {
                     loc: parser.peek().location.clone(),
                     found: parser.peek().typ,
                 });
             }
         }
 
-        return Err(ProgrammingLangParsingError::ExpectedType {
+        return Err(ParsingError::ExpectedType {
             loc: parser.peek().location.clone(),
             found: TokenType::Eof,
         });
@@ -222,7 +226,7 @@ impl TypeRef {
     pub fn loc(&self) -> &Location {
         match self {
             Self::Never(loc)
-            | Self::Void(loc)
+            | Self::Void(loc, _)
             | Self::Reference { loc, .. }
             | Self::SizedArray { loc, .. }
             | Self::UnsizedArray { loc, .. } => loc,
@@ -276,7 +280,9 @@ impl PartialEq for TypeRef {
                 _ => false,
             },
             Self::Never(_) => matches!(other, Self::Never(_)),
-            Self::Void(_) => matches!(other, Self::Void(_)),
+            Self::Void(_, refcount) => {
+                matches!(other, Self::Void(_, refcount_other) if refcount_other == refcount)
+            }
         }
     }
 }

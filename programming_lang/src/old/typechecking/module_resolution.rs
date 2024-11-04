@@ -68,7 +68,13 @@ fn resolve_struct(
         for field in structure.fields {
             fields.push((
                 field.0,
-                resolve_type(&field.1, module_id, modules, typechecked_modules.clone())?,
+                resolve_type(
+                    &field.1,
+                    module_id,
+                    modules,
+                    typechecked_modules.clone(),
+                    &[],
+                )?,
             ));
         }
 
@@ -114,7 +120,19 @@ fn resolve_type(
     module_id: usize,
     modules: &mut Vec<Module>,
     typechecked_modules: TypecheckedModules,
+    generics: &[GlobalStr],
 ) -> Result<Type, ProgrammingLangTypecheckingError> {
+    if let TypeRef::Reference {
+        num_references,
+        type_name,
+        loc: _,
+    } = type_ref
+    {
+        if generics.contains(type_name) {
+            return Ok(Type::Generic(type_name.clone(), *num_references));
+        }
+    }
+
     if let Some(primitive) = resolve_primitive(type_ref) {
         return Ok(primitive);
     }
@@ -131,6 +149,7 @@ fn resolve_type(
                 module_id,
                 modules,
                 typechecked_modules,
+                generics,
             )?),
             num_references: *num_references,
         }),
@@ -145,6 +164,7 @@ fn resolve_type(
                 module_id,
                 modules,
                 typechecked_modules,
+                generics,
             )?),
             num_references: *num_references,
             number_elements: *number_elements,
@@ -193,7 +213,7 @@ fn resolve_primitive(type_ref: &TypeRef) -> Option<Type> {
 
 pub fn resolve_modules(
     mut modules: Vec<Module>,
-) -> Result<Arc<RwLock<Vec<TypecheckedModule>>>, Vec<ProgrammingLangTypecheckingError>> {
+) -> Result<(TypecheckedModules, Arc<TypecheckingContext>), Vec<ProgrammingLangTypecheckingError>> {
     let mut errors = Vec::new();
     let context = Arc::new(TypecheckingContext::default());
     let typechecked_modules = Arc::new(RwLock::new(Vec::new()));
@@ -256,7 +276,13 @@ pub fn resolve_modules(
             let mut has_errs = false;
             let mut arguments = Vec::new();
             for arg in std::mem::take(&mut modules[id].function_registry[fn_id].0.arguments) {
-                match resolve_type(&arg.typ, id, &mut modules, typechecked_modules.clone()) {
+                match resolve_type(
+                    &arg.typ,
+                    id,
+                    &mut modules,
+                    typechecked_modules.clone(),
+                    &generics,
+                ) {
                     Ok(v) => arguments.push((arg.name, v)),
                     Err(e) => {
                         has_errs = true;
@@ -266,14 +292,19 @@ pub fn resolve_modules(
             }
 
             let return_type = modules[id].function_registry[fn_id].0.return_type.clone();
-            let return_type =
-                match resolve_type(&return_type, id, &mut modules, typechecked_modules.clone()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        errors.push(e);
-                        continue;
-                    }
-                };
+            let return_type = match resolve_type(
+                &return_type,
+                id,
+                &mut modules,
+                typechecked_modules.clone(),
+                &generics,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            };
             if has_errs {
                 continue;
             }
@@ -333,7 +364,7 @@ pub fn resolve_modules(
             let mut has_errs = false;
             let mut arguments = Vec::new();
             for arg in value.arguments {
-                match resolve_type(&arg.typ, id, &mut modules, typechecked_modules.clone()) {
+                match resolve_type(&arg.typ, id, &mut modules, typechecked_modules.clone(), &[]) {
                     Ok(v) => arguments.push((arg.name, v)),
                     Err(e) => {
                         has_errs = true;
@@ -347,6 +378,7 @@ pub fn resolve_modules(
                 id,
                 &mut modules,
                 typechecked_modules.clone(),
+                &[],
             ) {
                 Ok(v) => v,
                 Err(e) => {
@@ -363,12 +395,7 @@ pub fn resolve_modules(
                 location: value.location,
                 module_id: ModuleId(id),
                 annotations: value.annotations,
-                generics: value
-                    .generics
-                    .into_iter()
-                    .map(|v| v.name)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
+                generics: Vec::new().into_boxed_slice(),
                 arguments: arguments.into_boxed_slice(),
                 return_type,
             };
@@ -402,7 +429,7 @@ pub fn resolve_modules(
                 .remove(&key)
                 .expect("key should exist");
             let value_type =
-                match resolve_type(&value.0, id, &mut modules, typechecked_modules.clone()) {
+                match resolve_type(&value.0, id, &mut modules, typechecked_modules.clone(), &[]) {
                     Ok(v) => v,
                     Err(e) => {
                         errors.push(e);
@@ -460,7 +487,7 @@ pub fn resolve_modules(
     if errors.len() > 0 {
         return Err(errors);
     }
-    Ok(typechecked_modules)
+    Ok((typechecked_modules, context))
 }
 
 pub fn resolve_import(

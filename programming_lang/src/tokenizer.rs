@@ -1,12 +1,12 @@
 use std::{
     fmt::{Display, Write},
     path::Path,
-    rc::Rc,
-    sync::RwLock,
+    str::FromStr,
+    sync::{Arc, RwLock},
 };
 
 use crate::{
-    error::ProgrammingLangTokenizationError,
+    error::TokenizationError,
     globals::GlobalStr,
     parser::{LiteralValue, Parser, ParserQueueEntry},
 };
@@ -86,11 +86,70 @@ pub enum TokenType {
     Eof,                  // done, done
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberType {
+    F32,
+    F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    Usize,
+    None,
+}
+
+impl Display for NumberType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::F32 => f.write_str("f32"),
+            Self::F64 => f.write_str("f64"),
+            Self::I8 => f.write_str("i8"),
+            Self::I16 => f.write_str("i16"),
+            Self::I32 => f.write_str("i32"),
+            Self::I64 => f.write_str("i64"),
+            Self::U8 => f.write_str("u8"),
+            Self::U16 => f.write_str("u16"),
+            Self::U32 => f.write_str("u32"),
+            Self::U64 => f.write_str("u64"),
+            Self::Usize => f.write_str("usize"),
+            Self::Isize => f.write_str("isize"),
+            Self::None => Ok(()),
+        }
+    }
+}
+
+impl FromStr for NumberType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "f32" => Ok(Self::F32),
+            "f64" => Ok(Self::F64),
+            "i8" => Ok(Self::I8),
+            "i16" => Ok(Self::I16),
+            "i32" => Ok(Self::I32),
+            "i64" => Ok(Self::I64),
+            "u8" => Ok(Self::U8),
+            "u16" => Ok(Self::U16),
+            "u32" => Ok(Self::U32),
+            "u64" => Ok(Self::U64),
+            "usize" => Ok(Self::Usize),
+            "isize" => Ok(Self::Isize),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Literal {
-    Float(f64),
-    SInt(i64),
-    UInt(u64),
+    Float(f64, NumberType),
+    SInt(i64, NumberType),
+    UInt(u64, NumberType),
     String(GlobalStr),
     Bool(bool),
 }
@@ -99,11 +158,11 @@ pub enum Literal {
 pub struct Location {
     pub line: usize,
     pub column: usize,
-    pub file: Rc<Path>,
+    pub file: Arc<Path>,
 }
 
 impl Location {
-    pub fn new(file: Rc<Path>, line: usize, column: usize) -> Self {
+    pub fn new(file: Arc<Path>, line: usize, column: usize) -> Self {
         Self { column, file, line }
     }
 }
@@ -199,15 +258,15 @@ impl Display for Token {
             TokenType::AnnotationIntroducer => f.write_str("@"),
             TokenType::NamespaceAccess => f.write_str("::"),
             TokenType::FloatLiteral => match self.literal {
-                Some(Literal::Float(v)) => f.write_fmt(format_args!("float({v})")),
+                Some(Literal::Float(v, typ)) => f.write_fmt(format_args!("float({v}{typ})")),
                 _ => f.write_str("float(malformed data)"),
             },
             TokenType::SIntLiteral => match self.literal {
-                Some(Literal::SInt(v)) => f.write_fmt(format_args!("int({v})")),
+                Some(Literal::SInt(v, typ)) => f.write_fmt(format_args!("int({v}{typ})")),
                 _ => f.write_str("int(malformed data)"),
             },
             TokenType::UIntLiteral => match self.literal {
-                Some(Literal::UInt(v)) => f.write_fmt(format_args!("uint({v})")),
+                Some(Literal::UInt(v, typ)) => f.write_fmt(format_args!("uint({v}{typ})")),
                 _ => f.write_str("uint(malformed data)"),
             },
             TokenType::ParenLeft => f.write_str("("),
@@ -240,7 +299,7 @@ impl Token {
         literal: Option<Literal>,
         line_number: usize,
         column: usize,
-        file: Rc<Path>,
+        file: Arc<Path>,
     ) -> Self {
         Self {
             typ,
@@ -257,9 +316,9 @@ impl Token {
             | TokenType::UIntLiteral
             | TokenType::SIntLiteral => self.literal.as_ref().map(|v| match v {
                 Literal::Bool(boolean) => LiteralValue::Bool(*boolean),
-                Literal::Float(float) => LiteralValue::Float(*float),
-                Literal::SInt(int) => LiteralValue::SInt(*int),
-                Literal::UInt(uint) => LiteralValue::UInt(*uint),
+                Literal::Float(float, typ) => LiteralValue::Float(*float, *typ),
+                Literal::SInt(int, typ) => LiteralValue::SInt(*int, *typ),
+                Literal::UInt(uint, typ) => LiteralValue::UInt(*uint, *typ),
                 Literal::String(string) => LiteralValue::String(string.clone()),
             }),
             TokenType::VoidLiteral => Some(LiteralValue::Void),
@@ -282,7 +341,7 @@ impl Token {
 
 pub struct Tokenizer {
     source: Vec<char>,
-    pub file: Rc<Path>,
+    pub file: Arc<Path>,
     tokens: Vec<Token>,
     start: usize,
     current: usize,
@@ -291,7 +350,7 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
-    pub fn new(source: &str, file: Rc<Path>) -> Self {
+    pub fn new(source: &str, file: Arc<Path>) -> Self {
         Self {
             source: source.chars().collect(),
             file: file.into(),
@@ -303,7 +362,7 @@ impl Tokenizer {
         }
     }
 
-    pub fn scan_tokens(&mut self) -> Result<(), Vec<ProgrammingLangTokenizationError>> {
+    pub fn scan_tokens(&mut self) -> Result<(), Vec<TokenizationError>> {
         let mut errors = vec![];
         while !self.is_at_end() {
             self.start = self.current;
@@ -363,7 +422,7 @@ impl Tokenizer {
         }
     }
 
-    fn scan_token(&mut self) -> Result<(), ProgrammingLangTokenizationError> {
+    fn scan_token(&mut self) -> Result<(), TokenizationError> {
         let c = self.advance();
 
         macro_rules! token {
@@ -462,7 +521,7 @@ impl Tokenizer {
                 self.parse_identifier(c)
             }
             _ => {
-                return Err(ProgrammingLangTokenizationError::unknown_token(
+                return Err(TokenizationError::unknown_token(
                     loc!(self.file;self.line),
                     c,
                 ))
@@ -505,10 +564,46 @@ impl Tokenizer {
         &mut self,
         location: Location,
         is_negative: bool,
-    ) -> Result<(), ProgrammingLangTokenizationError> {
+    ) -> Result<(), TokenizationError> {
         let mut value: u64 = 0;
+        let mut typ = String::new();
 
         loop {
+            if typ.len() > 0 {
+                match self.peek() {
+                    'a'..='z' | '0'..='9' => typ.push(self.advance()),
+                    _ => {
+                        let err = TokenizationError::InvalidNumberType {
+                            loc: loc!(self.file;self.line;self.column - typ.len()),
+                        };
+                        let Ok(number_type) = NumberType::from_str(&typ) else {
+                            return Err(err);
+                        };
+                        return match number_type {
+                            NumberType::F32 | NumberType::F64 => Err(err),
+                            NumberType::U8
+                            | NumberType::U16
+                            | NumberType::U32
+                            | NumberType::U64
+                                if is_negative =>
+                            {
+                                Err(err)
+                            }
+                            _ if is_negative => Ok(self.add_token_lit_loc(
+                                TokenType::SIntLiteral,
+                                Literal::SInt(value as i64, number_type),
+                                location,
+                            )),
+                            _ => Ok(self.add_token_lit_loc(
+                                TokenType::UIntLiteral,
+                                Literal::UInt(value, number_type),
+                                location,
+                            )),
+                        };
+                    }
+                }
+                continue;
+            }
             match self.peek() {
                 '0'..='9' => value = (value << 4) | self.advance() as u64 - '0' as u64,
                 'a'..='f' => value = (value << 4) | self.advance() as u64 - 'a' as u64 + 0xa,
@@ -529,21 +624,22 @@ impl Tokenizer {
                             _ => break,
                         }
                     }
-                    return Err(ProgrammingLangTokenizationError::InvalidNumberError {
+                    return Err(TokenizationError::InvalidNumberError {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
+                'u' | 'i' => typ.push(self.advance()),
                 _ if is_negative => {
                     return Ok(self.add_token_lit_loc(
                         TokenType::SIntLiteral,
-                        Literal::SInt(-(value as i64)),
+                        Literal::SInt(-(value as i64), NumberType::None),
                         location,
                     ))
                 }
                 _ => {
                     return Ok(self.add_token_lit_loc(
                         TokenType::UIntLiteral,
-                        Literal::UInt(value),
+                        Literal::UInt(value, NumberType::None),
                         location,
                     ))
                 }
@@ -555,15 +651,51 @@ impl Tokenizer {
         &mut self,
         location: Location,
         is_negative: bool,
-    ) -> Result<(), ProgrammingLangTokenizationError> {
+    ) -> Result<(), TokenizationError> {
         let mut value: u64 = 0;
+        let mut typ = String::new();
 
         loop {
+            if typ.len() > 0 {
+                match self.peek() {
+                    'a'..='f' | '0'..='9' => typ.push(self.advance()),
+                    _ => {
+                        let err = TokenizationError::InvalidNumberType {
+                            loc: loc!(self.file;self.line;self.column - typ.len()),
+                        };
+                        let Ok(number_type) = NumberType::from_str(&typ) else {
+                            return Err(err);
+                        };
+                        return match number_type {
+                            NumberType::F32 | NumberType::F64 => Err(err),
+                            NumberType::U8
+                            | NumberType::U16
+                            | NumberType::U32
+                            | NumberType::U64
+                                if is_negative =>
+                            {
+                                Err(err)
+                            }
+                            _ if is_negative => Ok(self.add_token_lit_loc(
+                                TokenType::SIntLiteral,
+                                Literal::SInt(value as i64, number_type),
+                                location,
+                            )),
+                            _ => Ok(self.add_token_lit_loc(
+                                TokenType::UIntLiteral,
+                                Literal::UInt(value, number_type),
+                                location,
+                            )),
+                        };
+                    }
+                }
+                continue;
+            }
             match self.peek() {
                 '0' | '1' => value = (value << 1) | self.advance() as u64 - '0' as u64,
                 '2'..='9' => {
                     self.advance();
-                    return Err(ProgrammingLangTokenizationError::InvalidNumberError {
+                    return Err(TokenizationError::InvalidNumberError {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
@@ -577,21 +709,22 @@ impl Tokenizer {
                 {
                     self.advance();
                     self.skip_to_after_number();
-                    return Err(ProgrammingLangTokenizationError::InvalidNumberError {
+                    return Err(TokenizationError::InvalidNumberError {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
+                'u' | 'i' => typ.push(self.advance()),
                 _ if is_negative => {
                     return Ok(self.add_token_lit_loc(
                         TokenType::SIntLiteral,
-                        Literal::SInt(-(value as i64)),
+                        Literal::SInt(-(value as i64), NumberType::None),
                         location,
                     ))
                 }
                 _ => {
                     return Ok(self.add_token_lit_loc(
                         TokenType::UIntLiteral,
-                        Literal::UInt(value),
+                        Literal::UInt(value, NumberType::None),
                         location,
                     ))
                 }
@@ -603,15 +736,52 @@ impl Tokenizer {
         &mut self,
         location: Location,
         is_negative: bool,
-    ) -> Result<(), ProgrammingLangTokenizationError> {
+    ) -> Result<(), TokenizationError> {
         let mut value: u64 = 0;
+        let mut typ = String::new();
 
         loop {
+            if typ.len() > 0 {
+                match self.peek() {
+                    'a'..='z' | '0'..='9' => typ.push(self.advance()),
+                    _ => {
+                        let err = TokenizationError::InvalidNumberType {
+                            loc: loc!(self.file;self.line;self.column - typ.len()),
+                        };
+                        let Ok(number_type) = NumberType::from_str(&typ) else {
+                            return Err(err);
+                        };
+                        return match number_type {
+                            NumberType::F32 | NumberType::F64 => Err(err),
+                            NumberType::U8
+                            | NumberType::U16
+                            | NumberType::U32
+                            | NumberType::U64
+                                if is_negative =>
+                            {
+                                Err(err)
+                            }
+                            _ if is_negative => Ok(self.add_token_lit_loc(
+                                TokenType::SIntLiteral,
+                                Literal::SInt(value as i64, number_type),
+                                location,
+                            )),
+                            _ => Ok(self.add_token_lit_loc(
+                                TokenType::UIntLiteral,
+                                Literal::UInt(value, number_type),
+                                location,
+                            )),
+                        };
+                    }
+                }
+                continue;
+            }
+
             match self.peek() {
                 '0'..='7' => value = (value << 3) | self.advance() as u64 - '0' as u64,
                 '8' | '9' => {
                     self.advance();
-                    return Err(ProgrammingLangTokenizationError::InvalidNumberError {
+                    return Err(TokenizationError::InvalidNumberError {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
@@ -625,21 +795,22 @@ impl Tokenizer {
                 {
                     self.advance();
                     self.skip_to_after_number();
-                    return Err(ProgrammingLangTokenizationError::InvalidNumberError {
+                    return Err(TokenizationError::InvalidNumberError {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
+                'i' | 'u' => typ.push(self.advance()),
                 _ if is_negative => {
                     return Ok(self.add_token_lit_loc(
                         TokenType::SIntLiteral,
-                        Literal::SInt(-(value as i64)),
+                        Literal::SInt(-(value as i64), NumberType::None),
                         location,
                     ))
                 }
                 _ => {
                     return Ok(self.add_token_lit_loc(
                         TokenType::UIntLiteral,
-                        Literal::UInt(value),
+                        Literal::UInt(value, NumberType::None),
                         location,
                     ))
                 }
@@ -663,10 +834,7 @@ impl Tokenizer {
         value
     }
 
-    fn parse_number(
-        &mut self,
-        mut first_char: char,
-    ) -> Result<(), ProgrammingLangTokenizationError> {
+    fn parse_number(&mut self, mut first_char: char) -> Result<(), TokenizationError> {
         let loc = loc!(self.file;self.line;self.column);
         let is_negative = first_char == '-';
         let mut is_float = false;
@@ -678,7 +846,7 @@ impl Tokenizer {
             self.advance();
             if !matches!(self.peek(), '0'..='9' | 'a'..='f' | 'A'..='F') {
                 self.advance();
-                return Err(ProgrammingLangTokenizationError::InvalidNumberError {
+                return Err(TokenizationError::InvalidNumberError {
                     loc: loc!(self.file;self.line;self.column),
                 });
             }
@@ -687,7 +855,7 @@ impl Tokenizer {
             self.advance();
             if !matches!(self.peek(), '0' | '1') {
                 self.advance();
-                return Err(ProgrammingLangTokenizationError::InvalidNumberError {
+                return Err(TokenizationError::InvalidNumberError {
                     loc: loc!(self.file;self.line;self.column),
                 });
             }
@@ -696,7 +864,7 @@ impl Tokenizer {
             self.advance();
             if !matches!(self.peek(), '0'..='7') {
                 self.advance();
-                return Err(ProgrammingLangTokenizationError::InvalidNumberError {
+                return Err(TokenizationError::InvalidNumberError {
                     loc: loc!(self.file;self.line;self.column),
                 });
             }
@@ -704,6 +872,8 @@ impl Tokenizer {
         }
 
         let mut str = String::with_capacity(7);
+        let mut typ = String::new();
+
         if is_negative {
             str.push('-');
         }
@@ -714,6 +884,14 @@ impl Tokenizer {
         str.push(first_char);
 
         while !self.is_at_end() {
+            if typ.len() > 0 {
+                if matches!(self.peek(), 'a'..='z' | '0'..='9') {
+                    typ.push(self.advance());
+                    continue;
+                }
+                break;
+            }
+
             if matches!(self.peek(), ('0'..='9')) {
                 str.push(self.advance())
             } else if self.peek() == '.'
@@ -727,43 +905,53 @@ impl Tokenizer {
             {
                 if is_float {
                     self.skip_to_after_number();
-                    return Err(ProgrammingLangTokenizationError::InvalidNumberError {
+                    return Err(TokenizationError::InvalidNumberError {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
                 is_float = true;
                 str.push(self.advance());
+            } else if matches!(self.peek(), 'i' | 'u' | 'f') {
+                typ.push(self.advance());
             } else {
                 break;
             }
         }
+        let number_type = match NumberType::from_str(&typ) {
+            Ok(v @ (NumberType::F32 | NumberType::F64)) => v,
+            Ok(v @ (NumberType::U8 | NumberType::U16 | NumberType::U32 | NumberType::U64))
+                if !is_negative && !is_float =>
+            {
+                v
+            }
+            Ok(v) if !is_float => v,
+            Err(_) if typ.len() < 1 => NumberType::None,
+            _ => {
+                return Err(TokenizationError::InvalidNumberType {
+                    loc: loc!(self.file;self.line;self.column - typ.len()),
+                })
+            }
+        };
 
         let (lit, tok) = if is_float {
             let num = match str.parse::<f64>() {
                 Ok(num) => num,
                 Err(..) => {
-                    return Err(ProgrammingLangTokenizationError::invalid_number(
-                        loc!(self.file;self.line),
-                    ))
+                    return Err(TokenizationError::invalid_number(loc!(self.file;self.line)))
                 }
             };
-            if num.floor() == num {
-                if num < 0.0 {
-                    (Literal::SInt(num as i64), TokenType::SIntLiteral)
-                } else {
-                    (Literal::UInt(num as u64), TokenType::UIntLiteral)
-                }
-            } else {
-                (Literal::Float(num), TokenType::FloatLiteral)
-            }
+            (Literal::Float(num, number_type), TokenType::FloatLiteral)
         } else {
             if is_negative {
                 (
-                    Literal::SInt(-(Self::parse_dec(&str[1..]) as i64)),
+                    Literal::SInt(-(Self::parse_dec(&str[1..]) as i64), number_type),
                     TokenType::SIntLiteral,
                 )
             } else {
-                (Literal::UInt(Self::parse_dec(&str)), TokenType::UIntLiteral)
+                (
+                    Literal::UInt(Self::parse_dec(&str), number_type),
+                    TokenType::UIntLiteral,
+                )
             }
         };
 
@@ -772,7 +960,7 @@ impl Tokenizer {
         Ok(())
     }
 
-    fn parse_string(&mut self) -> Result<(), ProgrammingLangTokenizationError> {
+    fn parse_string(&mut self) -> Result<(), TokenizationError> {
         let mut is_backslash = false;
         let mut str = String::with_capacity(30);
         let loc = loc!(self.file;self.line;self.column);
@@ -792,7 +980,7 @@ impl Tokenizer {
             }
         }
         if self.cur_char() != '"' || self.source[self.current - 2] == '\\' {
-            return Err(ProgrammingLangTokenizationError::unclosed_string(
+            return Err(TokenizationError::unclosed_string(
                 loc!(self.file;self.line+1),
             ));
         }
@@ -890,7 +1078,7 @@ impl Tokenizer {
         &self.tokens
     }
 
-    pub fn to_parser(self, modules: Rc<RwLock<Vec<ParserQueueEntry>>>, root: Rc<Path>) -> Parser {
+    pub fn to_parser(self, modules: Arc<RwLock<Vec<ParserQueueEntry>>>, root: Arc<Path>) -> Parser {
         Parser::new(self.tokens, modules, self.file, root)
     }
 }

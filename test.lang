@@ -1,2 +1,2 @@
-fn a() -> i32 = 12;
-export a;
+use "./test.lang"::meow;
+export meow;

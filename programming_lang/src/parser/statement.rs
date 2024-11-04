@@ -4,9 +4,9 @@ use std::{
 };
 
 use crate::{
-    error::ProgrammingLangParsingError,
+    error::ParsingError,
     globals::GlobalStr,
-    module::{FunctionId, Module},
+    module::{FunctionId, Module, ModuleId, StaticId, StructId},
     parser::{module_resolution::resolve_module, Annotation, ParserQueueEntry},
     tokenizer::{Literal, Location, TokenType},
 };
@@ -20,37 +20,6 @@ use super::{
 pub enum BakableFunction {
     Function(Box<(FunctionContract, Statement)>),
     BakedFunction(FunctionId),
-}
-
-impl BakableFunction {
-    pub fn bake(&mut self, module: &mut Module) {
-        match self {
-            Self::BakedFunction(..) => (),
-            Self::Function(..) => {
-                let mut old_self = Self::BakedFunction(0);
-                std::mem::swap(self, &mut old_self);
-                let val = match old_self {
-                    Self::BakedFunction(..) => unreachable!(),
-                    Self::Function(func) => *func,
-                };
-                *self = Self::BakedFunction(module.push_fn(val.0, val.1));
-            }
-        }
-    }
-
-    pub fn get_baked_id(&self) -> FunctionId {
-        match self {
-            Self::Function(..) => unreachable!(),
-            Self::BakedFunction(id) => *id,
-        }
-    }
-
-    pub fn get_contract_unbaked(&self) -> &FunctionContract {
-        match self {
-            Self::Function(func) => &func.0,
-            Self::BakedFunction(..) => unreachable!(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -80,44 +49,57 @@ pub enum Statement {
     Var(GlobalStr, Expression, Option<TypeRef>, Location),
     Expression(Expression),
     Function(FunctionContract, Box<Statement>),
-    BakedFunction(FunctionId, Location),
-    ExternalFunction(FunctionContract),
+    ExternalFunction(FunctionContract, Option<Box<Statement>>),
     Struct {
         name: GlobalStr,
         elements: Vec<(GlobalStr, TypeRef)>,
         location: Location,
-        global_impl: HashMap<GlobalStr, BakableFunction>,
-        impls: Vec<(GlobalStr, HashMap<GlobalStr, BakableFunction>)>,
+        global_impl: HashMap<GlobalStr, (FunctionContract, Statement)>,
+        impls: Vec<(GlobalStr, HashMap<GlobalStr, (FunctionContract, Statement)>)>,
         annotations: Annotations,
     },
     /// key (the name of the thing in the module), export key (the name during import), location
     Export(GlobalStr, GlobalStr, Location),
+
+    BakedFunction(FunctionId, Location),
+    BakedExternalFunction(FunctionId, Location),
+    BakedStruct(StructId, Location),
+    BakedStatic(StaticId, Location),
 }
 
 impl Statement {
     pub fn loc(&self) -> &Location {
         match self {
             Self::Expression(expr) => expr.loc(),
-            Self::ExternalFunction(c) | Self::Function(c, _) => &c.location,
+            Self::ExternalFunction(c, _) | Self::Function(c, _) => &c.location,
 
             Self::Export(_, _, location)
-            | Self::BakedFunction(_, location)
             | Self::Block(_, location, _)
             | Self::For { location, .. }
             | Self::If { location, .. }
             | Self::Return(_, location)
             | Self::Struct { location, .. }
             | Self::Var(_, _, _, location)
+            | Self::BakedFunction(_, location)
+            | Self::BakedExternalFunction(_, location)
+            | Self::BakedStruct(_, location)
+            | Self::BakedStatic(_, location)
             | Self::While { location, .. } => location,
         }
     }
 
-    pub fn bake_functions(&mut self, module: &mut Module) {
+    pub fn bake_functions(&mut self, module: &mut Module, module_id: ModuleId) {
         match self {
             Self::BakedFunction(..)
-            | Self::ExternalFunction(..)
+            | Self::ExternalFunction(_, None)
+            | Self::BakedExternalFunction(..)
+            | Self::BakedStatic(..)
+            | Self::BakedStruct(..)
             | Self::Return(None, ..)
             | Self::Export(..) => (),
+            Self::ExternalFunction(_, Some(statement)) => {
+                statement.bake_functions(module, module_id)
+            }
             Self::Struct { location, .. } => {
                 panic!("{location}: use Module::push_statement to bake a struct")
             }
@@ -130,34 +112,35 @@ impl Statement {
                     generics: Default::default(),
                     location: location.clone(),
                     name: None,
-                    return_type: TypeRef::Void(location.clone()),
+                    return_type: TypeRef::Void(location.clone(), 0),
                 };
                 let dummy_statement: Statement =
-                    Statement::ExternalFunction(dummy_contract.clone());
+                    Statement::ExternalFunction(dummy_contract.clone(), None);
 
                 let id = module.push_fn(
                     std::mem::replace(contract, dummy_contract),
                     std::mem::replace(statement, dummy_statement),
+                    module_id,
                 );
 
                 *self = Self::BakedFunction(id, location);
             }
             Self::Block(statements, ..) => statements
                 .iter_mut()
-                .for_each(|stmt| stmt.bake_functions(module)),
-            Self::Var(_, stmt, ..) => stmt.bake_functions(module),
-            Self::Expression(expr) => expr.bake_functions(module),
+                .for_each(|stmt| stmt.bake_functions(module, module_id)),
+            Self::Var(_, stmt, ..) => stmt.bake_functions(module, module_id),
+            Self::Expression(expr) => expr.bake_functions(module, module_id),
             Self::For {
                 iterator, child, ..
             } => {
-                iterator.bake_functions(module);
-                child.bake_functions(module);
+                iterator.bake_functions(module, module_id);
+                child.bake_functions(module, module_id);
             }
             Self::While {
                 condition, child, ..
             } => {
-                condition.bake_functions(module);
-                child.bake_functions(module);
+                condition.bake_functions(module, module_id);
+                child.bake_functions(module, module_id);
             }
             Self::If {
                 condition,
@@ -165,125 +148,13 @@ impl Statement {
                 else_stmt,
                 ..
             } => {
-                condition.bake_functions(module);
-                if_stmt.bake_functions(module);
+                condition.bake_functions(module, module_id);
+                if_stmt.bake_functions(module, module_id);
                 if let Some(stmt) = else_stmt {
-                    stmt.bake_functions(module);
+                    stmt.bake_functions(module, module_id);
                 }
             }
-            Self::Return(Some(val), ..) => val.bake_functions(module),
-        }
-    }
-
-    pub fn display_module(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-        module: &Module,
-    ) -> std::fmt::Result {
-        match self {
-            Self::BakedFunction(id, _) => {
-                if let Some((contract, body)) = module.get_fn(*id) {
-                    display_contract(f, contract, false)?;
-                    Display::fmt(body, f)?;
-                    f.write_char(')')
-                } else {
-                    f.write_str("(module-fn ")?;
-                    Debug::fmt(id, f)?;
-                    f.write_char(')')
-                }
-            }
-            Self::Var(left_hand, right_hand, None, _) => {
-                f.write_fmt(format_args!("(var-assign {left_hand} {right_hand})"))
-            }
-            Self::Var(left_hand, right_hand, Some(typ), _) => {
-                f.write_fmt(format_args!("(var-assign {left_hand} {typ} {right_hand})"))
-            }
-            Self::Block(stmts, _, annotations) => {
-                Display::fmt(annotations, f)?;
-
-                f.write_char('{')?;
-                for stmt in &**stmts {
-                    f.write_char('\n')?;
-                    Display::fmt(stmt, f)?;
-                }
-                if stmts.len() > 0 {
-                    // {} for empty block, for filled block:
-                    // {
-                    // statement1
-                    // statement2
-                    // }
-                    f.write_char('\n')?;
-                }
-                f.write_char('}')
-            }
-            Self::Expression(v) => Display::fmt(v, f),
-            Self::Return(Some(v), _) => f.write_fmt(format_args!("(return {v})")),
-            Self::Return(None, _) => f.write_str("(return null)"),
-            Self::If {
-                condition,
-                if_stmt,
-                else_stmt: Some(else_stmt),
-                location: _,
-                annotations,
-            } => f.write_fmt(format_args!(
-                "{annotations}(if {condition} {if_stmt} {else_stmt})"
-            )),
-            Self::If {
-                condition,
-                if_stmt,
-                else_stmt: None,
-                location: _,
-                annotations,
-            } => f.write_fmt(format_args!("{annotations}(if {condition} {if_stmt})")),
-            Self::For {
-                iterator,
-                var_name,
-                child,
-                location: _,
-                annotations,
-            } => f.write_fmt(format_args!(
-                "{annotations}(for {var_name} {iterator} {child})"
-            )),
-            Self::While {
-                condition,
-                child,
-                location: _,
-                annotations,
-            } => f.write_fmt(format_args!("{annotations}(while {condition} {child})")),
-            Self::Struct {
-                name,
-                elements: arguments,
-                location: _,
-                ..
-            } => {
-                Display::fmt(name, f)?;
-                f.write_str(" {\n")?;
-
-                for arg_name in arguments {
-                    f.write_str("    ")?;
-                    Display::fmt(&arg_name.0, f)?;
-                    f.write_str(": ")?;
-                    Display::fmt(&arg_name.1, f)?;
-                    f.write_str(",\n")?;
-                }
-
-                f.write_str("}")
-            }
-            Self::Function(contract, body) => {
-                display_contract(f, contract, false)?;
-                Display::fmt(body, f)?;
-                f.write_char(')')
-            }
-            Self::ExternalFunction(contract) => display_contract(f, contract, true),
-            Self::Export(name, exported_name, _) => {
-                f.write_str("(export ")?;
-                Display::fmt(name, f)?;
-                if name != exported_name {
-                    f.write_str(" as ")?;
-                    Display::fmt(exported_name, f)?;
-                }
-                f.write_char(')')
-            }
+            Self::Return(Some(val), ..) => val.bake_functions(module, module_id),
         }
     }
 }
@@ -292,6 +163,12 @@ impl Display for Statement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BakedFunction(id, _) => f.write_fmt(format_args!("(module-fn {id:08x})")),
+            Self::BakedExternalFunction(id, _) => {
+                f.write_fmt(format_args!("(module-external-fn {id:08x})"))
+            }
+            Self::BakedStruct(id, _) => f.write_fmt(format_args!("(module-struct {id:08x})")),
+            Self::BakedStatic(id, _) => f.write_fmt(format_args!("(module-static {id:08x})")),
+
             Self::Var(left_hand, right_hand, None, _) => {
                 f.write_fmt(format_args!("(var-assign {left_hand} {right_hand})"))
             }
@@ -371,10 +248,20 @@ impl Display for Statement {
             }
             Self::Function(contract, body) => {
                 display_contract(f, contract, false)?;
+                f.write_char(' ')?;
                 Display::fmt(body, f)?;
                 f.write_char(')')
             }
-            Self::ExternalFunction(contract) => display_contract(f, contract, true),
+            Self::ExternalFunction(contract, None) => {
+                display_contract(f, contract, true)?;
+                f.write_char(')')
+            }
+            Self::ExternalFunction(contract, Some(body)) => {
+                display_contract(f, contract, true)?;
+                f.write_char(' ')?;
+                Display::fmt(body, f)?;
+                f.write_char(')')
+            }
             Self::Export(name, exported_name, _) => {
                 f.write_str("(export ")?;
                 Display::fmt(name, f)?;
@@ -434,22 +321,18 @@ pub fn display_contract(
         Display::fmt(&contract.arguments[i], f)?;
     }
     f.write_char(')')?;
-    if let TypeRef::Void(_) = &contract.return_type {
+    if let TypeRef::Void(_, 0) = &contract.return_type {
     } else {
         f.write_str(" returns ")?;
         Display::fmt(&contract.return_type, f)?;
     }
-    if is_external {
-        f.write_char(')')
-    } else {
-        f.write_char(' ')
-    }
+    Ok(())
 }
 
 impl Parser {
-    fn consume_semicolon(&mut self) -> Result<(), ProgrammingLangParsingError> {
+    fn consume_semicolon(&mut self) -> Result<(), ParsingError> {
         if !self.match_tok(TokenType::Semicolon) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 expected: TokenType::Semicolon,
                 found: self.peek().typ,
@@ -459,7 +342,7 @@ impl Parser {
         Ok(())
     }
 
-    pub fn parse_all(&mut self) -> (Vec<Statement>, Vec<ProgrammingLangParsingError>) {
+    pub fn parse_all(&mut self) -> (Vec<Statement>, Vec<ParsingError>) {
         let mut statements = vec![];
         let mut errors = vec![];
 
@@ -475,7 +358,7 @@ impl Parser {
         }
 
         if !self.current_annotations.0.is_empty() {
-            errors.push(ProgrammingLangParsingError::ExpectedStatement {
+            errors.push(ParsingError::ExpectedStatement {
                 loc: self.peek().location.clone(),
             });
         }
@@ -483,17 +366,14 @@ impl Parser {
         (statements, errors)
     }
 
-    pub fn parse_statement(
-        &mut self,
-        is_global: bool,
-    ) -> Result<Statement, ProgrammingLangParsingError> {
+    pub fn parse_statement(&mut self, is_global: bool) -> Result<Statement, ParsingError> {
         while !self.is_at_end() {
             match self.parse_statement_part(is_global)? {
                 Some(statement) => return Ok(statement),
                 None => {}
             }
         }
-        return Err(ProgrammingLangParsingError::ExpectedStatement {
+        return Err(ParsingError::ExpectedStatement {
             loc: self.peek().location.clone(),
         });
     }
@@ -501,10 +381,10 @@ impl Parser {
     pub fn parse_statement_part(
         &mut self,
         is_global: bool,
-    ) -> Result<Option<Statement>, ProgrammingLangParsingError> {
+    ) -> Result<Option<Statement>, ParsingError> {
         macro_rules! invalid_kw {
             ($kw: literal) => {
-                return Err(ProgrammingLangParsingError::InvalidKeyword {
+                return Err(ParsingError::InvalidKeyword {
                     keyword: $kw,
                     loc: self.peek().location.clone(),
                 })
@@ -526,7 +406,7 @@ impl Parser {
             }
         {
             self.bail();
-            return Err(ProgrammingLangParsingError::ExpectedAnnotationStatement {
+            return Err(ParsingError::ExpectedAnnotationStatement {
                 loc: self.peek().location.clone(),
             });
         }
@@ -552,7 +432,7 @@ impl Parser {
             TokenType::Struct => self.parse_struct().map(Some),
             TokenType::Fn => self
                 .parse_callable(false)
-                .map(|(contract, body)| Statement::Function(contract, body))
+                .map(|(contract, body)| Statement::Function(contract, Box::new(body)))
                 .map(Some),
             TokenType::AnnotationIntroducer => {
                 self.parse_annotation()?;
@@ -560,14 +440,14 @@ impl Parser {
             }
             TokenType::Extern => self.parse_external().map(Some),
             TokenType::Eof => {
-                return Err(ProgrammingLangParsingError::ExpectedStatement {
+                return Err(ParsingError::ExpectedStatement {
                     loc: self.peek().location.clone(),
                 });
             }
             TokenType::Use => self.parse_use().map(|_| None),
             TokenType::Export => self.parse_export().map(Some),
             _ if is_global => {
-                return Err(ProgrammingLangParsingError::ExpressionAtTopLevel {
+                return Err(ParsingError::ExpressionAtTopLevel {
                     loc: self.peek().location.clone(),
                 });
             }
@@ -584,7 +464,7 @@ impl Parser {
         Ok(maybe_statement)
     }
 
-    fn parse_export(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    fn parse_export(&mut self) -> Result<Statement, ParsingError> {
         let loc = self.advance().location.clone();
         let name = self.expect_identifier()?;
         let exported_name = if self.match_tok(TokenType::As) {
@@ -596,18 +476,18 @@ impl Parser {
         Ok(Statement::Export(name, exported_name, loc))
     }
 
-    fn parse_use(&mut self) -> Result<(), ProgrammingLangParsingError> {
+    fn parse_use(&mut self) -> Result<(), ParsingError> {
         let location = self.advance().location.clone();
         let name = self.advance();
         if name.typ != TokenType::StringLiteral {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: name.location.clone(),
                 expected: TokenType::StringLiteral,
                 found: name.typ,
             });
         }
         let Some(Literal::String(ref name)) = name.literal else {
-            return Err(ProgrammingLangParsingError::InvalidTokenization {
+            return Err(ParsingError::InvalidTokenization {
                 loc: name.location.clone(),
             });
         };
@@ -623,7 +503,7 @@ impl Parser {
                     &location,
                 )
             })
-            .map_err(ProgrammingLangParsingError::ModuleResolution)?;
+            .map_err(ParsingError::ModuleResolution)?;
 
         let module_id = self
             .modules
@@ -659,7 +539,7 @@ impl Parser {
         }
 
         if !self.match_tok(TokenType::NamespaceAccess) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 expected: TokenType::NamespaceAccess,
                 found: self.peek().typ,
@@ -672,7 +552,7 @@ impl Parser {
                 if !is_first {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
-                        return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                        return Err(ParsingError::ExpectedArbitrary {
                             loc: self.peek().location.clone(),
                             expected: TokenType::Comma,
                             found: self.peek().typ,
@@ -719,7 +599,7 @@ impl Parser {
         Ok(())
     }
 
-    fn parse_path_no_generics(&mut self) -> Result<Vec<GlobalStr>, ProgrammingLangParsingError> {
+    fn parse_path_no_generics(&mut self) -> Result<Vec<GlobalStr>, ParsingError> {
         let mut path = vec![self.expect_identifier()?];
 
         while self.match_tok(TokenType::NamespaceAccess) {
@@ -729,13 +609,13 @@ impl Parser {
         Ok(path)
     }
 
-    fn parse_expression_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    fn parse_expression_stmt(&mut self) -> Result<Statement, ParsingError> {
         let expr = self.parse_expression()?;
         self.consume_semicolon()?;
         Ok(Statement::Expression(expr))
     }
 
-    fn parse_let_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    fn parse_let_stmt(&mut self) -> Result<Statement, ParsingError> {
         // let <identifier>;
         // let <identifier> = <expr>;
         let location = self.advance().location.clone(); // skip `let`
@@ -748,7 +628,7 @@ impl Parser {
         };
 
         if !self.match_tok(TokenType::Equal) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 expected: TokenType::Equal,
                 found: self.peek().typ,
@@ -758,7 +638,7 @@ impl Parser {
         self.consume_semicolon()?;
         Ok(Statement::Var(name, expr, typ, location))
     }
-    fn parse_block_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    fn parse_block_stmt(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
 
         // { <...statements...> }
@@ -775,7 +655,7 @@ impl Parser {
             annotations,
         ))
     }
-    fn parse_return_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    fn parse_return_stmt(&mut self) -> Result<Statement, ParsingError> {
         // return;
         // return <expr>;
         let location = self.advance().location.clone(); // skip `return`
@@ -786,7 +666,7 @@ impl Parser {
         self.consume_semicolon()?;
         Ok(Statement::Return(Some(expr), location))
     }
-    fn parse_if_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    fn parse_if_stmt(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
 
         // if (<expr>) <stmt>
@@ -794,7 +674,7 @@ impl Parser {
         // we have else if support, because else <stmt>, the stmt can be another if expression!
         let location = self.advance().location.clone(); // skip `if`
         if !self.match_tok(TokenType::ParenLeft) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 found: self.peek().typ,
                 expected: TokenType::ParenLeft,
@@ -802,7 +682,7 @@ impl Parser {
         }
         let condition = self.parse_expression()?;
         if !self.match_tok(TokenType::ParenRight) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 found: self.peek().typ,
                 expected: TokenType::ParenRight,
@@ -826,14 +706,14 @@ impl Parser {
             annotations,
         })
     }
-    fn parse_while_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    fn parse_while_stmt(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
 
         // while (<expr>) <stmt>
         // we have else if support, because else <stmt>, the stmt can be another if expression!
         let location = self.advance().location.clone(); // skip `while`
         if !self.match_tok(TokenType::ParenLeft) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 found: self.peek().typ,
                 expected: TokenType::ParenLeft,
@@ -841,7 +721,7 @@ impl Parser {
         }
         let condition = self.parse_expression()?;
         if !self.match_tok(TokenType::ParenRight) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 found: self.peek().typ,
                 expected: TokenType::ParenRight,
@@ -854,14 +734,14 @@ impl Parser {
             annotations,
         })
     }
-    fn parse_for_stmt(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    fn parse_for_stmt(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
 
         // for (<identifier> in <expr>) <stmt>
         let location = self.advance().location.clone(); // skip over `for`
 
         if !self.match_tok(TokenType::ParenLeft) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 found: self.peek().typ,
                 expected: TokenType::ParenLeft,
@@ -870,7 +750,7 @@ impl Parser {
 
         let var_name = self.expect_identifier()?;
         if !self.match_tok(TokenType::In) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 expected: TokenType::In,
                 found: self.peek().typ,
@@ -878,7 +758,7 @@ impl Parser {
         }
         let iterator = self.parse_expression()?;
         if !self.match_tok(TokenType::ParenRight) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 found: self.peek().typ,
                 expected: TokenType::ParenRight,
@@ -894,7 +774,7 @@ impl Parser {
             annotations,
         })
     }
-    fn parse_struct(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
+    fn parse_struct(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
 
         // struct Name { ... fields ...; implementation area }
@@ -906,7 +786,7 @@ impl Parser {
         let mut elements = vec![];
 
         if !self.match_tok(TokenType::CurlyLeft) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 expected: TokenType::CurlyLeft,
                 found: self.peek().typ,
@@ -917,7 +797,7 @@ impl Parser {
             if elements.len() > 0 {
                 // needs comma
                 if !self.match_tok(TokenType::Comma) {
-                    return Err(ProgrammingLangParsingError::ExpectedObjectElement {
+                    return Err(ParsingError::ExpectedObjectElement {
                         loc: self.peek().location.clone(),
                         found: self.peek().typ,
                     });
@@ -929,7 +809,7 @@ impl Parser {
             }
             let name = self.expect_identifier()?;
             if !self.match_tok(TokenType::Colon) {
-                return Err(ProgrammingLangParsingError::ExpectedType {
+                return Err(ParsingError::ExpectedType {
                     loc: self.peek().location.clone(),
                     found: self.peek().typ,
                 });
@@ -938,7 +818,7 @@ impl Parser {
             elements.push((name, typ));
         }
 
-        let mut global_impl = HashMap::<GlobalStr, BakableFunction>::new();
+        let mut global_impl = HashMap::<GlobalStr, (FunctionContract, Statement)>::new();
         let mut impls = Vec::new();
 
         if self.previous().typ == TokenType::Semicolon {
@@ -956,24 +836,22 @@ impl Parser {
                             .cloned()
                             .expect("non-anonymous function without name");
                         if let Some(other_func) = global_impl.get(&name) {
-                            return Err(ProgrammingLangParsingError::FunctionAlreadyDefined {
+                            return Err(ParsingError::FunctionAlreadyDefined {
                                 loc: func.0.location.clone(),
-                                name: name,
-                                first_func_loc: other_func.get_contract_unbaked().location.clone(),
+                                name,
+                                first_func_loc: other_func.0.location.clone(),
                             });
                         }
-                        global_impl.insert(
-                            name,
-                            BakableFunction::Function(Box::new((func.0.clone(), *func.1))),
-                        );
+                        global_impl.insert(name, func);
                     }
                     TokenType::Impl => {
                         self.advance();
                         let trait_name: GlobalStr = self.expect_identifier()?;
-                        let mut current_impl = HashMap::<GlobalStr, BakableFunction>::new();
+                        let mut current_impl =
+                            HashMap::<GlobalStr, (FunctionContract, Statement)>::new();
 
                         if !self.match_tok(TokenType::CurlyLeft) {
-                            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                            return Err(ParsingError::ExpectedArbitrary {
                                 loc: self.peek().location.clone(),
                                 expected: TokenType::CurlyLeft,
                                 found: self.peek().typ,
@@ -981,7 +859,7 @@ impl Parser {
                         }
                         while !self.match_tok(TokenType::CurlyRight) {
                             if self.peek().typ != TokenType::Fn {
-                                return Err(ProgrammingLangParsingError::StructImplRegionExpect {
+                                return Err(ParsingError::StructImplRegionExpect {
                                     loc: self.peek().location.clone(),
                                     found: self.peek().typ,
                                     is_trait_impl: true,
@@ -995,24 +873,18 @@ impl Parser {
                                 .cloned()
                                 .expect("non-anonymous function without name");
                             if let Some(other_func) = current_impl.get(&name) {
-                                return Err(ProgrammingLangParsingError::FunctionAlreadyDefined {
+                                return Err(ParsingError::FunctionAlreadyDefined {
                                     loc: func.0.location,
                                     name,
-                                    first_func_loc: other_func
-                                        .get_contract_unbaked()
-                                        .location
-                                        .clone(),
+                                    first_func_loc: other_func.0.location.clone(),
                                 });
                             }
-                            current_impl.insert(
-                                name,
-                                BakableFunction::Function(Box::new((func.0, *func.1))),
-                            );
+                            current_impl.insert(name, func);
                         }
                         impls.push((trait_name, current_impl));
                     }
                     token @ _ => {
-                        return Err(ProgrammingLangParsingError::StructImplRegionExpect {
+                        return Err(ParsingError::StructImplRegionExpect {
                             loc: self.peek().location.clone(),
                             found: token,
                             is_trait_impl: false,
@@ -1032,21 +904,21 @@ impl Parser {
         })
     }
 
-    pub fn expect_identifier(&mut self) -> Result<GlobalStr, ProgrammingLangParsingError> {
+    pub fn expect_identifier(&mut self) -> Result<GlobalStr, ParsingError> {
         if !self.match_tok(TokenType::IdentifierLiteral) {
-            return Err(ProgrammingLangParsingError::ExpectedIdentifier {
+            return Err(ParsingError::ExpectedIdentifier {
                 loc: self.peek().location.clone(),
                 found: self.peek().typ,
             });
         }
         let Some(Literal::String(ref str)) = self.previous().literal else {
-            return Err(ProgrammingLangParsingError::InvalidTokenization {
+            return Err(ParsingError::InvalidTokenization {
                 loc: self.previous().location.clone(),
             });
         };
         Ok(str.clone())
     }
-    pub fn parse_annotation(&mut self) -> Result<(), ProgrammingLangParsingError> {
+    pub fn parse_annotation(&mut self) -> Result<(), ParsingError> {
         let loc = self.peek().location.clone();
         assert_eq!(self.advance().typ, TokenType::AnnotationIntroducer);
 
@@ -1065,14 +937,14 @@ impl Parser {
             TokenType::IdentifierLiteral => match &self.peek().literal {
                 Some(Literal::String(v)) => v.clone(),
                 _ => {
-                    return Err(ProgrammingLangParsingError::InvalidTokenization {
+                    return Err(ParsingError::InvalidTokenization {
                         loc: self.peek().location.clone(),
                     })
                 }
             },
 
             _ => {
-                return Err(ProgrammingLangParsingError::ExpectedIdentifier {
+                return Err(ParsingError::ExpectedIdentifier {
                     loc: self.peek().location.clone(),
                     found: self.peek().typ,
                 })
@@ -1081,7 +953,7 @@ impl Parser {
         self.advance();
 
         if !self.match_tok(TokenType::ParenLeft) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 expected: TokenType::ParenLeft,
                 found: self.peek().typ,
@@ -1093,7 +965,7 @@ impl Parser {
         loop {
             match self.peek().typ {
                 TokenType::Eof => {
-                    return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                    return Err(ParsingError::ExpectedArbitrary {
                         loc: self.peek().location.clone(),
                         expected: TokenType::ParenRight,
                         found: TokenType::Eof,
@@ -1162,111 +1034,34 @@ arguments => list of argument seperated by comma, trailing comma allowed, the la
 */
 
 impl Parser {
-    pub fn parse_external(&mut self) -> Result<Statement, ProgrammingLangParsingError> {
-        let location = self.peek().location.clone();
-        if !self.match_tok(TokenType::Extern) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                loc: self.peek().location.clone(),
-                expected: TokenType::Extern,
-                found: self.peek().typ,
-            });
-        }
-        if !self.match_tok(TokenType::Fn) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                loc: self.peek().location.clone(),
-                expected: TokenType::Fn,
-                found: self.peek().typ,
-            });
-        }
-
-        let name = {
-            if !self.match_tok(TokenType::IdentifierLiteral) {
-                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                    loc: self.peek().location.clone(),
-                    expected: TokenType::IdentifierLiteral,
-                    found: self.peek().typ,
-                });
-            }
-
-            let Some(Literal::String(ref name)) = self.previous().literal else {
-                return Err(ProgrammingLangParsingError::InvalidTokenization {
-                    loc: self.previous().location.clone(),
-                });
-            };
-
-            name.clone()
-        };
-
-        let mut arguments = vec![];
-
-        if !self.match_tok(TokenType::ParenLeft) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                loc: self.peek().location.clone(),
-                found: self.peek().typ,
-                expected: TokenType::ParenLeft,
-            });
-        }
-
-        while !self.match_tok(TokenType::ParenRight) {
-            if arguments.len() > 0 {
-                if !self.match_tok(TokenType::Comma) {
-                    return Err(ProgrammingLangParsingError::ExpectedFunctionArgument {
-                        loc: self.peek().location.clone(),
-                        found: self.peek().typ,
-                    });
-                }
-
-                // for trailing comma
-                if self.match_tok(TokenType::ParenRight) {
-                    break;
-                }
-            }
-
-            let name = self.expect_identifier()?.clone();
-            if !self.match_tok(TokenType::Colon) {
-                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                    loc: self.previous().location.clone(),
-                    expected: TokenType::Colon,
-                    found: self.previous().typ,
-                });
-            }
-
-            arguments.push(Argument::new(TypeRef::parse(self)?, name));
-        }
-
-        let return_type = if self.match_tok(TokenType::ReturnType) {
-            TypeRef::parse(self)?
-        } else {
-            TypeRef::Void(self.peek().location.clone())
-        };
-
-        if !self.match_tok(TokenType::Semicolon) {
-            Err(ProgrammingLangParsingError::ExpectedArbitrary {
-                loc: self.peek().location.clone(),
-                expected: TokenType::Semicolon,
-                found: self.peek().typ,
+    pub fn parse_external(&mut self) -> Result<Statement, ParsingError> {
+        let location = self.advance().location.clone();
+        self.parse_any_callable(false, false, false)
+            .map(|(mut contract, body)| {
+                contract.location = location;
+                Statement::ExternalFunction(contract, body.map(Box::new))
             })
-        } else {
-            Ok(Statement::ExternalFunction(FunctionContract {
-                arguments,
-                name: Some(name),
-                return_type,
-                location,
-                annotations: std::mem::take(&mut self.current_annotations),
-                generics: vec![],
-            }))
-        }
     }
 
     pub fn parse_callable(
         &mut self,
         anonymous: bool,
-    ) -> Result<(FunctionContract, Box<Statement>), ProgrammingLangParsingError> {
+    ) -> Result<(FunctionContract, Statement), ParsingError> {
+        self.parse_any_callable(anonymous, true, true)
+            .map(|(contract, body)| (contract, body.expect("there should always exist a body")))
+    }
+
+    pub fn parse_any_callable(
+        &mut self,
+        anonymous: bool,
+        needs_body: bool,
+        can_have_generics: bool,
+    ) -> Result<(FunctionContract, Option<Statement>), ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
 
         let location = self.peek().location.clone();
         if !self.match_tok(TokenType::Fn) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 expected: TokenType::Fn,
                 found: self.peek().typ,
@@ -1276,7 +1071,7 @@ impl Parser {
         let name = if anonymous {
             if self.match_tok(TokenType::IdentifierLiteral) {
                 let Some(Literal::String(ref name)) = self.previous().literal else {
-                    return Err(ProgrammingLangParsingError::InvalidTokenization {
+                    return Err(ParsingError::InvalidTokenization {
                         loc: self.previous().location.clone(),
                     });
                 };
@@ -1286,7 +1081,7 @@ impl Parser {
             }
         } else {
             if !self.match_tok(TokenType::IdentifierLiteral) {
-                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                return Err(ParsingError::ExpectedArbitrary {
                     loc: self.peek().location.clone(),
                     expected: TokenType::IdentifierLiteral,
                     found: self.peek().typ,
@@ -1294,14 +1089,14 @@ impl Parser {
             }
 
             let Some(Literal::String(ref name)) = self.previous().literal else {
-                return Err(ProgrammingLangParsingError::InvalidTokenization {
+                return Err(ParsingError::InvalidTokenization {
                     loc: self.previous().location.clone(),
                 });
             };
             Some(name.clone())
         };
 
-        let generics = if self.match_tok(TokenType::LessThan) {
+        let generics = if can_have_generics && self.match_tok(TokenType::LessThan) {
             self.parse_function_generics()?
         } else {
             vec![]
@@ -1310,7 +1105,7 @@ impl Parser {
         let mut arguments = vec![];
 
         if !self.match_tok(TokenType::ParenLeft) {
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 found: self.peek().typ,
                 expected: TokenType::ParenLeft,
@@ -1320,7 +1115,7 @@ impl Parser {
         while !self.match_tok(TokenType::ParenRight) {
             if arguments.len() > 0 {
                 if !self.match_tok(TokenType::Comma) {
-                    return Err(ProgrammingLangParsingError::ExpectedFunctionArgument {
+                    return Err(ParsingError::ExpectedFunctionArgument {
                         loc: self.peek().location.clone(),
                         found: self.peek().typ,
                     });
@@ -1334,7 +1129,7 @@ impl Parser {
 
             let name = self.expect_identifier()?.clone();
             if !self.match_tok(TokenType::Colon) {
-                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                return Err(ParsingError::ExpectedArbitrary {
                     loc: self.previous().location.clone(),
                     expected: TokenType::Colon,
                     found: self.previous().typ,
@@ -1347,30 +1142,31 @@ impl Parser {
         let return_type = if self.match_tok(TokenType::ReturnType) {
             TypeRef::parse(self)?
         } else {
-            TypeRef::Void(self.peek().location.clone())
+            TypeRef::Void(self.peek().location.clone(), 0)
         };
 
-        // body:
-        // - a block
-        // - equal and then an expression
-        let body = match self.peek().typ {
-            TokenType::CurlyLeft => self.parse_block_stmt().map(Box::new)?,
-            TokenType::Equal => {
-                self.advance();
-                let expr = self.parse_expression()?;
-                let return_location = expr.loc().clone();
-                if !anonymous {
-                    // needs a semicolon if this isnt anonymous
-                    self.consume_semicolon()?;
+        let body = if !needs_body && self.match_tok(TokenType::Semicolon) {
+            None
+        } else {
+            Some(match self.peek().typ {
+                TokenType::CurlyLeft => self.parse_block_stmt()?,
+                TokenType::Equal => {
+                    self.advance();
+                    let expr = self.parse_expression()?;
+                    let return_location = expr.loc().clone();
+                    if !anonymous {
+                        // needs a semicolon if this isnt anonymous
+                        self.consume_semicolon()?;
+                    }
+                    Statement::Return(Some(expr), return_location)
                 }
-                Box::new(Statement::Return(Some(expr), return_location))
-            }
-            _ => {
-                return Err(ProgrammingLangParsingError::ExpectedFunctionBody {
-                    loc: self.peek().location.clone(),
-                    found: self.peek().typ,
-                })
-            }
+                _ => {
+                    return Err(ParsingError::ExpectedFunctionBody {
+                        loc: self.peek().location.clone(),
+                        found: self.peek().typ,
+                    })
+                }
+            })
         };
 
         Ok((
@@ -1386,13 +1182,13 @@ impl Parser {
         ))
     }
 
-    pub fn parse_function_generics(&mut self) -> Result<Vec<Generic>, ProgrammingLangParsingError> {
+    pub fn parse_function_generics(&mut self) -> Result<Vec<Generic>, ParsingError> {
         let mut generics = vec![];
 
         while !self.match_tok(TokenType::GreaterThan) {
             if generics.len() > 0 {
                 if !self.match_tok(TokenType::Comma) {
-                    return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                    return Err(ParsingError::ExpectedArbitrary {
                         loc: self.peek().location.clone(),
                         expected: TokenType::Comma,
                         found: self.peek().typ,
@@ -1418,7 +1214,7 @@ impl Parser {
 
                     // expect `+` between bounds
                     if bounds.len() > 0 && !self.match_tok(TokenType::Plus) {
-                        return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                        return Err(ParsingError::ExpectedArbitrary {
                             loc: self.peek().location.clone(),
                             found: self.peek().typ,
                             expected: TokenType::Plus,

@@ -1,8 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::{Display, Write},
-    rc::Rc,
-    sync::RwLock,
+    sync::{Arc, RwLock},
 };
 
 use crate::{
@@ -59,14 +58,14 @@ impl Display for Annotation {
 
 #[derive(Clone, Debug)]
 pub struct ParserQueueEntry {
-    pub file: Rc<std::path::Path>,
-    pub root: Rc<std::path::Path>,
+    pub file: Arc<std::path::Path>,
+    pub root: Arc<std::path::Path>,
 }
 
 #[derive(Debug)]
 pub struct Parser {
-    file: Rc<std::path::Path>,
-    root_directory: Rc<std::path::Path>,
+    file: Arc<std::path::Path>,
+    root_directory: Arc<std::path::Path>,
 
     pub tokens: Vec<Token>,
     pub current: usize,
@@ -74,7 +73,7 @@ pub struct Parser {
     /// The modules, the index is their id. The second boolean dictates if they already started
     /// parsing. there's no reference to whether or not they finished. it is assumed they all
     /// finished when typechecking.
-    pub modules: Rc<RwLock<Vec<ParserQueueEntry>>>,
+    pub modules: Arc<RwLock<Vec<ParserQueueEntry>>>,
     /// a map of idents => imports. if the size of the vec is 0, the identifier refers to the
     /// module itself. otherwise, it refers to something in it.
     pub imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,

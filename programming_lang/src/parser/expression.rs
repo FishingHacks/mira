@@ -1,15 +1,14 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display, Write},
-    rc::Rc,
-    sync::RwLock,
+    sync::{Arc, RwLock},
 };
 
 use crate::{
-    error::{OperationType, ProgrammingLangParsingError},
+    error::{OperationType, ParsingError},
     globals::GlobalStr,
-    module::{FunctionId, Module},
-    tokenizer::{Literal, Location, Token, TokenType},
+    module::{FunctionId, Module, ModuleId},
+    tokenizer::{Literal, Location, NumberType, Token, TokenType},
 };
 
 use super::{
@@ -20,8 +19,7 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path {
-    entries: Vec<(GlobalStr, Vec<TypeRef>)>,
-    generics: Vec<TypeRef>,
+    pub entries: Vec<(GlobalStr, Vec<TypeRef>)>,
 }
 
 impl Display for Path {
@@ -62,16 +60,15 @@ impl Path {
     pub fn new(entry: GlobalStr, generics: Vec<TypeRef>) -> Self {
         Self {
             entries: vec![(entry, generics)],
-            generics: vec![],
         }
     }
 
-    fn parse_generics(parser: &mut Parser) -> Result<Vec<TypeRef>, ProgrammingLangParsingError> {
+    fn parse_generics(parser: &mut Parser) -> Result<Vec<TypeRef>, ParsingError> {
         let mut types = vec![];
 
         while !parser.match_tok(TokenType::GreaterThan) {
             if types.len() > 0 && !parser.match_tok(TokenType::Comma) {
-                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                return Err(ParsingError::ExpectedArbitrary {
                     loc: parser.peek().location.clone(),
                     expected: TokenType::Comma,
                     found: parser.peek().typ,
@@ -82,7 +79,7 @@ impl Path {
         Ok(types)
     }
 
-    pub fn parse(parser: &mut Parser) -> Result<Self, ProgrammingLangParsingError> {
+    pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
         let generics = if parser.match_tok(TokenType::LessThan) {
             Self::parse_generics(parser)?
         } else {
@@ -110,10 +107,10 @@ impl Path {
 pub enum LiteralValue {
     String(GlobalStr),
     Array(Vec<Expression>),
-    Struct(HashMap<GlobalStr, Expression>, Path),
-    Float(f64),
-    SInt(i64),
-    UInt(u64),
+    Struct(HashMap<GlobalStr, (Location, Expression)>, Path),
+    Float(f64, NumberType),
+    SInt(i64, NumberType),
+    UInt(u64, NumberType),
     Bool(bool),
     Dynamic(Path),
     AnonymousFunction(FunctionContract, Box<Statement>),
@@ -124,17 +121,24 @@ pub enum LiteralValue {
 impl PartialEq for LiteralValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (
+                Self::Float(_, num_type) | Self::UInt(_, num_type) | Self::SInt(_, num_type),
+                Self::Float(_, other) | Self::UInt(_, other) | Self::SInt(_, other),
+            ) if *num_type != *other => return false,
+            _ => (),
+        }
+        match (self, other) {
             (Self::String(l), Self::String(r)) => l == r,
-            (Self::SInt(l), Self::SInt(r)) => *l == *r,
-            (Self::UInt(l), Self::UInt(r)) => *l == *r,
-            (Self::Float(l), Self::Float(r)) => *l == *r,
-            (Self::UInt(l), Self::SInt(r)) | (Self::SInt(r), Self::UInt(l)) => {
+            (Self::SInt(l, _), Self::SInt(r, _)) => *l == *r,
+            (Self::UInt(l, _), Self::UInt(r, _)) => *l == *r,
+            (Self::Float(l, _), Self::Float(r, _)) => *l == *r,
+            (Self::UInt(l, _), Self::SInt(r, _)) | (Self::SInt(r, _), Self::UInt(l, _)) => {
                 *r >= 0 && (*r as u64) == *l
             }
-            (Self::Float(l), Self::SInt(r)) | (Self::SInt(r), Self::Float(l)) => {
+            (Self::Float(l, _), Self::SInt(r, _)) | (Self::SInt(r, _), Self::Float(l, _)) => {
                 (*l == l.floor()) && (*l as i64) == *r
             }
-            (Self::Float(l), Self::UInt(r)) | (Self::UInt(r), Self::Float(l)) => {
+            (Self::Float(l, _), Self::UInt(r, _)) | (Self::UInt(r, _), Self::Float(l, _)) => {
                 (*l >= 0.0) && (*l == l.floor()) && (*l as u64) == *r
             }
             (Self::Bool(l), Self::Bool(r)) => l == r,
@@ -153,9 +157,9 @@ impl Display for LiteralValue {
             }
             LiteralValue::Bool(b) => f.write_str(if *b { "true" } else { "false" }),
             LiteralValue::Dynamic(d) => Display::fmt(d, f),
-            LiteralValue::UInt(v) => f.write_fmt(format_args!("{}", *v)),
-            LiteralValue::SInt(v) => f.write_fmt(format_args!("{}", *v)),
-            LiteralValue::Float(v) => f.write_fmt(format_args!("{}", *v)),
+            LiteralValue::UInt(v, typ) => f.write_fmt(format_args!("{}{}", *v, *typ)),
+            LiteralValue::SInt(v, typ) => f.write_fmt(format_args!("{}{}", *v, *typ)),
+            LiteralValue::Float(v, typ) => f.write_fmt(format_args!("{}{}", *v, *typ)),
             LiteralValue::String(v) => Debug::fmt(v, f),
             LiteralValue::Array(v) => {
                 f.write_char('[')?;
@@ -171,7 +175,7 @@ impl Display for LiteralValue {
                 Display::fmt(name, f)?;
                 f.write_str(" {")?;
 
-                for (k, v) in v {
+                for (k, (_, v)) in v {
                     f.write_char(' ')?;
                     Display::fmt(k, f)?;
                     f.write_str(": ")?;
@@ -357,17 +361,6 @@ impl Expression {
         Self::Literal(LiteralValue::Bool(value), loc)
     }
 
-    pub fn float(value: f64, loc: Location) -> Self {
-        Self::Literal(LiteralValue::Float(value), loc)
-    }
-
-    pub fn signed_int(value: i64, loc: Location) -> Self {
-        Self::Literal(LiteralValue::SInt(value), loc)
-    }
-    pub fn unsigned_int(value: u64, loc: Location) -> Self {
-        Self::Literal(LiteralValue::UInt(value), loc)
-    }
-
     pub fn string(value: GlobalStr, loc: Location) -> Self {
         Self::Literal(LiteralValue::String(value), loc)
     }
@@ -403,11 +396,11 @@ impl Expression {
         }
     }
 
-    pub fn bake_functions(&mut self, module: &mut Module) {
+    pub fn bake_functions(&mut self, module: &mut Module, module_id: ModuleId) {
         match self {
             Self::Literal(val, ..) => {
                 if let LiteralValue::AnonymousFunction(contract, statements) = val {
-                    let id = module.push_fn(contract.clone(), *(statements.clone()));
+                    let id = module.push_fn(contract.clone(), *(statements.clone()), module_id);
                     *val = LiteralValue::BakedAnonymousFunction(id)
                 }
             }
@@ -430,28 +423,28 @@ impl Expression {
                 right_side,
                 ..
             } => {
-                left_side.bake_functions(module);
-                right_side.bake_functions(module);
+                left_side.bake_functions(module, module_id);
+                right_side.bake_functions(module, module_id);
             }
             Self::FunctionCall {
                 identifier,
                 arguments,
             } => {
-                identifier.bake_functions(module);
+                identifier.bake_functions(module, module_id);
                 arguments
                     .iter_mut()
-                    .for_each(|el| el.bake_functions(module));
+                    .for_each(|el| el.bake_functions(module, module_id));
             }
             Self::MemberAccess { left_side, .. }
             | Self::TypeCast { left_side, .. }
             | Self::Unary {
                 right_side: left_side,
                 ..
-            } => left_side.bake_functions(module),
+            } => left_side.bake_functions(module, module_id),
         }
     }
 
-    pub fn optimize(&mut self) -> Result<(), ProgrammingLangParsingError> {
+    pub fn optimize(&mut self) -> Result<(), ParsingError> {
         let loc = self.loc().clone();
 
         Ok(match self {
@@ -481,13 +474,11 @@ impl Expression {
                                 | LiteralValue::SInt(..)
                                 | LiteralValue::UInt(..) => (),
                                 v @ _ => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoUnaryOperation {
-                                            loc,
-                                            operation_type: OperationType::Plus,
-                                            right: v.type_name(),
-                                        },
-                                    )
+                                    return Err(ParsingError::CannotDoUnaryOperation {
+                                        loc,
+                                        operation_type: OperationType::Plus,
+                                        right: v.type_name(),
+                                    })
                                 }
                             },
                             TokenType::Minus => match v {
@@ -496,13 +487,11 @@ impl Expression {
                                 | LiteralValue::SInt(..)
                                 | LiteralValue::UInt(..) => (),
                                 v @ _ => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoUnaryOperation {
-                                            loc,
-                                            operation_type: OperationType::Minus,
-                                            right: v.type_name(),
-                                        },
-                                    )
+                                    return Err(ParsingError::CannotDoUnaryOperation {
+                                        loc,
+                                        operation_type: OperationType::Minus,
+                                        right: v.type_name(),
+                                    })
                                 }
                             },
                             TokenType::BitwiseNot => match v {
@@ -512,32 +501,28 @@ impl Expression {
                                 | LiteralValue::UInt(..) => (),
                                 LiteralValue::Bool(v) => *self = Self::bool(!*v, loc),
                                 v @ _ => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoUnaryOperation {
-                                            loc,
-                                            operation_type: OperationType::BitwiseNot,
-                                            right: v.type_name(),
-                                        },
-                                    )
+                                    return Err(ParsingError::CannotDoUnaryOperation {
+                                        loc,
+                                        operation_type: OperationType::BitwiseNot,
+                                        right: v.type_name(),
+                                    })
                                 }
                             },
                             TokenType::LogicalNot => match v {
                                 LiteralValue::Dynamic(..) => (),
                                 LiteralValue::Bool(v) => *self = Self::bool(!*v, loc),
                                 v @ _ => {
-                                    return Err(
-                                        ProgrammingLangParsingError::CannotDoUnaryOperation {
-                                            loc,
-                                            operation_type: OperationType::LogicalNot,
-                                            right: v.type_name(),
-                                        },
-                                    )
+                                    return Err(ParsingError::CannotDoUnaryOperation {
+                                        loc,
+                                        operation_type: OperationType::LogicalNot,
+                                        right: v.type_name(),
+                                    })
                                 }
                             },
                             TokenType::Ampersand => {}
                             TokenType::Asterix => {}
                             tok @ _ => {
-                                return Err(ProgrammingLangParsingError::InvalidUnaryOperand {
+                                return Err(ParsingError::InvalidUnaryOperand {
                                     loc,
                                     operand_type: tok,
                                 })
@@ -560,7 +545,7 @@ impl Expression {
                     | (_, Expression::Literal(LiteralValue::Dynamic(..), ..)) => (),
 
                     (Expression::Literal(left, ..), Expression::Literal(right, ..)) => {
-                        // +, -, *, /, %, &, |, ^, &&, ||, idiv, >=, <=, >, <, ==, !=
+                        // +, -, *, /, %, &, |, ^, &&, ||, >=, <=, >, <, ==, !=
                         match operator.typ {
                             TokenType::Plus => (),
                             TokenType::Minus => (),
@@ -592,6 +577,7 @@ impl Expression {
                                 _ => (),
                             },
                             TokenType::BitwiseLShift => (),
+                            TokenType::BitwiseRShift => (),
                             TokenType::Ampersand => (),
                             TokenType::BitwiseOr => match (left, right) {
                                 (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
@@ -633,7 +619,7 @@ impl Expression {
                                 }
                             }
                             tok @ _ => {
-                                return Err(ProgrammingLangParsingError::InvalidOperand {
+                                return Err(ParsingError::InvalidOperand {
                                     loc,
                                     operand_type: tok,
                                 })
@@ -658,19 +644,6 @@ impl Expression {
             } => {
                 left_side.optimize()?;
                 right_side.optimize()?;
-
-                match (&mut **left_side, &mut **right_side) {
-                    (Expression::Literal(left_side, ..), Expression::Literal(right_side, ..)) => {
-                        match (left_side, right_side) {
-                            (LiteralValue::Dynamic(..), _) | (_, LiteralValue::Dynamic(..)) => (),
-                            (LiteralValue::Array(a), LiteralValue::UInt(idx)) => {
-                                *self = a[*idx as usize].clone();
-                            }
-                            _ => (),
-                        }
-                    }
-                    _ => (),
-                }
             }
             Self::Assignment {
                 left_side,
@@ -681,7 +654,7 @@ impl Expression {
                     match v {
                         LiteralValue::Dynamic(..) => (),
                         _ => {
-                            return Err(ProgrammingLangParsingError::AssignmentInvalidLeftSide {
+                            return Err(ParsingError::AssignmentInvalidLeftSide {
                                 loc: loc.clone(),
                             })
                         }
@@ -715,17 +688,17 @@ macro_rules! assign_set {
 }
 
 impl Parser {
-    pub fn parse_expression(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    pub fn parse_expression(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.expression()?;
         expr.optimize()?;
         Ok(expr)
     }
 
-    fn expression(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn expression(&mut self) -> Result<Expression, ParsingError> {
         self.comparison()
     }
 
-    fn comparison(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn comparison(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.pipe_operator()?;
 
         while self.matches(&[
@@ -746,7 +719,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn pipe_operator(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn pipe_operator(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.range()?;
 
         while self.match_tok(TokenType::PipeOperator) {
@@ -763,14 +736,14 @@ impl Parser {
                         arguments,
                     };
                 }
-                _ => return Err(ProgrammingLangParsingError::ExpectedFunctionCall { loc }),
+                _ => return Err(ParsingError::ExpectedFunctionCall { loc }),
             }
         }
 
         Ok(expr)
     }
 
-    fn range(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn range(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.term()?;
 
         while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
@@ -788,7 +761,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn term(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn term(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.factor()?;
 
         while self.matches(&[
@@ -816,7 +789,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn factor(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn factor(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.unary()?;
 
         while self.matches(&[
@@ -880,7 +853,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn unary(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn unary(&mut self) -> Result<Expression, ParsingError> {
         if self.matches(&[
             TokenType::Plus,
             TokenType::Minus,
@@ -894,7 +867,7 @@ impl Parser {
         self.assignment()
     }
 
-    fn assignment(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn assignment(&mut self) -> Result<Expression, ParsingError> {
         let expr = self.type_cast()?;
         if self.match_tok(TokenType::Equal) {
             let loc = self.previous().location.clone();
@@ -908,7 +881,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn type_cast(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn type_cast(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.references()?;
 
         while self.match_tok(TokenType::As) {
@@ -924,7 +897,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn references(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn references(&mut self) -> Result<Expression, ParsingError> {
         if self.match_tok(TokenType::Ampersand) {
             Ok(Expression::Unary {
                 operator: self.previous().clone(),
@@ -940,7 +913,7 @@ impl Parser {
         }
     }
 
-    fn indexed(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn indexed(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.primary()?;
 
         while self.matches(&[TokenType::BracketLeft, TokenType::ParenLeft, TokenType::Dot]) {
@@ -954,7 +927,7 @@ impl Parser {
                     } else if arguments.len() != 0 {
                         // , or ), but ) is alr handled by the thing above
                         if self.advance().typ != TokenType::Comma {
-                            return Err(ProgrammingLangParsingError::ExpectedFunctionArgument {
+                            return Err(ParsingError::ExpectedFunctionArgument {
                                 loc: self.previous().location.clone(),
                                 found: self.previous().typ,
                             });
@@ -966,12 +939,10 @@ impl Parser {
                     if let Ok(expr) = self.expression() {
                         arguments.push(expr);
                     } else {
-                        return Err(
-                            ProgrammingLangParsingError::ExpectedFunctionArgumentExpression {
-                                loc: next_loc,
-                                found: next_typ,
-                            },
-                        );
+                        return Err(ParsingError::ExpectedFunctionArgumentExpression {
+                            loc: next_loc,
+                            found: next_typ,
+                        });
                     }
                 }
                 expr = Expression::FunctionCall {
@@ -982,12 +953,10 @@ impl Parser {
                 let next_loc = self.peek().location.clone();
                 let next_typ = self.peek().typ;
                 let Ok(indexing_expr) = self.expression() else {
-                    return Err(
-                        ProgrammingLangParsingError::ExpectedFunctionArgumentExpression {
-                            loc: next_loc,
-                            found: next_typ,
-                        },
-                    );
+                    return Err(ParsingError::ExpectedFunctionArgumentExpression {
+                        loc: next_loc,
+                        found: next_typ,
+                    });
                 };
 
                 if self.match_tok(TokenType::BracketRight) {
@@ -999,7 +968,7 @@ impl Parser {
                 }
 
                 let found_token = self.peek();
-                return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                return Err(ParsingError::ExpectedArbitrary {
                     loc: found_token.location.clone(),
                     found: found_token.typ,
                     expected: TokenType::BracketRight,
@@ -1007,7 +976,7 @@ impl Parser {
             } else if self.previous().typ == TokenType::Dot {
                 let identifier = self.advance();
                 if identifier.typ != TokenType::IdentifierLiteral {
-                    return Err(ProgrammingLangParsingError::ExpectedIdentifier {
+                    return Err(ParsingError::ExpectedIdentifier {
                         loc: identifier.location.clone(),
                         found: identifier.typ,
                     });
@@ -1018,7 +987,7 @@ impl Parser {
                         loc: identifier.location.clone(),
                     };
                 } else {
-                    return Err(ProgrammingLangParsingError::InvalidTokenization {
+                    return Err(ParsingError::InvalidTokenization {
                         loc: identifier.location.clone(),
                     });
                 }
@@ -1030,7 +999,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn primary(&mut self) -> Result<Expression, ProgrammingLangParsingError> {
+    fn primary(&mut self) -> Result<Expression, ParsingError> {
         // arrays
         match self.try_array() {
             Some(v) => return v,
@@ -1041,8 +1010,9 @@ impl Parser {
         if self.peek().typ == TokenType::Fn {
             let loc = self.peek().location.clone();
             return Ok(Expression::Literal(
-                self.parse_callable(true)
-                    .map(|(contract, body)| LiteralValue::AnonymousFunction(contract, body))?,
+                self.parse_callable(true).map(|(contract, body)| {
+                    LiteralValue::AnonymousFunction(contract, Box::new(body))
+                })?,
                 loc,
             ));
         }
@@ -1073,7 +1043,7 @@ impl Parser {
             }
 
             let found_token = self.peek();
-            return Err(ProgrammingLangParsingError::ExpectedArbitrary {
+            return Err(ParsingError::ExpectedArbitrary {
                 loc: found_token.location.clone(),
                 found: found_token.typ,
                 expected: TokenType::ParenRight,
@@ -1081,13 +1051,13 @@ impl Parser {
         }
 
         let found_token = self.peek();
-        return Err(ProgrammingLangParsingError::ExpectedExpression {
+        return Err(ParsingError::ExpectedExpression {
             loc: found_token.location.clone(),
             found: found_token.typ,
         });
     }
 
-    fn try_array(&mut self) -> Option<Result<Expression, ProgrammingLangParsingError>> {
+    fn try_array(&mut self) -> Option<Result<Expression, ParsingError>> {
         if self.match_tok(TokenType::BracketLeft) {
             let loc = self.previous().location.clone();
             let mut arr = vec![];
@@ -1095,7 +1065,7 @@ impl Parser {
                 if arr.len() > 0 {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
-                        return Some(Err(ProgrammingLangParsingError::ExpectedArrayElement {
+                        return Some(Err(ParsingError::ExpectedArrayElement {
                             loc: self.peek().location.clone(),
                             found: self.peek().typ,
                         }));
@@ -1121,14 +1091,14 @@ impl Parser {
     // { key : value, }
     fn try_object(
         &mut self,
-    ) -> Option<Result<HashMap<GlobalStr, Expression>, ProgrammingLangParsingError>> {
+    ) -> Option<Result<HashMap<GlobalStr, (Location, Expression)>, ParsingError>> {
         if self.match_tok(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
             while !self.match_tok(TokenType::CurlyRight) {
                 if obj.len() > 0 {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
-                        return Some(Err(ProgrammingLangParsingError::ExpectedObjectElement {
+                        return Some(Err(ParsingError::ExpectedObjectElement {
                             loc: self.peek().location.clone(),
                             found: self.peek().typ,
                         }));
@@ -1145,26 +1115,27 @@ impl Parser {
                     TokenType::IdentifierLiteral,
                     TokenType::FloatLiteral,
                 ]) {
-                    return Some(Err(ProgrammingLangParsingError::ExpectedKey {
+                    return Some(Err(ParsingError::ExpectedKey {
                         loc: self.peek().location.clone(),
                         found: self.peek().typ,
                     }));
                 } else {
                     match self.previous().literal {
                         Some(Literal::String(ref v)) => v.clone(),
-                        Some(Literal::UInt(v)) => {
+                        Some(Literal::UInt(v, _)) => {
                             GlobalStr::new_boxed(v.to_string().into_boxed_str())
                         }
                         _ => {
-                            return Some(Err(ProgrammingLangParsingError::InvalidTokenization {
+                            return Some(Err(ParsingError::InvalidTokenization {
                                 loc: self.previous().location.clone(),
                             }))
                         }
                     }
                 };
+                let location = self.previous().location.clone();
 
                 if !self.match_tok(TokenType::Colon) {
-                    return Some(Err(ProgrammingLangParsingError::ExpectedArbitrary {
+                    return Some(Err(ParsingError::ExpectedArbitrary {
                         loc: self.peek().location.clone(),
                         expected: TokenType::Colon,
                         found: self.peek().typ,
@@ -1172,7 +1143,7 @@ impl Parser {
                 }
 
                 match self.expression() {
-                    Ok(expr) => obj.insert(key, expr),
+                    Ok(expr) => obj.insert(key, (location, expr)),
                     Err(e) => return Some(Err(e)),
                 };
             }
@@ -1184,9 +1155,9 @@ impl Parser {
 
     pub fn new(
         tokens: Vec<Token>,
-        modules: Rc<RwLock<Vec<ParserQueueEntry>>>,
-        file: Rc<std::path::Path>,
-        root_directory: Rc<std::path::Path>,
+        modules: Arc<RwLock<Vec<ParserQueueEntry>>>,
+        file: Arc<std::path::Path>,
+        root_directory: Arc<std::path::Path>,
     ) -> Self {
         Self {
             tokens,

@@ -2,13 +2,15 @@ use std::{
     fs::OpenOptions,
     io::{stdin, stdout, ErrorKind, Read, Write},
     path::{Path, PathBuf},
-    rc::Rc,
-    sync::RwLock,
+    sync::{Arc, RwLock},
 };
 
 use programming_lang::{
-    error::ProgrammingLangError, module::Module, parser::ParserQueueEntry, tokenizer::Tokenizer,
-    typechecking::resolve_modules,
+    error::ProgrammingLangError,
+    module::{Module, ModuleContext},
+    parser::ParserQueueEntry,
+    tokenizer::Tokenizer,
+    typechecking::{typechecking::typecheck_function, TypecheckingContext},
 };
 
 fn print_help() {
@@ -48,8 +50,8 @@ fn get_line_start(mut line: usize, buffer: &String) -> Result<usize, usize> {
 }
 
 fn main() -> std::io::Result<()> {
-    let current_dir: Rc<Path> = std::env::current_dir()?.into();
-    let file: Rc<Path> = current_dir.join("stdin_buffer").into();
+    let current_dir: Arc<Path> = std::env::current_dir()?.into();
+    let file: Arc<Path> = current_dir.join("stdin_buffer").into();
     let mut buffer = String::new();
     let mut stdout = stdout();
     let stdin = stdin();
@@ -327,29 +329,60 @@ fn main() -> std::io::Result<()> {
 }
 
 fn run(
-    file: impl Into<Rc<Path>>,
-    root_directory: impl Into<Rc<Path>>,
+    file: impl Into<Arc<Path>>,
+    root_directory: impl Into<Arc<Path>>,
     source: impl AsRef<str>,
 ) -> Result<(), Vec<ProgrammingLangError>> {
-    let modules = parse_all(file.into(), root_directory.into(), source.as_ref())?;
+    let context = parse_all(file.into(), root_directory.into(), source.as_ref())?;
 
-    let resolved_modules = resolve_modules(modules).map_err(|errs| {
-        errs.into_iter()
-            .map(Into::<ProgrammingLangError>::into)
-            .collect::<Vec<_>>()
-    })?;
+    println!("Modules: {:?}", context.modules);
+    println!("Context: {:?}", context);
 
-    println!("Modules: {:?}", resolved_modules);
-    println!("Context: {:?}", resolved_modules.read().unwrap()[0].context);
+    let typechecking_context = TypecheckingContext::new(context.clone());
+    let errs = typechecking_context.resolve_imports(context.clone());
+    if errs.len() > 0 {
+        return Err(errs.into_iter().map(Into::into).collect());
+    }
+    let errs = typechecking_context.resolve_types(context.clone());
+    if errs.len() > 0 {
+        return Err(errs.into_iter().map(Into::into).collect());
+    }
+
+    println!(
+        "Typechecking Context after resolving: {:?}",
+        typechecking_context
+    );
+
+    let num_functions = typechecking_context
+        .functions
+        .read()
+        .expect("read-write lock is poisoned")
+        .len();
+
+    let mut errs = Vec::new();
+
+    for i in 0..num_functions {
+        errs.extend(typecheck_function(&typechecking_context, &context, i));
+    }
+
+    for err in &errs {
+        println!("{err:?}");
+    }
+
+    if errs.len() > 0 {
+        return Err(errs.into_iter().map(Into::into).collect());
+    }
+
+    println!("Typechecking Context: {typechecking_context:?}");
 
     Ok(())
 }
 
 fn parse_all(
-    file: Rc<Path>,
-    root_directory: Rc<Path>,
+    file: Arc<Path>,
+    root_directory: Arc<Path>,
     source: &str,
-) -> Result<Vec<Module>, Vec<ProgrammingLangError>> {
+) -> Result<Arc<ModuleContext>, Vec<ProgrammingLangError>> {
     let mut errors = vec![];
 
     let mut tokenizer = Tokenizer::new(source.as_ref(), file.clone());
@@ -357,12 +390,13 @@ fn parse_all(
         errors.extend(errs.into_iter().map(ProgrammingLangError::Tokenization));
     }
 
-    let modules = Rc::new(RwLock::new(vec![ParserQueueEntry {
+    let modules = Arc::new(RwLock::new(vec![ParserQueueEntry {
         file,
         root: root_directory.clone(),
     }]));
-    let mut parsed_modules = vec![];
     let mut current_parser = tokenizer.to_parser(modules.clone(), root_directory);
+
+    let module_context = Arc::new(ModuleContext::default());
 
     loop {
         let (statements, parsing_errors) = current_parser.parse_all();
@@ -371,16 +405,28 @@ fn parse_all(
                 .into_iter()
                 .map(ProgrammingLangError::Parsing),
         );
-        let mut module = Module::new(current_parser.imports);
-        if let Err(errs) = module.push_all(statements) {
+        let mut module = Module::new(module_context.clone(), current_parser.imports);
+        if let Err(errs) = module.push_all(
+            statements,
+            module_context
+                .modules
+                .read()
+                .expect("read-write lock is poisoned")
+                .len(),
+        ) {
             errors.extend(errs.into_iter().map(ProgrammingLangError::ProgramForming));
         }
-        parsed_modules.push(module);
+        let mut writer = module_context
+            .modules
+            .write()
+            .expect("read-write lock is poisoned");
+        writer.push(module);
 
         let read_modules = modules.read().expect("read-write lock was poisoned");
-        if read_modules.len() > parsed_modules.len() {
-            let entry = read_modules[parsed_modules.len()].clone();
+        if read_modules.len() > writer.len() {
+            let entry = read_modules[writer.len()].clone();
             drop(read_modules);
+            drop(writer);
             let mut tokenizer = Tokenizer::new(
                 &std::fs::read_to_string(&entry.file).expect("failed to read module file"),
                 entry.file,
@@ -397,6 +443,6 @@ fn parse_all(
     if errors.len() > 0 {
         Err(errors)
     } else {
-        Ok(parsed_modules)
+        Ok(module_context)
     }
 }

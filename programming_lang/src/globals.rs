@@ -117,6 +117,10 @@ impl Drop for GlobalStr {
 }
 
 impl GlobalStr {
+    pub const fn zeroed() -> Self {
+        Self(0)
+    }
+
     pub fn new(value: &str) -> Self {
         STRINGS.with_borrow_mut(|strings: &mut GlobalStrs| {
             for (idx, v) in strings.entries.iter_mut().enumerate() {

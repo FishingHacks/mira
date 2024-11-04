@@ -6,15 +6,15 @@ use std::{
 use crate::{
     globals::GlobalStr,
     tokenizer::{Location, TokenType},
-    typechecking::ProgrammingLangTypecheckingError,
+    typechecking::TypecheckingError,
 };
 
 #[derive(Clone)]
 pub enum ProgrammingLangError {
-    Parsing(ProgrammingLangParsingError),
-    Tokenization(ProgrammingLangTokenizationError),
-    ProgramForming(ProgrammingLangProgramFormingError),
-    Typechecking(ProgrammingLangTypecheckingError),
+    Parsing(ParsingError),
+    Tokenization(TokenizationError),
+    ProgramForming(ProgramFormingError),
+    Typechecking(TypecheckingError),
     Generic(&'static str),
 }
 
@@ -30,26 +30,26 @@ impl Debug for ProgrammingLangError {
     }
 }
 
-impl From<ProgrammingLangParsingError> for ProgrammingLangError {
-    fn from(value: ProgrammingLangParsingError) -> Self {
+impl From<ParsingError> for ProgrammingLangError {
+    fn from(value: ParsingError) -> Self {
         Self::Parsing(value)
     }
 }
 
-impl From<ProgrammingLangTokenizationError> for ProgrammingLangError {
-    fn from(value: ProgrammingLangTokenizationError) -> Self {
+impl From<TokenizationError> for ProgrammingLangError {
+    fn from(value: TokenizationError) -> Self {
         Self::Tokenization(value)
     }
 }
 
-impl From<ProgrammingLangProgramFormingError> for ProgrammingLangError {
-    fn from(value: ProgrammingLangProgramFormingError) -> Self {
+impl From<ProgramFormingError> for ProgrammingLangError {
+    fn from(value: ProgramFormingError) -> Self {
         Self::ProgramForming(value)
     }
 }
 
-impl From<ProgrammingLangTypecheckingError> for ProgrammingLangError {
-    fn from(value: ProgrammingLangTypecheckingError) -> Self {
+impl From<TypecheckingError> for ProgrammingLangError {
+    fn from(value: TypecheckingError) -> Self {
         Self::Typechecking(value)
     }
 }
@@ -68,7 +68,7 @@ pub enum ProgrammingLangResolveError {
 }
 
 #[derive(Clone)]
-pub enum ProgrammingLangParsingError {
+pub enum ParsingError {
     ExpectedType {
         loc: Location,
         found: TokenType,
@@ -215,7 +215,7 @@ impl OperationType {
     }
 }
 
-impl ProgrammingLangParsingError {
+impl ParsingError {
     pub fn get_loc(&self) -> &Location {
         match self {
             Self::CannotDoBinaryOperation { loc, .. }
@@ -251,7 +251,7 @@ impl ProgrammingLangParsingError {
     }
 }
 
-impl Debug for ProgrammingLangParsingError {
+impl Debug for ParsingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::CannotDoBinaryOperation {
@@ -359,13 +359,14 @@ impl Debug for ProgrammingLangResolveError {
 }
 
 #[derive(Clone)]
-pub enum ProgrammingLangTokenizationError {
+pub enum TokenizationError {
     UnknownTokenError { loc: Location, character: char },
     InvalidNumberError { loc: Location },
     UnclosedString { loc: Location },
+    InvalidNumberType { loc: Location },
 }
 
-impl ProgrammingLangTokenizationError {
+impl TokenizationError {
     pub fn invalid_number(loc: Location) -> Self {
         Self::InvalidNumberError { loc }
     }
@@ -380,27 +381,35 @@ impl ProgrammingLangTokenizationError {
         match self {
             Self::UnclosedString { loc }
             | Self::InvalidNumberError { loc }
+            | Self::InvalidNumberType { loc }
             | Self::UnknownTokenError { loc, .. } => &loc,
         }
     }
 }
 
-impl Debug for ProgrammingLangTokenizationError {
+impl Debug for TokenizationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self.get_loc(), f)?;
         f.write_str(": ")?;
         match self {
-            Self::UnclosedString { .. } => f.write_str("Expected `\"`, but found nothing"),
-            Self::InvalidNumberError { .. } => f.write_str("Could not parse the number"),
-            Self::UnknownTokenError { character, .. } => {
-                f.write_fmt(format_args!("Unknown Token: `{character}`"))
+            Self::UnclosedString { loc } => {
+                f.write_fmt(format_args!("{loc}: Expected `\"`, but found nothing"))
+            }
+            Self::InvalidNumberError { loc } => {
+                f.write_fmt(format_args!("{loc}: Could not parse the number"))
+            }
+            Self::UnknownTokenError { character, loc } => {
+                f.write_fmt(format_args!("{loc}: Unknown Token: `{character}`"))
+            }
+            Self::InvalidNumberType { loc } => {
+                f.write_fmt(format_args!("{loc}: Invalid number type"))
             }
         }
     }
 }
 
 #[derive(Clone)]
-pub enum ProgrammingLangProgramFormingError {
+pub enum ProgramFormingError {
     NoCodeOutsideOfFunctions(Location),
     AnonymousFunctionAtGlobalLevel(Location),
     GlobalValueNoLiteral(Location),
@@ -409,7 +418,7 @@ pub enum ProgrammingLangProgramFormingError {
     IdentAlreadyDefined(Location, GlobalStr),
 }
 
-impl Debug for ProgrammingLangProgramFormingError {
+impl Debug for ProgramFormingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoCodeOutsideOfFunctions(loc) => {
