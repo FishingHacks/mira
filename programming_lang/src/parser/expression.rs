@@ -103,6 +103,52 @@ impl Path {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathWithoutGenerics {
+    pub entries: Vec<GlobalStr>,
+}
+
+impl PathWithoutGenerics {
+    pub fn push(&mut self, name: GlobalStr) {
+        self.entries.push(name)
+    }
+    pub fn pop(&mut self) -> Option<GlobalStr> {
+        // ensure this is at least 1 element
+        if self.entries.len() > 1 {
+            self.entries.pop()
+        } else {
+            None
+        }
+    }
+    pub fn new(entry: GlobalStr) -> Self {
+        Self {
+            entries: vec![entry],
+        }
+    }
+    pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
+        let mut path = Self::new(parser.expect_identifier()?);
+
+        while parser.match_tok(TokenType::NamespaceAccess) {
+            let subpath = parser.expect_identifier()?;
+            path.push(subpath);
+        }
+
+        Ok(path)
+    }
+}
+
+impl Display for PathWithoutGenerics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for i in 0..self.entries.len() {
+            if i != 0 {
+                f.write_str("::")?;
+            }
+            Display::fmt(&self.entries[i], f)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum LiteralValue {
     String(GlobalStr),

@@ -11,7 +11,7 @@ use crate::{
     tokenizer::{Literal, TokenType},
 };
 
-use super::{Annotations, Parser, Path};
+use super::{expression::PathWithoutGenerics, Annotations, Parser, Path};
 
 pub static RESERVED_TYPE_NAMES: &[&'static str] = &[
     "str", "bool", "char", "void", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
@@ -20,9 +20,18 @@ pub static RESERVED_TYPE_NAMES: &[&'static str] = &[
 
 #[derive(Clone, Eq, Debug)]
 pub enum TypeRef {
+    DynReference {
+        num_references: u8,
+        loc: Location,
+        /// Has a list of traits and whether or not they're optional (only applicable to Sized as
+        /// in ?Sized, but because it could also be `?std::Sized`, `?TypeLengthKnown` or anything
+        /// that is marked with @lang_ref("sized_trait") or @lang("sized_trait"), we have to make
+        /// it applicable for every possible trait.)
+        traits: Vec<(bool, PathWithoutGenerics)>,
+    },
     Reference {
         num_references: u8,
-        type_name: GlobalStr,
+        type_name: Path,
         loc: Location,
     },
     Void(Location, u8),
@@ -46,6 +55,17 @@ impl Display for TypeRef {
             f.write_char('&')?;
         }
         match self {
+            Self::DynReference { traits, .. } => {
+                f.write_str("dyn")?;
+                for (optional, trait_name) in traits {
+                    f.write_char(' ')?;
+                    if *optional {
+                        f.write_char('?')?;
+                    }
+                    Display::fmt(trait_name, f)?;
+                }
+                Ok(())
+            }
             Self::Reference { type_name, .. } => Display::fmt(type_name, f),
             Self::UnsizedArray { child, .. } => {
                 f.write_char('[')?;
@@ -75,13 +95,22 @@ impl TypeRef {
             return None;
         }
         Some(match self {
+            Self::DynReference {
+                num_references,
+                loc,
+                traits,
+            } => Self::DynReference {
+                num_references: num_references - 1,
+                loc,
+                traits,
+            },
             Self::Reference {
                 num_references: number_of_references,
                 type_name,
                 loc,
             } => Self::Reference {
                 num_references: number_of_references - 1,
-                type_name: type_name,
+                type_name,
                 loc,
             },
             Self::UnsizedArray {
@@ -116,25 +145,17 @@ impl TypeRef {
 
     pub fn get_ref_count(&self) -> u8 {
         match self {
-            Self::Void(_, number_of_references)
-            | Self::Reference {
-                num_references: number_of_references,
-                ..
-            }
-            | Self::UnsizedArray {
-                num_references: number_of_references,
-                ..
-            }
-            | Self::SizedArray {
-                num_references: number_of_references,
-                ..
-            } => *number_of_references,
+            Self::Void(_, num_references)
+            | Self::Reference { num_references, .. }
+            | Self::UnsizedArray { num_references, .. }
+            | Self::DynReference { num_references, .. }
+            | Self::SizedArray { num_references, .. } => *num_references,
             Self::Never(_) => 0,
         }
     }
 
     pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
-        let mut number_of_references = 0;
+        let mut num_references = 0;
 
         while !parser.is_at_end() {
             // <type> = <subtype> | &<type>
@@ -142,11 +163,11 @@ impl TypeRef {
             // <sized-or-unsized> = <type>; <number> | <type>
 
             if parser.match_tok(TokenType::Ampersand) {
-                number_of_references += 1;
+                num_references += 1;
                 continue;
             }
             if parser.match_tok(TokenType::LogicalAnd) {
-                number_of_references += 2;
+                num_references += 2;
                 continue;
             }
 
@@ -177,7 +198,7 @@ impl TypeRef {
                     }
 
                     return Ok(Self::SizedArray {
-                        num_references: number_of_references,
+                        num_references,
                         child,
                         number_elements: lit as usize,
                         loc,
@@ -190,25 +211,31 @@ impl TypeRef {
                     });
                 } else {
                     return Ok(Self::UnsizedArray {
-                        num_references: number_of_references,
+                        num_references,
                         child,
                         loc,
                     });
                 }
             } else if parser.match_tok(TokenType::LogicalNot) {
                 return Ok(Self::Reference {
-                    num_references: number_of_references,
-                    type_name: GlobalStr::new("!"),
+                    num_references,
+                    type_name: Path::new(GlobalStr::new("!"), Vec::new()),
                     loc,
                 });
             } else if parser.match_tok(TokenType::VoidLiteral) {
-                return Ok(Self::Void(loc, number_of_references));
-            } else if let Some(ident) = parser.expect_identifier().ok() {
-                return Ok(Self::Reference {
-                    num_references: number_of_references,
-                    type_name: ident,
-                    loc,
-                });
+                return Ok(Self::Void(loc, num_references));
+            } else if parser.peek().typ == TokenType::IdentifierLiteral {
+                return match parser.peek().literal {
+                    Some(Literal::String(ref v)) if *v == "dyn" => {
+                        Self::parse_dyn(parser, num_references, loc)
+                    }
+                    Some(Literal::String(_)) => Ok(Self::Reference {
+                        num_references,
+                        type_name: Path::parse(parser)?,
+                        loc,
+                    }),
+                    _ => return Err(ParsingError::InvalidTokenization { loc }),
+                };
             } else {
                 return Err(ParsingError::ExpectedType {
                     loc: parser.peek().location.clone(),
@@ -223,12 +250,40 @@ impl TypeRef {
         });
     }
 
+    fn parse_dyn(
+        parser: &mut Parser,
+        num_references: u8,
+        loc: Location,
+    ) -> Result<Self, ParsingError> {
+        parser.advance();
+        let mut traits = vec![];
+
+        loop {
+            if traits.len() > 0 && !parser.match_tok(TokenType::Plus) {
+                break;
+            }
+
+            let is_optional = parser.match_tok(TokenType::QuestionMark);
+            if parser.peek().typ != TokenType::IdentifierLiteral {
+                break;
+            }
+            traits.push((is_optional, PathWithoutGenerics::parse(parser)?));
+        }
+
+        return Ok(Self::DynReference {
+            num_references,
+            loc,
+            traits,
+        });
+    }
+
     pub fn loc(&self) -> &Location {
         match self {
             Self::Never(loc)
             | Self::Void(loc, _)
             | Self::Reference { loc, .. }
             | Self::SizedArray { loc, .. }
+            | Self::DynReference { loc, .. }
             | Self::UnsizedArray { loc, .. } => loc,
         }
     }
@@ -247,6 +302,18 @@ impl PartialEq for TypeRef {
                     type_name: other_type,
                     loc: _,
                 } => *other_nor == *self_nor && self_type == other_type,
+                _ => false,
+            },
+            Self::DynReference {
+                num_references: self_nor,
+                traits: self_traits,
+                ..
+            } => match other {
+                Self::DynReference {
+                    num_references: other_nor,
+                    traits: other_traits,
+                    ..
+                } => *other_nor == *self_nor && *self_traits == *other_traits,
                 _ => false,
             },
             Self::SizedArray {
@@ -302,5 +369,5 @@ pub struct Struct {
 #[derive(Debug, Clone)]
 pub struct Generic {
     pub name: GlobalStr,
-    pub bounds: Vec<Path>,
+    pub bounds: Vec<(PathWithoutGenerics, Location)>,
 }

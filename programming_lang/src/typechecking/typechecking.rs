@@ -2,7 +2,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     globals::GlobalStr,
-    module::{ExternalFunctionId, FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StructId},
+    module::{
+        ExternalFunctionId, FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StructId,
+        TraitId,
+    },
     parser::{Expression, LiteralValue, Statement},
     tokenizer::Location,
 };
@@ -18,6 +21,7 @@ pub enum ScopeValue {
     Variable(Type),
     Struct(StructId),
     Function(FunctionId),
+    Trait(TraitId),
     ExternalFunction(ExternalFunctionId),
 }
 
@@ -43,6 +47,7 @@ impl Scopes {
                 ModuleScopeValue::Struct(id) => ScopeValue::Struct(id),
                 ModuleScopeValue::Static(id) => ScopeValue::Variable(statics[id].0.clone()),
                 ModuleScopeValue::Module(id) => ScopeValue::Module(id),
+                ModuleScopeValue::Trait(id) => ScopeValue::Trait(id),
             };
             values.insert(k.clone(), v);
         }
@@ -248,6 +253,8 @@ fn typecheck_statement(
         | Statement::BakedStatic(..)
         | Statement::Struct { .. }
         | Statement::Export(..)
+        | Statement::Trait(_)
+        | Statement::BakedTrait(..)
         | Statement::BakedExternalFunction(..) => {
             unreachable!()
         }
@@ -368,7 +375,7 @@ fn typecheck_expression(
                     };
 
                     match typ {
-                        ScopeValue::Module(_) | ScopeValue::Struct(_) => {
+                        ScopeValue::Module(_) | ScopeValue::Struct(_) | ScopeValue::Trait(_) => {
                             return Err(TypecheckingError::UnboundIdent {
                                 location: location.clone(),
                                 name: name.clone(),

@@ -6,20 +6,61 @@ use std::{
 use crate::{
     error::ParsingError,
     globals::GlobalStr,
-    module::{FunctionId, Module, ModuleId, StaticId, StructId},
+    module::{FunctionId, Module, ModuleId, StaticId, StructId, TraitId},
     parser::{module_resolution::resolve_module, Annotation, ParserQueueEntry},
     tokenizer::{Literal, Location, TokenType},
 };
 
 use super::{
+    expression::PathWithoutGenerics,
     types::{Generic, TypeRef},
-    Annotations, Expression, Parser, Path,
+    Annotations, Expression, Parser,
 };
 
 #[derive(Clone, Debug)]
 pub enum BakableFunction {
     Function(Box<(FunctionContract, Statement)>),
     BakedFunction(FunctionId),
+}
+
+#[derive(Clone, Debug)]
+pub struct Trait {
+    pub name: GlobalStr,
+    pub functions: Vec<(GlobalStr, Vec<Argument>, TypeRef, Annotations, Location)>,
+    pub location: Location,
+    pub annotations: Annotations,
+    pub module_id: ModuleId,
+}
+
+impl Display for Trait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.annotations, f)?;
+
+        f.write_str("trait ")?;
+        Display::fmt(&self.name, f)?;
+        f.write_str("{\n")?;
+
+        for (name, args, return_type, annotations, _) in self.functions.iter() {
+            Display::fmt(annotations, f)?;
+            f.write_str("    fn ")?;
+            Display::fmt(name, f)?;
+            f.write_char('(')?;
+            for i in 0..args.len() {
+                if i != 0 {
+                    f.write_str(", ")?;
+                }
+                Display::fmt(&args[i], f)?;
+            }
+            f.write_char(')')?;
+            if !matches!(return_type, TypeRef::Void(_, 0)) {
+                f.write_str(" -> ")?;
+                Display::fmt(return_type, f)?;
+            }
+            f.write_str(";\n")?;
+        }
+
+        f.write_char('}')
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -56,8 +97,10 @@ pub enum Statement {
         location: Location,
         global_impl: HashMap<GlobalStr, (FunctionContract, Statement)>,
         impls: Vec<(GlobalStr, HashMap<GlobalStr, (FunctionContract, Statement)>)>,
+        generics: Vec<Generic>,
         annotations: Annotations,
     },
+    Trait(Trait),
     /// key (the name of the thing in the module), export key (the name during import), location
     Export(GlobalStr, GlobalStr, Location),
 
@@ -65,6 +108,7 @@ pub enum Statement {
     BakedExternalFunction(FunctionId, Location),
     BakedStruct(StructId, Location),
     BakedStatic(StaticId, Location),
+    BakedTrait(TraitId, Location),
 }
 
 impl Statement {
@@ -84,6 +128,8 @@ impl Statement {
             | Self::BakedExternalFunction(_, location)
             | Self::BakedStruct(_, location)
             | Self::BakedStatic(_, location)
+            | Self::BakedTrait(_, location)
+            | Self::Trait(Trait { location, .. })
             | Self::While { location, .. } => location,
         }
     }
@@ -93,6 +139,8 @@ impl Statement {
             Self::BakedFunction(..)
             | Self::ExternalFunction(_, None)
             | Self::BakedExternalFunction(..)
+            | Self::Trait { .. }
+            | Self::BakedTrait(..)
             | Self::BakedStatic(..)
             | Self::BakedStruct(..)
             | Self::Return(None, ..)
@@ -168,7 +216,9 @@ impl Display for Statement {
             }
             Self::BakedStruct(id, _) => f.write_fmt(format_args!("(module-struct {id:08x})")),
             Self::BakedStatic(id, _) => f.write_fmt(format_args!("(module-static {id:08x})")),
+            Self::BakedTrait(id, _) => f.write_fmt(format_args!("(module-trait {id:08x})")),
 
+            Self::Trait(r#trait) => Display::fmt(&r#trait, f),
             Self::Var(left_hand, right_hand, None, _) => {
                 f.write_fmt(format_args!("(var-assign {left_hand} {right_hand})"))
             }
@@ -231,9 +281,30 @@ impl Display for Statement {
                 name,
                 elements: arguments,
                 location: _,
+                generics,
                 ..
             } => {
+                f.write_str("struct ")?;
                 Display::fmt(name, f)?;
+                if generics.len() > 0 {
+                    f.write_char('<')?;
+                    for i in 0..generics.len() {
+                        let generic = &generics[i];
+                        if i != 0 {
+                            f.write_str(", ")?;
+                        }
+                        Display::fmt(&generic.name, f)?;
+                        if generic.bounds.len() > 0 {
+                            for i in 0..generic.bounds.len() {
+                                if i != 0 {
+                                    f.write_str(" + ")?;
+                                }
+                                Display::fmt(&generic.bounds[i].0, f)?;
+                            }
+                        }
+                    }
+                    f.write_char('>')?;
+                }
                 f.write_str(" {\n")?;
 
                 for arg_name in arguments {
@@ -302,7 +373,7 @@ pub fn display_contract(
                     if i != 0 {
                         f.write_str(" + ")?;
                     }
-                    Display::fmt(&generic.bounds[i], f)?;
+                    Display::fmt(&generic.bounds[i].0, f)?;
                 }
             }
         }
@@ -416,6 +487,7 @@ impl Parser {
             TokenType::Struct if !is_global => invalid_kw!("struct definition"),
             TokenType::Use if !is_global => invalid_kw!("use"),
             TokenType::Export if !is_global => invalid_kw!("export"),
+            TokenType::Trait if !is_global => invalid_kw!("trait"),
 
             TokenType::Return if is_global => invalid_kw!("return"),
             TokenType::CurlyLeft if is_global => invalid_kw!("code block"),
@@ -423,6 +495,7 @@ impl Parser {
             TokenType::While if is_global => invalid_kw!("while loop"),
             TokenType::For if is_global => invalid_kw!("for loop"),
 
+            TokenType::Trait => self.parse_trait().map(Some),
             TokenType::Let => self.parse_let_stmt().map(Some),
             TokenType::CurlyLeft => self.parse_block_stmt().map(Some),
             TokenType::Return => self.parse_return_stmt().map(Some),
@@ -597,6 +670,112 @@ impl Parser {
         );
         self.consume_semicolon()?;
         Ok(())
+    }
+
+    fn parse_trait_fn(
+        &mut self,
+    ) -> Result<(GlobalStr, Vec<Argument>, TypeRef, Annotations, Location), ParsingError> {
+        let location = self.tokens[self.current].location.clone();
+        let name = self.expect_identifier()?;
+
+        let mut arguments = vec![];
+
+        if !self.match_tok(TokenType::ParenLeft) {
+            return Err(ParsingError::ExpectedArbitrary {
+                loc: self.peek().location.clone(),
+                found: self.peek().typ,
+                expected: TokenType::ParenLeft,
+            });
+        }
+
+        while !self.match_tok(TokenType::ParenRight) {
+            if arguments.len() > 0 {
+                if !self.match_tok(TokenType::Comma) {
+                    return Err(ParsingError::ExpectedFunctionArgument {
+                        loc: self.peek().location.clone(),
+                        found: self.peek().typ,
+                    });
+                }
+
+                // for trailing comma
+                if self.match_tok(TokenType::ParenRight) {
+                    break;
+                }
+            }
+
+            let name = self.expect_identifier()?.clone();
+            if !self.match_tok(TokenType::Colon) {
+                return Err(ParsingError::ExpectedArbitrary {
+                    loc: self.previous().location.clone(),
+                    expected: TokenType::Colon,
+                    found: self.previous().typ,
+                });
+            }
+
+            arguments.push(Argument::new(TypeRef::parse(self)?, name))
+        }
+
+        let return_type = if self.match_tok(TokenType::ReturnType) {
+            TypeRef::parse(self)?
+        } else {
+            TypeRef::Void(self.peek().location.clone(), 0)
+        };
+
+        if !self.match_tok(TokenType::Semicolon) {
+            return Err(ParsingError::ExpectedArbitrary {
+                loc: self.peek().location.clone(),
+                expected: TokenType::Semicolon,
+                found: self.peek().typ,
+            });
+        }
+
+        Ok((
+            name,
+            arguments,
+            return_type,
+            std::mem::take(&mut self.current_annotations),
+            location,
+        ))
+    }
+
+    fn parse_trait(&mut self) -> Result<Statement, ParsingError> {
+        let location = self.advance().location.clone(); // skip `trait`
+        let name = self.expect_identifier()?;
+
+        if !self.match_tok(TokenType::CurlyLeft) {
+            return Err(ParsingError::ExpectedArbitrary {
+                loc: self.peek().location.clone(),
+                expected: TokenType::CurlyLeft,
+                found: self.peek().typ,
+            });
+        }
+
+        let annotations = std::mem::take(&mut self.current_annotations);
+        let mut functions = Vec::new();
+
+        while !self.match_tok(TokenType::CurlyRight) {
+            if self.match_tok(TokenType::AnnotationIntroducer) {
+                self.parse_annotation()?;
+                continue;
+            } else if self.match_tok(TokenType::Fn) {
+                let func = self.parse_trait_fn()?;
+                functions.push(func);
+            } else {
+                return Err(ParsingError::ExpectedArbitrary {
+                    loc: self.peek().location.clone(),
+                    expected: TokenType::Fn,
+                    found: self.peek().typ,
+                });
+            }
+        }
+
+        Ok(Statement::Trait(Trait {
+            name,
+            functions,
+            location,
+            annotations,
+            module_id: 0,
+        }))
     }
 
     fn parse_path_no_generics(&mut self) -> Result<Vec<GlobalStr>, ParsingError> {
@@ -783,6 +962,48 @@ impl Parser {
         // implementation area no trait: fn implementation area no trait | ""
         let location = self.advance().location.clone(); // skip over `struct`
         let name = self.expect_identifier()?;
+
+        let mut generics = vec![];
+        if self.match_tok(TokenType::LessThan) {
+            while !self.match_tok(TokenType::GreaterThan) {
+                if generics.len() > 1 {
+                    if !self.match_tok(TokenType::Comma) {
+                        return Err(ParsingError::ExpectedArbitrary {
+                            loc: self.peek().location.clone(),
+                            expected: TokenType::Comma,
+                            found: self.peek().typ,
+                        });
+                    }
+                    if self.match_tok(TokenType::GreaterThan) {
+                        break;
+                    }
+                }
+
+                let name = self.expect_identifier()?;
+                let mut bounds = vec![];
+                if self.match_tok(TokenType::Colon) {
+                    while self.peek().typ == TokenType::IdentifierLiteral
+                        || self.peek().typ == TokenType::Plus
+                    {
+                        if bounds.len() > 0 && !self.match_tok(TokenType::Plus) {
+                            return Err(ParsingError::ExpectedArbitrary {
+                                loc: self.peek().location.clone(),
+                                expected: TokenType::Plus,
+                                found: self.peek().typ,
+                            });
+                        }
+
+                        bounds.push((
+                            PathWithoutGenerics::parse(self)?,
+                            self.peek().location.clone(),
+                        ));
+                    }
+                }
+
+                generics.push(Generic { name, bounds });
+            }
+        }
+
         let mut elements = vec![];
 
         if !self.match_tok(TokenType::CurlyLeft) {
@@ -901,6 +1122,7 @@ impl Parser {
             global_impl,
             impls,
             annotations,
+            generics,
         })
     }
 
@@ -1221,7 +1443,10 @@ impl Parser {
                         });
                     }
 
-                    bounds.push(Path::parse(self)?);
+                    bounds.push((
+                        PathWithoutGenerics::parse(self)?,
+                        self.peek().location.clone(),
+                    ));
                 }
                 generics.push(Generic { name, bounds });
             } else {

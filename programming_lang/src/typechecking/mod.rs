@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fmt::{Debug, Write},
+    fmt::Debug,
     path::PathBuf,
     sync::{Arc, LazyLock, RwLock},
 };
@@ -10,15 +10,17 @@ use types::{resolve_primitive_type, Type};
 
 use crate::{
     globals::GlobalStr,
-    module::{FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StructId},
+    module::{FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StructId, TraitId},
     parser::{Annotations, LiteralValue, TypeRef},
     tokenizer::Location,
 };
 
+mod error;
 mod expression;
 mod statement;
 pub mod typechecking;
 mod types;
+pub use error::TypecheckingError;
 
 static DUMMY_LOCATION: LazyLock<Location> = LazyLock::new(|| Location {
     line: 0,
@@ -37,6 +39,25 @@ pub struct TypecheckedFunctionContract {
 }
 
 #[derive(Debug)]
+pub struct TypedTrait {
+    pub name: GlobalStr,
+    pub functions: HashMap<
+        GlobalStr,
+        (
+            GlobalStr,
+            Vec<(GlobalStr, Type)>,
+            Type,
+            Annotations,
+            Location,
+        ),
+    >,
+    pub location: Location,
+    pub module_id: ModuleId,
+    pub id: TraitId,
+    pub annotations: Annotations,
+}
+
+#[derive(Debug)]
 pub struct TypedStruct {
     pub name: GlobalStr,
     pub elements: Vec<(GlobalStr, Type)>,
@@ -45,6 +66,7 @@ pub struct TypedStruct {
     pub annotations: Annotations,
     pub module_id: ModuleId,
     pub id: StructId,
+    pub generics: HashMap<GlobalStr, Vec<TraitId>>,
 }
 
 #[derive(Debug)]
@@ -55,11 +77,13 @@ pub struct TypecheckingContext {
         RwLock<Vec<(TypecheckedFunctionContract, Option<TypecheckedStatement>)>>,
     pub statics: RwLock<Vec<(Type, LiteralValue, ModuleId, Location)>>,
     pub structs: RwLock<Vec<Arc<TypedStruct>>>,
+    pub traits: RwLock<Vec<TypedTrait>>,
 }
 
 pub struct TypecheckedModule {
     context: Arc<TypecheckingContext>,
     scope: HashMap<GlobalStr, ModuleScopeValue>,
+    exports: HashMap<GlobalStr, GlobalStr>,
 }
 
 impl Debug for TypecheckedModule {
@@ -73,6 +97,7 @@ impl Debug for TypecheckedModule {
 impl TypecheckingContext {
     pub fn new(context: Arc<ModuleContext>) -> Arc<Self> {
         let modules = RwLock::new(Vec::new());
+        let traits_reader = context.traits.read().expect("read-write lock is poisoned");
         let structs_reader = context.structs.read().expect("read-write lock is poisoned");
         let statics_reader = context.statics.read().expect("read-write lock is poisoned");
         let functions_reader = context
@@ -83,11 +108,13 @@ impl TypecheckingContext {
             .external_functions
             .read()
             .expect("read-write lock is poisoned");
+        let num_traits = traits_reader.len();
         let num_structs = structs_reader.len();
         let num_statics = statics_reader.len();
         let num_functions = functions_reader.len();
         let num_external_functions = external_functions_reader.len();
 
+        let mut traits = Vec::with_capacity(num_traits);
         let mut structs = Vec::with_capacity(num_structs);
         let mut statics = Vec::with_capacity(num_statics);
         let mut functions = Vec::with_capacity(num_functions);
@@ -101,6 +128,7 @@ impl TypecheckingContext {
                 global_impl: HashMap::new(),
                 annotations: Annotations::default(),
                 module_id: 0,
+                generics: HashMap::new(),
                 id,
             }));
         }
@@ -142,10 +170,22 @@ impl TypecheckingContext {
             ))
         }
 
+        for _ in 0..num_traits {
+            traits.push(TypedTrait {
+                name: GlobalStr::zeroed(),
+                functions: HashMap::new(),
+                location: DUMMY_LOCATION.clone(),
+                module_id: 0,
+                id: 0,
+                annotations: Annotations::default(),
+            });
+        }
+
         let me = Arc::new(Self {
             structs: structs.into(),
             statics: statics.into(),
             functions: functions.into(),
+            traits: traits.into(),
             external_functions: external_functions.into(),
             modules,
         });
@@ -154,11 +194,13 @@ impl TypecheckingContext {
             me.modules.write().expect("read-write lock is poisoned");
         let module_reader = context.modules.read().expect("read-write lock is poisoned");
 
-        let scope = module_reader[typechecked_module_writer.len()].scope.clone();
+        let module_id = typechecked_module_writer.len();
+        let scope = module_reader[module_id].scope.clone();
 
         typechecked_module_writer.push(TypecheckedModule {
             context: me.clone(),
             scope,
+            exports: module_reader[module_id].exports.clone(),
         });
 
         drop(module_reader);
@@ -174,7 +216,7 @@ impl TypecheckingContext {
         let module_reader = context.modules.read().expect("read-write lock is poisoned");
         for id in 0..typechecked_module_writer.len() {
             for (name, (location, module_id, path)) in module_reader[id].imports.iter() {
-                match resolve_import(context.clone(), *module_id, path, location, &mut Vec::new()) {
+                match resolve_import(&context, *module_id, path, location, &mut Vec::new()) {
                     Err(e) => errors.push(e),
                     Ok(k) => {
                         typechecked_module_writer[id].scope.insert(name.clone(), k);
@@ -187,6 +229,11 @@ impl TypecheckingContext {
     }
 
     /// Resolves the types; This should be ran *after* [Self::resolve_imports]
+    ///
+    /// NOTE: this could potentially deadlock as i write-lock the rwlocks in the context a bunch
+    /// and don't free them until fully resolving a value. This module is designed in a way that
+    /// such a deadlock should never happen but.. uhh... :3c :3
+    /// meow
     pub fn resolve_types(&self, context: Arc<ModuleContext>) -> Vec<TypecheckingError> {
         let mut errors = Vec::new();
 
@@ -349,6 +396,69 @@ impl TypecheckingContext {
             }
         }
 
+        // +--------+
+        // | Traits |
+        // +--------+
+        let num_traits = context
+            .traits
+            .read()
+            .expect("read-write lock is poisoned")
+            .len();
+        for trait_id in 0..num_traits {
+            let mut writer = context.traits.write().expect("read-write lock is poisoned");
+            let location =
+                std::mem::replace(&mut writer[trait_id].location, DUMMY_LOCATION.clone());
+            let name = writer[trait_id].name.clone();
+            let annotations = std::mem::take(&mut writer[trait_id].annotations);
+            let functions = std::mem::take(&mut writer[trait_id].functions);
+            let module_id = writer[trait_id].module_id;
+            drop(writer);
+
+            let mut typed_functions = HashMap::new();
+            let error_count = errors.len();
+
+            for (name, arguments, return_type, annotations, location) in functions {
+                let typed_return_type = match self.resolve_type(module_id, &return_type, &[]) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        errors.push(e);
+                        continue;
+                    }
+                };
+
+                let mut typed_arguments = Vec::new();
+
+                for arg in arguments {
+                    match self.resolve_type(module_id, &arg.typ, &[]) {
+                        Ok(v) => typed_arguments.push((arg.name, v)),
+                        Err(e) => errors.push(e),
+                    }
+                }
+
+                typed_functions.insert(
+                    name.clone(),
+                    (
+                        name,
+                        typed_arguments,
+                        typed_return_type,
+                        annotations,
+                        location,
+                    ),
+                );
+            }
+
+            if errors.len() == error_count {
+                self.traits.write().expect("read-write lock is poisoned")[trait_id] = TypedTrait {
+                    name,
+                    location,
+                    id: trait_id,
+                    module_id,
+                    annotations,
+                    functions: typed_functions,
+                };
+            }
+        }
+
         return errors;
     }
 
@@ -363,29 +473,43 @@ impl TypecheckingContext {
         }
 
         match typ {
+            TypeRef::DynReference { .. } => todo!(),
             TypeRef::Reference {
                 num_references,
                 type_name,
                 loc,
             } => {
-                if generics.contains(type_name) {
-                    return Ok(Type::Generic(type_name.clone(), *num_references));
+                if type_name.entries.len() == 1 && type_name.entries[0].1.len() == 0 {
+                    if generics.contains(&type_name.entries[0].0) {
+                        return Ok(Type::Generic(
+                            type_name.entries[0].0.clone(),
+                            *num_references,
+                        ));
+                    }
                 }
-                match self.modules.read().expect("read-write lock is poisoned")[module_id]
-                    .scope
-                    .get(type_name)
-                    .copied()
-                {
-                    None => Err(TypecheckingError::UnboundIdent {
-                        location: loc.clone(),
-                        name: type_name.clone(),
-                    }),
-                    Some(ModuleScopeValue::Struct(id)) => Ok(Type::Struct {
+
+                let path = type_name
+                    .entries
+                    .iter()
+                    .map(|v| v.0.clone())
+                    .collect::<Vec<_>>();
+                // NOTE: this should only have a generic at the end as this is a type
+                // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
+                for (_, generics) in type_name.entries.iter() {
+                    if generics.len() > 0 {
+                        return Err(TypecheckingError::UnexpectedGenerics {
+                            location: loc.clone(),
+                        });
+                    }
+                }
+
+                match typed_resolve_import(self, module_id, &path, loc, &mut Vec::new())? {
+                    ModuleScopeValue::Struct(id) => Ok(Type::Struct {
                         structure: self.structs.read().expect("read-write lock is poisoned")[id]
                             .clone(),
                         num_references: *num_references,
                     }),
-                    Some(v) => Err(TypecheckingError::MismatchingScopeType {
+                    v => Err(TypecheckingError::MismatchingScopeType {
                         location: loc.clone(),
                         expected: ScopeKind::Type,
                         found: v.into(),
@@ -439,6 +563,24 @@ impl TypecheckingContext {
         let global_impl = std::mem::take(&mut writer[id].global_impl);
         let annotations = std::mem::take(&mut writer[id].annotations);
         let elements = std::mem::take(&mut writer[id].elements);
+        let mut generics = HashMap::new();
+
+        for generic in &writer[id].generics {
+            let mut bounds = Vec::new();
+
+            for (bound, loc) in &generic.bounds {
+                match resolve_import(&context, module_id, &bound.entries, loc, &mut Vec::new()) {
+                    Err(e) => errors.push(e),
+                    Ok(ModuleScopeValue::Trait(trait_id)) => bounds.push(trait_id),
+                    Ok(_) => errors.push(TypecheckingError::UnboundIdent {
+                        location: loc.clone(),
+                        name: bound.entries[bound.entries.len() - 1].clone(),
+                    }),
+                }
+            }
+
+            generics.insert(generic.name.clone(), bounds);
+        }
 
         let mut typed_struct = TypedStruct {
             name: writer[id].name.clone(),
@@ -448,13 +590,30 @@ impl TypecheckingContext {
             annotations,
             module_id,
             id,
+            generics,
         };
         drop(writer);
 
         for element in elements {
-            if let Some(typ) =
-                self.type_resolution_resolve_type(&element.1, module_id, context.clone(), errors)
-            {
+            if let Some(typ) = self.type_resolution_resolve_type(
+                &element.1,
+                |generic_name| typed_struct.generics.contains_key(generic_name),
+                module_id,
+                context.clone(),
+                errors,
+            ) {
+                let typ = match typ {
+                    Type::Generic(real_name, num_references)
+                        if typed_struct.generics[&real_name].len() > 0 =>
+                    {
+                        Type::Trait {
+                            trait_refs: typed_struct.generics[&real_name].clone(),
+                            num_references,
+                            real_name,
+                        }
+                    }
+                    t => t,
+                };
                 typed_struct.elements.push((element.0, typ));
             }
         }
@@ -463,9 +622,10 @@ impl TypecheckingContext {
         false
     }
 
-    fn type_resolution_resolve_type(
+    fn type_resolution_resolve_type<F: Fn(&GlobalStr) -> bool>(
         &self,
         typ: &TypeRef,
+        is_generic_name: F,
         module: ModuleId,
         context: Arc<ModuleContext>,
         errors: &mut Vec<TypecheckingError>,
@@ -474,20 +634,37 @@ impl TypecheckingContext {
             return Some(typ);
         }
         match typ {
+            TypeRef::DynReference { .. } => todo!(),
             TypeRef::Reference {
                 num_references,
                 type_name,
                 loc,
             } => {
-                let Some(value) = context.modules.read().expect("read-write lock is poisoned")
-                    [module]
-                    .scope
-                    .get(type_name)
-                    .copied()
+                let path = type_name
+                    .entries
+                    .iter()
+                    .map(|v| v.0.clone())
+                    .collect::<Vec<_>>();
+                // NOTE: this should only have a generic at the end as this is a type
+                // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
+                for (_, generics) in type_name.entries.iter() {
+                    if generics.len() > 0 {
+                        return None;
+                    }
+                }
+
+                // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
+                if type_name.entries.len() == 1 && type_name.entries[0].1.len() == 0 {
+                    if is_generic_name(&type_name.entries[0].0) {
+                        return Some(Type::Generic(type_name.entries[0].0.clone(), 0));
+                    }
+                }
+
+                let Ok(value) = resolve_import(&context, module, &path, loc, &mut Vec::new())
                 else {
                     errors.push(TypecheckingError::UnboundIdent {
                         location: loc.clone(),
-                        name: type_name.clone(),
+                        name: path[path.len() - 1].clone(),
                     });
                     return None;
                 };
@@ -537,7 +714,13 @@ impl TypecheckingContext {
                 child,
                 loc: _,
             } => Some(Type::UnsizedArray {
-                typ: Box::new(self.type_resolution_resolve_type(child, module, context, errors)?),
+                typ: Box::new(self.type_resolution_resolve_type(
+                    child,
+                    is_generic_name,
+                    module,
+                    context,
+                    errors,
+                )?),
                 num_references: *num_references,
             }),
             TypeRef::SizedArray {
@@ -546,7 +729,13 @@ impl TypecheckingContext {
                 number_elements,
                 loc: _,
             } => Some(Type::SizedArray {
-                typ: Box::new(self.type_resolution_resolve_type(child, module, context, errors)?),
+                typ: Box::new(self.type_resolution_resolve_type(
+                    child,
+                    is_generic_name,
+                    module,
+                    context,
+                    errors,
+                )?),
                 num_references: *num_references,
                 number_elements: *number_elements,
             }),
@@ -554,8 +743,8 @@ impl TypecheckingContext {
     }
 }
 
-fn resolve_import(
-    context: Arc<ModuleContext>,
+fn typed_resolve_import(
+    context: &TypecheckingContext,
     module: ModuleId,
     import: &[GlobalStr],
     location: &Location,
@@ -576,34 +765,95 @@ fn resolve_import(
     already_included.push((module, import[0].clone()));
 
     let reader = context.modules.read().expect("read-write lock is poisoned");
-    let Some(ident) = reader[module].exports.get(&import[0]) else {
-        return Err(TypecheckingError::ExportNotFound {
+    let ident = match reader[module].exports.get(&import[0]) {
+        Some(ident) => ident,
+        None if already_included.len() < 2 /* this is the module it was imported from */ => &import[0],
+        None => return Err(TypecheckingError::ExportNotFound {
             location: location.clone(),
             name: import[0].clone(),
+        }),
+    };
+
+    if let Some(value) = reader[module].scope.get(ident).copied() {
+        if import.len() < 2 {
+            return Ok(value);
+        }
+        match value {
+            ModuleScopeValue::Struct(id) => {
+                let reader = context.structs.read().expect("read-write lock is poisoned");
+                if let Some(function_id) = reader[id].global_impl.get(&import[1]).copied() {
+                    if import.len() < 3 {
+                        return Ok(ModuleScopeValue::Function(function_id));
+                    }
+                    return Err(TypecheckingError::ExportNotFound {
+                        location: location.clone(),
+                        name: import[2].clone(),
+                    });
+                } else {
+                    return Err(TypecheckingError::ExportNotFound {
+                        location: reader[id].location.clone(),
+                        name: import[1].clone(),
+                    });
+                }
+            }
+            ModuleScopeValue::Module(_) => unreachable!(), // all modules must have been imports
+            ModuleScopeValue::Function(_)
+            | ModuleScopeValue::ExternalFunction(_)
+            | ModuleScopeValue::Trait(_)
+            | ModuleScopeValue::Static(_) => {
+                return Err(TypecheckingError::ExportNotFound {
+                    location: location.clone(),
+                    name: import[1].clone(),
+                })
+            }
+        }
+    }
+    Err(TypecheckingError::ExportNotFound {
+        location: location.clone(),
+        name: import[1].clone(),
+    })
+}
+
+fn resolve_import(
+    context: &ModuleContext,
+    module: ModuleId,
+    import: &[GlobalStr],
+    location: &Location,
+    already_included: &mut Vec<(ModuleId, GlobalStr)>,
+) -> Result<ModuleScopeValue, TypecheckingError> {
+    if import.len() < 1 {
+        return Ok(ModuleScopeValue::Module(module));
+    }
+    if already_included
+        .iter()
+        .find(|(mod_id, imp)| module.eq(mod_id) && import[0].eq(imp))
+        .is_some()
+    {
+        return Err(TypecheckingError::CyclicDependency {
+            location: location.clone(),
         });
+    }
+    already_included.push((module, import[0].clone()));
+
+    let reader = context.modules.read().expect("read-write lock is poisoned");
+    let ident = match reader[module].exports.get(&import[0]) {
+        Some(ident) => ident,
+        None if already_included.len() < 2 /* this is the module it was imported from */ => &import[0],
+        None => return Err(TypecheckingError::ExportNotFound {
+            location: location.clone(),
+            name: import[0].clone(),
+        }),
     };
 
     if let Some((sub_location, module, path)) = reader[module].imports.get(ident) {
-        let value = resolve_import(
-            context.clone(),
-            *module,
-            path,
-            sub_location,
-            already_included,
-        )?;
+        let value = resolve_import(context, *module, path, sub_location, already_included)?;
         if import.len() < 2 {
             return Ok(value);
         }
 
         match value {
             ModuleScopeValue::Module(id) => {
-                return resolve_import(
-                    context.clone(),
-                    id,
-                    &import[1..],
-                    location,
-                    already_included,
-                )
+                return resolve_import(context, id, &import[1..], location, already_included)
             }
             ModuleScopeValue::Struct(id) => {
                 let reader = context.structs.read().expect("read-write lock is poisoned");
@@ -630,6 +880,7 @@ fn resolve_import(
             }
             ModuleScopeValue::Function(_)
             | ModuleScopeValue::ExternalFunction(_)
+            | ModuleScopeValue::Trait(_)
             | ModuleScopeValue::Static(_) => {
                 return Err(TypecheckingError::ExportNotFound {
                     location: location.clone(),
@@ -663,6 +914,7 @@ fn resolve_import(
             ModuleScopeValue::Module(_) => unreachable!(), // all modules must have been imports
             ModuleScopeValue::Function(_)
             | ModuleScopeValue::ExternalFunction(_)
+            | ModuleScopeValue::Trait(_)
             | ModuleScopeValue::Static(_) => {
                 return Err(TypecheckingError::ExportNotFound {
                     location: location.clone(),
@@ -680,6 +932,7 @@ fn resolve_import(
 impl From<ModuleScopeValue> for ScopeKind {
     fn from(value: ModuleScopeValue) -> Self {
         match value {
+            ModuleScopeValue::Trait(_) => Self::Trait,
             ModuleScopeValue::Struct(_) => Self::Type,
             ModuleScopeValue::Static(_) => Self::Static,
             ModuleScopeValue::Module(_) => Self::Module,
@@ -690,120 +943,9 @@ impl From<ModuleScopeValue> for ScopeKind {
 
 #[derive(Debug, Clone, Copy)]
 pub enum ScopeKind {
+    Trait,
     Type,
     Function,
     Static,
     Module,
-}
-
-#[derive(Clone)]
-pub enum TypecheckingError {
-    ExportNotFound {
-        location: Location,
-        name: GlobalStr,
-    },
-    CyclicDependency {
-        location: Location,
-    },
-    UnboundIdent {
-        location: Location,
-        name: GlobalStr,
-    },
-    MismatchingScopeType {
-        location: Location,
-        expected: ScopeKind,
-        found: ScopeKind,
-    },
-    RecursiveTypeDetected {
-        location: Location,
-    },
-    BodyDoesNotAlwaysReturn {
-        location: Location,
-    },
-    MismatchingType {
-        expected: Type,
-        found: Type,
-        location: Location,
-    },
-    GenericFunctionPointer {
-        location: Location,
-    },
-    IdentifierIsNotStruct {
-        location: Location,
-        name: GlobalStr,
-    },
-    NoSuchFieldFound {
-        location: Location,
-        name: GlobalStr,
-    },
-    MissingField {
-        location: Location,
-        name: GlobalStr,
-    },
-    TypeIsNotAFunction {
-        location: Location,
-    },
-    MissingArguments {
-        location: Location,
-    },
-    TooManyArguments {
-        location: Location,
-    },
-}
-
-impl Debug for TypecheckingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ExportNotFound { location, name } => {
-                f.write_fmt(format_args!("{location}: could not find field {name}"))
-            }
-            Self::CyclicDependency { location } => {
-                f.write_fmt(format_args!("{location}: cyclic dependency detected"))
-            }
-            Self::UnboundIdent { location, name } => {
-                f.write_fmt(format_args!("{location}: Unbound identifier `{name}`"))
-            }
-            Self::MismatchingScopeType {
-                location,
-                expected,
-                found,
-            } => f.write_fmt(format_args!(
-                "{location}: Expected a {expected:?}, but foun a {found:?}"
-            )),
-            Self::RecursiveTypeDetected { location } => {
-                f.write_fmt(format_args!("{location}: Recursive type detected"))
-            }
-            Self::BodyDoesNotAlwaysReturn { location } => {
-                f.write_fmt(format_args!("{location}: body does not always return"))
-            }
-            Self::MismatchingType {
-                expected,
-                found,
-                location,
-            } => f.write_fmt(format_args!(
-                "{location}: Expected {expected}, but found {found}"
-            )),
-            Self::GenericFunctionPointer { location } => f.write_fmt(format_args!(
-                "{location}: Function pointers can't have generics"
-            )),
-            Self::IdentifierIsNotStruct { location, name } => {
-                f.write_fmt(format_args!("{location}: {name} is not a struct type"))
-            }
-            Self::NoSuchFieldFound { location, name } => {
-                f.write_fmt(format_args!("{location}: such field named `{name}` found!"))
-            }
-            Self::MissingField { location, name } => {
-                f.write_fmt(format_args!("{location}: missing field `{name}`"))
-            }
-            Self::TypeIsNotAFunction { location } => {
-                f.write_fmt(format_args!("{location}: Expected a function"))
-            }
-            Self::MissingArguments { location } => {
-                f.write_fmt(format_args!("{location}: Function misses arguments"))
-            }
-            Self::TooManyArguments { location } => f.write_fmt(format_args!(
-                "{location}: Function expects no more arguments"
-            )),
-        }
-    }
 }

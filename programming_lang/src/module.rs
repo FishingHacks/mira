@@ -7,12 +7,15 @@ use std::{
 use crate::{
     error::ProgramFormingError,
     globals::GlobalStr,
-    parser::{Annotations, Expression, FunctionContract, LiteralValue, Statement, TypeRef},
+    parser::{
+        Annotations, Expression, FunctionContract, Generic, LiteralValue, Statement, Trait, TypeRef,
+    },
     tokenizer::Location,
 };
 
 pub type ModuleId = usize;
 pub type StructId = usize;
+pub type TraitId = usize;
 pub type FunctionId = usize;
 pub type StaticId = usize;
 pub type ExternalFunctionId = usize;
@@ -24,6 +27,7 @@ pub enum ModuleScopeValue {
     Struct(StructId),
     Static(StaticId),
     Module(ModuleId),
+    Trait(TraitId),
 }
 
 #[derive(Debug)]
@@ -35,6 +39,7 @@ pub struct BakedStruct {
     pub impls: Vec<(GlobalStr, HashMap<GlobalStr, FunctionId>)>,
     pub annotations: Annotations,
     pub module_id: ModuleId,
+    pub generics: Vec<Generic>,
 }
 
 #[derive(Default)]
@@ -44,6 +49,7 @@ pub struct ModuleContext {
     pub external_functions: RwLock<Vec<(FunctionContract, Option<Statement>, ModuleId)>>,
     pub statics: RwLock<Vec<(TypeRef, LiteralValue, ModuleId, Location)>>, // TODO: const-eval for statics
     pub structs: RwLock<Vec<BakedStruct>>,
+    pub traits: RwLock<Vec<Trait>>,
 }
 
 impl Debug for ModuleContext {
@@ -159,6 +165,23 @@ impl Module {
                 let fn_id = self.push_fn(contract, *body, module_id);
                 self.scope.insert(name, ModuleScopeValue::Function(fn_id));
             }
+            Statement::Trait(mut r#trait) => {
+                r#trait.module_id = module_id;
+                if self.scope.contains_key(&r#trait.name)
+                    || self.imports.contains_key(&r#trait.name)
+                {
+                    return Err(ProgramFormingError::IdentAlreadyDefined(
+                        r#trait.location.clone(),
+                        r#trait.name.clone(),
+                    ));
+                }
+
+                let mut writer = self.context.traits.write().expect("failed to lock rw lock");
+                let name = r#trait.name.clone();
+                writer.push(r#trait);
+                self.scope
+                    .insert(name, ModuleScopeValue::Trait(writer.len() - 1));
+            }
             Statement::Struct {
                 name,
                 elements,
@@ -166,6 +189,7 @@ impl Module {
                 global_impl,
                 impls,
                 annotations,
+                generics,
             } => {
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
@@ -197,6 +221,7 @@ impl Module {
                     global_impl: baked_global_impl,
                     impls: baked_impls,
                     module_id,
+                    generics,
                 };
 
                 let mut writer = self

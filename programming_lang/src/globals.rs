@@ -77,11 +77,11 @@ impl PartialEq for GlobalStr {
     }
 }
 
-impl PartialEq<str> for GlobalStr {
-    fn eq(&self, other: &str) -> bool {
+impl PartialEq<&str> for GlobalStr {
+    fn eq(&self, other: &&str) -> bool {
         STRINGS.with_borrow(|strings: &GlobalStrs| {
             if let Some(v) = strings.get(self.0) {
-                (*v.value).eq(other)
+                (*v.value).eq(*other)
             } else {
                 false
             }

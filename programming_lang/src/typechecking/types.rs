@@ -3,9 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use crate::{globals::GlobalStr, parser::TypeRef, tokenizer::NumberType};
+use crate::{globals::GlobalStr, module::TraitId, parser::TypeRef, tokenizer::NumberType};
 
-use super::TypedStruct;
+use super::{TypedStruct, TypedTrait};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionType {
@@ -15,6 +15,15 @@ pub struct FunctionType {
 
 #[derive(Debug, Clone)]
 pub enum Type {
+    Trait {
+        trait_refs: Vec<TraitId>,
+        num_references: u8,
+        real_name: GlobalStr,
+    },
+    DynType {
+        trait_refs: Vec<Arc<TypedTrait>>,
+        num_references: u8,
+    },
     Struct {
         structure: Arc<TypedStruct>,
         num_references: u8,
@@ -62,26 +71,31 @@ pub fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
             num_references: number_of_references,
             type_name,
             loc: _,
-        } => type_name.with(|type_name| match type_name {
-            "!" => Some(Type::PrimitiveNever),
-            "void" => Some(Type::PrimitiveVoid(*number_of_references)),
-            "i8" => Some(Type::PrimitiveI8(*number_of_references)),
-            "i16" => Some(Type::PrimitiveI16(*number_of_references)),
-            "i32" => Some(Type::PrimitiveI32(*number_of_references)),
-            "i64" => Some(Type::PrimitiveI64(*number_of_references)),
-            "u8" => Some(Type::PrimitiveU8(*number_of_references)),
-            "u16" => Some(Type::PrimitiveU16(*number_of_references)),
-            "u32" => Some(Type::PrimitiveU32(*number_of_references)),
-            "u64" => Some(Type::PrimitiveU64(*number_of_references)),
-            "f32" => Some(Type::PrimitiveF32(*number_of_references)),
-            "f64" => Some(Type::PrimitiveF64(*number_of_references)),
-            "bool" => Some(Type::PrimitiveBool(*number_of_references)),
-            "str" => Some(Type::PrimitiveStr(*number_of_references)),
-            "isize" => Some(Type::PrimitiveISize(*number_of_references)),
-            "usize" => Some(Type::PrimitiveUSize(*number_of_references)),
-            _ => None,
-        }),
-        TypeRef::SizedArray { .. } | TypeRef::UnsizedArray { .. } => None,
+        } if type_name.entries.len() == 1 && type_name.entries[0].1.len() == 0 => {
+            type_name.entries[0].0.with(|type_name| match type_name {
+                "!" => Some(Type::PrimitiveNever),
+                "void" => Some(Type::PrimitiveVoid(*number_of_references)),
+                "i8" => Some(Type::PrimitiveI8(*number_of_references)),
+                "i16" => Some(Type::PrimitiveI16(*number_of_references)),
+                "i32" => Some(Type::PrimitiveI32(*number_of_references)),
+                "i64" => Some(Type::PrimitiveI64(*number_of_references)),
+                "u8" => Some(Type::PrimitiveU8(*number_of_references)),
+                "u16" => Some(Type::PrimitiveU16(*number_of_references)),
+                "u32" => Some(Type::PrimitiveU32(*number_of_references)),
+                "u64" => Some(Type::PrimitiveU64(*number_of_references)),
+                "f32" => Some(Type::PrimitiveF32(*number_of_references)),
+                "f64" => Some(Type::PrimitiveF64(*number_of_references)),
+                "bool" => Some(Type::PrimitiveBool(*number_of_references)),
+                "str" => Some(Type::PrimitiveStr(*number_of_references)),
+                "isize" => Some(Type::PrimitiveISize(*number_of_references)),
+                "usize" => Some(Type::PrimitiveUSize(*number_of_references)),
+                _ => None,
+            })
+        }
+        TypeRef::Reference { .. }
+        | TypeRef::DynReference { .. }
+        | TypeRef::SizedArray { .. }
+        | TypeRef::UnsizedArray { .. } => None,
     }
 }
 
@@ -108,6 +122,8 @@ impl Type {
             | Type::PrimitiveF64(num_references)
             | Type::PrimitiveStr(num_references)
             | Type::PrimitiveBool(num_references)
+            | Type::DynType { num_references, .. }
+            | Type::Trait { num_references, .. }
             | Type::Generic(_, num_references) => *num_references,
         }
     }
@@ -139,6 +155,17 @@ impl Display for Type {
 
         match self {
             Type::Struct { structure, .. } => Display::fmt(&structure.name, f),
+            Type::Trait { real_name, .. } => Display::fmt(real_name, f),
+            Type::DynType { trait_refs, .. } => {
+                f.write_str("dyn ")?;
+                for i in 0..trait_refs.len() {
+                    if i != 0 {
+                        f.write_str(" + ")?;
+                    }
+                    Display::fmt(&trait_refs[i].name, f)?;
+                }
+                Ok(())
+            }
             Type::UnsizedArray { typ, .. } => {
                 f.write_char('[')?;
                 Display::fmt(typ, f)?;
