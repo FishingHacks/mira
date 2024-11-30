@@ -1,4 +1,4 @@
-use crate::{parser::Annotations, tokenizer::Location};
+use crate::{annotations::Annotations, tokenizer::Location};
 
 use super::{expression::TypecheckedExpression, types::Type};
 

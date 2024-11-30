@@ -4,17 +4,18 @@ use std::{
 };
 
 use crate::{
+    annotations::Annotations,
     error::ParsingError,
     globals::GlobalStr,
     module::{FunctionId, Module, ModuleId, StaticId, StructId, TraitId},
-    parser::{module_resolution::resolve_module, Annotation, ParserQueueEntry},
+    parser::{module_resolution::resolve_module, ParserQueueEntry},
     tokenizer::{Literal, Location, TokenType},
 };
 
 use super::{
     expression::PathWithoutGenerics,
     types::{Generic, TypeRef},
-    Annotations, Expression, Parser,
+    Expression, Parser,
 };
 
 #[derive(Clone, Debug)]
@@ -87,7 +88,13 @@ pub enum Statement {
     },
     Return(Option<Expression>, Location),
     Block(Box<[Statement]>, Location, Annotations),
-    Var(GlobalStr, Expression, Option<TypeRef>, Location),
+    Var(
+        GlobalStr,
+        Expression,
+        Option<TypeRef>,
+        Location,
+        Annotations,
+    ),
     Expression(Expression),
     Function(FunctionContract, Box<Statement>),
     ExternalFunction(FunctionContract, Option<Box<Statement>>),
@@ -96,7 +103,11 @@ pub enum Statement {
         elements: Vec<(GlobalStr, TypeRef)>,
         location: Location,
         global_impl: HashMap<GlobalStr, (FunctionContract, Statement)>,
-        impls: Vec<(GlobalStr, HashMap<GlobalStr, (FunctionContract, Statement)>)>,
+        impls: Vec<(
+            GlobalStr,
+            HashMap<GlobalStr, (FunctionContract, Statement)>,
+            Location,
+        )>,
         generics: Vec<Generic>,
         annotations: Annotations,
     },
@@ -123,7 +134,7 @@ impl Statement {
             | Self::If { location, .. }
             | Self::Return(_, location)
             | Self::Struct { location, .. }
-            | Self::Var(_, _, _, location)
+            | Self::Var(_, _, _, location, _)
             | Self::BakedFunction(_, location)
             | Self::BakedExternalFunction(_, location)
             | Self::BakedStruct(_, location)
@@ -219,10 +230,10 @@ impl Display for Statement {
             Self::BakedTrait(id, _) => f.write_fmt(format_args!("(module-trait {id:08x})")),
 
             Self::Trait(r#trait) => Display::fmt(&r#trait, f),
-            Self::Var(left_hand, right_hand, None, _) => {
+            Self::Var(left_hand, right_hand, None, ..) => {
                 f.write_fmt(format_args!("(var-assign {left_hand} {right_hand})"))
             }
-            Self::Var(left_hand, right_hand, Some(typ), _) => {
+            Self::Var(left_hand, right_hand, Some(typ), ..) => {
                 f.write_fmt(format_args!("(var-assign {left_hand} {typ} {right_hand})"))
             }
             Self::Block(stmts, _, annotations) => {
@@ -428,7 +439,7 @@ impl Parser {
             }
         }
 
-        if !self.current_annotations.0.is_empty() {
+        if !self.current_annotations.is_empty() {
             errors.push(ParsingError::ExpectedStatement {
                 loc: self.peek().location.clone(),
             });
@@ -462,7 +473,7 @@ impl Parser {
             };
         }
 
-        if self.current_annotations.0.len() > 0
+        if self.current_annotations.len() > 0
             && match self.peek().typ {
                 TokenType::AnnotationIntroducer
                 | TokenType::Extern
@@ -471,6 +482,8 @@ impl Parser {
                 | TokenType::Struct
                 | TokenType::For
                 | TokenType::While
+                | TokenType::Let
+                | TokenType::Trait
                 | TokenType::If => false,
 
                 _ => true,
@@ -528,7 +541,7 @@ impl Parser {
         }?;
         if maybe_statement.is_some() {
             assert_eq!(
-                self.current_annotations.0.len(),
+                self.current_annotations.len(),
                 0,
                 "more than 0 annotations left after parsing a statement"
             );
@@ -815,7 +828,13 @@ impl Parser {
         }
         let expr = self.parse_expression()?;
         self.consume_semicolon()?;
-        Ok(Statement::Var(name, expr, typ, location))
+        Ok(Statement::Var(
+            name,
+            expr,
+            typ,
+            location,
+            std::mem::take(&mut self.current_annotations),
+        ))
     }
     fn parse_block_stmt(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
@@ -1066,7 +1085,7 @@ impl Parser {
                         global_impl.insert(name, func);
                     }
                     TokenType::Impl => {
-                        self.advance();
+                        let loc = self.advance().location.clone();
                         let trait_name: GlobalStr = self.expect_identifier()?;
                         let mut current_impl =
                             HashMap::<GlobalStr, (FunctionContract, Statement)>::new();
@@ -1102,7 +1121,7 @@ impl Parser {
                             }
                             current_impl.insert(name, func);
                         }
-                        impls.push((trait_name, current_impl));
+                        impls.push((trait_name, current_impl, loc));
                     }
                     token @ _ => {
                         return Err(ParsingError::StructImplRegionExpect {
@@ -1204,11 +1223,8 @@ impl Parser {
             args.push(self.advance().clone());
         }
 
-        self.current_annotations
-            .0
-            .push(Annotation { args, loc, name });
-
-        Ok(())
+        let name = name.with(|v| v.to_string());
+        self.current_annotations.push_annotation(&name, args, loc)
     }
 }
 

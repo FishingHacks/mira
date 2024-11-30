@@ -152,7 +152,7 @@ impl GlobalStr {
         })
     }
 
-    pub fn with<T>(&self, func: impl Fn(&str) -> T) -> T {
+    pub fn with<T>(&self, mut func: impl FnMut(&str) -> T) -> T {
         STRINGS.with_borrow(|strings: &GlobalStrs| {
             if let Some(v) = strings.get(self.0) {
                 func(&v.value)

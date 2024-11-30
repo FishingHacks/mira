@@ -5,11 +5,10 @@ use std::{
 };
 
 use crate::{
+    annotations::Annotations,
     error::ProgramFormingError,
     globals::GlobalStr,
-    parser::{
-        Annotations, Expression, FunctionContract, Generic, LiteralValue, Statement, Trait, TypeRef,
-    },
+    parser::{Expression, FunctionContract, Generic, LiteralValue, Statement, Trait, TypeRef},
     tokenizer::Location,
 };
 
@@ -36,7 +35,7 @@ pub struct BakedStruct {
     pub elements: Vec<(GlobalStr, TypeRef)>,
     pub location: Location,
     pub global_impl: HashMap<GlobalStr, FunctionId>,
-    pub impls: Vec<(GlobalStr, HashMap<GlobalStr, FunctionId>)>,
+    pub impls: Vec<(GlobalStr, HashMap<GlobalStr, FunctionId>, Location)>,
     pub annotations: Annotations,
     pub module_id: ModuleId,
     pub generics: Vec<Generic>,
@@ -47,7 +46,7 @@ pub struct ModuleContext {
     pub modules: RwLock<Vec<Module>>,
     pub functions: RwLock<Vec<(FunctionContract, Statement, ModuleId)>>,
     pub external_functions: RwLock<Vec<(FunctionContract, Option<Statement>, ModuleId)>>,
-    pub statics: RwLock<Vec<(TypeRef, LiteralValue, ModuleId, Location)>>, // TODO: const-eval for statics
+    pub statics: RwLock<Vec<(TypeRef, LiteralValue, ModuleId, Location, Annotations)>>, // TODO: const-eval for statics
     pub structs: RwLock<Vec<BakedStruct>>,
     pub traits: RwLock<Vec<Trait>>,
 }
@@ -205,12 +204,12 @@ impl Module {
                     baked_global_impl.insert(name, self.push_fn(contract, body, module_id));
                 }
 
-                for (trait_name, implementation) in impls {
+                for (trait_name, implementation, loc) in impls {
                     let mut baked_impl = HashMap::new();
                     for (name, (contract, body)) in implementation {
                         baked_impl.insert(name, self.push_fn(contract, body, module_id));
                     }
-                    baked_impls.push((trait_name, baked_impl));
+                    baked_impls.push((trait_name, baked_impl, loc));
                 }
 
                 let baked_struct = BakedStruct {
@@ -233,10 +232,10 @@ impl Module {
                 self.scope
                     .insert(name, ModuleScopeValue::Struct(writer.len() - 1));
             }
-            Statement::Var(_, _, None, location) => {
+            Statement::Var(_, _, None, location, _) => {
                 return Err(ProgramFormingError::GlobalValueNoType(location.clone()))
             }
-            Statement::Var(name, expr, Some(typ), location) => {
+            Statement::Var(name, expr, Some(typ), location, annotations) => {
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         location.clone(),
@@ -254,7 +253,7 @@ impl Module {
                     .statics
                     .write()
                     .expect("read-write lock is poisoned");
-                writer.push((typ, value, module_id, location));
+                writer.push((typ, value, module_id, location, annotations));
                 self.scope
                     .insert(name, ModuleScopeValue::Static(writer.len() - 1));
             }

@@ -1,10 +1,10 @@
 use std::{
     collections::HashMap,
-    fmt::{Display, Write},
     sync::{Arc, RwLock},
 };
 
 use crate::{
+    annotations::Annotations,
     globals::GlobalStr,
     tokenizer::{Location, Token, TokenType},
 };
@@ -16,6 +16,7 @@ mod module_resolution;
 mod statement;
 mod types;
 
+/*
 #[derive(Default, Debug, Clone)]
 pub struct Annotations(pub Vec<Annotation>);
 
@@ -55,6 +56,7 @@ impl Display for Annotation {
         f.write_char(')')
     }
 }
+*/
 
 #[derive(Clone, Debug)]
 pub struct ParserQueueEntry {

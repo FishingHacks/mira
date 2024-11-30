@@ -6,23 +6,27 @@ use std::{
 };
 
 use statement::TypecheckedStatement;
-use types::{resolve_primitive_type, Type};
+use types::resolve_primitive_type;
 
 use crate::{
+    annotations::Annotations,
     globals::GlobalStr,
+    lang_items::LangItems,
     module::{FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StructId, TraitId},
-    parser::{Annotations, LiteralValue, TypeRef},
+    parser::{LiteralValue, TypeRef},
     tokenizer::Location,
 };
 
 mod error;
 mod expression;
 mod statement;
+mod type_resolution;
 pub mod typechecking;
 mod types;
 pub use error::TypecheckingError;
+pub use types::Type;
 
-static DUMMY_LOCATION: LazyLock<Location> = LazyLock::new(|| Location {
+pub static DUMMY_LOCATION: LazyLock<Location> = LazyLock::new(|| Location {
     line: 0,
     column: 0,
     file: PathBuf::from("").into(), // a file should never be a folder :3
@@ -41,16 +45,13 @@ pub struct TypecheckedFunctionContract {
 #[derive(Debug)]
 pub struct TypedTrait {
     pub name: GlobalStr,
-    pub functions: HashMap<
+    pub functions: Vec<(
         GlobalStr,
-        (
-            GlobalStr,
-            Vec<(GlobalStr, Type)>,
-            Type,
-            Annotations,
-            Location,
-        ),
-    >,
+        Vec<(GlobalStr, Type)>,
+        Type,
+        Annotations,
+        Location,
+    )>,
     pub location: Location,
     pub module_id: ModuleId,
     pub id: TraitId,
@@ -63,10 +64,11 @@ pub struct TypedStruct {
     pub elements: Vec<(GlobalStr, Type)>,
     pub location: Location,
     pub global_impl: HashMap<GlobalStr, FunctionId>,
+    pub trait_impl: HashMap<TraitId, Vec<FunctionId>>,
     pub annotations: Annotations,
     pub module_id: ModuleId,
     pub id: StructId,
-    pub generics: HashMap<GlobalStr, Vec<TraitId>>,
+    pub generics: Vec<(GlobalStr, Vec<TraitId>)>,
 }
 
 #[derive(Debug)]
@@ -75,9 +77,10 @@ pub struct TypecheckingContext {
     pub functions: RwLock<Vec<(TypecheckedFunctionContract, TypecheckedStatement)>>,
     pub external_functions:
         RwLock<Vec<(TypecheckedFunctionContract, Option<TypecheckedStatement>)>>,
-    pub statics: RwLock<Vec<(Type, LiteralValue, ModuleId, Location)>>,
-    pub structs: RwLock<Vec<Arc<TypedStruct>>>,
+    pub statics: RwLock<Vec<(Type, LiteralValue, ModuleId, Location, Annotations)>>,
+    pub structs: RwLock<Vec<TypedStruct>>,
     pub traits: RwLock<Vec<TypedTrait>>,
+    pub lang_items: RwLock<LangItems>,
 }
 
 pub struct TypecheckedModule {
@@ -121,16 +124,17 @@ impl TypecheckingContext {
         let mut external_functions = Vec::with_capacity(num_external_functions);
 
         for id in 0..num_structs {
-            structs.push(Arc::new(TypedStruct {
+            structs.push(TypedStruct {
                 name: GlobalStr::zeroed(),
                 elements: Vec::new(),
                 location: DUMMY_LOCATION.clone(),
                 global_impl: HashMap::new(),
+                trait_impl: HashMap::new(),
                 annotations: Annotations::default(),
                 module_id: 0,
-                generics: HashMap::new(),
+                generics: Vec::new(),
                 id,
-            }));
+            });
         }
 
         for _ in 0..num_statics {
@@ -139,6 +143,7 @@ impl TypecheckingContext {
                 LiteralValue::Void,
                 0,
                 DUMMY_LOCATION.clone(),
+                Annotations::default(),
             ));
         }
 
@@ -173,7 +178,7 @@ impl TypecheckingContext {
         for _ in 0..num_traits {
             traits.push(TypedTrait {
                 name: GlobalStr::zeroed(),
-                functions: HashMap::new(),
+                functions: Vec::new(),
                 location: DUMMY_LOCATION.clone(),
                 module_id: 0,
                 id: 0,
@@ -188,6 +193,7 @@ impl TypecheckingContext {
             traits: traits.into(),
             external_functions: external_functions.into(),
             modules,
+            lang_items: RwLock::new(LangItems::default()),
         });
 
         let mut typechecked_module_writer =
@@ -226,240 +232,6 @@ impl TypecheckingContext {
         }
 
         errors
-    }
-
-    /// Resolves the types; This should be ran *after* [Self::resolve_imports]
-    ///
-    /// NOTE: this could potentially deadlock as i write-lock the rwlocks in the context a bunch
-    /// and don't free them until fully resolving a value. This module is designed in a way that
-    /// such a deadlock should never happen but.. uhh... :3c :3
-    /// meow
-    pub fn resolve_types(&self, context: Arc<ModuleContext>) -> Vec<TypecheckingError> {
-        let mut errors = Vec::new();
-
-        // +---------+
-        // | Structs |
-        // +---------+
-        let num_structs = context
-            .structs
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
-        for struct_id in 0..num_structs {
-            let reader = context.structs.read().expect("read-write lock is poisoned");
-            let module_id = reader[struct_id].module_id;
-            drop(reader);
-            assert!(
-                !self.resolve_struct(context.clone(), struct_id, module_id, &mut errors),
-                "this came from no field, so this shouldn't be recursive"
-            );
-        }
-
-        // +-----------+
-        // | Functions |
-        // +-----------+
-        let num_functions = context
-            .functions
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
-        for function_id in 0..num_functions {
-            let mut writer = context
-                .functions
-                .write()
-                .expect("read-write lock is poisoned");
-            let module_id = writer[function_id].2;
-            let arguments = std::mem::take(&mut writer[function_id].0.arguments);
-            let return_type = std::mem::replace(
-                &mut writer[function_id].0.return_type,
-                TypeRef::Void(DUMMY_LOCATION.clone(), 0),
-            );
-            let generics = std::mem::take(&mut writer[function_id].0.generics)
-                .into_iter()
-                .map(|generic| generic.name)
-                .collect::<Vec<_>>();
-            let mut resolved_function_contract = TypecheckedFunctionContract {
-                module_id,
-                name: writer[function_id].0.name.clone(),
-                location: writer[function_id].0.location.clone(),
-                annotations: std::mem::take(&mut writer[function_id].0.annotations),
-                arguments: Vec::new(),
-                return_type: Type::PrimitiveNever,
-            };
-            drop(writer);
-
-            let mut has_errors = false;
-            match self.resolve_type(module_id, &return_type, &generics) {
-                Ok(v) => resolved_function_contract.return_type = v,
-                Err(e) => {
-                    has_errors = true;
-                    errors.push(e);
-                }
-            }
-
-            for arg in arguments {
-                match self.resolve_type(module_id, &arg.typ, &generics) {
-                    Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                    Err(e) => {
-                        has_errors = true;
-                        errors.push(e);
-                    }
-                }
-            }
-
-            if !has_errors {
-                self.functions.write().expect("read-write lock is poisoned")[function_id] =
-                    (resolved_function_contract, TypecheckedStatement::None);
-            }
-        }
-
-        // +--------------------+
-        // | External Functions |
-        // +--------------------+
-        let num_functions = context
-            .external_functions
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
-        for function_id in 0..num_functions {
-            let mut writer = context
-                .external_functions
-                .write()
-                .expect("read-write lock is poisoned");
-            let module_id = writer[function_id].2;
-            let arguments = std::mem::take(&mut writer[function_id].0.arguments);
-            let return_type = std::mem::replace(
-                &mut writer[function_id].0.return_type,
-                TypeRef::Void(DUMMY_LOCATION.clone(), 0),
-            );
-            let mut resolved_function_contract = TypecheckedFunctionContract {
-                module_id,
-                name: writer[function_id].0.name.clone(),
-                location: writer[function_id].0.location.clone(),
-                annotations: std::mem::take(&mut writer[function_id].0.annotations),
-                arguments: Vec::new(),
-                return_type: Type::PrimitiveNever,
-            };
-            drop(writer);
-
-            let mut has_errors = false;
-            match self.resolve_type(module_id, &return_type, &[]) {
-                Ok(v) => resolved_function_contract.return_type = v,
-                Err(e) => {
-                    has_errors = true;
-                    errors.push(e);
-                }
-            }
-
-            for arg in arguments {
-                match self.resolve_type(module_id, &arg.typ, &[]) {
-                    Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                    Err(e) => {
-                        has_errors = true;
-                        errors.push(e);
-                    }
-                }
-            }
-
-            if !has_errors {
-                self.external_functions
-                    .write()
-                    .expect("read-write lock is poisoned")[function_id] =
-                    (resolved_function_contract, None);
-            }
-        }
-
-        // +---------+
-        // | Statics |
-        // +---------+
-        let num_statics = context
-            .statics
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
-        for static_id in 0..num_statics {
-            let mut writer = context
-                .statics
-                .write()
-                .expect("read-write lock is poisoned");
-            let location = std::mem::replace(&mut writer[static_id].3, DUMMY_LOCATION.clone());
-            let dummy_type = TypeRef::Void(writer[static_id].0.loc().clone(), 0);
-            let typ = std::mem::replace(&mut writer[static_id].0, dummy_type);
-            let module_id = writer[static_id].2;
-            drop(writer);
-            match self.resolve_type(module_id, &typ, &[]) {
-                Ok(v) => {
-                    self.statics.write().expect("read-write lock is poisoned")[static_id] =
-                        (v, LiteralValue::Void, module_id, location);
-                }
-                Err(e) => errors.push(e),
-            }
-        }
-
-        // +--------+
-        // | Traits |
-        // +--------+
-        let num_traits = context
-            .traits
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
-        for trait_id in 0..num_traits {
-            let mut writer = context.traits.write().expect("read-write lock is poisoned");
-            let location =
-                std::mem::replace(&mut writer[trait_id].location, DUMMY_LOCATION.clone());
-            let name = writer[trait_id].name.clone();
-            let annotations = std::mem::take(&mut writer[trait_id].annotations);
-            let functions = std::mem::take(&mut writer[trait_id].functions);
-            let module_id = writer[trait_id].module_id;
-            drop(writer);
-
-            let mut typed_functions = HashMap::new();
-            let error_count = errors.len();
-
-            for (name, arguments, return_type, annotations, location) in functions {
-                let typed_return_type = match self.resolve_type(module_id, &return_type, &[]) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        errors.push(e);
-                        continue;
-                    }
-                };
-
-                let mut typed_arguments = Vec::new();
-
-                for arg in arguments {
-                    match self.resolve_type(module_id, &arg.typ, &[]) {
-                        Ok(v) => typed_arguments.push((arg.name, v)),
-                        Err(e) => errors.push(e),
-                    }
-                }
-
-                typed_functions.insert(
-                    name.clone(),
-                    (
-                        name,
-                        typed_arguments,
-                        typed_return_type,
-                        annotations,
-                        location,
-                    ),
-                );
-            }
-
-            if errors.len() == error_count {
-                self.traits.write().expect("read-write lock is poisoned")[trait_id] = TypedTrait {
-                    name,
-                    location,
-                    id: trait_id,
-                    module_id,
-                    annotations,
-                    functions: typed_functions,
-                };
-            }
-        }
-
-        return errors;
     }
 
     pub fn resolve_type(
@@ -505,7 +277,9 @@ impl TypecheckingContext {
 
                 match typed_resolve_import(self, module_id, &path, loc, &mut Vec::new())? {
                     ModuleScopeValue::Struct(id) => Ok(Type::Struct {
-                        structure: self.structs.read().expect("read-write lock is poisoned")[id]
+                        struct_id: id,
+                        name: self.structs.read().expect("read-write lock is poisoned")[id]
+                            .name
                             .clone(),
                         num_references: *num_references,
                     }),
@@ -563,7 +337,7 @@ impl TypecheckingContext {
         let global_impl = std::mem::take(&mut writer[id].global_impl);
         let annotations = std::mem::take(&mut writer[id].annotations);
         let elements = std::mem::take(&mut writer[id].elements);
-        let mut generics = HashMap::new();
+        let mut generics = Vec::new();
 
         for generic in &writer[id].generics {
             let mut bounds = Vec::new();
@@ -579,7 +353,7 @@ impl TypecheckingContext {
                 }
             }
 
-            generics.insert(generic.name.clone(), bounds);
+            generics.push((generic.name.clone(), bounds));
         }
 
         let mut typed_struct = TypedStruct {
@@ -591,25 +365,33 @@ impl TypecheckingContext {
             module_id,
             id,
             generics,
+            trait_impl: HashMap::new(),
         };
         drop(writer);
 
         for element in elements {
             if let Some(typ) = self.type_resolution_resolve_type(
                 &element.1,
-                |generic_name| typed_struct.generics.contains_key(generic_name),
+                |generic_name| {
+                    typed_struct
+                        .generics
+                        .iter()
+                        .find(|(v, ..)| *v == *generic_name)
+                        .is_some()
+                },
                 module_id,
                 context.clone(),
                 errors,
             ) {
                 let typ = match typ {
-                    Type::Generic(real_name, num_references)
-                        if typed_struct.generics[&real_name].len() > 0 =>
-                    {
-                        Type::Trait {
-                            trait_refs: typed_struct.generics[&real_name].clone(),
-                            num_references,
-                            real_name,
+                    Type::Generic(real_name, num_references) => {
+                        match typed_struct.generics.iter().find(|(v, ..)| *v == real_name) {
+                            Some(v) if v.1.len() > 0 => Type::Trait {
+                                trait_refs: v.1.clone(),
+                                num_references,
+                                real_name,
+                            },
+                            _ => Type::Generic(real_name, num_references),
                         }
                     }
                     t => t,
@@ -617,7 +399,7 @@ impl TypecheckingContext {
                 typed_struct.elements.push((element.0, typ));
             }
         }
-        self.structs.write().expect("read-write lock is poisoned")[id] = Arc::new(typed_struct);
+        self.structs.write().expect("read-write lock is poisoned")[id] = typed_struct;
 
         false
     }
@@ -683,7 +465,8 @@ impl TypecheckingContext {
                         &self.structs.read().expect("read-write lock is poisoned")[id];
                     if typechecked_struct.location != *DUMMY_LOCATION {
                         return Some(Type::Struct {
-                            structure: typechecked_struct.clone(),
+                            struct_id: typechecked_struct.id,
+                            name: typechecked_struct.name.clone(),
                             num_references: *num_references,
                         });
                     }
@@ -701,8 +484,9 @@ impl TypecheckingContext {
                     &self.structs.read().expect("read-write lock is poisoned")[id];
                 if typechecked_struct.location != *DUMMY_LOCATION {
                     return Some(Type::Struct {
-                        structure: typechecked_struct.clone(),
+                        struct_id: typechecked_struct.id,
                         num_references: *num_references,
+                        name: typechecked_struct.name.clone(),
                     });
                 }
                 unreachable!("struct should be resolved by here")
@@ -810,7 +594,7 @@ fn typed_resolve_import(
     }
     Err(TypecheckingError::ExportNotFound {
         location: location.clone(),
-        name: import[1].clone(),
+        name: import[0].clone(),
     })
 }
 

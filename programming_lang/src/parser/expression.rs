@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    error::{OperationType, ParsingError},
+    error::ParsingError,
     globals::GlobalStr,
     module::{FunctionId, Module, ModuleId},
     tokenizer::{Literal, Location, NumberType, Token, TokenType},
@@ -514,59 +514,12 @@ impl Expression {
                     Expression::Literal(v, ..) => {
                         // valid tokens: + plus, - minus, ~ bitwise not, ! logical not
                         match operator.typ {
-                            TokenType::Plus => match v {
-                                LiteralValue::Dynamic(..) => (),
-                                LiteralValue::Float(..)
-                                | LiteralValue::SInt(..)
-                                | LiteralValue::UInt(..) => (),
-                                v @ _ => {
-                                    return Err(ParsingError::CannotDoUnaryOperation {
-                                        loc,
-                                        operation_type: OperationType::Plus,
-                                        right: v.type_name(),
-                                    })
-                                }
-                            },
-                            TokenType::Minus => match v {
-                                LiteralValue::Dynamic(..) => (),
-                                LiteralValue::Float(..)
-                                | LiteralValue::SInt(..)
-                                | LiteralValue::UInt(..) => (),
-                                v @ _ => {
-                                    return Err(ParsingError::CannotDoUnaryOperation {
-                                        loc,
-                                        operation_type: OperationType::Minus,
-                                        right: v.type_name(),
-                                    })
-                                }
-                            },
-                            TokenType::BitwiseNot => match v {
-                                LiteralValue::Dynamic(..) => (),
-                                LiteralValue::Float(..)
-                                | LiteralValue::SInt(..)
-                                | LiteralValue::UInt(..) => (),
-                                LiteralValue::Bool(v) => *self = Self::bool(!*v, loc),
-                                v @ _ => {
-                                    return Err(ParsingError::CannotDoUnaryOperation {
-                                        loc,
-                                        operation_type: OperationType::BitwiseNot,
-                                        right: v.type_name(),
-                                    })
-                                }
-                            },
-                            TokenType::LogicalNot => match v {
-                                LiteralValue::Dynamic(..) => (),
-                                LiteralValue::Bool(v) => *self = Self::bool(!*v, loc),
-                                v @ _ => {
-                                    return Err(ParsingError::CannotDoUnaryOperation {
-                                        loc,
-                                        operation_type: OperationType::LogicalNot,
-                                        right: v.type_name(),
-                                    })
-                                }
-                            },
-                            TokenType::Ampersand => {}
-                            TokenType::Asterix => {}
+                            TokenType::Plus
+                            | TokenType::Minus
+                            | TokenType::BitwiseNot
+                            | TokenType::LogicalNot
+                            | TokenType::Ampersand
+                            | TokenType::Asterix => {}
                             tok @ _ => {
                                 return Err(ParsingError::InvalidUnaryOperand {
                                     loc,
@@ -1156,21 +1109,14 @@ impl Parser {
                 }
 
                 // parse key : value
-                let key = if !self.matches(&[
-                    TokenType::StringLiteral,
-                    TokenType::IdentifierLiteral,
-                    TokenType::FloatLiteral,
-                ]) {
-                    return Some(Err(ParsingError::ExpectedKey {
+                let key = if !self.match_tok(TokenType::IdentifierLiteral) {
+                    return Some(Err(ParsingError::ExpectedIdentifier {
                         loc: self.peek().location.clone(),
                         found: self.peek().typ,
                     }));
                 } else {
                     match self.previous().literal {
                         Some(Literal::String(ref v)) => v.clone(),
-                        Some(Literal::UInt(v, _)) => {
-                            GlobalStr::new_boxed(v.to_string().into_boxed_str())
-                        }
                         _ => {
                             return Some(Err(ParsingError::InvalidTokenization {
                                 loc: self.previous().location.clone(),

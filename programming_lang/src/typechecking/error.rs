@@ -1,122 +1,72 @@
-use crate::{globals::GlobalStr, tokenizer::Location};
-use std::fmt::Debug;
+use thiserror::Error;
+
+use crate::{
+    error::FunctionList,
+    globals::GlobalStr,
+    lang_items::{LangItemAssignmentError, LangItemError},
+    tokenizer::Location,
+};
 
 use super::{types::Type, ScopeKind};
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Error)]
 pub enum TypecheckingError {
-    ExportNotFound {
-        location: Location,
-        name: GlobalStr,
-    },
-    CyclicDependency {
-        location: Location,
-    },
-    UnboundIdent {
-        location: Location,
-        name: GlobalStr,
-    },
+    #[error("{0}")]
+    LangItemError(#[from] LangItemError),
+    #[error("{0}")]
+    LangItemAssignment(#[from] LangItemAssignmentError),
+    #[error("{location}: could not find export `{name}`")]
+    ExportNotFound { location: Location, name: GlobalStr },
+    #[error("{location}: cyclic dependency detected")]
+    CyclicDependency { location: Location },
+    #[error("{location}: Unbound identifier `{name}`")]
+    UnboundIdent { location: Location, name: GlobalStr },
+    #[error("{location}: Expected a {expected:?}, but found a {found:?}")]
     MismatchingScopeType {
         location: Location,
         expected: ScopeKind,
         found: ScopeKind,
     },
-    RecursiveTypeDetected {
-        location: Location,
-    },
-    BodyDoesNotAlwaysReturn {
-        location: Location,
-    },
+    #[error("{location}: Recursive type detected")]
+    RecursiveTypeDetected { location: Location },
+    #[error("{location}: Body does not always return")]
+    BodyDoesNotAlwaysReturn { location: Location },
+    #[error("{location}: Expected {expected}, but found {found}")]
     MismatchingType {
         expected: Type,
         found: Type,
         location: Location,
     },
-    GenericFunctionPointer {
+    #[error("{location}: Function pointers can't have generics")]
+    GenericFunctionPointer { location: Location },
+    #[error("{location}: `{name}` is not a struct type")]
+    IdentifierIsNotStruct { location: Location, name: GlobalStr },
+    #[error("{location}: no such field named `{name}` found!")]
+    NoSuchFieldFound { location: Location, name: GlobalStr },
+    #[error("{location}: missing firld `{name}`")]
+    MissingField { location: Location, name: GlobalStr },
+    #[error("{location}: Expected a function")]
+    TypeIsNotAFunction { location: Location },
+    #[error("{location}: Function misses arguments")]
+    MissingArguments { location: Location },
+    #[error("{location}: Function expects no more arguments")]
+    TooManyArguments { location: Location },
+    #[error("{location}: Did not expected a generic here.")]
+    UnexpectedGenerics { location: Location },
+    #[error("{location}: `{name}` is not a member of the trait.")]
+    IsNotTraitMember { location: Location, name: GlobalStr },
+    #[error("{location}: missing trait item `{name}`")]
+    MissingTraitItem { location: Location, name: GlobalStr },
+    #[error("{location}: Expected {}, but found {}", FunctionList(.expected), FunctionList(.found))]
+    MismatchingArguments {
         location: Location,
+        expected: Vec<Type>,
+        found: Vec<Type>,
     },
-    IdentifierIsNotStruct {
+    #[error("{location}: Expected fn(...) -> {expected} but fund fn(...) -> {found}")]
+    MismatchingReturnType {
         location: Location,
-        name: GlobalStr,
+        expected: Type,
+        found: Type,
     },
-    NoSuchFieldFound {
-        location: Location,
-        name: GlobalStr,
-    },
-    MissingField {
-        location: Location,
-        name: GlobalStr,
-    },
-    TypeIsNotAFunction {
-        location: Location,
-    },
-    MissingArguments {
-        location: Location,
-    },
-    TooManyArguments {
-        location: Location,
-    },
-    UnexpectedGenerics {
-        location: Location,
-    },
-}
-
-impl Debug for TypecheckingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ExportNotFound { location, name } => {
-                f.write_fmt(format_args!("{location}: could not find export {name}"))
-            }
-            Self::CyclicDependency { location } => {
-                f.write_fmt(format_args!("{location}: cyclic dependency detected"))
-            }
-            Self::UnboundIdent { location, name } => {
-                f.write_fmt(format_args!("{location}: Unbound identifier `{name}`"))
-            }
-            Self::MismatchingScopeType {
-                location,
-                expected,
-                found,
-            } => f.write_fmt(format_args!(
-                "{location}: Expected a {expected:?}, but foun a {found:?}"
-            )),
-            Self::RecursiveTypeDetected { location } => {
-                f.write_fmt(format_args!("{location}: Recursive type detected"))
-            }
-            Self::BodyDoesNotAlwaysReturn { location } => {
-                f.write_fmt(format_args!("{location}: body does not always return"))
-            }
-            Self::MismatchingType {
-                expected,
-                found,
-                location,
-            } => f.write_fmt(format_args!(
-                "{location}: Expected {expected}, but found {found}"
-            )),
-            Self::GenericFunctionPointer { location } => f.write_fmt(format_args!(
-                "{location}: Function pointers can't have generics"
-            )),
-            Self::IdentifierIsNotStruct { location, name } => {
-                f.write_fmt(format_args!("{location}: {name} is not a struct type"))
-            }
-            Self::NoSuchFieldFound { location, name } => {
-                f.write_fmt(format_args!("{location}: such field named `{name}` found!"))
-            }
-            Self::MissingField { location, name } => {
-                f.write_fmt(format_args!("{location}: missing field `{name}`"))
-            }
-            Self::TypeIsNotAFunction { location } => {
-                f.write_fmt(format_args!("{location}: Expected a function"))
-            }
-            Self::MissingArguments { location } => {
-                f.write_fmt(format_args!("{location}: Function misses arguments"))
-            }
-            Self::TooManyArguments { location } => f.write_fmt(format_args!(
-                "{location}: Function expects no more arguments"
-            )),
-            Self::UnexpectedGenerics { location } => {
-                f.write_fmt(format_args!("{location}: Did not expect a generic here."))
-            }
-        }
-    }
 }

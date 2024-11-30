@@ -1,11 +1,14 @@
 use std::{
-    fmt::{Display, Write},
+    fmt::{Debug, Display, Write},
     sync::Arc,
 };
 
-use crate::{globals::GlobalStr, module::TraitId, parser::TypeRef, tokenizer::NumberType};
-
-use super::{TypedStruct, TypedTrait};
+use crate::{
+    globals::GlobalStr,
+    module::{StructId, TraitId},
+    parser::TypeRef,
+    tokenizer::NumberType,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionType {
@@ -13,7 +16,7 @@ pub struct FunctionType {
     pub return_type: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub enum Type {
     Trait {
         trait_refs: Vec<TraitId>,
@@ -21,11 +24,12 @@ pub enum Type {
         real_name: GlobalStr,
     },
     DynType {
-        trait_refs: Vec<Arc<TypedTrait>>,
+        trait_refs: Vec<(TraitId, GlobalStr)>,
         num_references: u8,
     },
     Struct {
-        structure: Arc<TypedStruct>,
+        struct_id: StructId,
+        name: GlobalStr,
         num_references: u8,
     },
     UnsizedArray {
@@ -59,6 +63,7 @@ pub enum Type {
 
     PrimitiveStr(u8),
     PrimitiveBool(u8),
+    PrimitiveSelf(u8),
 
     Generic(GlobalStr, u8),
 }
@@ -68,27 +73,28 @@ pub fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
         TypeRef::Never(_) => Some(Type::PrimitiveNever),
         TypeRef::Void(_, refcount) => Some(Type::PrimitiveVoid(*refcount)),
         TypeRef::Reference {
-            num_references: number_of_references,
+            num_references,
             type_name,
             loc: _,
         } if type_name.entries.len() == 1 && type_name.entries[0].1.len() == 0 => {
             type_name.entries[0].0.with(|type_name| match type_name {
                 "!" => Some(Type::PrimitiveNever),
-                "void" => Some(Type::PrimitiveVoid(*number_of_references)),
-                "i8" => Some(Type::PrimitiveI8(*number_of_references)),
-                "i16" => Some(Type::PrimitiveI16(*number_of_references)),
-                "i32" => Some(Type::PrimitiveI32(*number_of_references)),
-                "i64" => Some(Type::PrimitiveI64(*number_of_references)),
-                "u8" => Some(Type::PrimitiveU8(*number_of_references)),
-                "u16" => Some(Type::PrimitiveU16(*number_of_references)),
-                "u32" => Some(Type::PrimitiveU32(*number_of_references)),
-                "u64" => Some(Type::PrimitiveU64(*number_of_references)),
-                "f32" => Some(Type::PrimitiveF32(*number_of_references)),
-                "f64" => Some(Type::PrimitiveF64(*number_of_references)),
-                "bool" => Some(Type::PrimitiveBool(*number_of_references)),
-                "str" => Some(Type::PrimitiveStr(*number_of_references)),
-                "isize" => Some(Type::PrimitiveISize(*number_of_references)),
-                "usize" => Some(Type::PrimitiveUSize(*number_of_references)),
+                "void" => Some(Type::PrimitiveVoid(*num_references)),
+                "i8" => Some(Type::PrimitiveI8(*num_references)),
+                "i16" => Some(Type::PrimitiveI16(*num_references)),
+                "i32" => Some(Type::PrimitiveI32(*num_references)),
+                "i64" => Some(Type::PrimitiveI64(*num_references)),
+                "u8" => Some(Type::PrimitiveU8(*num_references)),
+                "u16" => Some(Type::PrimitiveU16(*num_references)),
+                "u32" => Some(Type::PrimitiveU32(*num_references)),
+                "u64" => Some(Type::PrimitiveU64(*num_references)),
+                "f32" => Some(Type::PrimitiveF32(*num_references)),
+                "f64" => Some(Type::PrimitiveF64(*num_references)),
+                "bool" => Some(Type::PrimitiveBool(*num_references)),
+                "str" => Some(Type::PrimitiveStr(*num_references)),
+                "isize" => Some(Type::PrimitiveISize(*num_references)),
+                "usize" => Some(Type::PrimitiveUSize(*num_references)),
+                "Self" => Some(Type::PrimitiveSelf(*num_references)),
                 _ => None,
             })
         }
@@ -107,6 +113,7 @@ impl Type {
             | Type::UnsizedArray { num_references, .. }
             | Type::SizedArray { num_references, .. }
             | Type::Function(_, num_references)
+            | Type::PrimitiveSelf(num_references)
             | Type::PrimitiveVoid(num_references)
             | Type::PrimitiveI8(num_references)
             | Type::PrimitiveI16(num_references)
@@ -154,7 +161,7 @@ impl Display for Type {
         }
 
         match self {
-            Type::Struct { structure, .. } => Display::fmt(&structure.name, f),
+            Type::Struct { name, .. } => Display::fmt(name, f),
             Type::Trait { real_name, .. } => Display::fmt(real_name, f),
             Type::DynType { trait_refs, .. } => {
                 f.write_str("dyn ")?;
@@ -162,7 +169,7 @@ impl Display for Type {
                     if i != 0 {
                         f.write_str(" + ")?;
                     }
-                    Display::fmt(&trait_refs[i].name, f)?;
+                    Display::fmt(&trait_refs[i].1, f)?;
                 }
                 Ok(())
             }
@@ -199,6 +206,7 @@ impl Display for Type {
                 f.write_str(" -> ")?;
                 Display::fmt(&contract.return_type, f)
             }
+            Type::PrimitiveSelf(_) => f.write_str("Self"),
             Type::PrimitiveVoid(_) => f.write_str("void"),
             Type::PrimitiveI8(_) => f.write_str("i8"),
             Type::PrimitiveI16(_) => f.write_str("i16"),
@@ -228,11 +236,14 @@ impl PartialEq for Type {
 
         match (self, other) {
             (
-                Type::Struct { structure, .. },
                 Type::Struct {
-                    structure: other, ..
+                    struct_id: structure,
+                    ..
                 },
-            ) => structure.id == other.id,
+                Type::Struct {
+                    struct_id: other, ..
+                },
+            ) => *structure == *other,
             (Type::UnsizedArray { typ, .. }, Type::UnsizedArray { typ: other, .. }) => typ == other,
             (
                 Type::SizedArray {
@@ -262,6 +273,7 @@ impl PartialEq for Type {
             (Type::PrimitiveF64(_), Type::PrimitiveF64(_)) => true,
             (Type::PrimitiveStr(_), Type::PrimitiveStr(_)) => true,
             (Type::PrimitiveBool(_), Type::PrimitiveBool(_)) => true,
+            (Type::PrimitiveSelf(_), Type::PrimitiveSelf(_)) => true,
             (Type::Generic(name, _), Type::Generic(other_name, _)) => name == other_name,
             (Type::Function(id, _), Type::Function(other_id, _)) => id == other_id,
             _ => false,

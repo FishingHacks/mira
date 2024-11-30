@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
+    annotations::Annotations,
     globals::GlobalStr,
     module::{
         ExternalFunctionId, FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StructId,
@@ -36,7 +37,7 @@ pub struct Scopes {
 impl Scopes {
     pub fn new(
         module: &TypecheckedModule,
-        statics: &[(Type, LiteralValue, usize, Location)],
+        statics: &[(Type, LiteralValue, usize, Location, Annotations)],
     ) -> Self {
         let mut values = HashMap::new();
 
@@ -237,7 +238,7 @@ fn typecheck_statement(
                 ))
             }
         }
-        Statement::Var(global_str, expression, type_ref, location) => todo!(),
+        Statement::Var(global_str, expression, type_ref, location, _) => todo!(),
         Statement::Expression(expression) => typecheck_expression(context, scope, expression)
             .map_err(|v| vec![v])
             .map(|(typ, expr)| {
@@ -345,7 +346,8 @@ fn typecheck_expression(
                         }
                     }
                     Type::Struct {
-                        structure: structure.clone(),
+                        struct_id: structure.id,
+                        name: structure.name.clone(),
                         num_references: 0,
                     }
                 }

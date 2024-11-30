@@ -1,20 +1,27 @@
 use std::{
-    fmt::{Debug, Display},
+    fmt::{Debug, Display, Write},
     path::PathBuf,
 };
+
+use thiserror::Error;
 
 use crate::{
     globals::GlobalStr,
     tokenizer::{Location, TokenType},
-    typechecking::TypecheckingError,
+    typechecking::{Type, TypecheckingError},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Error)]
 pub enum ProgrammingLangError {
-    Parsing(ParsingError),
-    Tokenization(TokenizationError),
-    ProgramForming(ProgramFormingError),
-    Typechecking(TypecheckingError),
+    #[error("{0}")]
+    Parsing(#[from] ParsingError),
+    #[error("{0}")]
+    Tokenization(#[from] TokenizationError),
+    #[error("{0}")]
+    ProgramForming(#[from] ProgramFormingError),
+    #[error("{0}")]
+    Typechecking(#[from] TypecheckingError),
+    #[error("{0}")]
     Generic(&'static str),
 }
 
@@ -30,203 +37,98 @@ impl Debug for ProgrammingLangError {
     }
 }
 
-impl From<ParsingError> for ProgrammingLangError {
-    fn from(value: ParsingError) -> Self {
-        Self::Parsing(value)
-    }
-}
-
-impl From<TokenizationError> for ProgrammingLangError {
-    fn from(value: TokenizationError) -> Self {
-        Self::Tokenization(value)
-    }
-}
-
-impl From<ProgramFormingError> for ProgrammingLangError {
-    fn from(value: ProgramFormingError) -> Self {
-        Self::ProgramForming(value)
-    }
-}
-
-impl From<TypecheckingError> for ProgrammingLangError {
-    fn from(value: TypecheckingError) -> Self {
-        Self::Typechecking(value)
-    }
-}
-
-impl From<&'static str> for ProgrammingLangError {
-    fn from(value: &'static str) -> Self {
-        Self::Generic(value)
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Debug, Error)]
 pub enum ProgrammingLangResolveError {
+    #[error("{0}: Could not find file at `{1}`")]
     FileNotFound(Location, PathBuf),
+    #[error("{0}: Could not find module `{1}`")]
     ModuleNotFound(Location, String),
+    #[error("{0}: Absolute paths in use statements are not allowed")]
     AbsolutePath(Location),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Error)]
 pub enum ParsingError {
-    ExpectedType {
-        loc: Location,
-        found: TokenType,
-    },
-    ExpectedFunctionCall {
-        loc: Location,
-    },
-    ExpectedFunctionArgument {
-        loc: Location,
-        found: TokenType,
-    },
-    ExpectedArrayElement {
-        loc: Location,
-        found: TokenType,
-    },
-    ExpectedKey {
-        loc: Location,
-        found: TokenType,
-    },
-    ExpectedObjectElement {
-        loc: Location,
-        found: TokenType,
-    },
-    ExpectedFunctionArgumentExpression {
-        loc: Location,
-        found: TokenType,
-    },
-    ExpectedFunctionBody {
-        loc: Location,
-        found: TokenType,
-    },
-    ExpectedExpression {
-        loc: Location,
-        found: TokenType,
-    },
-    ExpectedIdentifier {
-        loc: Location,
-        found: TokenType,
-    },
-    CannotDoUnaryOperation {
-        loc: Location,
-        operation_type: OperationType,
-        right: &'static str,
-    },
-    CannotDoBinaryOperation {
-        loc: Location,
-        operation_type: OperationType,
-        left: &'static str,
-        right: &'static str,
-    },
+    #[error("{loc}: Expected a type, but found {found:?}")]
+    ExpectedType { loc: Location, found: TokenType },
+    #[error("{loc}: Expected a function call")]
+    ExpectedFunctionCall { loc: Location },
+    #[error("{loc}: Expected `,` or `)`, but found {found:?}")]
+    ExpectedFunctionArgument { loc: Location, found: TokenType },
+    #[error("{loc}: Expected `,` or `]`, but found {found:?}")]
+    ExpectedArrayElement { loc: Location, found: TokenType },
+    #[error("{loc}: Expected `,` or `}}`, but found {found:?}")]
+    ExpectedObjectElement { loc: Location, found: TokenType },
+    #[error("{loc}: Expected an expression or `)`, but found {found:?}")]
+    ExpectedFunctionArgumentExpression { loc: Location, found: TokenType },
+    #[error("{loc}: Expected `=` or `{{`, but found {found:?}")]
+    ExpectedFunctionBody { loc: Location, found: TokenType },
+    #[error("{loc}: Expected an expression, but found {found:?}")]
+    ExpectedExpression { loc: Location, found: TokenType },
+    #[error("{loc}: Expected an identifier, but found {found:?}")]
+    ExpectedIdentifier { loc: Location, found: TokenType },
+    #[error("{loc}: Invalid operand: {operand_type:?}")]
     InvalidOperand {
         loc: Location,
         operand_type: TokenType,
     },
+    #[error("{loc}: invalid unary operand: {operand_type:?}")]
     InvalidUnaryOperand {
         loc: Location,
         operand_type: TokenType,
     },
-    InvalidTokenization {
-        loc: Location,
-    },
-    AssignmentInvalidLeftSide {
-        loc: Location,
-    },
+    #[error("{loc}: Incorrect Tokenization (this was an error of the compiler! report it!)")]
+    InvalidTokenization { loc: Location },
+    #[error("{loc}: Invalid left-side of the assignment")]
+    AssignmentInvalidLeftSide { loc: Location },
+    #[error("{loc}: Expected {expected:?} but found {found:?}")]
     ExpectedArbitrary {
         loc: Location,
         expected: TokenType,
         found: TokenType,
     },
+    #[error("{loc}: `{keyword}` is not allowed here")]
     InvalidKeyword {
         keyword: &'static str,
         loc: Location,
     },
+    #[error(
+        "{loc}: Function `{name}` is already defined\n{first_func_loc}: `{name}` is defined here"
+    )]
     FunctionAlreadyDefined {
         loc: Location,
         name: GlobalStr,
         first_func_loc: Location,
     },
+    #[error("{loc}: Expected {}fn or `}}`, but found {found:?}", if *.is_trait_impl { "impl, " } else { "" })]
     StructImplRegionExpect {
         loc: Location,
         found: TokenType,
         is_trait_impl: bool,
     },
-    Eof {
-        loc: Location,
-    },
-    ExpectedStatement {
-        loc: Location,
-    },
-    ExpectedAnnotationStatement {
-        loc: Location,
-    },
-    ModuleResolution(ProgrammingLangResolveError),
-    ExpressionAtTopLevel {
-        loc: Location,
-    },
-}
-
-#[derive(Clone, Copy)]
-pub enum OperationType {
-    Plus,
-    Minus,
-    Multiply,
-    Divide,
-    IntDivide,
-    Modulo,
-    LogicalNot,
-    LogicalAnd,
-    LogicalOr,
-    BitwiseAnd,
-    BitwiseOr,
-    BitwiseNot,
-    BitwiseXor,
-    Equals,
-    NotEquals,
-    LessThan,
-    GreaterThan,
-    LessThanEquals,
-    GreaterThanEquals,
-}
-impl OperationType {
-    fn to_string(&self) -> &'static str {
-        match self {
-            Self::BitwiseAnd => "bitwise and",
-            Self::BitwiseOr => "bitwise or",
-            Self::BitwiseXor => "bitwise xor",
-            Self::BitwiseNot => "bitwise not",
-            Self::LogicalAnd => "logical and",
-            Self::LogicalOr => "logical or",
-            Self::LogicalNot => "logical not",
-            Self::Plus => "plus",
-            Self::Minus => "minus",
-            Self::Multiply => "multiply",
-            Self::Divide => "divide",
-            Self::IntDivide => "integer devide",
-            Self::Modulo => "modulo",
-            Self::Equals => "equals",
-            Self::NotEquals => "not equals",
-            Self::LessThan => "less than",
-            Self::GreaterThan => "greater than",
-            Self::LessThanEquals => "less than or equals",
-            Self::GreaterThanEquals => "greater than or equals",
-        }
-    }
+    #[error("{loc}: End-of-file")]
+    Eof { loc: Location },
+    #[error("{loc}: Expected a statement")]
+    ExpectedStatement { loc: Location },
+    #[error("{loc}: Expected a let, while, if, for, block, function, struct or trait statement")]
+    ExpectedAnnotationStatement { loc: Location },
+    #[error("{0}")]
+    ModuleResolution(#[from] ProgrammingLangResolveError),
+    #[error("{loc}: expected a statement, but found an expression")]
+    ExpressionAtTopLevel { loc: Location },
+    #[error("{loc}: Unknown annotation `{name}`")]
+    UnknownAnnotation { loc: Location, name: String },
 }
 
 impl ParsingError {
     pub fn get_loc(&self) -> &Location {
         match self {
-            Self::CannotDoBinaryOperation { loc, .. }
-            | Self::CannotDoUnaryOperation { loc, .. }
-            | Self::ExpectedType { loc, .. }
+            Self::ExpectedType { loc, .. }
             | Self::ExpectedExpression { loc, .. }
             | Self::ExpectedIdentifier { loc, .. }
             | Self::InvalidOperand { loc, .. }
             | Self::ExpectedArrayElement { loc, .. }
             | Self::ExpectedObjectElement { loc, .. }
-            | Self::ExpectedKey { loc, .. }
             | Self::ExpectedFunctionArgument { loc, .. }
             | Self::ExpectedFunctionArgumentExpression { loc, .. }
             | Self::ExpectedFunctionBody { loc, .. }
@@ -240,6 +142,7 @@ impl ParsingError {
             | Self::ExpectedArbitrary { loc, .. }
             | Self::InvalidUnaryOperand { loc, .. }
             | Self::FunctionAlreadyDefined { loc, .. }
+            | Self::UnknownAnnotation { loc, .. }
             | Self::ExpectedStatement { loc, .. }
             | Self::InvalidKeyword { loc, .. } => loc,
             Self::ModuleResolution(err) => match err {
@@ -251,118 +154,15 @@ impl ParsingError {
     }
 }
 
-impl Debug for ParsingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::CannotDoBinaryOperation {
-                operation_type,
-                left,
-                right,
-                loc,
-            } => f.write_fmt(format_args!(
-                "{loc}: Cannot do Binary Operation {} on {left} and {right}",
-                operation_type.to_string()
-            )),
-            Self::CannotDoUnaryOperation {
-                loc,
-                operation_type,
-                right,
-            } => f.write_fmt(format_args!(
-                "{loc}: Cannot do Unary Operation {} on {right}",
-                operation_type.to_string()
-            )),
-            Self::ExpectedExpression { loc, found } => f.write_fmt(format_args!(
-                "{loc}: Expected `(` or an expression, but found {found:?}"
-            )),
-            Self::InvalidOperand { loc, operand_type } => {
-                f.write_fmt(format_args!("{loc}: Invalid operand: {operand_type:?}"))
-            }
-            Self::InvalidUnaryOperand { loc, operand_type } => f.write_fmt(format_args!(
-                "{loc}: Invalid unary operand: {operand_type:?}"
-            )),
-            Self::ExpectedFunctionArgument { loc, found } => f.write_fmt(format_args!(
-                "{loc}: Expected `,` or `)`, but found {found:?}"
-            )),
-            Self::ExpectedFunctionArgumentExpression { loc, found } => f.write_fmt(format_args!(
-                "{loc}: Expected an expression or `)`, but found {found:?}"
-            )),
-            Self::ExpectedFunctionBody { loc, found } => f.write_fmt(format_args!(
-                "{loc}: `=` or `{{`, but found {found:?}"
-            )),
-            Self::ExpectedFunctionCall { loc } => f.write_fmt(format_args!(
-                "{loc}: Expected a function call"
-            )),
-            Self::ExpectedIdentifier { loc, found } => f.write_fmt(format_args!(
-                "{loc}: Expected an identifier, but found {found:?}"
-            )),
-            Self::InvalidTokenization { loc } => f.write_fmt(format_args!(
-                "{loc}: Incorrect Tokenization (this is an error of the compiler! Report it!)"
-            )),
-            Self::AssignmentInvalidLeftSide { loc } => f.write_fmt(format_args!(
-                "{loc}: Invalid left-hand side of the assignment"
-            )),
-            Self::ExpectedArbitrary {
-                loc,
-                expected,
-                found,
-            } => f.write_fmt(format_args!(
-                "{loc}: Expected {expected:?} but found {found:?}"
-            )),
-            Self::ExpectedArrayElement { loc, found } => {
-                f.write_fmt(format_args!("{loc}: Expected , or ], but found {found:?}"))
-            }
-            Self::ExpectedObjectElement { loc, found } => {
-                f.write_fmt(format_args!("{loc}: Expected , or }}, but found {found:?}"))
-            }
-            Self::ExpectedKey { loc, found } => f.write_fmt(format_args!(
-                "{loc}: Expected a key (a string, number or identifier), but found {found:?}"
-            )),
-            Self::ExpectedType { loc, found } => {
-                f.write_fmt(format_args!("{loc}: Expected a type, but found {found:?}"))
-            }
-            Self::InvalidKeyword { keyword, loc } => {
-                f.write_fmt(format_args!("{loc}: {keyword:?} is not allowed here"))
-            }
-            Self::FunctionAlreadyDefined { loc, name, first_func_loc } => {
-                f.write_fmt(format_args!("{loc}: Function `{name}` is already defined\n{first_func_loc}: `{name}` is already defined here"))
-            }
-            Self::StructImplRegionExpect { loc, found, is_trait_impl: false } => {
-                f.write_fmt(format_args!("{loc}: Expected impl, fn or }}, but found {found:?}"))
-            }
-            Self::StructImplRegionExpect { loc, found, is_trait_impl: true } => {
-                f.write_fmt(format_args!("{loc}: Expected fn or }}, but found {found:?}"))
-            }
-            Self::Eof { loc } => f.write_fmt(format_args!("{loc}: End-of-file")),
-            Self::ExpectedStatement { loc }  => f.write_fmt(format_args!("{loc}: Expected a statement")),
-            Self::ExpectedAnnotationStatement { loc } => f.write_fmt(format_args!("{loc}: Expected a while, if, for, block, function or struct statement")),
-            Self::ModuleResolution(err) => Debug::fmt(err, f),
-            Self::ExpressionAtTopLevel { loc } => f.write_fmt(format_args!("{loc}: expected a statement but found an expression")),
-        }
-    }
-}
-
-impl Debug for ProgrammingLangResolveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::FileNotFound(loc, path) => f.write_fmt(format_args!(
-                "{loc}: Could not find file at `{}`",
-                path.display()
-            )),
-            Self::ModuleNotFound(loc, module_name) => {
-                f.write_fmt(format_args!("{loc}: Could not find module `{module_name}`"))
-            }
-            Self::AbsolutePath(loc) => f.write_fmt(format_args!(
-                "{loc}: absolute paths in use statements are not allowed"
-            )),
-        }
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Error, Debug)]
 pub enum TokenizationError {
+    #[error("{loc}: Unknown token `{character}`")]
     UnknownTokenError { loc: Location, character: char },
+    #[error("{loc}: Could not parse the number")]
     InvalidNumberError { loc: Location },
+    #[error("{loc}: Expected `\"`, but found nothing")]
     UnclosedString { loc: Location },
+    #[error("{loc}: Invalid number type")]
     InvalidNumberType { loc: Location },
 }
 
@@ -387,58 +187,33 @@ impl TokenizationError {
     }
 }
 
-impl Debug for TokenizationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(self.get_loc(), f)?;
-        f.write_str(": ")?;
-        match self {
-            Self::UnclosedString { loc } => {
-                f.write_fmt(format_args!("{loc}: Expected `\"`, but found nothing"))
-            }
-            Self::InvalidNumberError { loc } => {
-                f.write_fmt(format_args!("{loc}: Could not parse the number"))
-            }
-            Self::UnknownTokenError { character, loc } => {
-                f.write_fmt(format_args!("{loc}: Unknown Token: `{character}`"))
-            }
-            Self::InvalidNumberType { loc } => {
-                f.write_fmt(format_args!("{loc}: Invalid number type"))
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Debug, Error)]
 pub enum ProgramFormingError {
+    #[error("{0}: Code outside of a function boundary")]
     NoCodeOutsideOfFunctions(Location),
+    #[error("{0}: There are no anonymous functions at global level allowed")]
     AnonymousFunctionAtGlobalLevel(Location),
+    #[error("{0}: global-level let or const expects you to pass a literal")]
     GlobalValueNoLiteral(Location),
+    #[error("{0}: global-level const expects you to pass a type")]
     GlobalValueNoType(Location),
+    #[error("{0}: could not find `{1}` in the current module")]
     IdentNotDefined(Location, GlobalStr),
+    #[error("{0}: `{1}` is already defined in the current module")]
     IdentAlreadyDefined(Location, GlobalStr),
 }
 
-impl Debug for ProgramFormingError {
+pub struct FunctionList<'a>(pub &'a [Type]);
+
+impl Display for FunctionList<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoCodeOutsideOfFunctions(loc) => {
-                f.write_fmt(format_args!("{loc}: Code outside of a function boundary"))
+        f.write_str("fn(")?;
+        for i in 0..self.0.len() {
+            if i != 0 {
+                f.write_str(", ")?;
             }
-            Self::AnonymousFunctionAtGlobalLevel(loc) => f.write_fmt(format_args!(
-                "{loc}: There are no anonymous functions at global level allowed"
-            )),
-            Self::GlobalValueNoLiteral(loc) => f.write_fmt(format_args!(
-                "{loc}: global-level let or const expects you to pass a literal"
-            )),
-            Self::GlobalValueNoType(loc) => f.write_fmt(format_args!(
-                "{loc}: global-level const expects you to pass a type"
-            )),
-            Self::IdentNotDefined(loc, ident) => f.write_fmt(format_args!(
-                "{loc}: could not find `{ident}` in the current module"
-            )),
-            Self::IdentAlreadyDefined(loc, ident) => f.write_fmt(format_args!(
-                "{loc}: `{ident}` is already defined in the current module"
-            )),
+            Display::fmt(&self.0[i], f)?;
         }
+        f.write_char(')')
     }
 }

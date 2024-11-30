@@ -1,0 +1,31 @@
+extern fn alloc(size: usize) -> &void;
+extern fn realloc(ptr: &void, size: usize) -> &void;
+extern fn free(ptr: &void);
+
+@lang("allocator_trait")
+trait Allocator {
+    fn alloc(self: &Self, size: usize) -> &void;
+    fn realloc(self: &Self, ptr: &void, size: usize) -> &void;
+    fn free(self: &Self, ptr: &void);
+}
+
+struct CAlloc {;
+    impl Allocator {
+        fn alloc(self: &Self, size: usize) -> &void = alloc(size);
+        fn realloc(self: &Self, ptr: &void, size: usize) -> &void = realloc(ptr, size);
+        fn free(self: &Self, ptr: &void) = free(ptr);
+    }
+}
+@lang("allocator")
+let allocator: CAlloc = CAlloc {};
+
+@lang("copy_trait")
+trait Copy {}
+
+@lang("clone_trait")
+trait Clone {
+    fn clone(self: &Self) -> Self;
+}
+
+@lang("printf")
+extern fn printf(pat: &u8, a: usize, b: &u8);

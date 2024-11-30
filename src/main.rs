@@ -307,8 +307,9 @@ fn main() -> std::io::Result<()> {
                 }
                 "run" => {
                     if let Err(errs) = run(file.clone(), current_dir.clone(), &buffer) {
+                        writeln!(stdout, "-------------------------------------")?;
                         for e in errs.into_iter() {
-                            writeln!(stdout, "{e:?}")?;
+                            writeln!(stdout, "{e}")?;
                         }
                     }
                 }
@@ -335,8 +336,8 @@ fn run(
 ) -> Result<(), Vec<ProgrammingLangError>> {
     let context = parse_all(file.into(), root_directory.into(), source.as_ref())?;
 
-    println!("Modules: {:?}", context.modules);
-    println!("Context: {:?}", context);
+    //println!("Modules: {:?}", context.modules);
+    //println!("Context: {:?}", context);
 
     let typechecking_context = TypecheckingContext::new(context.clone());
     let errs = typechecking_context.resolve_imports(context.clone());
@@ -348,6 +349,7 @@ fn run(
         return Err(errs.into_iter().map(Into::into).collect());
     }
 
+    println!("-----------");
     println!(
         "Typechecking Context after resolving: {:?}",
         typechecking_context
