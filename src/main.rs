@@ -1,16 +1,21 @@
+use parking_lot::RwLock;
 use std::{
     fs::OpenOptions,
     io::{stdin, stdout, ErrorKind, Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
 use programming_lang::{
+    codegen,
     error::ProgrammingLangError,
     module::{Module, ModuleContext},
     parser::ParserQueueEntry,
     tokenizer::Tokenizer,
-    typechecking::{typechecking::typecheck_function, TypecheckingContext},
+    typechecking::{
+        typechecking::{typecheck_function, typecheck_static},
+        TypecheckingContext,
+    },
 };
 
 fn print_help() {
@@ -25,6 +30,8 @@ fn print_help() {
     println!("│ .dd <line>       │ deletes the specified line                │");
     println!("│ .del <line>      │ deletes the specified line                │");
     println!("│ .delete <line>   │ deletes the specified line                │");
+    println!("│ .gc <line>       │ toggles a comment on the specified line   │");
+    println!("│ .comment <line>  │ toggles a comment on the specified line   │");
     println!("│ .clear           │ clears the current buffer                 │");
     println!("│ .list [-l]       │ lists the code; -l: with line numbers     │");
     println!("│ .load <path>     │ loads the path into the buffer            │");
@@ -270,6 +277,49 @@ fn main() -> std::io::Result<()> {
                     };
                     buffer.replace_range(start..=end, "");
                 }
+                "gc" | "comment" => {
+                    let num: usize = match rest.trim().parse() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            writeln!(stdout, "Could not parse {rest:?} as number: {e:?}")?;
+                            continue;
+                        }
+                    };
+                    let start = {
+                        let mut start = usize::MAX;
+                        let mut lines = 0;
+                        let mut line = num;
+                        for (idx, c) in buffer.char_indices() {
+                            if c == '\n' {
+                                lines += 1;
+                            }
+                            if line == 0 && start == usize::MAX {
+                                start = idx;
+                            }
+                            if c == '\n' && line == 0 {
+                                break;
+                            } else if c == '\n' {
+                                line -= 1;
+                            }
+                        }
+                        if start == usize::MAX {
+                            writeln!(
+                                stdout,
+                                "line {num} doesn't exist (buffer has {lines} lines)"
+                            )?;
+                            continue;
+                        } else {
+                            start
+                        }
+                    };
+                    if buffer[start..].starts_with("//") {
+                        buffer.remove(start);
+                        buffer.remove(start);
+                    } else {
+                        buffer.insert(start, '/');
+                        buffer.insert(start, '/');
+                    }
+                }
                 "esc" => {
                     buffer.push_str(rest);
                     buffer.push('\n');
@@ -336,9 +386,6 @@ fn run(
 ) -> Result<(), Vec<ProgrammingLangError>> {
     let context = parse_all(file.into(), root_directory.into(), source.as_ref())?;
 
-    //println!("Modules: {:?}", context.modules);
-    //println!("Context: {:?}", context);
-
     let typechecking_context = TypecheckingContext::new(context.clone());
     let errs = typechecking_context.resolve_imports(context.clone());
     if errs.len() > 0 {
@@ -349,22 +396,26 @@ fn run(
         return Err(errs.into_iter().map(Into::into).collect());
     }
 
-    println!("-----------");
-    println!(
-        "Typechecking Context after resolving: {:?}",
-        typechecking_context
-    );
-
-    let num_functions = typechecking_context
-        .functions
-        .read()
-        .expect("read-write lock is poisoned")
-        .len();
+    let num_functions = { typechecking_context.functions.read().len() };
+    let num_ext_functions = { typechecking_context.external_functions.read().len() };
+    let num_statics = { typechecking_context.statics.read().len() };
 
     let mut errs = Vec::new();
 
     for i in 0..num_functions {
-        errs.extend(typecheck_function(&typechecking_context, &context, i));
+        errs.extend(typecheck_function(
+            &typechecking_context,
+            &context,
+            i,
+            false,
+        ));
+    }
+
+    for i in 0..num_ext_functions {
+        errs.extend(typecheck_function(&typechecking_context, &context, i, true));
+    }
+    for i in 0..num_statics {
+        typecheck_static(&typechecking_context, &context, i, &mut errs);
     }
 
     for err in &errs {
@@ -375,7 +426,34 @@ fn run(
         return Err(errs.into_iter().map(Into::into).collect());
     }
 
-    println!("Typechecking Context: {typechecking_context:?}");
+    println!(
+        "{:#}",
+        programming_lang::typechecking::ir_displayer::TypecheckingContextDisplay(
+            &*typechecking_context
+        )
+    );
+
+    let num_fns = { typechecking_context.functions.read().len() };
+    let num_ext_fns = { typechecking_context.external_functions.read().len() };
+    for i in 0..num_fns {
+        println!(
+            "mangle_name(fn({i})) = {:?}",
+            codegen::mangle_name(
+                &typechecking_context,
+                programming_lang::module::ModuleScopeValue::Function(i)
+            )
+        );
+    }
+
+    for i in 0..num_ext_fns {
+        println!(
+            "mangle_name(ext_fn({i})) = {:?}",
+            codegen::mangle_name(
+                &typechecking_context,
+                programming_lang::module::ModuleScopeValue::ExternalFunction(i)
+            )
+        );
+    }
 
     Ok(())
 }
@@ -407,24 +485,18 @@ fn parse_all(
                 .into_iter()
                 .map(ProgrammingLangError::Parsing),
         );
-        let mut module = Module::new(module_context.clone(), current_parser.imports);
-        if let Err(errs) = module.push_all(
-            statements,
-            module_context
-                .modules
-                .read()
-                .expect("read-write lock is poisoned")
-                .len(),
-        ) {
+        let (path, root) = {
+            let module = &modules.read()[module_context.modules.read().len()];
+            (module.file.clone(), module.root.clone())
+        };
+        let mut module = Module::new(module_context.clone(), current_parser.imports, path, root);
+        if let Err(errs) = module.push_all(statements, module_context.modules.read().len()) {
             errors.extend(errs.into_iter().map(ProgrammingLangError::ProgramForming));
         }
-        let mut writer = module_context
-            .modules
-            .write()
-            .expect("read-write lock is poisoned");
+        let mut writer = module_context.modules.write();
         writer.push(module);
 
-        let read_modules = modules.read().expect("read-write lock was poisoned");
+        let read_modules = modules.read();
         if read_modules.len() > writer.len() {
             let entry = read_modules[writer.len()].clone();
             drop(read_modules);

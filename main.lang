@@ -72,12 +72,3 @@ struct slice {;
     fn from_raw<T>(ptr: &T, len: usize) -> &[T] = set_metadata(ptr, len);
     fn len<T>(self: &[T]) -> usize = get_metadata(self);
 }
-
-
-
-
-
-fn main() {
-    println("hello!!!");
-}
-

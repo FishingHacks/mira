@@ -1,10 +1,7 @@
-use std::{
-    fmt::{Debug, Display, Write},
-    sync::LazyLock,
-};
+use std::fmt::{Debug, Display, Write};
 
 use crate::{
-    annotations::Annotation,
+    annotations::{Annotation, AnnotationReceiver, Annotations},
     error::{FunctionList, ParsingError},
     globals::GlobalStr,
     tokenizer::{Literal, Location, Token, TokenType},
@@ -23,6 +20,17 @@ impl Annotation for LangItemAnnotation {
     fn get_name(&self) -> &'static str {
         "lang"
     }
+
+    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations) -> bool {
+        match thing {
+            AnnotationReceiver::Function
+            | AnnotationReceiver::ExternalFunction
+            | AnnotationReceiver::Struct
+            | AnnotationReceiver::Trait
+            | AnnotationReceiver::Static => true,
+            _ => false,
+        }
+    }
 }
 
 impl LangItemAnnotation {
@@ -30,7 +38,7 @@ impl LangItemAnnotation {
         &self.0
     }
 
-    pub fn parse(tokens: Vec<Token>, loc: Location) -> Result<LangItemAnnotation, ParsingError> {
+    pub fn parse(tokens: Vec<Token>, loc: Location) -> Result<Self, ParsingError> {
         if tokens.len() < 1 {
             return Err(ParsingError::ExpectedArbitrary {
                 loc,
@@ -93,7 +101,7 @@ macro_rules! lang_item_def {
     ($($lang_item: ident => $ty: ident),* $(,)?) => {
         #[derive(Debug, Default)]
         pub struct LangItems {
-            $($lang_item: Option<lang_item_def!(underlying_typ $ty)>,)*
+            $(pub $lang_item: Option<lang_item_def!(underlying_typ $ty)>,)*
         }
 
         impl LangItems {
@@ -352,13 +360,13 @@ macro_rules! check_langitem {
     ($lang_item:ident: Function; $self:ident $reader:ident $errors:ident $context:ident) => {
         if let Some(func) = $self.$lang_item {
             let func = match func {
-                FunctionLangItem::Internal(id) => &$context.functions.read().expect("read-write lock is poisoned")[id].0,
-                FunctionLangItem::External(id) => &$context.external_functions.read().expect("read-write lock is poisoned")[id].0,
+                FunctionLangItem::Internal(id) => &$context.functions.read()[id].0,
+                FunctionLangItem::External(id) => &$context.external_functions.read()[id].0,
             };
             does_function_match(&$self.$lang_item(), func, stringify!($lang_item), $errors, $context);
         }
     };
-    (&$lang_item:ident: $ty: ident; $self:ident $reader:ident $errors:ident) => { compile_error!(concat!(stringify!($ty), " is not yet supported")) };
+    ($lang_item:ident: $ty: ident; $self:ident $reader:ident $errors:ident) => { compile_error!(concat!(stringify!($ty), " is not yet supported")) };
 }
 
 lang_item_def! {
@@ -387,7 +395,6 @@ lang_item_def! {
 
     clone_trait => Trait, // done
     copy_trait => Trait, // done
-    sized_trait => Trait, // done
     allocator_trait => Trait, // done
     eq_trait => Trait,
     neq_trait => Trait,
@@ -521,11 +528,6 @@ impl LangItems {
         LangItemTrait { funcs: Vec::new() }
     }
 
-    fn sized_trait(&self) -> LangItemTrait {
-        // trait Sized {}
-        LangItemTrait { funcs: Vec::new() }
-    }
-
     fn clone_trait(&self) -> LangItemTrait {
         // trait Clone { fn clone(self: &Self) -> Self; }
         LangItemTrait {
@@ -549,22 +551,15 @@ impl LangItems {
     }
 
     pub fn check(&self, errors: &mut Vec<LangItemError>, context: &TypecheckingContext) {
-        let trait_reader = context.traits.read().expect("read-write lock is poisoned");
-        let struct_reader = context.structs.read().expect("read-write lock is poisoned");
-        let static_reader = context.statics.read().expect("read-write lock is poisoned");
-        let function_reader = context
-            .functions
-            .read()
-            .expect("read-write lock is poisoned");
-        let external_function_reader = context
-            .external_functions
-            .read()
-            .expect("read-write lock is poisoned");
+        let trait_reader = context.traits.read();
+        let struct_reader = context.structs.read();
+        let static_reader = context.statics.read();
+        let function_reader = context.functions.read();
+        let external_function_reader = context.external_functions.read();
 
         check_langitem!(required self.allocator_trait: Trait; trait_reader errors context);
         check_langitem!(required self.clone_trait: Trait; trait_reader errors context);
         check_langitem!(required self.copy_trait: Trait; trait_reader errors context);
-        check_langitem!(required self.sized_trait: Trait; trait_reader errors context);
         check_langitem!(required self.allocator: Static; static_reader errors context);
         check_langitem!(required self.printf: Function; static_reader errors context);
         check_langitem!(self.ptr: Struct; struct_reader errors context);
@@ -626,7 +621,7 @@ fn does_struct_match(
     context: &TypecheckingContext,
 ) -> bool {
     let num_errs = errors.len();
-    let trait_reader = context.traits.read().expect("read-write lock is poisoned");
+    let trait_reader = context.traits.read();
 
     for (i, bounds) in structure_a.generics.iter().enumerate() {
         match structure_b.generics.get(i) {
@@ -707,10 +702,7 @@ fn does_struct_match(
         }
     }
     drop(trait_reader);
-    let func_reader = context
-        .functions
-        .read()
-        .expect("read-write lock is poisoned");
+    let func_reader = context.functions.read();
 
     for (fn_name, func) in structure_a.funcs.iter() {
         let Some(func_impl) = structure_b.global_impl.get(fn_name) else {
@@ -757,7 +749,7 @@ fn does_static_match(
     errors: &mut Vec<LangItemError>,
     context: &TypecheckingContext,
 ) -> bool {
-    let trait_reader = context.traits.read().expect("read-write lock is poisoned");
+    let trait_reader = context.traits.read();
     match typ {
         Type::DynType {
             trait_refs,
@@ -780,9 +772,7 @@ fn does_static_match(
             num_references,
             ..
         } => {
-            let struct_traits = &context.structs.read().expect("read-write lock is poisoned")
-                [*struct_id]
-                .trait_impl;
+            let struct_traits = &context.structs.read()[*struct_id].trait_impl;
             let mut matches = true;
             for trait_id in traits {
                 if !struct_traits.contains_key(trait_id) {

@@ -1,7 +1,5 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use parking_lot::RwLock;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     annotations::Annotations,

@@ -1,1 +1,1 @@
-todo: remove `unsafe` from `bake_functions`
+- learn llvm

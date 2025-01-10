@@ -6,11 +6,11 @@ use crate::{
         ExternalFunctionId, FunctionId, ModuleContext, ModuleScopeValue, StaticId, StructId,
         TraitId,
     },
-    parser::{LiteralValue, TypeRef},
+    parser::TypeRef,
 };
 
 use super::{
-    resolve_import, statement::TypecheckedStatement, types::Type, TypecheckedFunctionContract,
+    expression::TypedLiteral, resolve_import, types::Type, TypecheckedFunctionContract,
     TypecheckingContext, TypecheckingError, TypedTrait, DUMMY_LOCATION,
 };
 
@@ -24,21 +24,14 @@ impl TypecheckingContext {
     pub fn resolve_types(&self, context: Arc<ModuleContext>) -> Vec<TypecheckingError> {
         let mut errors = Vec::new();
 
-        let mut lang_items_writer = self
-            .lang_items
-            .write()
-            .expect("read-write lock is poisoned");
+        let mut lang_items_writer = self.lang_items.write();
 
         // +---------+
         // | Structs |
         // +---------+
-        let num_structs = context
-            .structs
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
+        let num_structs = context.structs.read().len();
         for struct_id in 0..num_structs {
-            let struct_reader = context.structs.read().expect("read-write lock is poisoned");
+            let struct_reader = context.structs.read();
             let module_id = struct_reader[struct_id].module_id;
             drop(struct_reader);
             let err_count = errors.len();
@@ -49,7 +42,7 @@ impl TypecheckingContext {
             if err_count != errors.len() {
                 continue;
             }
-            let struct_reader = self.structs.read().expect("read-write lock is poisoned");
+            let struct_reader = self.structs.read();
             for annotation in struct_reader[struct_id]
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
@@ -67,18 +60,14 @@ impl TypecheckingContext {
         // +-----------+
         // | Functions |
         // +-----------+
-        let num_functions = context
-            .functions
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
+        let num_functions = context.functions.read().len();
         for function_id in 0..num_functions {
             let error_count = errors.len();
             self.resolve_function(function_id, &context, &mut errors);
             if error_count != errors.len() {
                 continue;
             }
-            let function_reader = self.functions.read().expect("read-write lock is poisoned");
+            let function_reader = self.functions.read();
             for annotation in function_reader[function_id]
                 .0
                 .annotations
@@ -97,21 +86,14 @@ impl TypecheckingContext {
         // +--------------------+
         // | External Functions |
         // +--------------------+
-        let num_functions = context
-            .external_functions
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
+        let num_functions = context.external_functions.read().len();
         for ext_function_id in 0..num_functions {
             let error_count = errors.len();
             self.resolve_ext_function(ext_function_id, &context, &mut errors);
             if error_count != errors.len() {
                 continue;
             }
-            let ext_function_reader = self
-                .external_functions
-                .read()
-                .expect("read-write lock is poisoned");
+            let ext_function_reader = self.external_functions.read();
             for annotation in ext_function_reader[ext_function_id]
                 .0
                 .annotations
@@ -130,18 +112,14 @@ impl TypecheckingContext {
         // +---------+
         // | Statics |
         // +---------+
-        let num_statics = context
-            .statics
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
+        let num_statics = context.statics.read().len();
         for static_id in 0..num_statics {
             let error_count = errors.len();
             self.resolve_static(static_id, &context, &mut errors);
             if error_count != errors.len() {
                 continue;
             }
-            let static_reader = self.statics.read().expect("read-write lock is poisoned");
+            let static_reader = self.statics.read();
             for annotation in static_reader[static_id]
                 .4
                 .get_annotations::<LangItemAnnotation>()
@@ -159,18 +137,14 @@ impl TypecheckingContext {
         // +--------+
         // | Traits |
         // +--------+
-        let num_traits = context
-            .traits
-            .read()
-            .expect("read-write lock is poisoned")
-            .len();
+        let num_traits = context.traits.read().len();
         for trait_id in 0..num_traits {
             let error_count = errors.len();
             self.resolve_trait(trait_id, &context, &mut errors);
             if error_count != errors.len() {
                 continue;
             }
-            let trait_reader = self.traits.read().expect("read-write lock is poisoned");
+            let trait_reader = self.traits.read();
             for annotation in trait_reader[trait_id]
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
@@ -204,18 +178,15 @@ impl TypecheckingContext {
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
-        let mut writer = context
-            .structs
-            .write()
-            .expect("read-write lock is poisoned");
+        let mut writer = context.structs.write();
         let trait_impl = std::mem::take(&mut writer[struct_id].impls);
         drop(writer);
 
         // it is *okay* to hold the lock here between resolve_type calls as all structs have
         // already been resolved.
-        let mut struct_writer = self.structs.write().expect("read-write lock is poisoned");
-        let trait_reader = self.traits.read().expect("read-write lock is poisoned");
-        let function_reader = self.functions.read().expect("read-write lock is poisoned");
+        let mut struct_writer = self.structs.write();
+        let trait_reader = self.traits.read();
+        let function_reader = self.functions.read();
         let module = struct_writer[struct_id].module_id;
 
         for (name, implementation, loc) in trait_impl {
@@ -313,10 +284,7 @@ impl TypecheckingContext {
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
-        let mut writer = context
-            .functions
-            .write()
-            .expect("read-write lock is poisoned");
+        let mut writer = context.functions.write();
         let module_id = writer[function_id].2;
         let arguments = std::mem::take(&mut writer[function_id].0.arguments);
         let return_type = std::mem::replace(
@@ -357,8 +325,7 @@ impl TypecheckingContext {
         }
 
         if !has_errors {
-            self.functions.write().expect("read-write lock is poisoned")[function_id] =
-                (resolved_function_contract, TypecheckedStatement::None);
+            self.functions.write()[function_id].0 = resolved_function_contract;
         }
     }
 
@@ -368,10 +335,7 @@ impl TypecheckingContext {
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
-        let mut writer = context
-            .external_functions
-            .write()
-            .expect("read-write lock is poisoned");
+        let mut writer = context.external_functions.write();
         let module_id = writer[ext_function_id].2;
         let arguments = std::mem::take(&mut writer[ext_function_id].0.arguments);
         let return_type = std::mem::replace(
@@ -408,10 +372,7 @@ impl TypecheckingContext {
         }
 
         if !has_errors {
-            self.external_functions
-                .write()
-                .expect("read-write lock is poisoned")[ext_function_id] =
-                (resolved_function_contract, None);
+            self.external_functions.write()[ext_function_id] = (resolved_function_contract, None);
         }
     }
 
@@ -421,10 +382,7 @@ impl TypecheckingContext {
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
-        let mut writer = context
-            .statics
-            .write()
-            .expect("read-write lock is poisoned");
+        let mut writer = context.statics.write();
         let location = std::mem::replace(&mut writer[static_id].3, DUMMY_LOCATION.clone());
         let annotations = std::mem::take(&mut writer[static_id].4);
         let dummy_type = TypeRef::Void(writer[static_id].0.loc().clone(), 0);
@@ -433,8 +391,8 @@ impl TypecheckingContext {
         drop(writer);
         match self.resolve_type(module_id, &typ, &[]) {
             Ok(v) => {
-                self.statics.write().expect("read-write lock is poisoned")[static_id] =
-                    (v, LiteralValue::Void, module_id, location, annotations);
+                self.statics.write()[static_id] =
+                    (v, TypedLiteral::Void, module_id, location, annotations);
             }
             Err(e) => errors.push(e),
         }
@@ -446,7 +404,7 @@ impl TypecheckingContext {
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
-        let mut writer = context.traits.write().expect("read-write lock is poisoned");
+        let mut writer = context.traits.write();
         let location = std::mem::replace(&mut writer[trait_id].location, DUMMY_LOCATION.clone());
         let name = writer[trait_id].name.clone();
         let annotations = std::mem::take(&mut writer[trait_id].annotations);
@@ -485,7 +443,7 @@ impl TypecheckingContext {
         }
 
         if errors.len() == error_count {
-            self.traits.write().expect("read-write lock is poisoned")[trait_id] = TypedTrait {
+            self.traits.write()[trait_id] = TypedTrait {
                 name,
                 location,
                 id: trait_id,

@@ -6,6 +6,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
+    annotations::AnnotationReceiver,
     globals::GlobalStr,
     tokenizer::{Location, TokenType},
     typechecking::{Type, TypecheckingError},
@@ -49,6 +50,8 @@ pub enum ProgrammingLangResolveError {
 
 #[derive(Clone, Debug, Error)]
 pub enum ParsingError {
+    #[error("{0}: {1} is an invalid intrinsic")]
+    InvalidIntrinsic(Location, GlobalStr),
     #[error("{loc}: Expected a type, but found {found:?}")]
     ExpectedType { loc: Location, found: TokenType },
     #[error("{loc}: Expected a function call")]
@@ -116,6 +119,12 @@ pub enum ParsingError {
     ModuleResolution(#[from] ProgrammingLangResolveError),
     #[error("{loc}: expected a statement, but found an expression")]
     ExpressionAtTopLevel { loc: Location },
+    #[error("{loc}: annotation `{name}` cannot go on a {thing}")]
+    AnnotationDoesNotGoOn {
+        loc: Location,
+        name: &'static str,
+        thing: AnnotationReceiver,
+    },
     #[error("{loc}: Unknown annotation `{name}`")]
     UnknownAnnotation { loc: Location, name: String },
 }
@@ -123,7 +132,9 @@ pub enum ParsingError {
 impl ParsingError {
     pub fn get_loc(&self) -> &Location {
         match self {
-            Self::ExpectedType { loc, .. }
+            Self::InvalidIntrinsic(loc, _)
+            | Self::ExpectedType { loc, .. }
+            | Self::AnnotationDoesNotGoOn { loc, .. }
             | Self::ExpectedExpression { loc, .. }
             | Self::ExpectedIdentifier { loc, .. }
             | Self::InvalidOperand { loc, .. }
@@ -164,6 +175,10 @@ pub enum TokenizationError {
     UnclosedString { loc: Location },
     #[error("{loc}: Invalid number type")]
     InvalidNumberType { loc: Location },
+    #[error("{loc}: unclosed macro invocation (Expected a `{bracket}`))")]
+    UnclosedMacro { loc: Location, bracket: char },
+    #[error("{loc}: expected a bracket (`(`, `[` or `{{`), but found {character}")]
+    MacroExpectedBracket { loc: Location, character: char },
 }
 
 impl TokenizationError {
@@ -182,6 +197,8 @@ impl TokenizationError {
             Self::UnclosedString { loc }
             | Self::InvalidNumberError { loc }
             | Self::InvalidNumberType { loc }
+            | Self::UnclosedMacro { loc, .. }
+            | Self::MacroExpectedBracket { loc, .. }
             | Self::UnknownTokenError { loc, .. } => &loc,
         }
     }

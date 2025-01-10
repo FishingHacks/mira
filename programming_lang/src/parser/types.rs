@@ -23,11 +23,7 @@ pub enum TypeRef {
     DynReference {
         num_references: u8,
         loc: Location,
-        /// Has a list of traits and whether or not they're optional (only applicable to Sized as
-        /// in ?Sized, but because it could also be `?std::Sized`, `?TypeLengthKnown` or anything
-        /// that is marked with @lang_ref("sized_trait") or @lang("sized_trait"), we have to make
-        /// it applicable for every possible trait.)
-        traits: Vec<(bool, PathWithoutGenerics)>,
+        traits: Vec<PathWithoutGenerics>,
     },
     Reference {
         num_references: u8,
@@ -57,11 +53,8 @@ impl Display for TypeRef {
         match self {
             Self::DynReference { traits, .. } => {
                 f.write_str("dyn")?;
-                for (optional, trait_name) in traits {
+                for trait_name in traits {
                     f.write_char(' ')?;
-                    if *optional {
-                        f.write_char('?')?;
-                    }
                     Display::fmt(trait_name, f)?;
                 }
                 Ok(())
@@ -263,11 +256,10 @@ impl TypeRef {
                 break;
             }
 
-            let is_optional = parser.match_tok(TokenType::QuestionMark);
             if parser.peek().typ != TokenType::IdentifierLiteral {
                 break;
             }
-            traits.push((is_optional, PathWithoutGenerics::parse(parser)?));
+            traits.push(PathWithoutGenerics::parse(parser)?);
         }
 
         return Ok(Self::DynReference {

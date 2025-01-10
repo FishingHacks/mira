@@ -1,8 +1,9 @@
+use parking_lot::RwLock;
 use std::{
     fmt::{Display, Write},
     path::Path,
     str::FromStr,
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
 use crate::{
@@ -49,8 +50,8 @@ pub enum TokenType {
     Ampersand,            // done, done
     BitwiseOr,            // done, done
     BitwiseXor,           // done, done
-    BitwiseLShift,        // done, done
-    BitwiseRShift,        // done, done
+    LShift,               // done, done
+    RShift,               // done, done
     PipeOperator,         // done, done
     Return,               // done, done
     Fn,                   // done, done
@@ -208,9 +209,9 @@ impl Display for Token {
             TokenType::BitwiseOrAssign => f.write_str("|="),
             TokenType::BitwiseXor => f.write_str("^"),
             TokenType::BitwiseXorAssign => f.write_str("^="),
-            TokenType::BitwiseLShift => f.write_str("<<"),
+            TokenType::LShift => f.write_str("<<"),
             TokenType::BitwiseLShiftAssign => f.write_str("<<="),
-            TokenType::BitwiseRShift => f.write_str(">>"),
+            TokenType::RShift => f.write_str(">>"),
             TokenType::BitwiseRShiftAssign => f.write_str(">>="),
             TokenType::VoidLiteral => f.write_str("void"),
             TokenType::BooleanLiteral => match &self.literal {
@@ -402,39 +403,55 @@ impl Tokenizer {
     }
 
     fn cur_char(&self) -> char {
-        if self.current < 1 {
-            self.source[0] // before advance() was called, this shouldnt happen
-        } else {
-            self.source[self.current - 1]
-        }
+        self.source[self.current.saturating_sub(1)]
     }
 
     fn peek(&self) -> char {
-        self.source.get(self.current).map(|c| *c).unwrap_or('\0')
+        self.source.get(self.current).copied().unwrap_or('\0')
     }
 
     fn if_char_advance(&mut self, character: char) -> bool {
-        if self.peek() == character {
-            self.advance();
-            true
-        } else {
-            false
+        if self.peek() != character {
+            return false;
         }
+
+        self.advance();
+        true
     }
 
     fn scan_token(&mut self) -> Result<(), TokenizationError> {
+        let tok = self.int_scan_token()?;
+        let Some(tok) = tok else {
+            return Ok(());
+        };
+        match tok.typ {
+            TokenType::IdentifierLiteral if self.if_char_advance('!') => match &tok.literal {
+                Some(Literal::String(str)) => {
+                    let mut tokens = self.do_macro(&tok.location, str)?;
+                    self.tokens.append(&mut tokens);
+                }
+                _ => unreachable!(
+                    "Token::IdentifierLiteral should always have a string literal value"
+                ),
+            },
+            _ => self.tokens.push(tok),
+        }
+        Ok(())
+    }
+
+    fn int_scan_token(&mut self) -> Result<Option<Token>, TokenizationError> {
         let c = self.advance();
 
         macro_rules! token {
             ($token: ident) => {
-                self.add_token(TokenType::$token)
+                Ok(self.get_token(TokenType::$token))
             };
 
             ($tokena: ident, $tokenb: ident, $char: expr) => {{
                 if self.if_char_advance($char) {
-                    self.add_token(TokenType::$tokenb)
+                    Ok(self.get_token(TokenType::$tokenb))
                 } else {
-                    self.add_token(TokenType::$tokena)
+                    Ok(self.get_token(TokenType::$tokena))
                 }
             }};
         }
@@ -448,33 +465,18 @@ impl Tokenizer {
             '[' => token!(BracketLeft),
             ']' => token!(BracketRight),
             ',' => token!(Comma),
-            '.' => {
-                if self.if_char_advance('.') {
-                    if self.if_char_advance('=') {
-                        token!(RangeInclusive); // ..=
-                    } else {
-                        token!(Range); // ..
-                    }
-                } else {
-                    if ('0'..='9').contains(&self.peek()) {
-                        return self.parse_number('.');
-                    } else {
-                        token!(Dot) // .
-                    }
-                }
-            }
+            '.' if self.if_char_advance('.') => token!(Range, RangeInclusive, '.'),
+            '.' if self.peek().is_ascii_digit() => self.parse_number('.'),
+            '.' => token!(Dot),
             '+' => token!(Plus, PlusAssign, '='),
+            '-' if self.peek().is_ascii_digit() || self.peek() == '.' => self.parse_number('-'),
             '-' => {
-                if matches!(self.peek(), ('0'..='9') | '.') {
-                    self.parse_number('-')?;
+                if self.if_char_advance('=') {
+                    token!(MinusAssign)
+                } else if self.if_char_advance('>') {
+                    token!(ReturnType)
                 } else {
-                    if self.if_char_advance('=') {
-                        token!(MinusAssign);
-                    } else if self.if_char_advance('>') {
-                        token!(ReturnType);
-                    } else {
-                        token!(Minus);
-                    }
+                    token!(Minus)
                 }
             }
             '/' if self.peek() != '/' => token!(Divide, DivideAssign, '='),
@@ -482,41 +484,47 @@ impl Tokenizer {
             '*' => token!(Asterix, MultiplyAssign, '='),
             '=' => token!(Equal, EqualEqual, '='),
             '<' if self.peek() != '<' => token!(LessThan, LessThanEquals, '='),
-            '<' if self.if_char_advance('<') => token!(BitwiseLShift, BitwiseLShiftAssign, '='),
+            '<' if self.if_char_advance('<') => token!(LShift, BitwiseLShiftAssign, '='),
             '>' if self.peek() != '>' => token!(GreaterThan, GreaterThanEquals, '='),
-            '>' if self.if_char_advance('>') => token!(BitwiseRShift, BitwiseRShiftAssign, '='),
+            '>' if self.if_char_advance('>') => token!(RShift, BitwiseRShiftAssign, '='),
             ':' => token!(Colon, NamespaceAccess, ':'),
             ';' => token!(Semicolon),
             '!' => token!(LogicalNot, NotEquals, '='),
             '~' => token!(BitwiseNot),
             '&' => {
                 if self.if_char_advance('=') {
-                    token!(BitwiseAndAssign);
+                    token!(BitwiseAndAssign)
                 } else if self.if_char_advance('&') {
-                    token!(LogicalAnd);
+                    token!(LogicalAnd)
                 } else {
-                    token!(Ampersand);
+                    token!(Ampersand)
                 }
             }
             '|' => {
                 if self.if_char_advance('=') {
-                    token!(BitwiseOrAssign);
+                    token!(BitwiseOrAssign)
                 } else if self.if_char_advance('|') {
-                    token!(LogicalOr);
+                    token!(LogicalOr)
                 } else if self.if_char_advance('>') {
-                    token!(PipeOperator);
+                    token!(PipeOperator)
                 } else {
-                    token!(BitwiseOr);
+                    token!(BitwiseOr)
                 }
             }
             '^' => token!(BitwiseXor, BitwiseXorAssign, '='),
-            ' ' | '\n' | '\r' | '\t' => (),
+            ' ' | '\n' | '\r' | '\t' => {
+                while matches!(self.peek(), ' ' | '\n' | '\r' | '\t') {
+                    self.advance();
+                }
+                return Ok(None);
+            }
             '/' if self.if_char_advance('/') => {
                 while !self.is_at_end() && self.advance() != '\n' {}
+                return Ok(None);
             }
             '@' => token!(AnnotationIntroducer),
-            ('0'..='9') => return self.parse_number(c),
-            '"' => return self.parse_string(),
+            ('0'..='9') => self.parse_number(c),
+            '"' => self.parse_string(),
             _ if Self::is_valid_identifier_char(c) && !matches!(c, ('0'..='9')) => {
                 self.parse_identifier(c)
             }
@@ -527,17 +535,12 @@ impl Tokenizer {
                 ))
             }
         }
-        Ok(())
+        .map(Some)
     }
 
-    fn add_token(&mut self, token: TokenType) {
-        self.tokens.push(Token::new(
-            token,
-            None,
-            self.line,
-            self.column,
-            self.file.clone(),
-        ));
+    #[inline(always)]
+    fn get_token(&self, token: TokenType) -> Token {
+        Token::new(token, None, self.line, self.column, self.file.clone())
     }
 
     fn skip_to_after_number(&mut self) {
@@ -564,7 +567,7 @@ impl Tokenizer {
         &mut self,
         location: Location,
         is_negative: bool,
-    ) -> Result<(), TokenizationError> {
+    ) -> Result<Token, TokenizationError> {
         let mut value: u64 = 0;
         let mut typ = String::new();
 
@@ -589,12 +592,12 @@ impl Tokenizer {
                             {
                                 Err(err)
                             }
-                            _ if is_negative => Ok(self.add_token_lit_loc(
+                            _ if is_negative => Ok(self.get_token_lit_loc(
                                 TokenType::SIntLiteral,
                                 Literal::SInt(value as i64, number_type),
                                 location,
                             )),
-                            _ => Ok(self.add_token_lit_loc(
+                            _ => Ok(self.get_token_lit_loc(
                                 TokenType::UIntLiteral,
                                 Literal::UInt(value, number_type),
                                 location,
@@ -630,14 +633,14 @@ impl Tokenizer {
                 }
                 'u' | 'i' => typ.push(self.advance()),
                 _ if is_negative => {
-                    return Ok(self.add_token_lit_loc(
+                    return Ok(self.get_token_lit_loc(
                         TokenType::SIntLiteral,
                         Literal::SInt(-(value as i64), NumberType::None),
                         location,
                     ))
                 }
                 _ => {
-                    return Ok(self.add_token_lit_loc(
+                    return Ok(self.get_token_lit_loc(
                         TokenType::UIntLiteral,
                         Literal::UInt(value, NumberType::None),
                         location,
@@ -651,7 +654,7 @@ impl Tokenizer {
         &mut self,
         location: Location,
         is_negative: bool,
-    ) -> Result<(), TokenizationError> {
+    ) -> Result<Token, TokenizationError> {
         let mut value: u64 = 0;
         let mut typ = String::new();
 
@@ -676,12 +679,12 @@ impl Tokenizer {
                             {
                                 Err(err)
                             }
-                            _ if is_negative => Ok(self.add_token_lit_loc(
+                            _ if is_negative => Ok(self.get_token_lit_loc(
                                 TokenType::SIntLiteral,
                                 Literal::SInt(value as i64, number_type),
                                 location,
                             )),
-                            _ => Ok(self.add_token_lit_loc(
+                            _ => Ok(self.get_token_lit_loc(
                                 TokenType::UIntLiteral,
                                 Literal::UInt(value, number_type),
                                 location,
@@ -715,14 +718,14 @@ impl Tokenizer {
                 }
                 'u' | 'i' => typ.push(self.advance()),
                 _ if is_negative => {
-                    return Ok(self.add_token_lit_loc(
+                    return Ok(self.get_token_lit_loc(
                         TokenType::SIntLiteral,
                         Literal::SInt(-(value as i64), NumberType::None),
                         location,
                     ))
                 }
                 _ => {
-                    return Ok(self.add_token_lit_loc(
+                    return Ok(self.get_token_lit_loc(
                         TokenType::UIntLiteral,
                         Literal::UInt(value, NumberType::None),
                         location,
@@ -736,7 +739,7 @@ impl Tokenizer {
         &mut self,
         location: Location,
         is_negative: bool,
-    ) -> Result<(), TokenizationError> {
+    ) -> Result<Token, TokenizationError> {
         let mut value: u64 = 0;
         let mut typ = String::new();
 
@@ -761,12 +764,12 @@ impl Tokenizer {
                             {
                                 Err(err)
                             }
-                            _ if is_negative => Ok(self.add_token_lit_loc(
+                            _ if is_negative => Ok(self.get_token_lit_loc(
                                 TokenType::SIntLiteral,
                                 Literal::SInt(value as i64, number_type),
                                 location,
                             )),
-                            _ => Ok(self.add_token_lit_loc(
+                            _ => Ok(self.get_token_lit_loc(
                                 TokenType::UIntLiteral,
                                 Literal::UInt(value, number_type),
                                 location,
@@ -801,14 +804,14 @@ impl Tokenizer {
                 }
                 'i' | 'u' => typ.push(self.advance()),
                 _ if is_negative => {
-                    return Ok(self.add_token_lit_loc(
+                    return Ok(self.get_token_lit_loc(
                         TokenType::SIntLiteral,
                         Literal::SInt(-(value as i64), NumberType::None),
                         location,
                     ))
                 }
                 _ => {
-                    return Ok(self.add_token_lit_loc(
+                    return Ok(self.get_token_lit_loc(
                         TokenType::UIntLiteral,
                         Literal::UInt(value, NumberType::None),
                         location,
@@ -834,7 +837,7 @@ impl Tokenizer {
         value
     }
 
-    fn parse_number(&mut self, mut first_char: char) -> Result<(), TokenizationError> {
+    fn parse_number(&mut self, mut first_char: char) -> Result<Token, TokenizationError> {
         let loc = loc!(self.file;self.line;self.column);
         let is_negative = first_char == '-';
         let mut is_float = false;
@@ -871,7 +874,7 @@ impl Tokenizer {
             return self.parse_oct(loc, is_negative);
         }
 
-        let mut str = String::with_capacity(7);
+        let mut str = String::new();
         let mut typ = String::new();
 
         if is_negative {
@@ -955,14 +958,12 @@ impl Tokenizer {
             }
         };
 
-        self.add_token_lit_loc(tok, lit, loc);
-
-        Ok(())
+        Ok(self.get_token_lit_loc(tok, lit, loc))
     }
 
-    fn parse_string(&mut self) -> Result<(), TokenizationError> {
+    fn parse_string(&mut self) -> Result<Token, TokenizationError> {
         let mut is_backslash = false;
-        let mut str = String::with_capacity(30);
+        let mut str = String::new();
         let loc = loc!(self.file;self.line;self.column);
 
         while !self.is_at_end() {
@@ -970,7 +971,7 @@ impl Tokenizer {
 
             if is_backslash {
                 is_backslash = false;
-                str.push(Self::backslash_char_to_real_char(c));
+                str.push(Self::escape_char_to_real_char(c));
             } else if c == '\\' {
                 is_backslash = true;
             } else if c == '"' {
@@ -985,15 +986,14 @@ impl Tokenizer {
             ));
         }
 
-        self.add_token_lit_loc(
+        Ok(self.get_token_lit_loc(
             TokenType::StringLiteral,
             Literal::String(GlobalStr::new_boxed(str.into_boxed_str())),
             loc,
-        );
-        return Ok(());
+        ))
     }
 
-    fn backslash_char_to_real_char(character: char) -> char {
+    fn escape_char_to_real_char(character: char) -> char {
         match character {
             'n' => '\n',
             '0' => '\0',
@@ -1003,8 +1003,8 @@ impl Tokenizer {
         }
     }
 
-    fn parse_identifier(&mut self, starting_char: char) {
-        let mut identifier = String::with_capacity(10);
+    fn parse_identifier(&mut self, starting_char: char) -> Result<Token, TokenizationError> {
+        let mut identifier = String::new();
         identifier.push(starting_char);
         let loc = loc!(self.file;self.line;self.column);
 
@@ -1016,22 +1016,88 @@ impl Tokenizer {
         }
         match identifier.as_str() {
             "true" => {
-                return self.add_token_lit_loc(TokenType::BooleanLiteral, Literal::Bool(true), loc)
+                return Ok(self.get_token_lit_loc(
+                    TokenType::BooleanLiteral,
+                    Literal::Bool(true),
+                    loc,
+                ))
             }
             "false" => {
-                return self.add_token_lit_loc(TokenType::BooleanLiteral, Literal::Bool(false), loc)
+                return Ok(self.get_token_lit_loc(
+                    TokenType::BooleanLiteral,
+                    Literal::Bool(false),
+                    loc,
+                ))
             }
-            "void" => return self.add_token(TokenType::VoidLiteral),
+            "void" => return Ok(self.get_token(TokenType::VoidLiteral)),
             _ => (),
         }
-        if let Some(typ) = Self::try_token_from_keyword(&identifier) {
-            return self.add_token(typ);
+        Ok(Self::try_token_from_keyword(&identifier)
+            .map(|v| self.get_token(v))
+            .unwrap_or_else(|| {
+                self.get_token_lit_loc(
+                    TokenType::IdentifierLiteral,
+                    Literal::String(GlobalStr::new_boxed(identifier.into_boxed_str())),
+                    loc,
+                )
+            }))
+    }
+
+    fn do_macro(
+        &mut self,
+        loc: &Location,
+        name: &GlobalStr,
+    ) -> Result<Vec<Token>, TokenizationError> {
+        let closing_bracket_type = match self.peek() {
+            '[' => ']',
+            '(' => ')',
+            '{' => '}',
+            _ => {
+                return Err(TokenizationError::MacroExpectedBracket {
+                    loc: loc!(self.file.clone();self.line;self.column + 1),
+                    character: self.peek(),
+                })
+            }
+        };
+        let opening_bracket_type = self.advance();
+        let mut depth = 0usize;
+        let mut tokens = Vec::new();
+        loop {
+            if self.peek() == closing_bracket_type && depth > 0 {
+                depth -= 1;
+            } else if self.peek() == closing_bracket_type {
+                self.advance();
+                break;
+            } else if self.peek() == opening_bracket_type {
+                depth += 1;
+            } else if self.peek() == '\0' || self.is_at_end() {
+                return Err(TokenizationError::UnclosedMacro {
+                    loc: loc!(self.file;self.line;self.column),
+                    bracket: closing_bracket_type,
+                });
+            }
+            let Some(tok) = self.int_scan_token()? else {
+                continue;
+            };
+            if tok.typ == TokenType::IdentifierLiteral && self.if_char_advance('!') {
+                let Some(Literal::String(ref name)) = tok.literal else {
+                    unreachable!(
+                        "TokenType::IdentifierLiteral should always have a string literal value"
+                    )
+                };
+                tokens.append(&mut self.do_macro(&tok.location, name)?);
+            } else {
+                tokens.push(tok);
+            }
         }
-        self.add_token_lit_loc(
-            TokenType::IdentifierLiteral,
-            Literal::String(GlobalStr::new_boxed(identifier.into_boxed_str())),
-            loc,
-        );
+        let tokens =
+            if let Some(macro_fn) = name.with(|v| crate::builtin_macros::get_builtin_macro(v)) {
+                macro_fn(loc, &tokens)
+            } else {
+                // TODO: implement macros
+                unimplemented!("custom macros");
+            };
+        Ok(tokens)
     }
 
     fn try_token_from_keyword(word: &str) -> Option<TokenType> {
@@ -1055,14 +1121,14 @@ impl Tokenizer {
         }
     }
 
-    fn add_token_lit_loc(&mut self, token: TokenType, literal: Literal, location: Location) {
-        self.tokens.push(Token::new(
+    fn get_token_lit_loc(&self, token: TokenType, literal: Literal, location: Location) -> Token {
+        Token::new(
             token,
             Some(literal),
             location.line,
             location.column,
             location.file,
-        ));
+        )
     }
 
     /// valid characters:
@@ -1074,7 +1140,7 @@ impl Tokenizer {
         )
     }
 
-    pub fn get_tokens(&self) -> &Vec<Token> {
+    pub fn get_tokens(&self) -> &[Token] {
         &self.tokens
     }
 

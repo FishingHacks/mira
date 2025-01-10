@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    annotations::Annotations,
+    annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
     globals::GlobalStr,
     module::{FunctionId, Module, ModuleId, StaticId, StructId, TraitId},
@@ -157,32 +157,13 @@ impl Statement {
             | Self::Return(None, ..)
             | Self::Export(..) => (),
             Self::ExternalFunction(_, Some(statement)) => {
-                statement.bake_functions(module, module_id)
+                unreachable!("function in a non-top-level scope")
             }
             Self::Struct { location, .. } => {
                 panic!("{location}: use Module::push_statement to bake a struct")
             }
             Self::Function(contract, statement) => {
-                let location = contract.location.clone();
-
-                let dummy_contract: FunctionContract = FunctionContract {
-                    annotations: Default::default(),
-                    arguments: Default::default(),
-                    generics: Default::default(),
-                    location: location.clone(),
-                    name: None,
-                    return_type: TypeRef::Void(location.clone(), 0),
-                };
-                let dummy_statement: Statement =
-                    Statement::ExternalFunction(dummy_contract.clone(), None);
-
-                let id = module.push_fn(
-                    std::mem::replace(contract, dummy_contract),
-                    std::mem::replace(statement, dummy_statement),
-                    module_id,
-                );
-
-                *self = Self::BakedFunction(id, location);
+                unreachable!("function in a non-top-level scope")
             }
             Self::Block(statements, ..) => statements
                 .iter_mut()
@@ -497,6 +478,7 @@ impl Parser {
 
         let maybe_statement = match self.peek().typ {
             TokenType::Extern if !is_global => invalid_kw!("external value/function"),
+            TokenType::Fn if !is_global => invalid_kw!("function"),
             TokenType::Struct if !is_global => invalid_kw!("struct definition"),
             TokenType::Use if !is_global => invalid_kw!("use"),
             TokenType::Export if !is_global => invalid_kw!("export"),
@@ -509,7 +491,7 @@ impl Parser {
             TokenType::For if is_global => invalid_kw!("for loop"),
 
             TokenType::Trait => self.parse_trait().map(Some),
-            TokenType::Let => self.parse_let_stmt().map(Some),
+            TokenType::Let => self.parse_let_stmt(is_global).map(Some),
             TokenType::CurlyLeft => self.parse_block_stmt().map(Some),
             TokenType::Return => self.parse_return_stmt().map(Some),
             TokenType::If => self.parse_if_stmt().map(Some),
@@ -518,7 +500,12 @@ impl Parser {
             TokenType::Struct => self.parse_struct().map(Some),
             TokenType::Fn => self
                 .parse_callable(false)
-                .map(|(contract, body)| Statement::Function(contract, Box::new(body)))
+                .and_then(|(contract, body)| {
+                    contract
+                        .annotations
+                        .are_annotations_valid_for(AnnotationReceiver::Function)?;
+                    Ok(Statement::Function(contract, Box::new(body)))
+                })
                 .map(Some),
             TokenType::AnnotationIntroducer => {
                 self.parse_annotation()?;
@@ -594,13 +581,12 @@ impl Parser {
         let module_id = self
             .modules
             .read()
-            .expect("read-write Lock was poisoned")
             .iter()
             .position(|v| (*v.file).eq(&module_file));
         let module_id = match module_id {
             Some(v) => v,
             None => {
-                let mut vec = self.modules.write().expect("read-write lock was poisoned");
+                let mut vec = self.modules.write();
                 vec.push(ParserQueueEntry {
                     root: module_root
                         .map(Into::into)
@@ -764,6 +750,7 @@ impl Parser {
         }
 
         let annotations = std::mem::take(&mut self.current_annotations);
+        annotations.are_annotations_valid_for(crate::annotations::AnnotationReceiver::Trait)?;
         let mut functions = Vec::new();
 
         while !self.match_tok(TokenType::CurlyRight) {
@@ -807,10 +794,18 @@ impl Parser {
         Ok(Statement::Expression(expr))
     }
 
-    fn parse_let_stmt(&mut self) -> Result<Statement, ParsingError> {
+    fn parse_let_stmt(&mut self, is_static: bool) -> Result<Statement, ParsingError> {
         // let <identifier>;
         // let <identifier> = <expr>;
         let location = self.advance().location.clone(); // skip `let`
+
+        let annotations = std::mem::take(&mut self.current_annotations);
+        annotations.are_annotations_valid_for(if is_static {
+            AnnotationReceiver::Static
+        } else {
+            AnnotationReceiver::Variable
+        })?;
+
         let name = self.expect_identifier()?;
 
         let typ = if self.match_tok(TokenType::Colon) {
@@ -828,16 +823,11 @@ impl Parser {
         }
         let expr = self.parse_expression()?;
         self.consume_semicolon()?;
-        Ok(Statement::Var(
-            name,
-            expr,
-            typ,
-            location,
-            std::mem::take(&mut self.current_annotations),
-        ))
+        Ok(Statement::Var(name, expr, typ, location, annotations))
     }
     fn parse_block_stmt(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
+        annotations.are_annotations_valid_for(AnnotationReceiver::Block)?;
 
         // { <...statements...> }
         let location = self.advance().location.clone(); // skip `{`
@@ -866,6 +856,7 @@ impl Parser {
     }
     fn parse_if_stmt(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
+        annotations.are_annotations_valid_for(AnnotationReceiver::If)?;
 
         // if (<expr>) <stmt>
         // if (<expr>) <stmt> else <stmt>
@@ -906,6 +897,7 @@ impl Parser {
     }
     fn parse_while_stmt(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
+        annotations.are_annotations_valid_for(AnnotationReceiver::While)?;
 
         // while (<expr>) <stmt>
         // we have else if support, because else <stmt>, the stmt can be another if expression!
@@ -934,6 +926,7 @@ impl Parser {
     }
     fn parse_for_stmt(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
+        annotations.are_annotations_valid_for(AnnotationReceiver::For)?;
 
         // for (<identifier> in <expr>) <stmt>
         let location = self.advance().location.clone(); // skip over `for`
@@ -974,6 +967,7 @@ impl Parser {
     }
     fn parse_struct(&mut self) -> Result<Statement, ParsingError> {
         let annotations = std::mem::take(&mut self.current_annotations);
+        annotations.are_annotations_valid_for(AnnotationReceiver::Struct)?;
 
         // struct Name { ... fields ...; implementation area }
         // fields: field: type,[...]
@@ -1275,9 +1269,12 @@ impl Parser {
     pub fn parse_external(&mut self) -> Result<Statement, ParsingError> {
         let location = self.advance().location.clone();
         self.parse_any_callable(false, false, false)
-            .map(|(mut contract, body)| {
+            .and_then(|(mut contract, body)| {
+                contract
+                    .annotations
+                    .are_annotations_valid_for(AnnotationReceiver::ExternalFunction)?;
                 contract.location = location;
-                Statement::ExternalFunction(contract, body.map(Box::new))
+                Ok(Statement::ExternalFunction(contract, body.map(Box::new)))
             })
     }
 

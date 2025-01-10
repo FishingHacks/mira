@@ -64,7 +64,14 @@ type GlobalStrs = Slab<GlobalValue<Box<str>>>;
 //type GlobalPaths = Slab<GlobalValue<Box<Path>>>;
 
 thread_local! {
-    static STRINGS: RefCell<GlobalStrs> = RefCell::new(Slab::new());
+    static STRINGS: RefCell<GlobalStrs> = RefCell::new({
+        let mut slab = Slab::new();
+        slab.push(GlobalValue {
+            refs: usize::MAX,
+            value: "".to_string().into_boxed_str()
+        });
+        slab
+    });
     //static PATHS: RefCell<GlobalPaths> = RefCell::new(Slab::new());
 }
 
@@ -104,6 +111,9 @@ impl Clone for GlobalStr {
 
 impl Drop for GlobalStr {
     fn drop(&mut self) {
+        if self.0 == 0 {
+            return;
+        }
         STRINGS.with_borrow_mut(|strings: &mut GlobalStrs| {
             if let Some(v) = strings.get_mut(self.0) {
                 if v.refs == 0 {
@@ -117,9 +127,7 @@ impl Drop for GlobalStr {
 }
 
 impl GlobalStr {
-    pub const fn zeroed() -> Self {
-        Self(0)
-    }
+    pub const ZERO: GlobalStr = Self(0);
 
     pub fn new(value: &str) -> Self {
         STRINGS.with_borrow_mut(|strings: &mut GlobalStrs| {
@@ -160,6 +168,22 @@ impl GlobalStr {
                 func("")
             }
         })
+    }
+}
+
+impl From<&str> for GlobalStr {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+impl From<Box<str>> for GlobalStr {
+    fn from(value: Box<str>) -> Self {
+        Self::new_boxed(value)
+    }
+}
+impl From<String> for GlobalStr {
+    fn from(value: String) -> Self {
+        Self::new_boxed(value.into_boxed_str())
     }
 }
 

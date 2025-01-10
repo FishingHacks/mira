@@ -29,3 +29,34 @@ trait Clone {
 
 @lang("printf")
 extern fn printf(pat: &u8, a: usize, b: &u8);
+
+@lang("eq_trait")
+trait Eq {
+    fn eq(self: &Self, other: &Self) -> bool;
+}
+
+@lang("neq_trait")
+trait Neq {
+    fn neq(self: &Self, other: &Self) -> bool;
+}
+
+struct Test2 {
+    test: &Test
+}
+
+struct Test {
+    value: i32
+}
+
+struct Nya {
+    meow: i32,
+    mreow: u32,
+    boop: usize;
+
+    fn new(meow: i32, mreow: u32, boop: usize) -> Nya = Nya { meow: meow, mreow: mreow, boop: boop };
+}
+
+let meow: i32 = 12;
+
+fn test() -> Nya = Nya::new(13, 14, 15);
+fn test2() -> Nya = Nya { meow: 13, mreow: 3948, boop: 0xff87cd };

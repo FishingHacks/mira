@@ -1,10 +1,12 @@
+use parking_lot::RwLock;
 use std::{
     collections::HashMap,
     fmt::{Debug, Display, Write},
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
 use crate::{
+    annotations::AnnotationReceiver,
     error::ParsingError,
     globals::GlobalStr,
     module::{FunctionId, Module, ModuleId},
@@ -273,13 +275,18 @@ pub enum Expression {
         identifier: Box<Expression>,
         arguments: Vec<Expression>,
     },
+    MemberCall {
+        identifier: GlobalStr,
+        lhs: Box<Expression>,
+        arguments: Vec<Expression>,
+    },
     Indexing {
         left_side: Box<Expression>,
         right_side: Box<Expression>,
     },
     MemberAccess {
         left_side: Box<Expression>,
-        right_side: GlobalStr,
+        index: Vec<GlobalStr>,
         loc: Location,
     },
     Assignment {
@@ -351,14 +358,15 @@ impl Display for Expression {
                 f.write_char(')')
             }
             Expression::MemberAccess {
-                left_side,
-                right_side,
-                ..
+                left_side, index, ..
             } => {
                 f.write_str("(member ")?;
                 Display::fmt(left_side, f)?;
-                f.write_char(' ')?;
-                Display::fmt(right_side, f)?;
+                for value in index {
+                    f.write_char(' ')?;
+                    Display::fmt(value, f)?;
+                }
+
                 f.write_char(')')
             }
             Expression::Assignment {
@@ -398,6 +406,21 @@ impl Display for Expression {
                 Display::fmt(new_type, f)?;
                 f.write_char(')')
             }
+            Expression::MemberCall {
+                identifier,
+                lhs,
+                arguments,
+            } => {
+                f.write_str("(member-call ")?;
+                Display::fmt(lhs, f)?;
+                f.write_char(' ')?;
+                Display::fmt(identifier, f)?;
+                for arg in arguments {
+                    f.write_char(' ')?;
+                    Display::fmt(arg, f)?;
+                }
+                f.write_char(')')
+            }
         }
     }
 }
@@ -434,6 +457,9 @@ impl Expression {
                 right_side: identifier,
                 ..
             }
+            | Self::MemberCall {
+                lhs: identifier, ..
+            }
             | Self::FunctionCall { identifier, .. } => identifier.loc(),
             Self::MemberAccess { loc, .. }
             | Self::Assignment { loc, .. }
@@ -446,7 +472,21 @@ impl Expression {
         match self {
             Self::Literal(val, ..) => {
                 if let LiteralValue::AnonymousFunction(contract, statements) = val {
-                    let id = module.push_fn(contract.clone(), *(statements.clone()), module_id);
+                    let id = module.push_fn(
+                        FunctionContract {
+                            name: contract.name.take(),
+                            arguments: std::mem::take(&mut contract.arguments),
+                            return_type: contract.return_type.clone(),
+                            annotations: std::mem::take(&mut contract.annotations),
+                            location: contract.location.clone(),
+                            generics: std::mem::take(&mut contract.generics),
+                        },
+                        std::mem::replace(
+                            &mut **statements,
+                            Statement::BakedTrait(0, contract.location.clone()),
+                        ),
+                        module_id,
+                    );
                     *val = LiteralValue::BakedAnonymousFunction(id)
                 }
             }
@@ -477,6 +517,12 @@ impl Expression {
                 arguments,
             } => {
                 identifier.bake_functions(module, module_id);
+                arguments
+                    .iter_mut()
+                    .for_each(|el| el.bake_functions(module, module_id));
+            }
+            Self::MemberCall { lhs, arguments, .. } => {
+                lhs.bake_functions(module, module_id);
                 arguments
                     .iter_mut()
                     .for_each(|el| el.bake_functions(module, module_id));
@@ -528,6 +574,20 @@ impl Expression {
                             }
                         }
                     }
+                    // *&
+                    Expression::Unary {
+                        operator: r_op,
+                        right_side,
+                    } if operator.typ == TokenType::Asterix && r_op.typ == TokenType::Ampersand => {
+                        *self = (&**right_side).clone();
+                    }
+                    // &*
+                    Expression::Unary {
+                        operator: r_op,
+                        right_side,
+                    } if operator.typ == TokenType::Ampersand && r_op.typ == TokenType::Asterix => {
+                        *self = (&**right_side).clone();
+                    }
                     _ => (),
                 }
             }
@@ -575,8 +635,8 @@ impl Expression {
                                 }
                                 _ => (),
                             },
-                            TokenType::BitwiseLShift => (),
-                            TokenType::BitwiseRShift => (),
+                            TokenType::LShift => (),
+                            TokenType::RShift => (),
                             TokenType::Ampersand => (),
                             TokenType::BitwiseOr => match (left, right) {
                                 (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
@@ -668,8 +728,38 @@ impl Expression {
                 left_side.optimize()?;
                 right_side.optimize()?;
             }
-            Self::MemberAccess { left_side, .. } | Self::TypeCast { left_side, .. } => {
-                left_side.optimize()?
+            Self::MemberAccess {
+                left_side, index, ..
+            } => {
+                left_side.optimize()?;
+                if let Self::MemberAccess {
+                    left_side: left_left_side,
+                    index: left_idx,
+                    loc,
+                } = &mut **left_side
+                {
+                    left_idx.extend(index.drain(..));
+                    std::mem::swap(index, left_idx);
+                    index.append(left_idx);
+                    let left_left_side = std::mem::replace(
+                        &mut **left_left_side,
+                        Self::Literal(LiteralValue::Void, loc.clone()),
+                    );
+                    drop(std::mem::replace(&mut **left_side, left_left_side));
+                }
+                if index.len() == 0 {
+                    let mut dummy_expr =
+                        Expression::Literal(LiteralValue::Void, left_side.loc().clone());
+                    std::mem::swap(&mut dummy_expr, &mut **left_side);
+                    std::mem::swap(self, &mut dummy_expr);
+                }
+            }
+            Self::TypeCast { left_side, .. } => left_side.optimize()?,
+            Self::MemberCall { lhs, arguments, .. } => {
+                lhs.optimize()?;
+                for arg in arguments {
+                    arg.optimize()?;
+                }
             }
         })
     }
@@ -798,8 +888,8 @@ impl Parser {
             TokenType::Ampersand,
             TokenType::BitwiseOr,
             TokenType::BitwiseXor,
-            TokenType::BitwiseLShift,
-            TokenType::BitwiseRShift,
+            TokenType::LShift,
+            TokenType::RShift,
             TokenType::DivideAssign,
             TokenType::ModuloAssign,
             TokenType::MultiplyAssign,
@@ -838,11 +928,11 @@ impl Parser {
                     assign_set!(expr, right, operator);
                 }
                 TokenType::BitwiseLShiftAssign => {
-                    operator.typ = TokenType::BitwiseLShift;
+                    operator.typ = TokenType::LShift;
                     assign_set!(expr, right, operator);
                 }
                 TokenType::BitwiseRShiftAssign => {
-                    operator.typ = TokenType::BitwiseRShift;
+                    operator.typ = TokenType::RShift;
                     assign_set!(expr, right, operator);
                 }
                 _ => expr = Expression::binary(operator, expr, right),
@@ -944,10 +1034,35 @@ impl Parser {
                         });
                     }
                 }
-                expr = Expression::FunctionCall {
-                    identifier: Box::new(expr),
-                    arguments,
-                };
+
+                if self.tokens[self.current.saturating_sub(2)].typ == TokenType::ParenRight {
+                    expr = Expression::FunctionCall {
+                        identifier: Box::new(expr),
+                        arguments,
+                    };
+                } else if let Expression::MemberAccess {
+                    left_side,
+                    mut index,
+                    loc,
+                } = expr
+                {
+                    expr = Expression::MemberCall {
+                        identifier: index
+                            .pop()
+                            .expect("member access did not access any members"),
+                        lhs: Box::new(Expression::MemberAccess {
+                            left_side,
+                            index,
+                            loc,
+                        }),
+                        arguments,
+                    }
+                } else {
+                    expr = Expression::FunctionCall {
+                        identifier: Box::new(expr),
+                        arguments,
+                    };
+                }
             } else if self.previous().typ == TokenType::BracketLeft {
                 let next_loc = self.peek().location.clone();
                 let next_typ = self.peek().typ;
@@ -980,9 +1095,13 @@ impl Parser {
                         found: identifier.typ,
                     });
                 } else if let Some(Literal::String(str)) = &identifier.literal {
+                    if let Expression::MemberAccess { index, .. } = &mut expr {
+                        index.push(str.clone());
+                        continue;
+                    }
                     expr = Expression::MemberAccess {
                         left_side: Box::new(expr),
-                        right_side: str.clone(),
+                        index: vec![str.clone()],
                         loc: identifier.location.clone(),
                     };
                 } else {
@@ -1009,8 +1128,11 @@ impl Parser {
         if self.peek().typ == TokenType::Fn {
             let loc = self.peek().location.clone();
             return Ok(Expression::Literal(
-                self.parse_callable(true).map(|(contract, body)| {
-                    LiteralValue::AnonymousFunction(contract, Box::new(body))
+                self.parse_callable(true).and_then(|(contract, body)| {
+                    contract
+                        .annotations
+                        .are_annotations_valid_for(AnnotationReceiver::Function)?;
+                    Ok(LiteralValue::AnonymousFunction(contract, Box::new(body)))
                 })?,
                 loc,
             ));

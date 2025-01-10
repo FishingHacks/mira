@@ -1,7 +1,9 @@
+use parking_lot::RwLock;
 use std::{
     collections::HashMap,
     fmt::Debug,
-    sync::{Arc, RwLock},
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use crate::{
@@ -54,25 +56,10 @@ pub struct ModuleContext {
 impl Debug for ModuleContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModuleContext")
-            .field(
-                "functions",
-                &self.functions.read().expect("read-write lock is poisoned"),
-            )
-            .field(
-                "external_functions",
-                &self
-                    .external_functions
-                    .read()
-                    .expect("read-write lock is poisoned"),
-            )
-            .field(
-                "statics",
-                &self.statics.read().expect("read-write lock is poisoned"),
-            )
-            .field(
-                "structs",
-                &self.structs.read().expect("read-write lock is poisoned"),
-            )
+            .field("functions", &self.functions.read())
+            .field("external_functions", &self.external_functions.read())
+            .field("statics", &self.statics.read())
+            .field("structs", &self.structs.read())
             .finish()
     }
 }
@@ -82,6 +69,8 @@ pub struct Module {
     pub scope: HashMap<GlobalStr, ModuleScopeValue>,
     pub imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
     pub exports: HashMap<GlobalStr, GlobalStr>,
+    pub path: Arc<Path>,
+    pub root: Arc<Path>,
 }
 
 impl Debug for Module {
@@ -98,28 +87,42 @@ impl Module {
     pub fn new(
         context: Arc<ModuleContext>,
         imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
+        path: Arc<Path>,
+        root: Arc<Path>,
     ) -> Self {
         Self {
             context,
             imports,
             scope: HashMap::new(),
             exports: HashMap::new(),
+            path,
+            root,
         }
     }
 
     pub fn push_fn(
         &mut self,
         contract: FunctionContract,
-        body: Statement,
+        mut body: Statement,
         module: ModuleId,
     ) -> FunctionId {
-        let mut writer = self
-            .context
-            .functions
-            .write()
-            .expect("read-write lock is poisoned");
-        writer.push((contract, body, module));
-        writer.len() - 1
+        let idx = {
+            let mut writer = self.context.functions.write();
+            let loc = contract.location.clone();
+            writer.push((
+                contract,
+                Statement::Return(None, loc), /* "zeroed" statement */
+                module,
+            ));
+            writer.len() - 1
+        };
+        // we have to bake the body *after* pushing the function to ensure the function is
+        // typechecked before any of its child elements, such as closures, as we need to evaluate
+        // the function body before the closure to fill in the closures types.
+        body.bake_functions(self, module);
+        self.context.functions.write()[idx].1 = body;
+
+        idx
     }
 
     pub fn push_all(
@@ -146,7 +149,7 @@ impl Module {
         module_id: ModuleId,
     ) -> Result<(), ProgramFormingError> {
         match statement {
-            Statement::Function(contract, mut body) => {
+            Statement::Function(contract, body) => {
                 let Some(name) = contract.name.clone() else {
                     return Err(ProgramFormingError::AnonymousFunctionAtGlobalLevel(
                         contract.location.clone(),
@@ -160,7 +163,6 @@ impl Module {
                     ));
                 }
 
-                body.bake_functions(self, module_id);
                 let fn_id = self.push_fn(contract, *body, module_id);
                 self.scope.insert(name, ModuleScopeValue::Function(fn_id));
             }
@@ -175,7 +177,7 @@ impl Module {
                     ));
                 }
 
-                let mut writer = self.context.traits.write().expect("failed to lock rw lock");
+                let mut writer = self.context.traits.write();
                 let name = r#trait.name.clone();
                 writer.push(r#trait);
                 self.scope
@@ -223,11 +225,7 @@ impl Module {
                     generics,
                 };
 
-                let mut writer = self
-                    .context
-                    .structs
-                    .write()
-                    .expect("read-write lock is poisoned");
+                let mut writer = self.context.structs.write();
                 writer.push(baked_struct);
                 self.scope
                     .insert(name, ModuleScopeValue::Struct(writer.len() - 1));
@@ -248,11 +246,7 @@ impl Module {
                         expr.loc().clone(),
                     ));
                 };
-                let mut writer = self
-                    .context
-                    .statics
-                    .write()
-                    .expect("read-write lock is poisoned");
+                let mut writer = self.context.statics.write();
                 writer.push((typ, value, module_id, location, annotations));
                 self.scope
                     .insert(name, ModuleScopeValue::Static(writer.len() - 1));
@@ -274,11 +268,7 @@ impl Module {
                 if let Some(ref mut body) = body {
                     body.bake_functions(self, module_id);
                 }
-                let mut writer = self
-                    .context
-                    .external_functions
-                    .write()
-                    .expect("read-write lock is poisoned");
+                let mut writer = self.context.external_functions.write();
                 writer.push((contract, body.map(|v| *v), module_id));
                 self.scope
                     .insert(name, ModuleScopeValue::ExternalFunction(writer.len() - 1));
