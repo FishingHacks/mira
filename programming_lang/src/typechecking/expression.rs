@@ -1,4 +1,7 @@
-use std::fmt::{Display, Write};
+use std::{
+    borrow::Cow,
+    fmt::{Display, Write},
+};
 
 use crate::{
     annotations::Annotations,
@@ -7,7 +10,12 @@ use crate::{
     tokenizer::Location,
 };
 
-use super::{intrinsics::Intrinsic, typechecking::ScopeValueId, types::Type};
+use super::{
+    intrinsics::Intrinsic,
+    typechecking::{ScopeTypeMetadata, ScopeValueId},
+    types::Type,
+    TypecheckingContext,
+};
 
 #[derive(Debug, Clone)]
 pub enum TypedLiteral {
@@ -36,6 +44,45 @@ pub enum TypedLiteral {
 }
 
 impl TypedLiteral {
+    pub fn to_type<'a>(
+        &self,
+        scope: &'a [(Type, ScopeTypeMetadata)],
+        ctx: &TypecheckingContext,
+    ) -> Cow<'a, Type> {
+        match self {
+            TypedLiteral::Void => Cow::Owned(Type::PrimitiveVoid(0)),
+            TypedLiteral::Dynamic(id) => Cow::Borrowed(&scope[*id].0),
+            TypedLiteral::Function(id) => todo!(),
+            TypedLiteral::ExternalFunction(id) => todo!(),
+            TypedLiteral::Static(id) => Cow::Owned(ctx.statics.read()[*id].0.clone()),
+            TypedLiteral::String(_) => Cow::Owned(Type::PrimitiveStr(1)),
+            TypedLiteral::Array(ty, elems) => Cow::Owned(Type::SizedArray {
+                typ: ty.clone().into(),
+                num_references: 0,
+                number_elements: elems.len(),
+            }),
+            TypedLiteral::Struct(struct_id, _) => Cow::Owned(Type::Struct {
+                struct_id: *struct_id,
+                name: ctx.structs.read()[*struct_id].name.clone(),
+                num_references: 0,
+            }),
+            TypedLiteral::F64(_) => Cow::Owned(Type::PrimitiveF64(0)),
+            TypedLiteral::F32(_) => Cow::Owned(Type::PrimitiveF32(0)),
+            TypedLiteral::U8(_) => Cow::Owned(Type::PrimitiveU8(0)),
+            TypedLiteral::U16(_) => Cow::Owned(Type::PrimitiveU16(0)),
+            TypedLiteral::U32(_) => Cow::Owned(Type::PrimitiveU32(0)),
+            TypedLiteral::U64(_) => Cow::Owned(Type::PrimitiveU64(0)),
+            TypedLiteral::USize(_) => Cow::Owned(Type::PrimitiveUSize(0)),
+            TypedLiteral::I8(_) => Cow::Owned(Type::PrimitiveI8(0)),
+            TypedLiteral::I16(_) => Cow::Owned(Type::PrimitiveI16(0)),
+            TypedLiteral::I32(_) => Cow::Owned(Type::PrimitiveI32(0)),
+            TypedLiteral::I64(_) => Cow::Owned(Type::PrimitiveI64(0)),
+            TypedLiteral::ISize(_) => Cow::Owned(Type::PrimitiveISize(0)),
+            TypedLiteral::Bool(_) => Cow::Owned(Type::PrimitiveBool(0)),
+            TypedLiteral::Intrinsic(intrinsic) => panic!("intrinsic is no type"),
+        }
+    }
+
     pub fn is_entirely_literal(&self) -> bool {
         match self {
             TypedLiteral::Array(_, vec) | TypedLiteral::Struct(_, vec) => vec
@@ -119,6 +166,13 @@ pub enum TypecheckedExpression {
     Call(Location, ScopeValueId, TypedLiteral, Vec<TypedLiteral>),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectCall(Location, ScopeValueId, FunctionId, Vec<TypedLiteral>),
+    // _1 = func(_3.1, _3.2, d, ...)
+    DirectExternCall(
+        Location,
+        ScopeValueId,
+        ExternalFunctionId,
+        Vec<TypedLiteral>,
+    ),
     // _1 = intrinsic(_3.1, _3.2)
     IntrinsicCall(Location, ScopeValueId, Intrinsic, Vec<TypedLiteral>),
     // _1 = +_2
@@ -202,6 +256,7 @@ impl TypecheckedExpression {
             | TypecheckedExpression::While { loc: location, .. }
             | TypecheckedExpression::IntrinsicCall(location, ..)
             | TypecheckedExpression::DirectCall(location, ..)
+            | TypecheckedExpression::DirectExternCall(location, ..)
             | TypecheckedExpression::TraitCall(location, ..)
             | TypecheckedExpression::StoreAssignment(location, ..)
             | TypecheckedExpression::OffsetNonPointer(location, ..)

@@ -182,6 +182,18 @@ impl Display for ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
+            TypecheckedExpression::DirectExternCall(_, typed_literal, func, vec) => {
+                f.write_fmt(format_args!(
+                    "_{} = {}(",
+                    typed_literal,
+                    TLD(&TypedLiteral::ExternalFunction(*func))
+                ))?;
+                for arg in vec {
+                    Display::fmt(&TLD(arg), f)?;
+                    f.write_char(',')?;
+                }
+                f.write_char(')')
+            }
             TypecheckedExpression::IntrinsicCall(_, typed_literal, intrinsic, vec) => {
                 f.write_fmt(format_args!(
                     "_{} = {}(",

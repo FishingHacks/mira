@@ -1,4 +1,4 @@
-use inkwell::{support::LLVMString, targets::TargetTriple};
+use inkwell::{builder::BuilderError, support::LLVMString, targets::TargetTriple};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -7,6 +7,8 @@ pub enum CodegenError {
     LLVMNative(LLVMString),
     #[error("Unknown Triple: {0}")]
     UnknownTriple(TargetTriple),
+    #[error("{0}")]
+    Builder(#[from] BuilderError),
 }
 
 impl From<LLVMString> for CodegenError {

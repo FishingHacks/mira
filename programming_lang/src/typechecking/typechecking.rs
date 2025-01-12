@@ -147,7 +147,7 @@ pub fn typecheck_function(
     module_context: &ModuleContext,
     function_id: usize,
     is_external: bool,
-) -> Vec<TypecheckingError> {
+) -> Result<Vec<(Type, ScopeTypeMetadata)>, Vec<TypecheckingError>> {
     let ext_fn_reader = module_context.external_functions.read();
     let fn_reader = module_context.functions.read();
     let (statement, module_id) = if is_external {
@@ -155,7 +155,7 @@ pub fn typecheck_function(
         if let Some(statement) = statement {
             (statement, module_id)
         } else {
-            return Vec::new(); // don't have to typecheck any functions without body
+            return Ok(Vec::new());
         }
     } else {
         let (_, ref statement, module_id) = fn_reader[function_id];
@@ -186,9 +186,9 @@ pub fn typecheck_function(
     ) {
         Ok(always_returns) => {
             if !matches!(return_type, Type::PrimitiveVoid(0)) && !always_returns {
-                return vec![TypecheckingError::BodyDoesNotAlwaysReturn {
+                return Err(vec![TypecheckingError::BodyDoesNotAlwaysReturn {
                     location: statement.loc().clone(),
-                }];
+                }]);
             }
             if !always_returns {
                 if let Err(e) = typecheck_statement(
@@ -199,14 +199,14 @@ pub fn typecheck_function(
                     &return_type,
                     &mut exprs,
                 ) {
-                    return e;
+                    return Err(e);
                 }
             }
             context.functions.write()[function_id].1 = exprs.into_boxed_slice();
-            Vec::new()
         }
-        Err(e) => e,
+        Err(e) => return Err(e),
     }
+    Ok(scope.values)
 }
 
 /// Returns if the statement and if it always returns
@@ -347,7 +347,6 @@ fn typecheck_statement(
                 TypedLiteral::Dynamic(id) => id,
                 _ => {
                     let id = scope.push(typ.clone());
-                    scope.make_stack_allocated(id);
                     exprs.push(TypecheckedExpression::Literal(
                         expression.loc().clone(),
                         id,
@@ -925,6 +924,8 @@ fn typecheck_expression(
                 tc_res!(binary scope, exprs; IntrinsicCall(identifier.loc().clone(), intrinsic, typed_arguments, function_type.return_type.clone()))
             } else if let TypedLiteral::Function(fn_id) = function_expr {
                 tc_res!(binary scope, exprs; DirectCall(identifier.loc().clone(), fn_id, typed_arguments, function_type.return_type.clone()))
+            } else if let TypedLiteral::ExternalFunction(fn_id) = function_expr {
+                tc_res!(binary scope, exprs; DirectExternCall(identifier.loc().clone(), fn_id, typed_arguments, function_type.return_type.clone()))
             } else {
                 tc_res!(binary scope, exprs; Call(identifier.loc().clone(), function_expr, typed_arguments, function_type.return_type.clone()))
             }
@@ -1361,6 +1362,32 @@ fn ref_resolve_indexing(
                 exprs,
                 type_suggestion.clone(),
             )?;
+
+            if let TypeSuggestion::UnsizedArray(_) = type_suggestion {
+                if let Type::SizedArray {
+                    num_references: 1,
+                    number_elements,
+                    typ,
+                } = &typ
+                {
+                    let typ = Type::UnsizedArray {
+                        typ: typ.clone(),
+                        num_references: 0,
+                    };
+                    let id = scope.push(typ.clone().take_ref());
+                    exprs.push(TypecheckedExpression::MakeUnsizedSlice(
+                        expression.loc().clone(),
+                        id,
+                        typed_literal,
+                        *number_elements,
+                    ));
+                    return Ok((typ, TypedLiteral::Dynamic(id)));
+                }
+            }
+
+            if typ.refcount() > 0 {
+                return Ok((typ.deref().unwrap(), typed_literal));
+            }
 
             match type_suggestion {
                 TypeSuggestion::UnsizedArray(_) => match typ {

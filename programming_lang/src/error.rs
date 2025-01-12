@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::{
     annotations::AnnotationReceiver,
+    codegen::CodegenError,
     globals::GlobalStr,
     tokenizer::{Location, TokenType},
     typechecking::{Type, TypecheckingError},
@@ -23,6 +24,8 @@ pub enum ProgrammingLangError {
     #[error("{0}")]
     Typechecking(#[from] TypecheckingError),
     #[error("{0}")]
+    Codegen(#[from] CodegenError),
+    #[error("{0}")]
     Generic(&'static str),
 }
 
@@ -33,6 +36,7 @@ impl Debug for ProgrammingLangError {
             Self::Tokenization(v) => Debug::fmt(v, f),
             Self::ProgramForming(v) => Debug::fmt(v, f),
             Self::Typechecking(v) => Debug::fmt(v, f),
+            Self::Codegen(v) => Debug::fmt(v, f),
             Self::Generic(v) => f.write_str(v),
         }
     }

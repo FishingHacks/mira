@@ -410,18 +410,21 @@ fn run(
     let num_statics = { typechecking_context.statics.read().len() };
 
     let mut errs = Vec::new();
+    let mut scopes_fns = Vec::with_capacity(num_functions);
+    let mut scopes_ext_fns = Vec::with_capacity(num_ext_functions);
 
     for i in 0..num_functions {
-        errs.extend(typecheck_function(
-            &typechecking_context,
-            &context,
-            i,
-            false,
-        ));
+        match typecheck_function(&typechecking_context, &context, i, false) {
+            Ok(v) => scopes_fns.push(v),
+            Err(e) => errs.extend(e),
+        }
     }
 
     for i in 0..num_ext_functions {
-        errs.extend(typecheck_function(&typechecking_context, &context, i, true));
+        match typecheck_function(&typechecking_context, &context, i, true) {
+            Ok(v) => scopes_ext_fns.extend(v),
+            Err(e) => errs.extend(e),
+        }
     }
     for i in 0..num_statics {
         typecheck_static(&typechecking_context, &context, i, &mut errs);
@@ -441,7 +444,7 @@ fn run(
             &*typechecking_context
         )
     );
-    return Ok(());
+    let mut errs = Vec::new();
 
     let num_fns = { typechecking_context.functions.read().len() };
     let num_ext_fns = { typechecking_context.external_functions.read().len() };
@@ -463,14 +466,25 @@ fn run(
     let codegen_context = CodegenContext::make_context(
         &context,
         TargetTriple::create("x86_64-unknown-linux-gnu"),
-        &typechecking_context,
+        typechecking_context,
         &filename,
     )
     .expect("failed to create the llvm context");
+    for fn_id in 0..num_fns {
+        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_fns.remove(0)) {
+            errs.push(ProgrammingLangError::Codegen(e.into()));
+        } else {
+            println!("compiling fn {fn_id}");
+        }
+    }
+    if errs.len() > 0 {
+        return Err(errs);
+    }
+
     println!("{}", codegen_context.module.to_string());
-    codegen_context
-        .write_object_file(Path::new("out.o"))
-        .unwrap();
+    //codegen_context
+    //    .write_object_file(Path::new("out.o"))
+    //    .unwrap();
 
     Ok(())
 }

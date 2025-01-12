@@ -41,7 +41,6 @@ intrinsics! {
     Forget => forget, // <T>(v: T), causes the value to not be dropped
     SizeOf => size_of, // <T>() -> usize, returns the size of T in bytes
     SizeOfVal => size_of_val, // <unsized T>(v: &T) -> usize, returns the size of v in bytes
-    Transmute => transmute, // <Src, Dst>(v: Src) -> Dst, assumption: sizeof::<Src>() == sizeof::<Dst>()
     Breakpoint => breakpoint,
     Location => location,
     Offset => offset, // <unsized T>(v: &T, off: usize) -> &T, offsets a pointer

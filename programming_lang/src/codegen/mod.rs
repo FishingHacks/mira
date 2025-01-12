@@ -1,25 +1,28 @@
 use context::DefaultTypes;
 use core::panic;
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
     globals::GlobalStr,
     typechecking::{
-        expression::{TypecheckedExpression, TypedLiteral},
-        Type,
+        expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
+        intrinsics::Intrinsic,
+        typechecking::ScopeTypeMetadata,
+        Type, TypecheckingContext,
     },
 };
 pub use inkwell::context::Context as InkwellContext;
 pub use inkwell::targets::TargetTriple;
 pub mod mangling;
 pub use context::CodegenContext;
+pub use error::CodegenError;
 pub use inkwell::support::LLVMString;
 use inkwell::{
     builder::{Builder, BuilderError},
     context::Context,
     module::Module,
     types::{AnyTypeEnum, BasicType, BasicTypeEnum, StructType},
-    values::{BasicValueEnum, FunctionValue, GlobalValue},
+    values::{BasicValueEnum, FunctionValue, GlobalValue, PointerValue},
     FloatPredicate, IntPredicate,
 };
 
@@ -29,11 +32,12 @@ mod error;
 impl<'ctx, 'me> CodegenContext<'ctx> {
     pub fn make_function_codegen_context(
         &'me self,
-        tc_scope: Vec<Type>,
+        tc_scope: Vec<(Type, ScopeTypeMetadata)>,
         current_fn: FunctionValue<'ctx>,
     ) -> FunctionCodegenContext<'ctx, 'me> {
         FunctionCodegenContext {
             tc_scope,
+            tc_ctx: &self.tc_ctx,
             scope: Vec::new(),
             builder: &self.builder,
             context: self.context,
@@ -50,7 +54,8 @@ impl<'ctx, 'me> CodegenContext<'ctx> {
 }
 
 pub struct FunctionCodegenContext<'ctx, 'codegen> {
-    tc_scope: Vec<Type>,
+    tc_scope: Vec<(Type, ScopeTypeMetadata)>,
+    tc_ctx: &'codegen TypecheckingContext,
     scope: Vec<BasicValueEnum<'ctx>>,
     builder: &'codegen Builder<'ctx>,
     context: &'codegen Context,
@@ -66,10 +71,10 @@ pub struct FunctionCodegenContext<'ctx, 'codegen> {
 
 impl<'ctx> FunctionCodegenContext<'ctx, '_> {
     pub fn push_value(&mut self, id: usize, value: BasicValueEnum<'ctx>) {
-        if self.scope.len() - 1 != id {
+        if self.scope.len() != id {
             panic!(
                 "inserting values out-of-order, expected value _{}, but got value _{id}",
-                self.scope.len() - 1
+                self.scope.len()
             );
         }
         self.scope.push(value);
@@ -187,7 +192,7 @@ impl<'ctx> TypedLiteral {
         string_map: &HashMap<GlobalStr, GlobalValue<'ctx>>,
     ) -> BasicValueEnum<'ctx> {
         match self {
-            TypedLiteral::Void => panic!("void should be ignored in llvm"),
+            TypedLiteral::Void => default_types.empty_struct.const_zero().into(),
             TypedLiteral::Dynamic(id) => scope[*id],
             TypedLiteral::Function(id) => {
                 functions[*id].as_global_value().as_pointer_value().into()
@@ -396,7 +401,102 @@ macro_rules! f_s_u {
 }
 
 impl TypecheckedExpression {
-    fn build(&self, ctx: &mut FunctionCodegenContext) -> Result<(), BuilderError> {
+    fn build_store(
+        &self,
+        left_side: PointerValue,
+        right_side: BasicValueEnum,
+        ty: &Type,
+        ctx: &FunctionCodegenContext,
+    ) -> Result<(), BuilderError> {
+        if ty.refcount() == 0 {
+            if ty.is_thin_ptr() {
+                ctx.builder.build_store(left_side, right_side)?;
+                return Ok(());
+            } else {
+                let actual_ptr =
+                    ctx.builder
+                        .build_extract_value(right_side.into_struct_value(), 0, "")?;
+                let metadata =
+                    ctx.builder
+                        .build_extract_value(right_side.into_struct_value(), 1, "")?;
+                let actual_ptr_ptr =
+                    ctx.builder
+                        .build_struct_gep(ctx.default_types.fat_ptr, left_side, 0, "")?;
+                let metadata_ptr =
+                    ctx.builder
+                        .build_struct_gep(ctx.default_types.fat_ptr, left_side, 0, "")?;
+                ctx.builder.build_store(actual_ptr_ptr, actual_ptr)?;
+                ctx.builder.build_store(metadata_ptr, metadata)?;
+                return Ok(());
+            }
+        }
+        match ty {
+            Type::Trait { .. } | Type::Generic(..) | Type::PrimitiveSelf(_) => {
+                panic!("{ty:?} should be resolved by now")
+            }
+            Type::UnsizedArray { .. } | Type::DynType { .. } | Type::PrimitiveStr(_) => {
+                panic!("cannot store unsized type")
+            }
+            Type::PrimitiveNever | Type::PrimitiveVoid(_) => (),
+            Type::Struct { struct_id, .. } => {
+                let struct_ty = &ctx.tc_ctx.structs.read()[*struct_id];
+                for (idx, ty) in struct_ty.elements.iter().map(|v| &v.1).enumerate() {
+                    let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, &ctx.structs);
+                    let val = ctx.builder.build_extract_value(
+                        right_side.into_struct_value(),
+                        idx as u32,
+                        "",
+                    )?;
+                    let ptr = ctx
+                        .builder
+                        .build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
+                    self.build_store(ptr, val, ty, ctx)?;
+                }
+            }
+            Type::SizedArray {
+                typ,
+                number_elements,
+                ..
+            } => {
+                let llvm_ty = typ.to_llvm_basic_type(&ctx.default_types, ctx.structs);
+                for i in 0..*number_elements {
+                    let val = ctx.builder.build_extract_value(
+                        right_side.into_array_value(),
+                        i as u32,
+                        "",
+                    )?;
+                    let ptr = unsafe {
+                        ctx.builder.build_in_bounds_gep(
+                            llvm_ty,
+                            left_side,
+                            &[ctx.default_types.isize.const_int(i as u64, false)],
+                            "",
+                        )
+                    }?;
+                    self.build_store(ptr, val, typ, ctx)?;
+                }
+            }
+            Type::Function(..)
+            | Type::PrimitiveI8(_)
+            | Type::PrimitiveI16(_)
+            | Type::PrimitiveI32(_)
+            | Type::PrimitiveI64(_)
+            | Type::PrimitiveISize(_)
+            | Type::PrimitiveU8(_)
+            | Type::PrimitiveU16(_)
+            | Type::PrimitiveU32(_)
+            | Type::PrimitiveU64(_)
+            | Type::PrimitiveUSize(_)
+            | Type::PrimitiveF32(_)
+            | Type::PrimitiveF64(_)
+            | Type::PrimitiveBool(_) => {
+                ctx.builder.build_store(left_side, right_side)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn codegen(&self, ctx: &mut FunctionCodegenContext) -> Result<(), BuilderError> {
         match self {
             TypecheckedExpression::Return(location, typed_literal) => {
                 match typed_literal {
@@ -408,18 +508,17 @@ impl TypecheckedExpression {
                 };
                 Ok(())
             }
-            TypecheckedExpression::Block(location, child, annotations) => {
+            TypecheckedExpression::Block(_, child, _) => {
                 for c in child {
-                    c.build(ctx)?;
+                    c.codegen(ctx)?;
                 }
                 Ok(())
             }
             TypecheckedExpression::If {
-                loc,
                 cond,
                 if_block,
                 else_block: None,
-                annotations,
+                ..
             } => {
                 let if_basic_block = ctx.context.append_basic_block(ctx.current_fn, "then");
                 let end_basic_block = ctx.context.append_basic_block(ctx.current_fn, "endif");
@@ -430,18 +529,17 @@ impl TypecheckedExpression {
                 )?;
                 ctx.builder.position_at_end(if_basic_block);
                 for expr in if_block {
-                    expr.build(ctx)?;
+                    expr.codegen(ctx)?;
                 }
                 ctx.builder.build_unconditional_branch(end_basic_block)?;
                 Ok(())
             }
 
             TypecheckedExpression::If {
-                loc,
                 cond,
                 if_block,
                 else_block: Some(else_block),
-                annotations,
+                ..
             } => {
                 let if_basic_block = ctx.context.append_basic_block(ctx.current_fn, "then");
                 let else_basic_block = ctx.context.append_basic_block(ctx.current_fn, "else");
@@ -453,37 +551,106 @@ impl TypecheckedExpression {
                 )?;
                 ctx.builder.position_at_end(if_basic_block);
                 for expr in if_block {
-                    expr.build(ctx)?;
+                    expr.codegen(ctx)?;
                 }
                 ctx.builder.build_unconditional_branch(end_basic_block)?;
                 ctx.builder.position_at_end(else_basic_block);
                 for expr in else_block {
-                    expr.build(ctx)?;
+                    expr.codegen(ctx)?;
                 }
                 ctx.builder.build_unconditional_branch(end_basic_block)?;
                 Ok(())
             }
             TypecheckedExpression::While {
-                loc,
                 cond_block,
                 cond,
                 body,
-            } => todo!(),
-            TypecheckedExpression::Range {
-                location,
-                typ,
-                lhs,
-                rhs,
-                inclusive,
-                dst,
-            } => todo!(),
-            TypecheckedExpression::StoreAssignment(location, typed_literal, typed_literal1) => {
-                todo!()
+                ..
+            } => {
+                let cond_basic_block = ctx.context.append_basic_block(ctx.current_fn, "while-cond");
+                let body_basic_block = ctx.context.append_basic_block(ctx.current_fn, "while-body");
+                let end_basic_block = ctx.context.append_basic_block(ctx.current_fn, "while-end");
+                ctx.builder.build_unconditional_branch(cond_basic_block)?;
+                ctx.builder.position_at_end(cond_basic_block);
+                for expr in cond_block {
+                    expr.codegen(ctx)?;
+                }
+                ctx.builder.build_conditional_branch(
+                    cond.fn_ctx_to_basic_value(ctx).into_int_value(),
+                    body_basic_block,
+                    end_basic_block,
+                )?;
+                ctx.builder.position_at_end(body_basic_block);
+                for expr in body {
+                    expr.codegen(ctx)?;
+                }
+                ctx.builder.build_unconditional_branch(cond_basic_block)?;
+                ctx.builder.position_at_end(end_basic_block);
+                Ok(())
             }
-            TypecheckedExpression::Call(location, typed_literal, typed_literal1, vec) => todo!(),
-            TypecheckedExpression::DirectCall(location, typed_literal, _, vec) => todo!(),
-            TypecheckedExpression::IntrinsicCall(location, typed_literal, intrinsic, vec) => {
-                todo!()
+            TypecheckedExpression::Range { .. } => todo!(),
+            TypecheckedExpression::StoreAssignment(location, lhs, rhs) => self.build_store(
+                lhs.fn_ctx_to_basic_value(ctx).into_pointer_value(),
+                rhs.fn_ctx_to_basic_value(ctx),
+                if let TypedLiteral::Function(..) | TypedLiteral::ExternalFunction(..) = rhs {
+                    Cow::Borrowed(&Type::PrimitiveUSize(0))
+                } else {
+                    rhs.to_type(&ctx.tc_scope, ctx.tc_ctx)
+                }
+                .as_ref(),
+                ctx,
+            ),
+            TypecheckedExpression::Call(location, dst, fn_ptr, args) => todo!(),
+            TypecheckedExpression::DirectExternCall(location, dst, func, args)
+            | TypecheckedExpression::DirectCall(location, dst, func, args) => {
+                let func_value = if matches!(self, TypecheckedExpression::DirectCall(..)) {
+                    ctx.functions[*func]
+                } else {
+                    ctx.external_functions[*func]
+                };
+                let val = ctx.builder.build_direct_call(
+                    func_value,
+                    &args
+                        .iter()
+                        .filter(|v| match v {
+                            TypedLiteral::Void => false,
+                            TypedLiteral::Dynamic(id) => !matches!(
+                                ctx.tc_scope[*id].0,
+                                Type::PrimitiveNever | Type::PrimitiveVoid(0)
+                            ),
+                            _ => true,
+                        })
+                        .map(|v| v.fn_ctx_to_basic_value(ctx).into())
+                        .collect::<Vec<_>>(),
+                    "",
+                )?;
+                ctx.push_value(
+                    *dst,
+                    val.try_as_basic_value()
+                        .left_or(ctx.default_types.empty_struct.const_zero().into()),
+                );
+                Ok(())
+            }
+            TypecheckedExpression::IntrinsicCall(location, dst, intrinsic, vec) => {
+                match intrinsic {
+                    Intrinsic::Drop => todo!(),
+                    Intrinsic::DropInPlace => todo!(),
+                    Intrinsic::Forget => todo!(),
+                    Intrinsic::SizeOf => todo!(),
+                    Intrinsic::SizeOfVal => todo!(),
+                    Intrinsic::Breakpoint => todo!(),
+                    Intrinsic::Location => {}
+                    Intrinsic::Offset => todo!(),
+                    Intrinsic::GetMetadata => todo!(),
+                    Intrinsic::WithMetadata => todo!(),
+                    Intrinsic::TypeName => todo!(),
+                    Intrinsic::Unreachable => todo!(),
+                    Intrinsic::VtableSize => todo!(),
+                    Intrinsic::VtableDrop => todo!(),
+                    Intrinsic::Read => todo!(),
+                    Intrinsic::Write => todo!(),
+                }
+                Ok(())
             }
             TypecheckedExpression::Pos(location, dst, src) => {
                 Ok(ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx)))
@@ -494,7 +661,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::Add(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -511,7 +678,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::Sub(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -528,7 +695,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::Mul(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -545,7 +712,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::Div(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -562,7 +729,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::Mod(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -579,7 +746,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::BAnd(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
                     ctx.push_value(
                         *dst,
@@ -597,7 +764,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::BOr(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
                     ctx.push_value(
                         *dst,
@@ -615,7 +782,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::BXor(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
                     ctx.push_value(
                         *dst,
@@ -631,7 +798,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::GreaterThan(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -648,7 +815,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::LessThan(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -667,7 +834,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::GreaterThanEq(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -684,7 +851,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::LessThanEq(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -701,7 +868,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::Eq(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -718,7 +885,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::Neq(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -735,7 +902,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::LShift(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 if typ.is_int_like() {
                     ctx.push_value(
                         *dst,
@@ -751,7 +918,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::RShift(location, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst];
+                let typ = &ctx.tc_scope[*dst].0;
                 if typ.is_int_like() {
                     ctx.push_value(
                         *dst,
@@ -794,7 +961,84 @@ impl TypecheckedExpression {
             // &[a] <- extractvalue 0 and then i64 n of that
             // &[a; n] <- i64 0 n (for getelementptr [a; n]) or i64 n (for getelementptr a)
             TypecheckedExpression::Offset(location, dst, src, offset) => {
-                todo!()
+                let ty = src.to_type(&ctx.tc_scope, ctx.tc_ctx);
+                match ty.as_ref() {
+                    Type::Struct {
+                        struct_id,
+                        num_references: 1,
+                        ..
+                    } => {
+                        let offset = match offset {
+                            OffsetValue::Dynamic(id) => ctx.scope[*id].into_int_value(),
+                            OffsetValue::Static(v) => {
+                                ctx.default_types.i32.const_int(*v as u64, false)
+                            }
+                        };
+                        let value = unsafe {
+                            ctx.builder.build_in_bounds_gep(
+                                ctx.structs[*struct_id],
+                                src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
+                                &[ctx.default_types.isize.const_int(0, false), offset],
+                                "",
+                            )
+                        }?;
+                        ctx.push_value(*dst, value.into());
+                        Ok(())
+                    }
+                    Type::SizedArray {
+                        typ,
+                        num_references: 1,
+                        ..
+                    } => {
+                        let offset = match offset {
+                            OffsetValue::Dynamic(id) => ctx.scope[*id].into_int_value(),
+                            OffsetValue::Static(v) => {
+                                ctx.default_types.i32.const_int(*v as u64, false)
+                            }
+                        };
+                        let value = unsafe {
+                            ctx.builder.build_in_bounds_gep(
+                                typ.to_llvm_basic_type(&ctx.default_types, &ctx.structs),
+                                src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
+                                &[offset],
+                                "",
+                            )
+                        }?;
+                        ctx.push_value(*dst, value.into());
+                        Ok(())
+                    }
+                    Type::UnsizedArray {
+                        typ,
+                        num_references: 1,
+                        ..
+                    } => {
+                        let offset = match offset {
+                            OffsetValue::Dynamic(id) => ctx.scope[*id].into_int_value(),
+                            OffsetValue::Static(v) => {
+                                ctx.default_types.i32.const_int(*v as u64, false)
+                            }
+                        };
+                        let actual_ptr = ctx
+                            .builder
+                            .build_extract_value(
+                                src.fn_ctx_to_basic_value(ctx).into_struct_value(),
+                                0,
+                                "",
+                            )?
+                            .into_pointer_value();
+                        let value = unsafe {
+                            ctx.builder.build_in_bounds_gep(
+                                typ.to_llvm_basic_type(&ctx.default_types, &ctx.structs),
+                                actual_ptr,
+                                &[offset],
+                                "",
+                            )
+                        }?;
+                        ctx.push_value(*dst, value.into());
+                        Ok(())
+                    }
+                    _ => unreachable!("cannot take offset of {ty:?}"),
+                }
             }
             TypecheckedExpression::OffsetNonPointer(location, dst, src, offset_value) => {
                 let src = src.fn_ctx_to_basic_value(ctx);

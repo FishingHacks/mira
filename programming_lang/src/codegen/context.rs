@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    sync::Arc,
 };
 
 use super::{
@@ -8,7 +9,7 @@ use super::{
     mangling::{mangle_function, mangle_static, mangle_string, mangle_struct},
 };
 use inkwell::{
-    builder::Builder,
+    builder::{Builder, BuilderError},
     context::Context,
     module::{Linkage, Module},
     support::LLVMString,
@@ -22,9 +23,11 @@ use inkwell::{
 
 use crate::{
     globals::GlobalStr,
+    module::FunctionId,
     std_annotations::alias_annotation::ExternAliasAnnotation,
     typechecking::{
         expression::{TypecheckedExpression, TypedLiteral},
+        typechecking::ScopeTypeMetadata,
         Type, TypecheckingContext,
     },
 };
@@ -42,9 +45,12 @@ pub struct DefaultTypes<'ctx> {
     pub fat_ptr: StructType<'ctx>,
     pub f32: FloatType<'ctx>,
     pub f64: FloatType<'ctx>,
+    // {}
+    pub empty_struct: StructType<'ctx>,
 }
 
 pub struct CodegenContext<'ctx> {
+    pub(super) tc_ctx: Arc<TypecheckingContext>,
     pub(super) builder: Builder<'ctx>,
     pub(super) context: &'ctx Context,
     pub(super) default_types: DefaultTypes<'ctx>,
@@ -62,7 +68,7 @@ impl<'a> CodegenContext<'a> {
     pub fn make_context(
         context: &'a Context,
         triple: TargetTriple,
-        ctx: &TypecheckingContext,
+        ctx: Arc<TypecheckingContext>,
         module: &str,
     ) -> Result<CodegenContext<'a>, CodegenError> {
         Target::initialize_all(&InitializationConfig::default());
@@ -93,9 +99,10 @@ impl<'a> CodegenContext<'a> {
             isize: isize_type,
             ptr: ptr_type,
             fat_ptr: context.struct_type(&[ptr_type.into(), isize_type.into()], false),
+            empty_struct: context.struct_type(&[], false),
         };
         let builder = context.create_builder();
-        let mut strings = collect_strings(ctx);
+        let mut strings = collect_strings(&ctx);
         let mut string_map = HashMap::new();
         for strn in strings.drain() {
             let (constant, length, mangled_name) = strn.with(|v| {
@@ -120,7 +127,7 @@ impl<'a> CodegenContext<'a> {
         let structs = struct_reader
             .iter()
             .enumerate()
-            .map(|(i, structure)| context.opaque_struct_type(&mangle_struct(ctx, i)))
+            .map(|(i, structure)| context.opaque_struct_type(&mangle_struct(&ctx, i)))
             .collect::<Vec<_>>();
         for i in 0..struct_reader.len() {
             let fields = struct_reader[i]
@@ -166,7 +173,7 @@ impl<'a> CodegenContext<'a> {
                             .to_llvm_basic_type(&default_types, &structs)
                             .fn_type(&param_types, false)
                     };
-                let name = mangle_function(ctx, i);
+                let name = mangle_function(&ctx, i);
                 module.add_function(name.as_str(), fn_typ, Some(Linkage::Internal))
             })
             .collect::<Vec<_>>();
@@ -223,7 +230,7 @@ impl<'a> CodegenContext<'a> {
                 module.add_global(
                     v.0.to_llvm_basic_type(&default_types, &structs),
                     None,
-                    &mangle_static(ctx, i),
+                    &mangle_static(&ctx, i),
                 )
             })
             .collect::<Vec<_>>();
@@ -254,7 +261,43 @@ impl<'a> CodegenContext<'a> {
             string_map,
             machine,
             triple,
+            tc_ctx: ctx,
         });
+    }
+
+    pub fn compile_fn(
+        &self,
+        fn_id: FunctionId,
+        scope: Vec<(Type, ScopeTypeMetadata)>,
+    ) -> Result<(), BuilderError> {
+        let func = self.functions[fn_id];
+        let function_reader = self.tc_ctx.functions.read();
+        let contract = &function_reader[fn_id].0;
+        let mut function_ctx = self.make_function_codegen_context(scope, func);
+        let void_arg = self.default_types.empty_struct.const_zero().into();
+
+        let mut param_idx = 0;
+        for (idx, arg) in contract
+            .arguments
+            .iter()
+            .enumerate()
+            .map(|v| (v.0, &v.1 .1))
+        {
+            if matches!(arg, Type::PrimitiveVoid(0) | Type::PrimitiveNever) {
+                function_ctx.push_value(idx, void_arg);
+            } else {
+                function_ctx.push_value(idx, func.get_nth_param(param_idx).unwrap());
+                param_idx += 1;
+            }
+        }
+        let body_basic_block = self.context.append_basic_block(func, "entry");
+        self.builder.position_at_end(body_basic_block);
+
+        let body = &*function_reader[fn_id].1;
+        for expr in body {
+            expr.codegen(&mut function_ctx)?;
+        }
+        Ok(())
     }
 
     pub fn write_object_file(&self, path: impl AsRef<Path>) -> Result<(), LLVMString> {
@@ -313,15 +356,16 @@ fn collect_strings_for_expressions(
                 collect_strings_for_expressions(body, strings);
                 collect_strings_for_typed_literal(&cond, strings);
             }
-            TypecheckedExpression::Call(_, _, lhs, vec) => {
+            TypecheckedExpression::Call(_, _, lhs, args) => {
                 collect_strings_for_typed_literal(lhs, strings);
-                for v in vec {
+                for v in args {
                     collect_strings_for_typed_literal(v, strings);
                 }
             }
-            TypecheckedExpression::DirectCall(.., vec)
-            | TypecheckedExpression::IntrinsicCall(.., vec) => {
-                for v in vec {
+            TypecheckedExpression::DirectCall(.., args)
+            | TypecheckedExpression::DirectExternCall(.., args)
+            | TypecheckedExpression::IntrinsicCall(.., args) => {
+                for v in args {
                     collect_strings_for_typed_literal(v, strings);
                 }
             }
