@@ -7,7 +7,10 @@ use std::{
 };
 
 use programming_lang::{
-    codegen,
+    codegen::{
+        mangling::{mangle_external_function, mangle_function},
+        CodegenContext, InkwellContext, TargetTriple,
+    },
     error::ProgrammingLangError,
     module::{Module, ModuleContext},
     parser::ParserQueueEntry,
@@ -384,7 +387,13 @@ fn run(
     root_directory: impl Into<Arc<Path>>,
     source: impl AsRef<str>,
 ) -> Result<(), Vec<ProgrammingLangError>> {
-    let context = parse_all(file.into(), root_directory.into(), source.as_ref())?;
+    let file: Arc<Path> = file.into();
+    let filename = file
+        .file_name()
+        .expect("file needs a filename")
+        .to_string_lossy()
+        .into_owned();
+    let context = parse_all(file, root_directory.into(), source.as_ref())?;
 
     let typechecking_context = TypecheckingContext::new(context.clone());
     let errs = typechecking_context.resolve_imports(context.clone());
@@ -438,22 +447,29 @@ fn run(
     for i in 0..num_fns {
         println!(
             "mangle_name(fn({i})) = {:?}",
-            codegen::mangle_name(
-                &typechecking_context,
-                programming_lang::module::ModuleScopeValue::Function(i)
-            )
+            mangle_function(&typechecking_context, i)
         );
     }
-
     for i in 0..num_ext_fns {
         println!(
             "mangle_name(ext_fn({i})) = {:?}",
-            codegen::mangle_name(
-                &typechecking_context,
-                programming_lang::module::ModuleScopeValue::ExternalFunction(i)
-            )
+            mangle_external_function(&typechecking_context, i)
         );
     }
+    println!("----------------------------");
+    println!("Compiling...");
+    let context = InkwellContext::create();
+    let codegen_context = CodegenContext::make_context(
+        &context,
+        TargetTriple::create("x86_64-unknown-linux-gnu"),
+        &typechecking_context,
+        &filename,
+    )
+    .expect("failed to create the llvm context");
+    println!("{}", codegen_context.module.to_string());
+    codegen_context
+        .write_object_file(Path::new("out.o"))
+        .unwrap();
 
     Ok(())
 }

@@ -16,7 +16,7 @@ use super::{
 
 pub type ScopeValueId = usize;
 
-struct ScopeTypeMetadata {
+pub struct ScopeTypeMetadata {
     stack_allocated: bool,
 }
 
@@ -161,15 +161,16 @@ pub fn typecheck_function(
 
     let mut scope = Scopes::new();
 
-    let return_type = {
+    let (return_type, args) = if is_external {
+        let contract = &context.external_functions.read()[function_id].0;
+        (contract.return_type.clone(), contract.arguments.clone())
+    } else {
         let contract = &context.functions.read()[function_id].0;
-
-        for arg in contract.arguments.iter().cloned() {
-            scope.insert_value(arg.0, arg.1);
-        }
-
-        contract.return_type.clone()
+        (contract.return_type.clone(), contract.arguments.clone())
     };
+    for arg in args {
+        scope.insert_value(arg.0, arg.1);
+    }
 
     let mut exprs = vec![];
     match typecheck_statement(
@@ -185,6 +186,18 @@ pub fn typecheck_function(
                 return vec![TypecheckingError::BodyDoesNotAlwaysReturn {
                     location: statement.loc().clone(),
                 }];
+            }
+            if !always_returns {
+                if let Err(e) = typecheck_statement(
+                    context,
+                    &mut scope,
+                    &Statement::Return(None, statement.loc().clone()),
+                    module_id,
+                    &return_type,
+                    &mut exprs,
+                ) {
+                    return e;
+                }
             }
             context.functions.write()[function_id].1 = exprs.into_boxed_slice();
             Vec::new()
@@ -954,13 +967,9 @@ fn typecheck_expression(
                         exprs,
                         TypeSuggestion::Unknown,
                     )?;
-                    let dst_id = scope.push(typ.clone().take_ref());
-                    exprs.push(TypecheckedExpression::Reference(
-                        left_side.loc().clone(),
-                        dst_id,
-                        lhs,
-                    ));
-                    (typ, TypedLiteral::Dynamic(dst_id))
+                    let dst_typed_lit =
+                        make_reference(scope, exprs, typ.clone(), lhs, left_side.loc().clone());
+                    (typ, dst_typed_lit)
                 }
             };
             let (typ_rhs, rhs) = typecheck_expression(
@@ -1133,14 +1142,14 @@ fn typecheck_membercall(
             ));
             typed_literal_lhs = TypedLiteral::Dynamic(new_id);
         } else {
-            typ_lhs = typ_lhs.take_ref();
-            let new_id = scope.push(typ_lhs.clone());
-            exprs.push(TypecheckedExpression::Reference(
-                lhs.loc().clone(),
-                new_id,
+            typed_literal_lhs = make_reference(
+                scope,
+                exprs,
+                typ_lhs.clone(),
                 typed_literal_lhs,
-            ));
-            typed_literal_lhs = TypedLiteral::Dynamic(new_id);
+                lhs.loc().clone(),
+            );
+            typ_lhs = typ_lhs.take_ref();
         }
     }
 
@@ -1207,29 +1216,10 @@ fn typecheck_take_ref(
             typecheck_expression(context, module, scope, right_side, exprs, type_suggestion)
         }
         _ => {
-            let mut current_offsets = vec![];
-            let (typ, expr) = ref_resolve_indexing(
-                context,
-                module,
-                scope,
-                expression,
-                exprs,
-                &mut current_offsets,
-                type_suggestion,
-            )?;
+            let (typ, expr) =
+                ref_resolve_indexing(context, module, scope, expression, exprs, type_suggestion)?;
             let typ = typ.take_ref();
-            if current_offsets.len() > 0 {
-                let new_expr_id = scope.push(typ.clone());
-                exprs.push(TypecheckedExpression::Offset(
-                    expression.loc().clone(),
-                    new_expr_id,
-                    expr,
-                    current_offsets,
-                ));
-                Ok((typ, TypedLiteral::Dynamic(new_expr_id)))
-            } else {
-                Ok((typ, expr))
-            }
+            Ok((typ, expr))
         }
     }
 }
@@ -1243,7 +1233,6 @@ fn ref_resolve_indexing(
     scope: &mut Scopes,
     expression: &Expression,
     exprs: &mut Vec<TypecheckedExpression>,
-    current_offsets: &mut Vec<OffsetValue>,
     type_suggestion: TypeSuggestion,
 ) -> Result<(Type, TypedLiteral), TypecheckingError> {
     match expression {
@@ -1258,34 +1247,20 @@ fn ref_resolve_indexing(
                 scope,
                 left_side,
                 exprs,
-                current_offsets,
                 TypeSuggestion::Unknown,
             )?;
             for element_name in index {
-                if typ_lhs.refcount() > 0 {
-                    {
-                        let typ = typ_lhs.clone().take_ref();
-                        let id = scope.push(typ);
-                        exprs.push(TypecheckedExpression::Offset(
-                            left_side.loc().clone(),
-                            id,
-                            typed_literal_lhs,
-                            std::mem::take(current_offsets),
-                        ));
-                        typed_literal_lhs = TypedLiteral::Dynamic(id);
-                    }
-                    while typ_lhs.refcount() > 0 {
-                        typ_lhs = typ_lhs
-                            .deref()
-                            .expect("&_ should never fail to dereference");
-                        let id = scope.push(typ_lhs.clone().take_ref());
-                        exprs.push(TypecheckedExpression::Dereference(
-                            expression.loc().clone(),
-                            id,
-                            typed_literal_lhs,
-                        ));
-                        typed_literal_lhs = TypedLiteral::Dynamic(id);
-                    }
+                while typ_lhs.refcount() > 0 {
+                    typ_lhs = typ_lhs
+                        .deref()
+                        .expect("&_ should never fail to dereference");
+                    let id = scope.push(typ_lhs.clone().take_ref());
+                    exprs.push(TypecheckedExpression::Dereference(
+                        expression.loc().clone(),
+                        id,
+                        typed_literal_lhs,
+                    ));
+                    typed_literal_lhs = TypedLiteral::Dynamic(id);
                 }
                 assert_eq!(typ_lhs.refcount(), 0, "non-zero refcount after auto-deref");
                 match typ_lhs {
@@ -1300,7 +1275,14 @@ fn ref_resolve_indexing(
                         {
                             Some((idx, typ)) => {
                                 typ_lhs = typ.clone();
-                                current_offsets.push(OffsetValue::Static(idx));
+                                let mut new_val = scope.push(typ_lhs.clone().take_ref());
+                                exprs.push(TypecheckedExpression::Offset(
+                                    loc.clone(),
+                                    new_val,
+                                    typed_literal_lhs,
+                                    OffsetValue::Static(idx),
+                                ));
+                                typed_literal_lhs = TypedLiteral::Dynamic(new_val);
                             }
                             None => {
                                 return Err(TypecheckingError::FieldNotFound(
@@ -1331,33 +1313,19 @@ fn ref_resolve_indexing(
                 scope,
                 left_side,
                 exprs,
-                current_offsets,
                 TypeSuggestion::Array(Box::new(type_suggestion)),
             )?;
-            if typ_lhs.refcount() > 0 {
-                {
-                    let typ = typ_lhs.clone().take_ref();
-                    let id = scope.push(typ);
-                    exprs.push(TypecheckedExpression::Offset(
-                        left_side.loc().clone(),
-                        id,
-                        typed_literal_lhs,
-                        std::mem::take(current_offsets),
-                    ));
-                    typed_literal_lhs = TypedLiteral::Dynamic(id);
-                }
-                while typ_lhs.refcount() > 0 {
-                    typ_lhs = typ_lhs
-                        .deref()
-                        .expect("&_ should never fail to dereference");
-                    let id = scope.push(typ_lhs.clone().take_ref());
-                    exprs.push(TypecheckedExpression::Dereference(
-                        expression.loc().clone(),
-                        id,
-                        typed_literal_lhs,
-                    ));
-                    typed_literal_lhs = TypedLiteral::Dynamic(id);
-                }
+            while typ_lhs.refcount() > 0 {
+                typ_lhs = typ_lhs
+                    .deref()
+                    .expect("&_ should never fail to dereference");
+                let id = scope.push(typ_lhs.clone().take_ref());
+                exprs.push(TypecheckedExpression::Dereference(
+                    expression.loc().clone(),
+                    id,
+                    typed_literal_lhs,
+                ));
+                typed_literal_lhs = TypedLiteral::Dynamic(id);
             }
             assert_eq!(typ_lhs.refcount(), 0, "non-zero refcount after auto-deref");
             let typ = match typ_lhs {
@@ -1371,10 +1339,15 @@ fn ref_resolve_indexing(
                 }
             };
 
-            current_offsets.push(indexing_resolve_rhs(
-                context, module, scope, right_side, exprs,
-            )?);
-            Ok((typ, typed_literal_lhs))
+            let offset = indexing_resolve_rhs(context, module, scope, right_side, exprs)?;
+            let id = scope.push(typ.clone().take_ref());
+            exprs.push(TypecheckedExpression::Offset(
+                expression.loc().clone(),
+                id,
+                typed_literal_lhs,
+                offset,
+            ));
+            Ok((typ, TypedLiteral::Dynamic(id)))
         }
         _ => {
             let (typ, typed_literal) = typecheck_expression(
@@ -1393,15 +1366,26 @@ fn ref_resolve_indexing(
                         num_references: 0,
                         number_elements,
                     } => {
+                        let typed_literal_sized_array_ref = make_reference(
+                            scope,
+                            exprs,
+                            Type::SizedArray {
+                                typ: typ.clone(),
+                                num_references: 0,
+                                number_elements,
+                            },
+                            typed_literal,
+                            expression.loc().clone(),
+                        );
                         let typ = Type::UnsizedArray {
                             typ,
                             num_references: 0,
                         };
                         let id = scope.push(typ.clone().take_ref());
-                        exprs.push(TypecheckedExpression::SizedArrayToUnsizedArrayRef(
+                        exprs.push(TypecheckedExpression::MakeUnsizedSlice(
                             expression.loc().clone(),
                             id,
-                            typed_literal,
+                            typed_literal_sized_array_ref,
                             number_elements,
                         ));
                         return Ok((typ, TypedLiteral::Dynamic(id)));
@@ -1410,13 +1394,10 @@ fn ref_resolve_indexing(
                 },
                 _ => (),
             }
-            let id = scope.push(typ.clone().take_ref());
-            exprs.push(TypecheckedExpression::Reference(
-                expression.loc().clone(),
-                id,
-                typed_literal,
-            ));
-            Ok((typ, TypedLiteral::Dynamic(id)))
+            Ok((
+                typ.clone(),
+                make_reference(scope, exprs, typ, typed_literal, expression.loc().clone()),
+            ))
         }
     }
 }
@@ -1450,6 +1431,35 @@ fn indexing_resolve_rhs(
     }
 }
 
+/// typ - the type before the reference (as in, typ is the type of the typed_literal, the type of
+/// the returned type literal is typ.take_ref())
+fn make_reference(
+    scope: &mut Scopes,
+    expressions: &mut Vec<TypecheckedExpression>,
+    typ: Type,
+    mut typed_literal: TypedLiteral,
+    loc: Location,
+) -> TypedLiteral {
+    match typed_literal {
+        TypedLiteral::Void | TypedLiteral::Static(_) => {}
+        TypedLiteral::Dynamic(v) => scope.make_stack_allocated(v),
+        _ => {
+            let lit_id = scope.push(typ.clone());
+            scope.make_stack_allocated(lit_id);
+            expressions.push(TypecheckedExpression::Literal(
+                loc.clone(),
+                lit_id,
+                typed_literal,
+            ));
+            typed_literal = TypedLiteral::Dynamic(lit_id);
+        }
+    }
+
+    let new_id = scope.push(typ.take_ref());
+    expressions.push(TypecheckedExpression::Reference(loc, new_id, typed_literal));
+    TypedLiteral::Dynamic(new_id)
+}
+
 fn copy_resolve_indexing(
     context: &TypecheckingContext,
     module: ModuleId,
@@ -1479,22 +1489,45 @@ fn copy_resolve_indexing(
                 ));
             }
             if typ.refcount() == 0 {
-                let typ = match typ {
+                let new_typ = match typ.clone() {
                     Type::SizedArray { typ, .. } => *typ,
                     Type::UnsizedArray { typ, .. } => panic!("unsized element without references"),
                     _ => unreachable!(),
                 };
-                let new_id = scope.push(typ.clone());
-                if let TypedLiteral::Dynamic(id) = lhs {
-                    scope.make_stack_allocated(id);
-                }
-                exprs.push(TypecheckedExpression::OffsetNonPointer(
-                    expression.loc().clone(),
-                    new_id,
-                    lhs,
-                    offset,
-                ));
-                Ok((typ, TypedLiteral::Dynamic(new_id)))
+                let new_id = match offset {
+                    OffsetValue::Static(offset) => {
+                        let new_id = scope.push(new_typ.clone());
+                        exprs.push(TypecheckedExpression::OffsetNonPointer(
+                            expression.loc().clone(),
+                            new_id,
+                            lhs,
+                            offset,
+                        ));
+                        new_id
+                    }
+                    off @ OffsetValue::Dynamic(_) => {
+                        if let TypedLiteral::Dynamic(lhs) = lhs {
+                            scope.make_stack_allocated(lhs);
+                        }
+                        let typed_lit_ref =
+                            make_reference(scope, exprs, typ, lhs, expression.loc().clone());
+                        let offset_id = scope.push(new_typ.clone().take_ref());
+                        let new_id = scope.push(new_typ.clone());
+                        exprs.push(TypecheckedExpression::Offset(
+                            expression.loc().clone(),
+                            offset_id,
+                            typed_lit_ref,
+                            off,
+                        ));
+                        exprs.push(TypecheckedExpression::Dereference(
+                            expression.loc().clone(),
+                            new_id,
+                            TypedLiteral::Dynamic(offset_id),
+                        ));
+                        new_id
+                    }
+                };
+                Ok((new_typ, TypedLiteral::Dynamic(new_id)))
             } else {
                 let mut typ = typ;
                 let mut lhs = lhs;
@@ -1518,7 +1551,7 @@ fn copy_resolve_indexing(
                     expression.loc().clone(),
                     offset_id,
                     lhs,
-                    vec![offset],
+                    offset,
                 ));
                 exprs.push(TypecheckedExpression::Dereference(
                     expression.loc().clone(),
@@ -1565,7 +1598,7 @@ fn copy_resolve_indexing(
                         {
                             Some((idx, typ)) => {
                                 typ_lhs = typ.clone();
-                                OffsetValue::Static(idx)
+                                idx
                             }
                             None => {
                                 return Err(TypecheckingError::FieldNotFound(
@@ -1602,7 +1635,7 @@ fn copy_resolve_indexing(
                         loc.clone(),
                         offset_id,
                         typed_literal_lhs,
-                        vec![OffsetValue::Static(0), offset],
+                        OffsetValue::Static(offset),
                     ));
                     exprs.push(TypecheckedExpression::Dereference(
                         loc.clone(),

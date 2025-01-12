@@ -1,148 +1,70 @@
-use std::{
-    fmt::Write,
-    hash::{DefaultHasher, Hash, Hasher},
-};
+use context::DefaultTypes;
+use core::panic;
+use std::collections::HashMap;
 
+use crate::{
+    globals::GlobalStr,
+    typechecking::{
+        expression::{TypecheckedExpression, TypedLiteral},
+        Type,
+    },
+};
+pub use inkwell::context::Context as InkwellContext;
+pub use inkwell::targets::TargetTriple;
+pub mod mangling;
+pub use context::CodegenContext;
+pub use inkwell::support::LLVMString;
 use inkwell::{
     builder::{Builder, BuilderError},
     context::Context,
     module::Module,
-    types::{BasicType, BasicTypeEnum, FloatType, IntType, PointerType, StructType},
-    values::{BasicValueEnum, FunctionValue},
+    types::{AnyTypeEnum, BasicType, BasicTypeEnum, StructType},
+    values::{BasicValueEnum, FunctionValue, GlobalValue},
     FloatPredicate, IntPredicate,
 };
 
-use crate::{
-    module::ModuleScopeValue,
-    std_annotations::alias_annotation::ExternAliasAnnotation,
-    typechecking::{
-        expression::{TypecheckedExpression, TypedLiteral},
-        Type, TypecheckingContext,
-    },
-};
+mod context;
+mod error;
 
-pub fn mangle_name(ctx: &TypecheckingContext, item: ModuleScopeValue) -> String {
-    match item {
-        ModuleScopeValue::Function(id) => {
-            let fn_reader = ctx.functions.read();
-            let module_reader = ctx.modules.read();
-            let module_id = fn_reader[id].0.module_id;
-            let v = &module_reader[module_id];
-            let path = v.path.strip_prefix(&v.root).unwrap_or(&v.path);
-            let mut mangled_name = "_ZN".to_string();
-            let mut tmp_escaped_name_part = String::new();
-            for entry in path.components() {
-                let std::path::Component::Normal(name) = entry else {
-                    continue;
-                };
-                tmp_escaped_name_part.clear();
-                for byte in name.as_encoded_bytes() {
-                    match (*byte) as char {
-                        'a'..='z' | 'A'..='Z' | '_' | '.' | '-' | '0'..='9' => {
-                            tmp_escaped_name_part.push(*byte as char)
-                        }
-                        '<' => tmp_escaped_name_part.push_str("$LT$"),
-                        '>' => tmp_escaped_name_part.push_str("$GT$"),
-                        ',' => tmp_escaped_name_part.push_str("$C$"),
-                        '(' => tmp_escaped_name_part.push_str("$PL$"),
-                        ')' => tmp_escaped_name_part.push_str("$PR$"),
-                        '{' => tmp_escaped_name_part.push_str("$CL$"),
-                        '}' => tmp_escaped_name_part.push_str("$CR$"),
-                        '$' => tmp_escaped_name_part.push_str("$D$"),
-                        _ => tmp_escaped_name_part.push('_'),
-                    }
-                }
-                write!(
-                    mangled_name,
-                    "{}{}",
-                    tmp_escaped_name_part.len(),
-                    tmp_escaped_name_part
-                )
-                .expect("writing to a string should never fail");
-            }
-
-            match fn_reader[id].0.name {
-                None => mangled_name.push_str("23$CL$$CL$anon_fn$CR$$CR$"), // {{anon_fn}}
-                Some(ref v) => v.with(|v| {
-                    tmp_escaped_name_part.clear();
-                    for c in v.chars() {
-                        match c {
-                            'a'..='z' | 'A'..='Z' | '_' | '.' | '-' | '0'..='9' => {
-                                tmp_escaped_name_part.push(c)
-                            }
-                            '<' => tmp_escaped_name_part.push_str("$LT$"),
-                            '>' => tmp_escaped_name_part.push_str("$GT$"),
-                            ',' => tmp_escaped_name_part.push_str("$C$"),
-                            '(' => tmp_escaped_name_part.push_str("$PL$"),
-                            ')' => tmp_escaped_name_part.push_str("$PR$"),
-                            '{' => tmp_escaped_name_part.push_str("$CL$"),
-                            '}' => tmp_escaped_name_part.push_str("$CR$"),
-                            '$' => tmp_escaped_name_part.push_str("$D$"),
-                            _ => tmp_escaped_name_part.push('_'),
-                        }
-                    }
-                    write!(
-                        mangled_name,
-                        "{}{}",
-                        tmp_escaped_name_part.len(),
-                        tmp_escaped_name_part
-                    )
-                    .expect("writing to a string should never fail");
-                }),
-            }
-            mangled_name.push_str("17h"); // hash
-            let mut hasher = DefaultHasher::new();
-            fn_reader[id].0.hash(&mut hasher);
-            write!(mangled_name, "{:x}", hasher.finish())
-                .expect("writing to a string should never fail");
-
-            mangled_name
+impl<'ctx, 'me> CodegenContext<'ctx> {
+    pub fn make_function_codegen_context(
+        &'me self,
+        tc_scope: Vec<Type>,
+        current_fn: FunctionValue<'ctx>,
+    ) -> FunctionCodegenContext<'ctx, 'me> {
+        FunctionCodegenContext {
+            tc_scope,
+            scope: Vec::new(),
+            builder: &self.builder,
+            context: self.context,
+            default_types: self.default_types,
+            module: &self.module,
+            current_fn,
+            functions: &self.functions,
+            external_functions: &self.external_functions,
+            structs: &self.structs,
+            statics: &self.statics,
+            string_map: &self.string_map,
         }
-        ModuleScopeValue::ExternalFunction(id) => {
-            let reader = &ctx.external_functions.read()[id].0;
-            if let Some(v) = reader
-                .annotations
-                .get_first_annotation::<ExternAliasAnnotation>()
-            {
-                return v.0.to_string();
-            }
-            reader
-                .name
-                .as_ref()
-                .expect("external functions need a name")
-                .to_string()
-        }
-        ModuleScopeValue::Static(_)
-        | ModuleScopeValue::Struct(_)
-        | ModuleScopeValue::Module(_)
-        | ModuleScopeValue::Trait(_) => unreachable!("does not have to be mangled"),
     }
 }
 
-struct DefaultTypes<'ctx> {
-    isize: IntType<'ctx>,
-    i8: IntType<'ctx>,
-    i16: IntType<'ctx>,
-    i32: IntType<'ctx>,
-    i64: IntType<'ctx>,
-    bool: IntType<'ctx>,
-    ptr: PointerType<'ctx>,
-    fat_ptr: StructType<'ctx>,
-    f32: FloatType<'ctx>,
-    f64: FloatType<'ctx>,
-}
-
-struct CodegenContext<'ctx> {
+pub struct FunctionCodegenContext<'ctx, 'codegen> {
     tc_scope: Vec<Type>,
     scope: Vec<BasicValueEnum<'ctx>>,
-    builder: Builder<'ctx>,
-    context: &'ctx Context,
+    builder: &'codegen Builder<'ctx>,
+    context: &'codegen Context,
     default_types: DefaultTypes<'ctx>,
-    module: Module<'ctx>,
+    module: &'codegen Module<'ctx>,
     current_fn: FunctionValue<'ctx>,
+    functions: &'codegen Vec<FunctionValue<'ctx>>,
+    external_functions: &'codegen Vec<FunctionValue<'ctx>>,
+    structs: &'codegen Vec<StructType<'ctx>>,
+    statics: &'codegen Vec<GlobalValue<'ctx>>,
+    string_map: &'codegen HashMap<GlobalStr, GlobalValue<'ctx>>,
 }
 
-impl<'ctx> CodegenContext<'ctx> {
+impl<'ctx> FunctionCodegenContext<'ctx, '_> {
     pub fn push_value(&mut self, id: usize, value: BasicValueEnum<'ctx>) {
         if self.scope.len() - 1 != id {
             panic!(
@@ -155,12 +77,16 @@ impl<'ctx> CodegenContext<'ctx> {
 }
 
 impl<'ctx> Type {
-    fn to_llvm_basic_type(&self, ctx: &CodegenContext<'ctx>) -> BasicTypeEnum<'ctx> {
+    fn to_llvm_basic_type(
+        &self,
+        default_types: &DefaultTypes<'ctx>,
+        structs: &Vec<StructType<'ctx>>,
+    ) -> BasicTypeEnum<'ctx> {
         if self.refcount() > 0 {
             if self.is_thin_ptr() {
-                return ctx.default_types.ptr.into();
+                return default_types.ptr.into();
             } else {
-                return ctx.default_types.fat_ptr.into();
+                return default_types.fat_ptr.into();
             }
         }
 
@@ -172,85 +98,239 @@ impl<'ctx> Type {
             Type::PrimitiveStr(_) => panic!("llvm types must be sized, `str` is not"),
             Type::PrimitiveSelf(_) => unreachable!("Self must be resolved at this point"),
             Type::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
-            Type::Struct {
-                struct_id,
-                num_references,
-                ..
-            } => todo!(),
+            Type::Struct { struct_id, .. } => structs[*struct_id].into(),
             Type::SizedArray {
                 typ,
                 number_elements,
                 ..
             } => typ
-                .to_llvm_basic_type(ctx)
+                .to_llvm_basic_type(default_types, structs)
                 .array_type(*number_elements as u32)
                 .into(),
             // our function types are always pointers because all function types are pointers in llvm
-            Type::Function(..) => ctx.default_types.ptr.into(),
+            Type::Function(..) => default_types.ptr.into(),
             Type::PrimitiveNever | Type::PrimitiveVoid(_) => panic!(
                 "void and never should be ignored as llvm types outside of function return values"
             ),
-            Type::PrimitiveU8(_) | Type::PrimitiveI8(_) => ctx.default_types.i8.into(),
-            Type::PrimitiveU16(_) | Type::PrimitiveI16(_) => ctx.default_types.i16.into(),
-            Type::PrimitiveU32(_) | Type::PrimitiveI32(_) => ctx.default_types.i32.into(),
-            Type::PrimitiveU64(_) | Type::PrimitiveI64(_) => ctx.default_types.i64.into(),
-            Type::PrimitiveUSize(_) | Type::PrimitiveISize(_) => ctx.default_types.isize.into(),
-            Type::PrimitiveF32(_) => ctx.default_types.f32.into(),
-            Type::PrimitiveF64(_) => ctx.default_types.f64.into(),
-            Type::PrimitiveBool(_) => ctx.default_types.bool.into(),
+            Type::PrimitiveU8(_) | Type::PrimitiveI8(_) => default_types.i8.into(),
+            Type::PrimitiveU16(_) | Type::PrimitiveI16(_) => default_types.i16.into(),
+            Type::PrimitiveU32(_) | Type::PrimitiveI32(_) => default_types.i32.into(),
+            Type::PrimitiveU64(_) | Type::PrimitiveI64(_) => default_types.i64.into(),
+            Type::PrimitiveUSize(_) | Type::PrimitiveISize(_) => default_types.isize.into(),
+            Type::PrimitiveF32(_) => default_types.f32.into(),
+            Type::PrimitiveF64(_) => default_types.f64.into(),
+            Type::PrimitiveBool(_) => default_types.bool.into(),
         }
     }
 }
 
+fn is_value_const(v: &BasicValueEnum<'_>) -> bool {
+    match v {
+        BasicValueEnum::ArrayValue(v) => v.is_const(),
+        BasicValueEnum::IntValue(v) => v.is_const(),
+        BasicValueEnum::FloatValue(v) => v.is_const(),
+        BasicValueEnum::PointerValue(v) => v.is_const(),
+        BasicValueEnum::StructValue(v) => v.is_const(),
+        BasicValueEnum::VectorValue(v) => v.is_const(),
+    }
+}
+
+fn poison_val<'ctx>(v: BasicTypeEnum<'ctx>) -> BasicValueEnum<'ctx> {
+    match v {
+        BasicTypeEnum::ArrayType(v) => v.get_poison().into(),
+        BasicTypeEnum::FloatType(v) => v.get_poison().into(),
+        BasicTypeEnum::IntType(v) => v.get_poison().into(),
+        BasicTypeEnum::PointerType(v) => v.get_poison().into(),
+        BasicTypeEnum::StructType(v) => v.get_poison().into(),
+        BasicTypeEnum::VectorType(v) => v.get_poison().into(),
+    }
+}
+
+fn static_to_basic_type<'ctx>(static_value: GlobalValue<'ctx>) -> BasicTypeEnum<'ctx> {
+    match static_value.get_value_type() {
+        AnyTypeEnum::ArrayType(ty) => ty.into(),
+        AnyTypeEnum::FloatType(ty) => ty.into(),
+        AnyTypeEnum::FunctionType(_) => panic!("A static should never be a function"),
+        AnyTypeEnum::IntType(ty) => ty.into(),
+        AnyTypeEnum::PointerType(ty) => ty.into(),
+        AnyTypeEnum::StructType(ty) => ty.into(),
+        AnyTypeEnum::VectorType(ty) => ty.into(),
+        AnyTypeEnum::VoidType(_) => panic!("A static should never be void"),
+    }
+}
+
 impl<'ctx> TypedLiteral {
-    fn to_basic_value(&self, ctx: &CodegenContext<'ctx>) -> BasicValueEnum<'ctx> {
+    fn fn_ctx_to_basic_value(
+        &self,
+        ctx: &FunctionCodegenContext<'ctx, '_>,
+    ) -> BasicValueEnum<'ctx> {
+        self.to_basic_value(
+            &ctx.scope,
+            &ctx.default_types,
+            ctx.structs,
+            ctx.builder,
+            ctx.statics,
+            ctx.functions,
+            ctx.external_functions,
+            ctx.string_map,
+        )
+    }
+    fn to_basic_value(
+        &self,
+        scope: &Vec<BasicValueEnum<'ctx>>,
+        default_types: &DefaultTypes<'ctx>,
+        structs: &Vec<StructType<'ctx>>,
+        builder: &Builder<'ctx>,
+        statics: &Vec<GlobalValue<'ctx>>,
+        functions: &Vec<FunctionValue<'ctx>>,
+        ext_functions: &Vec<FunctionValue<'ctx>>,
+        string_map: &HashMap<GlobalStr, GlobalValue<'ctx>>,
+    ) -> BasicValueEnum<'ctx> {
         match self {
             TypedLiteral::Void => panic!("void should be ignored in llvm"),
-            TypedLiteral::Dynamic(id) => ctx.scope[*id],
-            TypedLiteral::Function(_) => todo!(),
-            TypedLiteral::ExternalFunction(_) => todo!(),
-            TypedLiteral::Static(_) => todo!(),
-            TypedLiteral::String(global_str) => todo!(),
-            TypedLiteral::Array(ty, vec) => {
-                if vec.len() == 0 {
-                    return ty.to_llvm_basic_type(ctx).array_type(0).const_zero().into();
-                } else {
-                    let mut val = ctx
-                        .builder
-                        .build_insert_value(
-                            ty.to_llvm_basic_type(ctx)
-                                .array_type(vec.len() as u32)
-                                .get_poison(),
-                            vec[0].to_basic_value(ctx),
-                            0,
-                            "",
-                        )
-                        .expect("the index should never be out of range")
-                        .into_array_value();
-                    for i in 1..vec.len() {
-                        val = ctx
-                            .builder
-                            .build_insert_value(val, vec[0].to_basic_value(ctx), 0, "")
-                            .expect("the index should never be out of range")
-                            .into_array_value();
-                    }
-                    val.into()
-                }
+            TypedLiteral::Dynamic(id) => scope[*id],
+            TypedLiteral::Function(id) => {
+                functions[*id].as_global_value().as_pointer_value().into()
             }
-            TypedLiteral::Struct(_, vec) => todo!(),
-            TypedLiteral::F64(v) => ctx.default_types.f64.const_float(*v).into(),
-            TypedLiteral::F32(v) => ctx.default_types.f32.const_float(*v as f64).into(),
-            TypedLiteral::U8(v) => ctx.default_types.i8.const_int(*v as u64, false).into(),
-            TypedLiteral::U16(v) => ctx.default_types.i16.const_int(*v as u64, false).into(),
-            TypedLiteral::U32(v) => ctx.default_types.i32.const_int(*v as u64, false).into(),
-            TypedLiteral::U64(v) => ctx.default_types.i64.const_int(*v, false).into(),
-            TypedLiteral::USize(v) => ctx.default_types.isize.const_int(*v as u64, false).into(),
-            TypedLiteral::I8(v) => ctx.default_types.i8.const_int(*v as u64, false).into(),
-            TypedLiteral::I16(v) => ctx.default_types.i16.const_int(*v as u64, false).into(),
-            TypedLiteral::I32(v) => ctx.default_types.i32.const_int(*v as u64, false).into(),
-            TypedLiteral::I64(v) => ctx.default_types.i64.const_int(*v as u64, false).into(),
-            TypedLiteral::ISize(v) => ctx.default_types.isize.const_int(*v as u64, false).into(),
-            TypedLiteral::Bool(v) => ctx.default_types.bool.const_int(*v as u64, false).into(),
+            TypedLiteral::ExternalFunction(id) => ext_functions[*id]
+                .as_global_value()
+                .as_pointer_value()
+                .into(),
+            TypedLiteral::Static(id) => {
+                let static_value = statics[*id];
+                builder
+                    .build_load(
+                        static_to_basic_type(static_value),
+                        static_value.as_pointer_value().into(),
+                        "",
+                    )
+                    .expect("the type should always match")
+                    .into()
+            }
+            TypedLiteral::String(global_str) => {
+                let ptr = string_map[global_str].as_pointer_value().into();
+                let size = global_str.with(|v| v.len());
+                let len_const = default_types.isize.const_int(size as u64, false).into();
+                default_types
+                    .fat_ptr
+                    .const_named_struct(&[ptr, len_const])
+                    .into()
+            }
+            TypedLiteral::Array(ty, elements) => {
+                if elements.len() == 0 {
+                    return ty
+                        .to_llvm_basic_type(default_types, structs)
+                        .array_type(0)
+                        .const_zero()
+                        .into();
+                }
+                let mut insert_value_vec: Vec<(usize, BasicValueEnum<'ctx>)> = Vec::new();
+
+                macro_rules! array_const_value {
+                    ($ty:expr,$into_val_fn:ident) => {{
+                        let mut const_elements = Vec::new();
+                        for (i, v) in elements.iter().enumerate() {
+                            let val = v
+                                .to_basic_value(
+                                    scope,
+                                    default_types,
+                                    structs,
+                                    builder,
+                                    statics,
+                                    functions,
+                                    ext_functions,
+                                    string_map,
+                                )
+                                .$into_val_fn();
+                            if val.is_const() {
+                                const_elements.push(val);
+                            } else {
+                                insert_value_vec.push((i, val.into()));
+                                const_elements.push($ty.get_poison());
+                            }
+                        }
+                        $ty.const_array(&const_elements)
+                    }};
+                }
+                let mut const_value = match ty.to_llvm_basic_type(default_types, structs) {
+                    BasicTypeEnum::ArrayType(array_type) => {
+                        array_const_value!(array_type, into_array_value)
+                    }
+                    BasicTypeEnum::FloatType(float_type) => {
+                        array_const_value!(float_type, into_float_value)
+                    }
+                    BasicTypeEnum::IntType(int_type) => {
+                        array_const_value!(int_type, into_int_value)
+                    }
+                    BasicTypeEnum::PointerType(pointer_type) => {
+                        array_const_value!(pointer_type, into_pointer_value)
+                    }
+                    BasicTypeEnum::StructType(struct_type) => {
+                        array_const_value!(struct_type, into_struct_value)
+                    }
+                    BasicTypeEnum::VectorType(vector_type) => {
+                        array_const_value!(vector_type, into_vector_value)
+                    }
+                };
+
+                for v in insert_value_vec.drain(..) {
+                    const_value = builder
+                        .build_insert_value(const_value, v.1, v.0 as u32, "")
+                        .expect("integer should never be out of range")
+                        .into_array_value();
+                }
+                const_value.into()
+            }
+            TypedLiteral::Struct(struct_id, vec) => {
+                if vec.len() < 1 {
+                    return structs[*struct_id].const_named_struct(&[]).into();
+                }
+                let mut non_const_value = Vec::new();
+                let mut const_value = structs[*struct_id].const_named_struct(
+                    &vec.iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            let val = v.to_basic_value(
+                                scope,
+                                default_types,
+                                structs,
+                                builder,
+                                statics,
+                                functions,
+                                ext_functions,
+                                string_map,
+                            );
+                            if is_value_const(&val) {
+                                val
+                            } else {
+                                let poison_val = poison_val(val.get_type());
+                                non_const_value.push((i, val));
+                                poison_val
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                for v in non_const_value.drain(..) {
+                    const_value = builder
+                        .build_insert_value(const_value, v.1, v.0 as u32, "")
+                        .expect("integer should never be out of range")
+                        .into_struct_value();
+                }
+                const_value.into()
+            }
+            TypedLiteral::F64(v) => default_types.f64.const_float(*v).into(),
+            TypedLiteral::F32(v) => default_types.f32.const_float(*v as f64).into(),
+            TypedLiteral::U8(v) => default_types.i8.const_int(*v as u64, false).into(),
+            TypedLiteral::U16(v) => default_types.i16.const_int(*v as u64, false).into(),
+            TypedLiteral::U32(v) => default_types.i32.const_int(*v as u64, false).into(),
+            TypedLiteral::U64(v) => default_types.i64.const_int(*v, false).into(),
+            TypedLiteral::USize(v) => default_types.isize.const_int(*v as u64, false).into(),
+            TypedLiteral::I8(v) => default_types.i8.const_int(*v as u64, false).into(),
+            TypedLiteral::I16(v) => default_types.i16.const_int(*v as u64, false).into(),
+            TypedLiteral::I32(v) => default_types.i32.const_int(*v as u64, false).into(),
+            TypedLiteral::I64(v) => default_types.i64.const_int(*v as u64, false).into(),
+            TypedLiteral::ISize(v) => default_types.isize.const_int(*v as u64, false).into(),
+            TypedLiteral::Bool(v) => default_types.bool.const_int(*v as u64, false).into(),
             TypedLiteral::Intrinsic(intrinsic) => {
                 unreachable!("intrinsics should've been resolved by now")
             }
@@ -316,13 +396,15 @@ macro_rules! f_s_u {
 }
 
 impl TypecheckedExpression {
-    fn build(&self, ctx: &mut CodegenContext) -> Result<(), BuilderError> {
+    fn build(&self, ctx: &mut FunctionCodegenContext) -> Result<(), BuilderError> {
         match self {
             TypecheckedExpression::Return(location, typed_literal) => {
                 match typed_literal {
                     TypedLiteral::Void => ctx.builder.build_return(None)?,
                     TypedLiteral::Intrinsic(_) => unreachable!("intrinsic"),
-                    lit => ctx.builder.build_return(Some(&lit.to_basic_value(ctx)))?,
+                    lit => ctx
+                        .builder
+                        .build_return(Some(&lit.fn_ctx_to_basic_value(ctx)))?,
                 };
                 Ok(())
             }
@@ -342,7 +424,7 @@ impl TypecheckedExpression {
                 let if_basic_block = ctx.context.append_basic_block(ctx.current_fn, "then");
                 let end_basic_block = ctx.context.append_basic_block(ctx.current_fn, "endif");
                 ctx.builder.build_conditional_branch(
-                    cond.to_basic_value(ctx).into_int_value(),
+                    cond.fn_ctx_to_basic_value(ctx).into_int_value(),
                     if_basic_block,
                     end_basic_block,
                 )?;
@@ -365,7 +447,7 @@ impl TypecheckedExpression {
                 let else_basic_block = ctx.context.append_basic_block(ctx.current_fn, "else");
                 let end_basic_block = ctx.context.append_basic_block(ctx.current_fn, "endif");
                 ctx.builder.build_conditional_branch(
-                    cond.to_basic_value(ctx).into_int_value(),
+                    cond.fn_ctx_to_basic_value(ctx).into_int_value(),
                     if_basic_block,
                     else_basic_block,
                 )?;
@@ -403,13 +485,15 @@ impl TypecheckedExpression {
             TypecheckedExpression::IntrinsicCall(location, typed_literal, intrinsic, vec) => {
                 todo!()
             }
-            TypecheckedExpression::Pos(location, dst, src) => todo!(),
+            TypecheckedExpression::Pos(location, dst, src) => {
+                Ok(ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx)))
+            }
             TypecheckedExpression::Neg(location, typed_literal, typed_literal1) => todo!(),
             TypecheckedExpression::LNot(location, typed_literal, typed_literal1) => todo!(),
             TypecheckedExpression::BNot(location, typed_literal, typed_literal1) => todo!(),
             TypecheckedExpression::Add(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -425,8 +509,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::Sub(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -442,8 +526,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::Mul(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -459,8 +543,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::Div(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -476,8 +560,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::Mod(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -493,8 +577,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::BAnd(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
                     ctx.push_value(
@@ -511,8 +595,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::BOr(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
                     ctx.push_value(
@@ -529,8 +613,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::BXor(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
                     ctx.push_value(
@@ -545,8 +629,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::GreaterThan(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -562,8 +646,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::LessThan(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -581,8 +665,8 @@ impl TypecheckedExpression {
             TypecheckedExpression::LAnd(location, dst, lhs, rhs) => todo!(),
             TypecheckedExpression::LOr(location, dst, lhs, rhs) => todo!(),
             TypecheckedExpression::GreaterThanEq(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -598,8 +682,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::LessThanEq(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -615,8 +699,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::Eq(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -632,8 +716,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::Neq(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 let v = f_s_u!(
                     ctx,
@@ -649,8 +733,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::LShift(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 if typ.is_int_like() {
                     ctx.push_value(
@@ -665,8 +749,8 @@ impl TypecheckedExpression {
                 }
             }
             TypecheckedExpression::RShift(location, dst, lhs, rhs) => {
-                let lhs = lhs.to_basic_value(ctx);
-                let rhs = rhs.to_basic_value(ctx);
+                let lhs = lhs.fn_ctx_to_basic_value(ctx);
+                let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst];
                 if typ.is_int_like() {
                     ctx.push_value(
@@ -687,21 +771,56 @@ impl TypecheckedExpression {
                     );
                 }
             }
+            // &void is a nullptr
+            TypecheckedExpression::Reference(_, dst, TypedLiteral::Void) => {
+                Ok(ctx.push_value(*dst, ctx.default_types.ptr.const_zero().into()))
+            }
             TypecheckedExpression::Reference(location, typed_literal, typed_literal1) => todo!(),
-            TypecheckedExpression::SizedArrayToUnsizedArrayRef(
-                location,
-                typed_literal,
-                typed_literal1,
-                _,
-            ) => todo!(),
+            TypecheckedExpression::MakeUnsizedSlice(_, dst, src, sz) => {
+                let fat_ptr_no_ptr = ctx.default_types.fat_ptr.const_named_struct(&[
+                    ctx.default_types.ptr.get_poison().into(),
+                    ctx.default_types.isize.const_int(*sz as u64, false).into(),
+                ]);
+                let fat_ptr = ctx
+                    .builder
+                    .build_insert_value(fat_ptr_no_ptr, src.fn_ctx_to_basic_value(ctx), 0, "")?
+                    .into_struct_value();
+                ctx.push_value(*dst, fat_ptr.into());
+
+                Ok(())
+            }
             TypecheckedExpression::Dereference(location, typed_literal, typed_literal1) => todo!(),
-            TypecheckedExpression::Offset(location, typed_literal, typed_literal1, vec) => todo!(),
-            TypecheckedExpression::OffsetNonPointer(
-                location,
-                typed_literal,
-                typed_literal1,
-                offset_value,
-            ) => todo!(),
+            // &struct, <- i64 0, i32 <idx>
+            // &[a] <- extractvalue 0 and then i64 n of that
+            // &[a; n] <- i64 0 n (for getelementptr [a; n]) or i64 n (for getelementptr a)
+            TypecheckedExpression::Offset(location, dst, src, offset) => {
+                todo!()
+            }
+            TypecheckedExpression::OffsetNonPointer(location, dst, src, offset_value) => {
+                let src = src.fn_ctx_to_basic_value(ctx);
+                if src.is_array_value() {
+                    ctx.push_value(
+                        *dst,
+                        ctx.builder.build_extract_value(
+                            src.into_array_value(),
+                            *offset_value as u32,
+                            "",
+                        )?,
+                    );
+                } else if src.is_struct_value() {
+                    ctx.push_value(
+                        *dst,
+                        ctx.builder.build_extract_value(
+                            src.into_struct_value(),
+                            *offset_value as u32,
+                            "",
+                        )?,
+                    );
+                } else {
+                    panic!("offsetnonptr should never be used with a src element that is not an aggregate value")
+                }
+                Ok(())
+            }
             TypecheckedExpression::TraitCall(
                 location,
                 typed_literal,
@@ -712,9 +831,13 @@ impl TypecheckedExpression {
             TypecheckedExpression::Alias(location, lhs, rhs) => {
                 Ok(ctx.push_value(*lhs, ctx.scope[*rhs]))
             }
-            TypecheckedExpression::Literal(location, typed_literal, typed_literal1) => todo!(),
-            TypecheckedExpression::Empty(location) => todo!(),
-            TypecheckedExpression::None => todo!(),
+            TypecheckedExpression::Literal(location, dst, src) => {
+                Ok(ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx)))
+            }
+            TypecheckedExpression::Empty(location) => Ok(()),
+            TypecheckedExpression::None => {
+                unreachable!("None-expressions are not valid and indicate an error")
+            }
         }
     }
 }

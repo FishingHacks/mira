@@ -149,7 +149,8 @@ impl Display for ExpressionDisplay<'_> {
                 dst,
                 ..
             } => {
-                Display::fmt(&TLD(dst), f)?;
+                f.write_char('_')?;
+                Display::fmt(dst, f)?;
                 f.write_str(" = ")?;
                 Display::fmt(&TLD(lhs), f)?;
                 f.write_str("..")?;
@@ -251,13 +252,7 @@ impl Display for ExpressionDisplay<'_> {
             TypecheckedExpression::RShift(_, dst, lhs, rhs) => {
                 format_tlds!(f "{} = {} >> {}", dst, lhs, rhs)
             }
-            TypecheckedExpression::Reference(_, lhs, rhs) => format_tlds!(f "{} = &{}", lhs, rhs),
-            TypecheckedExpression::SizedArrayToUnsizedArrayRef(
-                _,
-                typed_literal,
-                typed_literal1,
-                _,
-            ) => f.write_fmt(format_args!("")),
+            TypecheckedExpression::Reference(_, lhs, rhs) => format_tlds!(f "_{} = &{}", lhs, rhs),
             TypecheckedExpression::Dereference(_, lhs, rhs) => {
                 f.write_fmt(format_args!("_{} = *{}", lhs, TLD(rhs)))
             }
@@ -272,8 +267,11 @@ impl Display for ExpressionDisplay<'_> {
                 f.write_fmt(format_args!("_{lhs} = {rhs}"))
             }
             TypecheckedExpression::Literal(_, lhs, rhs) => {
-                f.write_fmt(format_args!("let _{} = {};", lhs, TLD(rhs)))
+                f.write_fmt(format_args!("let _{} = {}", lhs, TLD(rhs)))
             }
+            TypecheckedExpression::MakeUnsizedSlice(_, lhs, rhs, size) => f.write_fmt(
+                format_args!("_{lhs} = attach_size_metadata({}, {size})", TLD(rhs)),
+            ),
             TypecheckedExpression::Empty(_) => f.write_str("<removed>"),
             TypecheckedExpression::None => f.write_str("<none>"),
         }

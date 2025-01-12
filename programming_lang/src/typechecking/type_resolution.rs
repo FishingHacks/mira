@@ -276,6 +276,43 @@ impl TypecheckingContext {
                 .trait_impl
                 .insert(trait_id, trait_impl);
         }
+        drop(struct_writer);
+        drop(function_reader);
+        drop(trait_reader);
+        let struct_reader = self.structs.read();
+        let mut function_writer = self.functions.write();
+
+        for fn_id in struct_reader[struct_id]
+            .global_impl
+            .values()
+            .copied()
+            .chain(
+                struct_reader[struct_id]
+                    .trait_impl
+                    .values()
+                    .map(|v| v.iter())
+                    .flatten()
+                    .copied(),
+            )
+        {
+            let contract = &mut function_writer[fn_id].0;
+            if let Type::PrimitiveSelf(num_references) = contract.return_type {
+                contract.return_type = Type::Struct {
+                    struct_id,
+                    name: struct_reader[struct_id].name.clone(),
+                    num_references,
+                }
+            }
+            for t in contract.arguments.iter_mut() {
+                if let Type::PrimitiveSelf(num_references) = t.1 {
+                    t.1 = Type::Struct {
+                        struct_id,
+                        name: struct_reader[struct_id].name.clone(),
+                        num_references,
+                    }
+                }
+            }
+        }
     }
 
     fn resolve_function(

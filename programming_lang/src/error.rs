@@ -12,7 +12,7 @@ use crate::{
     typechecking::{Type, TypecheckingError},
 };
 
-#[derive(Clone, Error)]
+#[derive(Error)]
 pub enum ProgrammingLangError {
     #[error("{0}")]
     Parsing(#[from] ParsingError),

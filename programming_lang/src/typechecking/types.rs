@@ -204,7 +204,7 @@ impl Type {
             }
             Type::PrimitiveNever => unreachable!("never can never be referenced"),
             Type::PrimitiveSelf(_) => unreachable!("Self should be resolved by now"),
-            Type::DynType { .. } | Type::UnsizedArray { .. } => false,
+            Type::DynType { .. } | Type::UnsizedArray { .. } | Type::PrimitiveStr(_) => false,
             Type::Struct { .. }
             | Type::SizedArray { .. }
             | Type::Function(..)
@@ -221,7 +221,6 @@ impl Type {
             | Type::PrimitiveUSize(_)
             | Type::PrimitiveF32(_)
             | Type::PrimitiveF64(_)
-            | Type::PrimitiveStr(_)
             | Type::PrimitiveBool(_) => true,
         }
     }

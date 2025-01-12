@@ -98,9 +98,9 @@ pub enum TypecheckedExpression {
     },
     While {
         loc: Location,
-        cond_block: Box<TypecheckedExpression>,
+        cond_block: Box<[TypecheckedExpression]>,
         cond: TypedLiteral,
-        body: Box<TypecheckedExpression>,
+        body: Box<[TypecheckedExpression]>,
     },
 
     // _dst = _lhs..=_rhs
@@ -111,7 +111,7 @@ pub enum TypecheckedExpression {
         lhs: TypedLiteral,
         rhs: TypedLiteral,
         inclusive: bool,
-        dst: TypedLiteral,
+        dst: ScopeValueId,
     },
     // *_1 = _2
     StoreAssignment(Location, TypedLiteral, TypedLiteral),
@@ -166,21 +166,19 @@ pub enum TypecheckedExpression {
     // _1 = _1 >> _2
     RShift(Location, ScopeValueId, TypedLiteral, TypedLiteral),
     // _1 = &_1
+    //                                v- guaranteed to either be `Dynamic`, `Static` or `Void`
     Reference(Location, ScopeValueId, TypedLiteral),
-    // _1 = make_big_ref(&_2, {3})
-    // ^ &[T]             ^ [T; {3}]
-    SizedArrayToUnsizedArrayRef(Location, ScopeValueId, TypedLiteral, usize),
     // _1 = *_1
     Dereference(Location, ScopeValueId, TypedLiteral),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = &(*_2).a[3].c.d; This is required, because we will offset the _2 pointer by the required
     // offsets
-    Offset(Location, ScopeValueId, TypedLiteral, Vec<OffsetValue>),
+    Offset(Location, ScopeValueId, TypedLiteral, OffsetValue),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = _2.a.b.c.d
-    OffsetNonPointer(Location, ScopeValueId, TypedLiteral, OffsetValue),
+    OffsetNonPointer(Location, ScopeValueId, TypedLiteral, usize),
     // _1 = Eq::eq(_2)
     // TODO: do this
     TraitCall(Location, ScopeValueId, TypedLiteral, TraitId, GlobalStr),
@@ -189,6 +187,9 @@ pub enum TypecheckedExpression {
     Alias(Location, ScopeValueId, ScopeValueId),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
     Literal(Location, ScopeValueId, TypedLiteral),
+    // let _1 = attach_metadata(_2, _3)
+    // _2: &[_; _3]
+    MakeUnsizedSlice(Location, ScopeValueId, TypedLiteral, usize),
     Empty(Location),
     None,
 }
@@ -199,12 +200,12 @@ impl TypecheckedExpression {
             TypecheckedExpression::Range { location, .. }
             | TypecheckedExpression::If { loc: location, .. }
             | TypecheckedExpression::While { loc: location, .. }
-            | TypecheckedExpression::SizedArrayToUnsizedArrayRef(location, ..)
             | TypecheckedExpression::IntrinsicCall(location, ..)
             | TypecheckedExpression::DirectCall(location, ..)
             | TypecheckedExpression::TraitCall(location, ..)
             | TypecheckedExpression::StoreAssignment(location, ..)
             | TypecheckedExpression::OffsetNonPointer(location, ..)
+            | TypecheckedExpression::MakeUnsizedSlice(location, ..)
             | TypecheckedExpression::Offset(location, ..)
             | TypecheckedExpression::Literal(location, ..)
             | TypecheckedExpression::Call(location, ..)

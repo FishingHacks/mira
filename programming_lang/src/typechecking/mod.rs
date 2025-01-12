@@ -2,7 +2,7 @@ use parking_lot::RwLock;
 use std::{
     collections::HashMap,
     fmt::Debug,
-    hash::Hash,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
 };
@@ -84,6 +84,14 @@ pub struct TypedStruct {
     pub module_id: ModuleId,
     pub id: StructId,
     pub generics: Vec<(GlobalStr, Vec<TraitId>)>,
+}
+
+impl Hash for TypedStruct {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.elements.hash(state);
+        self.module_id.hash(state);
+    }
 }
 
 #[derive(Debug)]

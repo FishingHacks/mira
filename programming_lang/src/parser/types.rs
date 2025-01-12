@@ -169,10 +169,10 @@ impl TypeRef {
                 let child = Box::new(Self::parse(parser)?);
                 if parser.match_tok(TokenType::Semicolon) {
                     // case [<type>; <amount>]
-                    if !parser.match_tok(TokenType::FloatLiteral) {
+                    if !parser.match_tok(TokenType::UIntLiteral) {
                         return Err(ParsingError::ExpectedArbitrary {
                             loc: parser.peek().location.clone(),
-                            expected: TokenType::FloatLiteral,
+                            expected: TokenType::UIntLiteral,
                             found: parser.peek().typ,
                         });
                     }
