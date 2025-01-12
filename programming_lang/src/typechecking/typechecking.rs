@@ -65,6 +65,9 @@ impl Scopes {
     }
 
     pub fn push(&mut self, value: Type) -> ScopeValueId {
+        if !value.is_sized() {
+            panic!("unsized type: {value:?}");
+        }
         if self.entries.len() < 1 {
             self.push_scope();
         }

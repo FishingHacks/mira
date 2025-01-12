@@ -230,16 +230,17 @@ impl TypecheckingContext {
         let mut typechecked_module_writer = me.modules.write();
         let module_reader = context.modules.read();
 
-        let module_id = typechecked_module_writer.len();
-        let scope = module_reader[module_id].scope.clone();
+        for module_id in 0..module_reader.len() {
+            let scope = module_reader[module_id].scope.clone();
 
-        typechecked_module_writer.push(TypecheckedModule {
-            context: me.clone(),
-            scope,
-            exports: module_reader[module_id].exports.clone(),
-            path: module_reader[module_id].path.clone(),
-            root: module_reader[module_id].root.clone(),
-        });
+            typechecked_module_writer.push(TypecheckedModule {
+                context: me.clone(),
+                scope,
+                exports: module_reader[module_id].exports.clone(),
+                path: module_reader[module_id].path.clone(),
+                root: module_reader[module_id].root.clone(),
+            });
+        }
 
         drop(module_reader);
         drop(typechecked_module_writer);
@@ -253,7 +254,13 @@ impl TypecheckingContext {
         let module_reader = context.modules.read();
         for id in 0..typechecked_module_writer.len() {
             for (name, (location, module_id, path)) in module_reader[id].imports.iter() {
-                match resolve_import(&context, *module_id, path, location, &mut Vec::new()) {
+                match resolve_import(
+                    &context,
+                    *module_id,
+                    path,
+                    location,
+                    &mut vec![(id, GlobalStr::ZERO)],
+                ) {
                     Err(e) => errors.push(e),
                     Ok(k) => {
                         typechecked_module_writer[id].scope.insert(name.clone(), k);

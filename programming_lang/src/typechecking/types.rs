@@ -194,10 +194,20 @@ impl Type {
         }
     }
 
-    /// ASSUMES self.refcount() > 0
-    pub fn is_thin_ptr(&self) -> bool {
-        debug_assert!(self.refcount() > 0);
+    pub fn is_sized(&self) -> bool {
+        match self {
+            Self::Trait { .. } | Type::Generic(..) => {
+                unreachable!("generics aren't supported yet and as such don't have size info")
+            }
+            Type::PrimitiveSelf(_) => unreachable!("Self should be resolved"),
+            Type::PrimitiveStr(num_references)
+            | Type::UnsizedArray { num_references, .. }
+            | Type::DynType { num_references, .. } => *num_references > 0,
+            _ => true,
+        }
+    }
 
+    pub fn is_thin_ptr(&self) -> bool {
         match self {
             Type::Generic(..) | Type::Trait { .. } => {
                 unreachable!("generics don't yet have size info")

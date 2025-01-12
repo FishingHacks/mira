@@ -441,6 +441,7 @@ fn run(
             &*typechecking_context
         )
     );
+    return Ok(());
 
     let num_fns = { typechecking_context.functions.read().len() };
     let num_ext_fns = { typechecking_context.external_functions.read().len() };
