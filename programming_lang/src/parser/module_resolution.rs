@@ -30,7 +30,7 @@ pub fn resolve_module(
 
         let mut file = root_directory.to_path_buf();
 
-        file.push(".lang");
+        file.push(".mira");
         file.push("modules");
         file.push(module_name);
 
@@ -71,7 +71,7 @@ pub fn resolve_module(
             ));
         };
         let mut name = name.to_os_string();
-        name.push(".lang");
+        name.push(".mr");
         directory.push(name);
         if directory.exists() {
             Ok((directory, root))
