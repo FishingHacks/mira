@@ -81,6 +81,7 @@ thread_local! {
         hashmap.insert("lang", Box::new(|a, b| Ok(Box::new(LangItemAnnotation::parse(a, b)?))));
         hashmap.insert("intrinsic", Box::new(|a, b| Ok(Box::new(IntrinsicAnnotation::parse(a, b)?))));
         hashmap.insert("alias", Box::new(|a, b| Ok(Box::new(std_annotations::alias_annotation::parse(a, b)?))));
+        hashmap.insert("ext_vararg", Box::new(|a, b| Ok(Box::new(std_annotations::ext_var_arg::parse(a, b)?))));
 
         RefCell::new(hashmap)
     };

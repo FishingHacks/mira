@@ -14,7 +14,7 @@ use crate::{
 };
 
 #[derive(Error)]
-pub enum ProgrammingLangError {
+pub enum MiraError {
     #[error("{0}")]
     Parsing(#[from] ParsingError),
     #[error("{0}")]
@@ -29,7 +29,7 @@ pub enum ProgrammingLangError {
     Generic(&'static str),
 }
 
-impl Debug for ProgrammingLangError {
+impl Debug for MiraError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Parsing(v) => Debug::fmt(v, f),

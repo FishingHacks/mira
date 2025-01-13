@@ -1,17 +1,18 @@
 use parking_lot::RwLock;
 use std::{
+    collections::HashSet,
     fs::OpenOptions,
     io::{stdin, stdout, ErrorKind, Read, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
-use programming_lang::{
+use mira::{
     codegen::{
         mangling::{mangle_external_function, mangle_function},
         CodegenContext, InkwellContext, TargetTriple,
     },
-    error::ProgrammingLangError,
+    error::MiraError,
     module::{Module, ModuleContext},
     parser::ParserQueueEntry,
     tokenizer::Tokenizer,
@@ -19,29 +20,51 @@ use programming_lang::{
         typechecking::{typecheck_function, typecheck_static},
         TypecheckingContext,
     },
+    AUTHORS as MIRA_AUTHORS, VERSION as VER,
 };
 
-fn print_help() {
+const MIRAC_VERSION: &str = env!("CARGO_PKG_VERSION");
+const MIRAC_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
+pub const AUTHORS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let hashset = MIRA_AUTHORS
+        .split(':')
+        .chain(MIRAC_AUTHORS.split(':'))
+        .collect::<HashSet<_>>();
+    hashset.into_iter().collect()
+});
+
+fn print_repl_help() {
     //┌─┐└┘│├┬┴┼┴┤
-    println!("┌─[ commands ]─────┬───────────────────────────────────────────┐");
-    println!("│ .^ <line> <code> │ inserts code after the specified line     │");
-    println!("│ .v <line> <code> │ inserts code before the specified line    │");
-    println!("│ .% <line> <code> │ replaces the specified line with the code │");
-    println!("│ .[ <line> <code> │ prepends the code to the specified line   │");
-    println!("│ .] <line> <code> │ appends the code to the specified line    │");
-    println!("│ .esc <code>      │ appends the code to the buffer            │");
-    println!("│ .dd <line>       │ deletes the specified line                │");
-    println!("│ .del <line>      │ deletes the specified line                │");
-    println!("│ .delete <line>   │ deletes the specified line                │");
-    println!("│ .gc <line>       │ toggles a comment on the specified line   │");
-    println!("│ .comment <line>  │ toggles a comment on the specified line   │");
-    println!("│ .clear           │ clears the current buffer                 │");
-    println!("│ .list [-l]       │ lists the code; -l: with line numbers     │");
-    println!("│ .load <path>     │ loads the path into the buffer            │");
-    println!("│ .run             │ runs the code                             │");
-    println!("│ .help            │ prints the help menu                      │");
-    println!("│ .exit            │ exits the repl                            │");
-    println!("└──────────────────┴───────────────────────────────────────────┘");
+    println!("┌─[ repl commands ]──┬─────────────────────────────────────────────┐");
+    println!("│ .^ <line> <code>   │ inserts code after the specified line       │");
+    println!("│ .v <line> <code>   │ inserts code before the specified line      │");
+    println!("│ .% <line> <code>   │ replaces the specified line with the code   │");
+    println!("│ .[ <line> <code>   │ prepends the code to the specified line     │");
+    println!("│ .] <line> <code>   │ appends the code to the specified line      │");
+    println!("│ .esc <code>        │ appends the code to the buffer              │");
+    println!("│ .dd <line>         │ deletes the specified line                  │");
+    println!("│ .del <line>        │ deletes the specified line                  │");
+    println!("│ .delete <line>     │ deletes the specified line                  │");
+    println!("│ .gc <line>         │ toggles a comment on the specified line     │");
+    println!("│ .comment <line>    │ toggles a comment on the specified line     │");
+    println!("│ .clear             │ clears the current buffer                   │");
+    println!("│ .list [-l]         │ lists the code; -l: with line numbers       │");
+    println!("│ .load <path>       │ loads the path into the buffer              │");
+    println!("│ .run               │ runs the code                               │");
+    println!("│ .help              │ prints the help menu                        │");
+    println!("│ .about             │ prints the about message                    │");
+    println!("│ .exit              │ exits the repl                              │");
+    println!("└─[ mira v{VER} ]────┴─────────────────────────────────────────────┘");
+}
+
+fn print_about() {
+    println!("--- Mira Compiler ---");
+    println!(" -> mirac version {MIRAC_VERSION}");
+    println!(" -> mira version {VER}");
+    println!(" -> Contributors:");
+    for author in AUTHORS.iter() {
+        println!("    -> {author}");
+    }
 }
 
 /// Returns the start index of the line or the number of lines
@@ -367,10 +390,11 @@ fn main() -> std::io::Result<()> {
                     }
                 }
                 "exit" => break Ok(()),
-                "help" => print_help(),
+                "help" => print_repl_help(),
+                "about" => print_about(),
                 _ => {
                     writeln!(stdout, "Unknown command `{cmd}`.")?;
-                    print_help();
+                    print_repl_help();
                 }
             };
 
@@ -386,7 +410,7 @@ fn run(
     file: impl Into<Arc<Path>>,
     root_directory: impl Into<Arc<Path>>,
     source: impl AsRef<str>,
-) -> Result<(), Vec<ProgrammingLangError>> {
+) -> Result<(), Vec<MiraError>> {
     let file: Arc<Path> = file.into();
     let filename = file
         .file_name()
@@ -422,7 +446,7 @@ fn run(
 
     for i in 0..num_ext_functions {
         match typecheck_function(&typechecking_context, &context, i, true) {
-            Ok(v) => scopes_ext_fns.extend(v),
+            Ok(v) => scopes_ext_fns.push(v),
             Err(e) => errs.extend(e),
         }
     }
@@ -438,53 +462,42 @@ fn run(
         return Err(errs.into_iter().map(Into::into).collect());
     }
 
-    println!(
-        "{:#}",
-        programming_lang::typechecking::ir_displayer::TypecheckingContextDisplay(
-            &*typechecking_context
-        )
-    );
     let mut errs = Vec::new();
 
     let num_fns = { typechecking_context.functions.read().len() };
     let num_ext_fns = { typechecking_context.external_functions.read().len() };
-    for i in 0..num_fns {
-        println!(
-            "mangle_name(fn({i})) = {:?}",
-            mangle_function(&typechecking_context, i)
-        );
-    }
-    for i in 0..num_ext_fns {
-        println!(
-            "mangle_name(ext_fn({i})) = {:?}",
-            mangle_external_function(&typechecking_context, i)
-        );
-    }
     println!("----------------------------");
     println!("Compiling...");
     let context = InkwellContext::create();
     let codegen_context = CodegenContext::make_context(
         &context,
         TargetTriple::create("x86_64-unknown-linux-gnu"),
-        typechecking_context,
+        typechecking_context.clone(),
         &filename,
     )
     .expect("failed to create the llvm context");
     for fn_id in 0..num_fns {
-        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_fns.remove(0)) {
-            errs.push(ProgrammingLangError::Codegen(e.into()));
-        } else {
-            println!("compiling fn {fn_id}");
+        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_fns.remove(0), false) {
+            errs.push(MiraError::Codegen(e.into()));
+        }
+    }
+    for fn_id in 0..num_ext_fns {
+        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_ext_fns.remove(0), true) {
+            errs.push(MiraError::Codegen(e.into()));
         }
     }
     if errs.len() > 0 {
         return Err(errs);
     }
 
-    println!("{}", codegen_context.module.to_string());
-    //codegen_context
-    //    .write_object_file(Path::new("out.o"))
-    //    .unwrap();
+    println!("===== [ RUNNING ] =====");
+
+    codegen_context.run().unwrap();
+
+    println!("===== [ STOPPED ] =====");
+
+    codegen_context.module.print_to_file("./out.ll").unwrap();
+    println!("wrote out.ll");
 
     Ok(())
 }
@@ -493,12 +506,12 @@ fn parse_all(
     file: Arc<Path>,
     root_directory: Arc<Path>,
     source: &str,
-) -> Result<Arc<ModuleContext>, Vec<ProgrammingLangError>> {
+) -> Result<Arc<ModuleContext>, Vec<MiraError>> {
     let mut errors = vec![];
 
     let mut tokenizer = Tokenizer::new(source.as_ref(), file.clone());
     if let Err(errs) = tokenizer.scan_tokens() {
-        errors.extend(errs.into_iter().map(ProgrammingLangError::Tokenization));
+        errors.extend(errs.into_iter().map(MiraError::Tokenization));
     }
 
     let modules = Arc::new(RwLock::new(vec![ParserQueueEntry {
@@ -511,18 +524,14 @@ fn parse_all(
 
     loop {
         let (statements, parsing_errors) = current_parser.parse_all();
-        errors.extend(
-            parsing_errors
-                .into_iter()
-                .map(ProgrammingLangError::Parsing),
-        );
+        errors.extend(parsing_errors.into_iter().map(MiraError::Parsing));
         let (path, root) = {
             let module = &modules.read()[module_context.modules.read().len()];
             (module.file.clone(), module.root.clone())
         };
         let mut module = Module::new(module_context.clone(), current_parser.imports, path, root);
         if let Err(errs) = module.push_all(statements, module_context.modules.read().len()) {
-            errors.extend(errs.into_iter().map(ProgrammingLangError::ProgramForming));
+            errors.extend(errs.into_iter().map(MiraError::ProgramForming));
         }
         let mut writer = module_context.modules.write();
         writer.push(module);
@@ -537,7 +546,7 @@ fn parse_all(
                 entry.file,
             );
             if let Err(errs) = tokenizer.scan_tokens() {
-                errors.extend(errs.into_iter().map(ProgrammingLangError::Tokenization));
+                errors.extend(errs.into_iter().map(MiraError::Tokenization));
             }
             current_parser = tokenizer.to_parser(modules.clone(), entry.root);
         } else {

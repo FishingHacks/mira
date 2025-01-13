@@ -4,6 +4,7 @@ use crate::{
     globals::GlobalStr,
     module::{ModuleContext, ModuleId, ModuleScopeValue, StaticId},
     parser::{Expression, LiteralValue, Statement},
+    std_annotations::ext_var_arg::ExternVarArg,
     tokenizer::{Location, NumberType, TokenType},
     typechecking::typed_resolve_import,
 };
@@ -17,7 +18,7 @@ use super::{
 pub type ScopeValueId = usize;
 
 pub struct ScopeTypeMetadata {
-    stack_allocated: bool,
+    pub stack_allocated: bool,
 }
 
 pub struct Scopes {
@@ -202,7 +203,21 @@ pub fn typecheck_function(
                     return Err(e);
                 }
             }
-            context.functions.write()[function_id].1 = exprs.into_boxed_slice();
+            if is_external {
+                let mut exprs = Some(exprs.into_boxed_slice());
+                std::mem::swap(
+                    &mut exprs,
+                    &mut context.external_functions.write()[function_id].1,
+                );
+                assert!(exprs.is_none());
+            } else {
+                let mut boxed_slice = exprs.into_boxed_slice();
+                std::mem::swap(
+                    &mut boxed_slice,
+                    &mut context.functions.write()[function_id].1,
+                );
+                assert_eq!(boxed_slice.len(), 0);
+            }
         }
         Err(e) => return Err(e),
     }
@@ -280,7 +295,7 @@ fn typecheck_statement(
         Statement::Block(statements, location, annotations) => {
             let mut errs = Vec::new();
             let mut block_exprs = Vec::with_capacity(statements.len());
-            let mut last_always_returns = false;
+            let mut always_returns = false;
             scope.push_scope();
 
             for statement in statements.iter() {
@@ -292,9 +307,12 @@ fn typecheck_statement(
                     return_type,
                     &mut block_exprs,
                 ) {
-                    Ok(statement_always_returns) => last_always_returns = statement_always_returns,
+                    Ok(true) => {
+                        always_returns = true;
+                        break;
+                    }
+                    Ok(_) => {}
                     Err(e) => {
-                        last_always_returns = false;
                         errs.extend(e);
                     }
                 }
@@ -310,7 +328,7 @@ fn typecheck_statement(
                     block_exprs.into_boxed_slice(),
                     annotations.clone(),
                 ));
-                Ok(last_always_returns)
+                Ok(always_returns)
             }
         }
         Statement::Var(name, expression, type_ref, location, _) => {
@@ -526,12 +544,12 @@ fn typecheck_expression(
                     }
                     elements.push(el_lit);
                 }
-                let typ = Type::SizedArray {
-                    typ: Box::new(typ),
+                let arr_typ = Type::SizedArray {
+                    typ: Box::new(typ.clone()),
                     num_references: 0,
                     number_elements: vec.len(),
                 };
-                Ok((typ.clone(), TypedLiteral::Array(typ, elements)))
+                Ok((arr_typ, TypedLiteral::Array(typ, elements)))
             }
             LiteralValue::Struct(values, path) => {
                 let value = typed_resolve_import(
@@ -885,6 +903,15 @@ fn typecheck_expression(
                 exprs,
                 TypeSuggestion::Unknown,
             )?;
+            let has_vararg = if let TypedLiteral::ExternalFunction(id) = function_expr {
+                context.external_functions.read()[id]
+                    .0
+                    .annotations
+                    .get_first_annotation::<ExternVarArg>()
+                    .is_some()
+            } else {
+                false
+            };
             let Type::Function(function_type, _) = typ else {
                 return Err(TypecheckingError::TypeIsNotAFunction {
                     location: identifier.loc().clone(),
@@ -896,21 +923,29 @@ fn typecheck_expression(
                     location: identifier.loc().clone(),
                 });
             }
-            if arguments.len() > function_type.arguments.len() {
+            if arguments.len() > function_type.arguments.len() && !has_vararg {
                 return Err(TypecheckingError::TooManyArguments {
                     location: arguments[function_type.arguments.len() - 1].loc().clone(),
                 });
             }
-            for i in 0..function_type.arguments.len() {
+            for i in 0..arguments.len() {
                 let (typ, expr) = typecheck_expression(
                     context,
                     module,
                     scope,
                     &arguments[i],
                     exprs,
-                    TypeSuggestion::from_type(&function_type.arguments[i]),
+                    function_type
+                        .arguments
+                        .get(i)
+                        .map(TypeSuggestion::from_type)
+                        .unwrap_or_default(),
                 )?;
-                if typ != function_type.arguments[i] {
+                // ignore for i => function_type.arguments.len() because we can't possibly know the
+                // type of varargs. This is of course incredibly unsafe and as such safety
+                // precautions have to be taken when calling a function with varargs, but the
+                // compiler cannot help with those.
+                if i < function_type.arguments.len() && typ != function_type.arguments[i] {
                     return Err(TypecheckingError::MismatchingType {
                         expected: function_type.arguments[i].clone(),
                         found: typ,
@@ -1041,13 +1076,15 @@ fn typecheck_expression(
             )?;
             if typ_lhs.refcount() == 0 && new_type.refcount() == 0 {
                 // TODO: ensure both types are primitives
+                todo!();
             }
 
             // only allow casting between types with the same reference count and if either of them
-            // are &{&}void.
+            // are &{&}void or the old one is &str and the new one is &u8
             if typ_lhs.refcount() != new_type.refcount()
                 || !(matches!(typ_lhs, Type::PrimitiveVoid(_))
-                    || matches!(new_type, Type::PrimitiveVoid(_)))
+                    || matches!(new_type, Type::PrimitiveVoid(_))
+                    || (typ_lhs == Type::PrimitiveStr(1) && new_type == Type::PrimitiveU8(1)))
             {
                 return Err(TypecheckingError::DisallowedPointerCast(
                     loc.clone(),
@@ -1055,13 +1092,16 @@ fn typecheck_expression(
                     new_type,
                 ));
             } else {
-                if let TypedLiteral::Dynamic(lhs_id) = lhs {
-                    let id = scope.push(new_type.clone());
-                    exprs.push(TypecheckedExpression::Alias(loc.clone(), id, lhs_id));
-                    Ok((new_type, TypedLiteral::Dynamic(id)))
-                } else {
-                    Ok((new_type, lhs))
+                if !new_type.is_thin_ptr() {
+                    return Err(TypecheckingError::DisallowedPointerCast(
+                        loc.clone(),
+                        typ_lhs,
+                        new_type,
+                    ));
                 }
+                let id = scope.push(new_type.clone());
+                exprs.push(TypecheckedExpression::Alias(loc.clone(), id, lhs));
+                Ok((new_type, TypedLiteral::Dynamic(id)))
             }
         }
     }
@@ -1585,7 +1625,7 @@ fn copy_resolve_indexing(
                 ));
                 exprs.push(TypecheckedExpression::Dereference(
                     expression.loc().clone(),
-                    offset_id,
+                    value_id,
                     TypedLiteral::Dynamic(offset_id),
                 ));
                 Ok((typ, TypedLiteral::Dynamic(value_id)))

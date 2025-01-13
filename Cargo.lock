@@ -98,14 +98,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lang-runner"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "programming_lang",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -148,6 +140,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "mira"
+version = "0.1.0"
+dependencies = [
+ "inkwell",
+ "insta",
+ "parking_lot",
+ "thiserror 2.0.3",
+]
+
+[[package]]
+name = "mirac"
+version = "0.1.0"
+dependencies = [
+ "mira",
+ "parking_lot",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -183,16 +193,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37d3544b3f2748c54e147655edb5025752e2303145b5aefb3c3ea2c78b973bb0"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "programming_lang"
-version = "0.1.0"
-dependencies = [
- "inkwell",
- "insta",
- "parking_lot",
- "thiserror 2.0.3",
 ]
 
 [[package]]

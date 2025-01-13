@@ -8,6 +8,7 @@ use crate::{
     globals::GlobalStr,
     module::{ExternalFunctionId, FunctionId, StaticId, StructId, TraitId},
     tokenizer::Location,
+    typechecking::types::FunctionType,
 };
 
 use super::{
@@ -52,8 +53,20 @@ impl TypedLiteral {
         match self {
             TypedLiteral::Void => Cow::Owned(Type::PrimitiveVoid(0)),
             TypedLiteral::Dynamic(id) => Cow::Borrowed(&scope[*id].0),
-            TypedLiteral::Function(id) => todo!(),
-            TypedLiteral::ExternalFunction(id) => todo!(),
+            TypedLiteral::Function(id) | TypedLiteral::ExternalFunction(id) => {
+                let function_reader = ctx.functions.read();
+                let ext_function_reader = ctx.external_functions.read();
+                let contract = if matches!(self, TypedLiteral::Function(_)) {
+                    &function_reader[*id].0
+                } else {
+                    &ext_function_reader[*id].0
+                };
+                let fn_type = FunctionType {
+                    return_type: contract.return_type.clone(),
+                    arguments: contract.arguments.iter().map(|v| v.1.clone()).collect(),
+                };
+                Cow::Owned(Type::Function(fn_type.into(), 0))
+            }
             TypedLiteral::Static(id) => Cow::Owned(ctx.statics.read()[*id].0.clone()),
             TypedLiteral::String(_) => Cow::Owned(Type::PrimitiveStr(1)),
             TypedLiteral::Array(ty, elems) => Cow::Owned(Type::SizedArray {
@@ -238,7 +251,7 @@ pub enum TypecheckedExpression {
     TraitCall(Location, ScopeValueId, TypedLiteral, TraitId, GlobalStr),
     // _1 = _2
     // used for casts, `_1 = (_2 as T)` results in `_1 = _2`.
-    Alias(Location, ScopeValueId, ScopeValueId),
+    Alias(Location, ScopeValueId, TypedLiteral),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
     Literal(Location, ScopeValueId, TypedLiteral),
     // let _1 = attach_metadata(_2, _3)

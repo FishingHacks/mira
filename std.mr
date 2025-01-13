@@ -28,7 +28,8 @@ trait Clone {
 }
 
 @lang("printf")
-extern fn printf(pat: &u8, a: usize, b: &u8);
+@ext_vararg()
+extern fn printf(pat: &u8);
 
 @lang("eq_trait")
 trait Eq {
@@ -71,7 +72,14 @@ fn test8() -> &str = "abcdefg :3";
 fn test9() -> i32 = woof(12);
 
 extern fn main(argc: usize, argv: &&u8) {
+    let v = [test2(), test2(), test2(), test2(), test2()];
     // turn argv of &&u8 into &&str into &[&str] where the size is argc
+    printf("got %d arguments\n\0" as &u8, argc);
+    let value = test9();
+    printf("value of test9: %d\n\0" as &u8, value);
+    let value2 = test4(v, 3);
+    let value3 = test3(&value2);
+    printf("value of test 3 and test 4 is: %d\n\0" as &u8, *value3);
 }
 
 use "test"::woof;

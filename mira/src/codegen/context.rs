@@ -1,3 +1,4 @@
+use core::panic;
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -24,7 +25,7 @@ use inkwell::{
 use crate::{
     globals::GlobalStr,
     module::FunctionId,
-    std_annotations::alias_annotation::ExternAliasAnnotation,
+    std_annotations::{alias_annotation::ExternAliasAnnotation, ext_var_arg::ExternVarArg},
     typechecking::{
         expression::{TypecheckedExpression, TypedLiteral},
         typechecking::ScopeTypeMetadata,
@@ -86,6 +87,8 @@ impl<'a> CodegenContext<'a> {
         let module = context.create_module(module);
         module.set_triple(&triple);
         let target_data = machine.get_target_data();
+        let data_layout = target_data.get_data_layout();
+        module.set_data_layout(&data_layout);
         let isize_type = context.ptr_sized_int_type(&target_data, None);
         let ptr_type = context.ptr_type(AddressSpace::default());
         let default_types = DefaultTypes {
@@ -202,7 +205,13 @@ impl<'a> CodegenContext<'a> {
                         contract
                             .return_type
                             .to_llvm_basic_type(&default_types, &structs)
-                            .fn_type(&param_types, false)
+                            .fn_type(
+                                &param_types,
+                                contract
+                                    .annotations
+                                    .get_first_annotation::<ExternVarArg>()
+                                    .is_some(),
+                            )
                     };
                 let name = if let Some(name) = contract
                     .annotations
@@ -237,7 +246,7 @@ impl<'a> CodegenContext<'a> {
         for (i, v) in static_reader.iter().enumerate() {
             statics[i].set_linkage(Linkage::Internal);
             statics[i].set_initializer(&v.1.to_basic_value(
-                &Vec::new(),
+                &|i| panic!("index out of bounds: the length is 0, but the index is {i}"),
                 &default_types,
                 &structs,
                 &builder,
@@ -269,12 +278,35 @@ impl<'a> CodegenContext<'a> {
         &self,
         fn_id: FunctionId,
         scope: Vec<(Type, ScopeTypeMetadata)>,
+        is_external: bool,
     ) -> Result<(), BuilderError> {
-        let func = self.functions[fn_id];
+        let func = if is_external {
+            self.external_functions[fn_id]
+        } else {
+            self.functions[fn_id]
+        };
         let function_reader = self.tc_ctx.functions.read();
-        let contract = &function_reader[fn_id].0;
+        let ext_function_reader = self.tc_ctx.external_functions.read();
+        let body = if is_external {
+            let Some(v) = &ext_function_reader[fn_id].1 else {
+                return Ok(());
+            };
+            &**v
+        } else {
+            &*function_reader[fn_id].1
+        };
+        let contract = if is_external {
+            &ext_function_reader[fn_id].0
+        } else {
+            &function_reader[fn_id].0
+        };
         let mut function_ctx = self.make_function_codegen_context(scope, func);
         let void_arg = self.default_types.empty_struct.const_zero().into();
+
+        let body_basic_block = self
+            .context
+            .append_basic_block(func, &format!("entry_{}", fn_id));
+        self.builder.position_at_end(body_basic_block);
 
         let mut param_idx = 0;
         for (idx, arg) in contract
@@ -290,10 +322,7 @@ impl<'a> CodegenContext<'a> {
                 param_idx += 1;
             }
         }
-        let body_basic_block = self.context.append_basic_block(func, "entry");
-        self.builder.position_at_end(body_basic_block);
 
-        let body = &*function_reader[fn_id].1;
         for expr in body {
             expr.codegen(&mut function_ctx)?;
         }
@@ -303,6 +332,21 @@ impl<'a> CodegenContext<'a> {
     pub fn write_object_file(&self, path: impl AsRef<Path>) -> Result<(), LLVMString> {
         self.machine
             .write_to_file(&self.module, FileType::Object, path.as_ref())
+    }
+
+    pub fn run(&self) -> Result<(), LLVMString> {
+        let execution_engine = self
+            .module
+            .create_jit_execution_engine(OptimizationLevel::Aggressive)?;
+        let func = unsafe {
+            execution_engine
+                .get_function::<unsafe extern "C" fn(usize, *const *const u8)>("main")
+                .expect("failed to get function main")
+        };
+        unsafe {
+            func.call(0, std::ptr::null());
+        }
+        Ok(())
     }
 }
 
@@ -315,8 +359,10 @@ fn collect_strings(ctx: &TypecheckingContext) -> HashSet<GlobalStr> {
     for (_, body) in function_reader.iter() {
         collect_strings_for_expressions(body, &mut strings);
     }
-    for (_, body) in function_reader.iter() {
-        collect_strings_for_expressions(body, &mut strings);
+    for (_, body) in ext_function_reader.iter() {
+        if let Some(body) = body {
+            collect_strings_for_expressions(body, &mut strings);
+        }
     }
     for static_value in statics_reader.iter() {
         collect_strings_for_typed_literal(&static_value.1, &mut strings);
@@ -403,12 +449,11 @@ fn collect_strings_for_expressions(
             | TypecheckedExpression::Pos(.., lit)
             | TypecheckedExpression::Neg(.., lit)
             | TypecheckedExpression::LNot(.., lit)
+            | TypecheckedExpression::Alias(.., lit)
             | TypecheckedExpression::BNot(.., lit) => {
                 collect_strings_for_typed_literal(lit, strings)
             }
-            TypecheckedExpression::Alias(.., _)
-            | TypecheckedExpression::Empty(_)
-            | TypecheckedExpression::None => (),
+            TypecheckedExpression::Empty(_) | TypecheckedExpression::None => (),
         }
     }
 }

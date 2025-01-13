@@ -1,7 +1,9 @@
 [package]
-name = "programming_lang"
+name = "mira"
 version = "0.1.0"
 edition = "2021"
+
+authors = ["Skylar (github.com/FishingHacks)", "Eden (Discord - @your.eden)"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

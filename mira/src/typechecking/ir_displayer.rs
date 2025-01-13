@@ -276,7 +276,7 @@ impl Display for ExpressionDisplay<'_> {
             ),
             TypecheckedExpression::TraitCall(_, lhs, rhs, trait_id, fn_name) => todo!(),
             TypecheckedExpression::Alias(_, lhs, rhs) => {
-                f.write_fmt(format_args!("_{lhs} = {rhs}"))
+                f.write_fmt(format_args!("_{lhs} = {} as <unknown type T>", TLD(rhs)))
             }
             TypecheckedExpression::Literal(_, lhs, rhs) => {
                 f.write_fmt(format_args!("let _{} = {}", lhs, TLD(rhs)))
