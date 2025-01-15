@@ -43,6 +43,12 @@ pub enum TypeRef {
         number_elements: usize,
         loc: Location,
     },
+    Function {
+        return_ty: Box<TypeRef>,
+        args: Vec<TypeRef>,
+        loc: Location,
+        num_references: u8,
+    },
 }
 
 impl Display for TypeRef {
@@ -76,6 +82,22 @@ impl Display for TypeRef {
                 Display::fmt(&amount_of_elements, f)?;
                 f.write_char(']')
             }
+            Self::Function {
+                return_ty, args, ..
+            } => {
+                f.write_str("fn(")?;
+                for i in 0..args.len() {
+                    if i != 0 {
+                        f.write_str(", ")?
+                    }
+                    Display::fmt(&args[i], f)?;
+                }
+                if !matches!(&**return_ty, Self::Void(_, 0) | Self::Never(_)) {
+                    f.write_str(" -> ")?;
+                    Display::fmt(return_ty, f)?;
+                }
+                Ok(())
+            }
             Self::Void(..) => f.write_str("void"),
             Self::Never(_) => f.write_str("!"),
         }
@@ -88,6 +110,17 @@ impl TypeRef {
             return None;
         }
         Some(match self {
+            Self::Function {
+                return_ty,
+                args,
+                loc,
+                num_references,
+            } => Self::Function {
+                return_ty,
+                args,
+                loc,
+                num_references: num_references - 1,
+            },
             Self::DynReference {
                 num_references,
                 loc,
@@ -142,6 +175,7 @@ impl TypeRef {
             | Self::Reference { num_references, .. }
             | Self::UnsizedArray { num_references, .. }
             | Self::DynReference { num_references, .. }
+            | Self::Function { num_references, .. }
             | Self::SizedArray { num_references, .. } => *num_references,
             Self::Never(_) => 0,
         }
@@ -229,6 +263,39 @@ impl TypeRef {
                     }),
                     _ => return Err(ParsingError::InvalidTokenization { loc }),
                 };
+            } else if parser.match_tok(TokenType::Fn) {
+                parser.expect_tok(TokenType::ParenLeft)?;
+                let mut args = Vec::new();
+                while !parser.match_tok(TokenType::ParenRight) {
+                    if args.len() > 0 {
+                        if !parser.match_tok(TokenType::Comma) {
+                            return Err(ParsingError::ExpectedFunctionArgument {
+                                loc: parser.peek().location.clone(),
+                                found: parser.peek().typ,
+                            });
+                        }
+
+                        // for trailing comma
+                        if parser.match_tok(TokenType::ParenRight) {
+                            break;
+                        }
+                    }
+
+                    args.push(TypeRef::parse(parser)?);
+                }
+
+                let return_ty = Box::new(if parser.match_tok(TokenType::ReturnType) {
+                    TypeRef::parse(parser)?
+                } else {
+                    TypeRef::Void(loc.clone(), 0)
+                });
+
+                return Ok(TypeRef::Function {
+                    return_ty,
+                    args,
+                    loc,
+                    num_references,
+                });
             } else {
                 return Err(ParsingError::ExpectedType {
                     loc: parser.peek().location.clone(),
@@ -276,6 +343,7 @@ impl TypeRef {
             | Self::Reference { loc, .. }
             | Self::SizedArray { loc, .. }
             | Self::DynReference { loc, .. }
+            | Self::Function { loc, .. }
             | Self::UnsizedArray { loc, .. } => loc,
         }
     }
@@ -306,6 +374,24 @@ impl PartialEq for TypeRef {
                     traits: other_traits,
                     ..
                 } => *other_nor == *self_nor && *self_traits == *other_traits,
+                _ => false,
+            },
+            Self::Function {
+                num_references: self_nor,
+                return_ty: self_return_ty,
+                args: self_args,
+                ..
+            } => match other {
+                Self::Function {
+                    num_references: other_nor,
+                    return_ty: other_return_ty,
+                    args: other_args,
+                    ..
+                } => {
+                    *other_nor == *self_nor
+                        && *self_return_ty == *other_return_ty
+                        && *self_args == *other_args
+                }
                 _ => false,
             },
             Self::SizedArray {

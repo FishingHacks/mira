@@ -202,6 +202,10 @@ pub fn typecheck_function(
                 ) {
                     return Err(e);
                 }
+                //exprs.push(TypecheckedExpression::Return(
+                //    statement.loc().clone(),
+                //    TypedLiteral::Void,
+                //));
             }
             if is_external {
                 let mut exprs = Some(exprs.into_boxed_slice());
@@ -240,20 +244,116 @@ fn typecheck_statement(
             else_stmt,
             location,
             annotations,
-        } => todo!(),
+        } => {
+            let mut errs = Vec::new();
+            let expr_result = typecheck_expression(
+                context,
+                module,
+                scope,
+                condition,
+                exprs,
+                TypeSuggestion::Bool,
+            )
+            .map_err(|v| errs.push(v));
+
+            let mut if_exprs = Vec::new();
+            let mut else_exprs = Vec::new();
+            let if_stmt_result =
+                typecheck_statement(context, scope, if_stmt, module, return_type, &mut if_exprs)
+                    .map_err(|v| errs.extend(v));
+            let else_stmt_result = if let Some(else_stmt) = else_stmt {
+                typecheck_statement(
+                    context,
+                    scope,
+                    else_stmt,
+                    module,
+                    return_type,
+                    &mut else_exprs,
+                )
+                .map_err(|v| errs.extend(v))
+            } else {
+                Ok(false)
+            };
+            let Ok((condition_ty, cond)) = expr_result else {
+                return Err(errs);
+            };
+            if condition_ty != Type::PrimitiveBool(0) {
+                errs.push(TypecheckingError::MismatchingType {
+                    expected: Type::PrimitiveBool(0),
+                    found: condition_ty,
+                    location: location.clone(),
+                });
+            }
+            let Ok(if_stmt_exits) = if_stmt_result else {
+                return Err(errs);
+            };
+            let Ok(else_stmt_exits) = else_stmt_result else {
+                return Err(errs);
+            };
+            if errs.len() > 0 {
+                return Err(errs);
+            }
+            exprs.push(TypecheckedExpression::If {
+                loc: location.clone(),
+                cond,
+                if_block: if_exprs.into_boxed_slice(),
+                else_block: else_stmt
+                    .as_ref()
+                    .map(move |_| else_exprs.into_boxed_slice()),
+                annotations: annotations.clone(),
+            });
+            Ok(if_stmt_exits && else_stmt_exits)
+        }
         Statement::While {
             condition,
             child,
             location,
-            annotations,
-        } => todo!(),
-        Statement::For {
-            iterator,
-            var_name,
-            child,
-            location,
-            annotations,
-        } => todo!("trait generics"),
+            ..
+        } => {
+            let mut errs = Vec::new();
+            let mut condition_block = Vec::new();
+            let mut body = Vec::new();
+
+            let condition_result = typecheck_expression(
+                context,
+                module,
+                scope,
+                condition,
+                &mut condition_block,
+                TypeSuggestion::Bool,
+            )
+            .map_err(|v| errs.push(v));
+            let body_result =
+                typecheck_statement(context, scope, child, module, return_type, &mut body)
+                    .map_err(|v| errs.extend(v));
+            let Ok((condition_ty, cond)) = condition_result else {
+                return Err(errs);
+            };
+            if condition_ty != Type::PrimitiveBool(0) {
+                errs.push(TypecheckingError::MismatchingType {
+                    expected: Type::PrimitiveBool(0),
+                    found: condition_ty,
+                    location: location.clone(),
+                });
+            }
+            let Ok(mut always_exits) = body_result else {
+                return Err(errs);
+            };
+            if errs.len() > 0 {
+                return Err(errs);
+            }
+            // while (true) {} also never exits
+            always_exits = always_exits || matches!(cond, TypedLiteral::Bool(true));
+            exprs.push(TypecheckedExpression::While {
+                loc: location.clone(),
+                cond_block: condition_block.into_boxed_slice(),
+                cond,
+                body: body.into_boxed_slice(),
+            });
+
+            Ok(always_exits)
+        }
+        Statement::For { .. } => todo!("iterator (requires generics)"),
         Statement::Return(None, location) => {
             if matches!(return_type, Type::PrimitiveVoid(0)) {
                 exprs.push(TypecheckedExpression::Return(
@@ -385,9 +485,9 @@ fn typecheck_statement(
             Default::default(),
         )
         .map_err(|v| vec![v])
-        .map(|(typ, expr)| matches!(typ, Type::PrimitiveNever)),
-        Statement::BakedFunction(_, location) => todo!(),
-        Statement::Function(..)
+        .map(|(typ, _)| matches!(typ, Type::PrimitiveNever)),
+        Statement::BakedFunction(..)
+        | Statement::Function(..)
         | Statement::ExternalFunction(..)
         | Statement::BakedStruct(..)
         | Statement::BakedStatic(..)
@@ -691,23 +791,15 @@ fn typecheck_expression(
                     TypedLiteral::Function(*fn_id),
                 ))
             }
-            LiteralValue::AnonymousFunction(function_contract, statement) => {
-                unreachable!("unbaked function")
-            }
+            LiteralValue::AnonymousFunction(..) => unreachable!("unbaked function"),
             LiteralValue::Void => Ok((Type::PrimitiveVoid(0), TypedLiteral::Void)),
         },
         Expression::Unary {
             operator,
             right_side,
-        } if operator.typ == TokenType::Ampersand => typecheck_take_ref(
-            context,
-            module,
-            scope,
-            right_side,
-            exprs,
-            expression.loc(),
-            type_suggestion,
-        ),
+        } if operator.typ == TokenType::Ampersand => {
+            typecheck_take_ref(context, module, scope, right_side, exprs, type_suggestion)
+        }
         Expression::Unary {
             operator,
             right_side,
@@ -1037,8 +1129,7 @@ fn typecheck_expression(
         Expression::Range {
             left_side,
             right_side,
-            inclusive,
-            loc,
+            ..
         } => {
             let (typ, _) =
                 typecheck_expression(context, module, scope, left_side, exprs, type_suggestion)?;
@@ -1116,23 +1207,12 @@ fn typecheck_membercall(
     ident: &GlobalStr,
     args: &[Expression],
 ) -> Result<(Type, TypedLiteral), TypecheckingError> {
-    let (mut typ_lhs, mut typed_literal_lhs) = typecheck_take_ref(
-        context,
-        module,
-        scope,
-        lhs,
-        exprs,
-        lhs.loc(),
-        TypeSuggestion::Unknown,
-    )?;
+    let (mut typ_lhs, mut typed_literal_lhs) =
+        typecheck_take_ref(context, module, scope, lhs, exprs, TypeSuggestion::Unknown)?;
     let function_reader = context.functions.read();
 
     let Some(function_id) = (match typ_lhs {
-        Type::Struct {
-            struct_id,
-            num_references,
-            ..
-        } => {
+        Type::Struct { struct_id, .. } => {
             let structure = &context.structs.read()[struct_id];
             structure.global_impl.get(ident).copied().or_else(|| {
                 structure
@@ -1248,7 +1328,6 @@ fn typecheck_take_ref(
     scope: &mut Scopes,
     expression: &Expression,
     exprs: &mut Vec<TypecheckedExpression>,
-    location: &Location,
     type_suggestion: TypeSuggestion,
 ) -> Result<(Type, TypedLiteral), TypecheckingError> {
     match expression {
@@ -1319,7 +1398,7 @@ fn ref_resolve_indexing(
                         {
                             Some((idx, typ)) => {
                                 typ_lhs = typ.clone();
-                                let mut new_val = scope.push(typ_lhs.clone().take_ref());
+                                let new_val = scope.push(typ_lhs.clone().take_ref());
                                 exprs.push(TypecheckedExpression::Offset(
                                     loc.clone(),
                                     new_val,
@@ -1561,7 +1640,7 @@ fn copy_resolve_indexing(
             if typ.refcount() == 0 {
                 let new_typ = match typ.clone() {
                     Type::SizedArray { typ, .. } => *typ,
-                    Type::UnsizedArray { typ, .. } => panic!("unsized element without references"),
+                    Type::UnsizedArray { .. } => panic!("unsized element without references"),
                     _ => unreachable!(),
                 };
                 let new_id = match offset {

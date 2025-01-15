@@ -8,15 +8,13 @@ use std::{
 };
 
 use mira::{
-    codegen::{
-        mangling::{mangle_external_function, mangle_function},
-        CodegenContext, InkwellContext, TargetTriple,
-    },
+    codegen::{CodegenContext, InkwellContext, TargetTriple},
     error::MiraError,
     module::{Module, ModuleContext},
     parser::ParserQueueEntry,
     tokenizer::Tokenizer,
     typechecking::{
+        ir_displayer::TypecheckingContextDisplay,
         typechecking::{typecheck_function, typecheck_static},
         TypecheckingContext,
     },
@@ -462,6 +460,7 @@ fn run(
         return Err(errs.into_iter().map(Into::into).collect());
     }
 
+    print!("{}", TypecheckingContextDisplay(&typechecking_context));
     let mut errs = Vec::new();
 
     let num_fns = { typechecking_context.functions.read().len() };
@@ -478,23 +477,23 @@ fn run(
     .expect("failed to create the llvm context");
     for fn_id in 0..num_fns {
         if let Err(e) = codegen_context.compile_fn(fn_id, scopes_fns.remove(0), false) {
-            errs.push(MiraError::Codegen(e.into()));
+            errs.push(MiraError::Codegen { inner: e.into() });
         }
     }
     for fn_id in 0..num_ext_fns {
         if let Err(e) = codegen_context.compile_fn(fn_id, scopes_ext_fns.remove(0), true) {
-            errs.push(MiraError::Codegen(e.into()));
+            errs.push(MiraError::Codegen { inner: e.into() });
         }
     }
     if errs.len() > 0 {
         return Err(errs);
     }
 
-    println!("===== [ RUNNING ] =====");
-
-    codegen_context.run().unwrap();
-
-    println!("===== [ STOPPED ] =====");
+    //    println!("===== [ RUNNING ] =====");
+    //
+    //    codegen_context.run().unwrap();
+    //
+    //    println!("===== [ STOPPED ] =====");
 
     codegen_context.module.print_to_file("./out.ll").unwrap();
     println!("wrote out.ll");
@@ -511,7 +510,10 @@ fn parse_all(
 
     let mut tokenizer = Tokenizer::new(source.as_ref(), file.clone());
     if let Err(errs) = tokenizer.scan_tokens() {
-        errors.extend(errs.into_iter().map(MiraError::Tokenization));
+        errors.extend(
+            errs.into_iter()
+                .map(|inner| MiraError::Tokenization { inner }),
+        );
     }
 
     let modules = Arc::new(RwLock::new(vec![ParserQueueEntry {
@@ -524,14 +526,21 @@ fn parse_all(
 
     loop {
         let (statements, parsing_errors) = current_parser.parse_all();
-        errors.extend(parsing_errors.into_iter().map(MiraError::Parsing));
+        errors.extend(
+            parsing_errors
+                .into_iter()
+                .map(|inner| MiraError::Parsing { inner }),
+        );
         let (path, root) = {
             let module = &modules.read()[module_context.modules.read().len()];
             (module.file.clone(), module.root.clone())
         };
         let mut module = Module::new(module_context.clone(), current_parser.imports, path, root);
         if let Err(errs) = module.push_all(statements, module_context.modules.read().len()) {
-            errors.extend(errs.into_iter().map(MiraError::ProgramForming));
+            errors.extend(
+                errs.into_iter()
+                    .map(|inner| MiraError::ProgramForming { inner }),
+            );
         }
         let mut writer = module_context.modules.write();
         writer.push(module);
@@ -546,7 +555,10 @@ fn parse_all(
                 entry.file,
             );
             if let Err(errs) = tokenizer.scan_tokens() {
-                errors.extend(errs.into_iter().map(MiraError::Tokenization));
+                errors.extend(
+                    errs.into_iter()
+                        .map(|inner| MiraError::Tokenization { inner }),
+                );
             }
             current_parser = tokenizer.to_parser(modules.clone(), entry.root);
         } else {

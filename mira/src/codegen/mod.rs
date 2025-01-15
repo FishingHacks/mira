@@ -20,8 +20,7 @@ pub use inkwell::support::LLVMString;
 use inkwell::{
     builder::{Builder, BuilderError},
     context::Context,
-    module::Module,
-    types::{AnyTypeEnum, BasicType, BasicTypeEnum, StructType},
+    types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType},
     values::{BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PointerValue},
     FloatPredicate, IntPredicate,
 };
@@ -42,7 +41,6 @@ impl<'ctx, 'me> CodegenContext<'ctx> {
             builder: &self.builder,
             context: self.context,
             default_types: self.default_types,
-            module: &self.module,
             current_fn,
             functions: &self.functions,
             external_functions: &self.external_functions,
@@ -60,7 +58,6 @@ pub struct FunctionCodegenContext<'ctx, 'codegen> {
     builder: &'codegen Builder<'ctx>,
     context: &'codegen Context,
     default_types: DefaultTypes<'ctx>,
-    module: &'codegen Module<'ctx>,
     current_fn: FunctionValue<'ctx>,
     functions: &'codegen Vec<FunctionValue<'ctx>>,
     external_functions: &'codegen Vec<FunctionValue<'ctx>>,
@@ -146,7 +143,7 @@ impl<'ctx> Type {
     fn to_llvm_basic_type(
         &self,
         default_types: &DefaultTypes<'ctx>,
-        structs: &Vec<StructType<'ctx>>,
+        structs: &[StructType<'ctx>],
     ) -> BasicTypeEnum<'ctx> {
         if self.refcount() > 0 {
             if self.is_thin_ptr() {
@@ -187,6 +184,23 @@ impl<'ctx> Type {
             Type::PrimitiveF64(_) => default_types.f64.into(),
             Type::PrimitiveBool(_) => default_types.bool.into(),
         }
+    }
+
+    fn to_llvm_fn_type(
+        &self,
+        default_types: &DefaultTypes<'ctx>,
+        structs: &[StructType<'ctx>],
+    ) -> FunctionType<'ctx> {
+        let Type::Function(v, _) = self else {
+            unreachable!("`self` is not a function")
+        };
+        let return_ty = v.return_type.to_llvm_basic_type(default_types, structs);
+        let args = v
+            .arguments
+            .iter()
+            .map(|v| v.to_llvm_basic_type(default_types, structs).into())
+            .collect::<Vec<_>>();
+        return_ty.fn_type(&args, false)
     }
 }
 
@@ -420,8 +434,8 @@ impl<'ctx> TypedLiteral {
             TypedLiteral::I64(v) => default_types.i64.const_int(*v as u64, false).into(),
             TypedLiteral::ISize(v) => default_types.isize.const_int(*v as u64, false).into(),
             TypedLiteral::Bool(v) => default_types.bool.const_int(*v as u64, false).into(),
-            TypedLiteral::Intrinsic(intrinsic) => {
-                unreachable!("intrinsics should've been resolved by now")
+            TypedLiteral::Intrinsic(_) => {
+                unreachable!("intrinsics can only be used as part of intrinsic call")
             }
         }
     }
@@ -450,7 +464,7 @@ macro_rules! f_s_u {
                 .builder
                 .$float($($float_val,)* $lhs.into_float_value(), $rhs.into_float_value(), "")?
                 .into(),
-            _ => unreachable!($err),
+            ty => unreachable!(concat!($err, "  -- Type: {}"), ty),
         }
     };
     (with_bool $ctx:expr, $typ: expr, $lhs: expr, $rhs: expr, $sint: ident, $uint: ident, $float: ident, $bool: ident, $err:literal) => {
@@ -690,7 +704,20 @@ fn build_ptr_store(
 impl TypecheckedExpression {
     fn codegen(&self, ctx: &mut FunctionCodegenContext) -> Result<(), BuilderError> {
         match self {
-            TypecheckedExpression::Return(location, typed_literal) => {
+            TypecheckedExpression::Return(_, typed_literal) => {
+                if typed_literal.to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
+                    == Some(Type::PrimitiveVoid(0))
+                {
+                    let bb = ctx
+                        .builder
+                        .get_insert_block()
+                        .expect("builder needs a basic block to codegen into");
+                    if bb.get_terminator().is_some() {
+                        println!("[WARN]: Has a return even tho a terminating instruction was already generated");
+                        return Ok(());
+                    }
+                    return ctx.builder.build_return(None).map(|_| ());
+                }
                 match typed_literal {
                     TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == Type::PrimitiveVoid(0) => {
                         ctx.builder.build_return(None)?
@@ -732,6 +759,7 @@ impl TypecheckedExpression {
                     expr.codegen(ctx)?;
                 }
                 ctx.builder.build_unconditional_branch(end_basic_block)?;
+                ctx.builder.position_at_end(end_basic_block);
                 Ok(())
             }
 
@@ -759,6 +787,7 @@ impl TypecheckedExpression {
                     expr.codegen(ctx)?;
                 }
                 ctx.builder.build_unconditional_branch(end_basic_block)?;
+                ctx.builder.position_at_end(end_basic_block);
                 Ok(())
             }
             TypecheckedExpression::While {
@@ -789,7 +818,7 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::Range { .. } => todo!(),
-            TypecheckedExpression::StoreAssignment(location, dst, src) => {
+            TypecheckedExpression::StoreAssignment(_, dst, src) => {
                 match src {
                     TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].1.stack_allocated => {
                         let ty = &ctx.tc_scope[*id].0;
@@ -831,9 +860,58 @@ impl TypecheckedExpression {
                     ctx,
                 )
             }
-            TypecheckedExpression::Call(location, dst, fn_ptr, args) => todo!(),
-            TypecheckedExpression::DirectExternCall(location, dst, func, args)
-            | TypecheckedExpression::DirectCall(location, dst, func, args) => {
+            TypecheckedExpression::Call(_, dst, fn_ptr, args) => {
+                let (fn_ty, fn_ptr) = match fn_ptr {
+                    TypedLiteral::Dynamic(id) => (&ctx.tc_scope[*id].0, ctx.get_value(*id).into_pointer_value()),
+                    TypedLiteral::Static(id) => (&ctx.tc_ctx.statics.read()[*id].0, ctx.statics[*id].as_pointer_value()),
+                    TypedLiteral::Function(_) => unreachable!("TypedLiteral::Function should have been turned into a DirectCall"),
+                    TypedLiteral::ExternalFunction(_) => unreachable!("TypedLiteral::ExternalFunction should have been turned into a DirectExternCall"),
+                    TypedLiteral::Intrinsic(_) => unreachable!("TypedLiteral::Intrinsic should have been turned into a IntrinsicCall"),
+                    TypedLiteral::String(_) |
+                    TypedLiteral::Array(..) |
+                    TypedLiteral::Struct(..) |
+                    TypedLiteral::F64(_) |
+                    TypedLiteral::F32(_) |
+                    TypedLiteral::U8(_) |
+                    TypedLiteral::U16(_) |
+                    TypedLiteral::U32(_) |
+                    TypedLiteral::U64(_) |
+                    TypedLiteral::USize(_) |
+                    TypedLiteral::I8(_) |
+                    TypedLiteral::I16(_) |
+                    TypedLiteral::I32(_) |
+                    TypedLiteral::I64(_) |
+                    TypedLiteral::ISize(_) |
+                    TypedLiteral::Bool(_) |
+                    TypedLiteral::Void => unreachable!("{fn_ptr:?} is not callable"),
+                };
+                let llvm_fn_ty = fn_ty.to_llvm_fn_type(&ctx.default_types, ctx.structs);
+                let val = ctx.builder.build_indirect_call(
+                    llvm_fn_ty,
+                    fn_ptr,
+                    &args
+                        .iter()
+                        .filter(|v| match v {
+                            TypedLiteral::Void => false,
+                            TypedLiteral::Dynamic(id) => !matches!(
+                                ctx.tc_scope[*id].0,
+                                Type::PrimitiveNever | Type::PrimitiveVoid(0)
+                            ),
+                            _ => true,
+                        })
+                        .map(|v| v.fn_ctx_to_basic_value(ctx).into())
+                        .collect::<Vec<_>>(),
+                    "",
+                )?;
+                ctx.push_value(
+                    *dst,
+                    val.try_as_basic_value()
+                        .left_or_else(|_| ctx.default_types.empty_struct.const_zero().into()),
+                );
+                Ok(())
+            }
+            TypecheckedExpression::DirectExternCall(_, dst, func, args)
+            | TypecheckedExpression::DirectCall(_, dst, func, args) => {
                 let func_value = if matches!(self, TypecheckedExpression::DirectCall(..)) {
                     ctx.functions[*func]
                 } else {
@@ -858,11 +936,11 @@ impl TypecheckedExpression {
                 ctx.push_value(
                     *dst,
                     val.try_as_basic_value()
-                        .left_or(ctx.default_types.empty_struct.const_zero().into()),
+                        .left_or_else(|_| ctx.default_types.empty_struct.const_zero().into()),
                 );
                 Ok(())
             }
-            TypecheckedExpression::IntrinsicCall(location, dst, intrinsic, vec) => {
+            TypecheckedExpression::IntrinsicCall(.., intrinsic, _) => {
                 match intrinsic {
                     Intrinsic::Drop => todo!(),
                     Intrinsic::DropInPlace => todo!(),
@@ -883,13 +961,13 @@ impl TypecheckedExpression {
                 }
                 Ok(())
             }
-            TypecheckedExpression::Pos(location, dst, src) => {
+            TypecheckedExpression::Pos(_, dst, src) => {
                 Ok(ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx)))
             }
-            TypecheckedExpression::Neg(location, typed_literal, typed_literal1) => todo!(),
-            TypecheckedExpression::LNot(location, typed_literal, typed_literal1) => todo!(),
-            TypecheckedExpression::BNot(location, typed_literal, typed_literal1) => todo!(),
-            TypecheckedExpression::Add(location, dst, lhs, rhs) => {
+            TypecheckedExpression::Neg(..) => todo!(),
+            TypecheckedExpression::LNot(..) => todo!(),
+            TypecheckedExpression::BNot(..) => todo!(),
+            TypecheckedExpression::Add(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
@@ -901,12 +979,12 @@ impl TypecheckedExpression {
                     build_int_nsw_add(),
                     build_int_nuw_add(),
                     build_float_add(),
-                    "tc should have errored if you try to add 2 non-int/float values"
+                    "tc should have errored if you try to add 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::Sub(location, dst, lhs, rhs) => {
+            TypecheckedExpression::Sub(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
@@ -918,12 +996,12 @@ impl TypecheckedExpression {
                     build_int_nsw_sub(),
                     build_int_nuw_sub(),
                     build_float_sub(),
-                    "tc should have errored if you try to subtract 2 non-int/float values"
+                    "tc should have errored if you try to subtract 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::Mul(location, dst, lhs, rhs) => {
+            TypecheckedExpression::Mul(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
@@ -935,12 +1013,12 @@ impl TypecheckedExpression {
                     build_int_nsw_mul(),
                     build_int_nuw_mul(),
                     build_float_mul(),
-                    "tc should have errored if you try to multiply 2 non-int/float values"
+                    "tc should have errored if you try to multiply 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::Div(location, dst, lhs, rhs) => {
+            TypecheckedExpression::Div(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
@@ -952,12 +1030,12 @@ impl TypecheckedExpression {
                     build_int_signed_div(),
                     build_int_unsigned_div(),
                     build_float_div(),
-                    "tc should have errored if you try to divide 2 non-int/float values"
+                    "tc should have errored if you try to divide 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::Mod(location, dst, lhs, rhs) => {
+            TypecheckedExpression::Mod(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
@@ -969,15 +1047,15 @@ impl TypecheckedExpression {
                     build_int_signed_rem(),
                     build_int_unsigned_rem(),
                     build_float_rem(),
-                    "tc should have errored if you try to mod 2 non-int/float values"
+                    "tc should have errored if you try to mod 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::BAnd(location, dst, lhs, rhs) => {
+            TypecheckedExpression::BAnd(_, dst, lhs, rhs) => {
+                let typ = lhs.to_type(&ctx.tc_scope, ctx.tc_ctx);
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst].0;
                 if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
                     ctx.push_value(
                         *dst,
@@ -992,7 +1070,7 @@ impl TypecheckedExpression {
                 }
                 Ok(())
             }
-            TypecheckedExpression::BOr(location, dst, lhs, rhs) => {
+            TypecheckedExpression::BOr(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
@@ -1010,7 +1088,7 @@ impl TypecheckedExpression {
                 }
                 Ok(())
             }
-            TypecheckedExpression::BXor(location, dst, lhs, rhs) => {
+            TypecheckedExpression::BXor(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
@@ -1026,10 +1104,12 @@ impl TypecheckedExpression {
                 }
                 Ok(())
             }
-            TypecheckedExpression::GreaterThan(location, dst, lhs, rhs) => {
+            TypecheckedExpression::GreaterThan(_, dst, lhs, rhs) => {
+                let typ = lhs
+                    .to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
+                    .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -1038,15 +1118,17 @@ impl TypecheckedExpression {
                     build_int_compare(IntPredicate::SGT),
                     build_int_compare(IntPredicate::UGT),
                     build_float_compare(FloatPredicate::UGT),
-                    "tc should have errored if you try to compare 2 non-int/float values"
+                    "tc should have errored if you try to compare 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::LessThan(location, dst, lhs, rhs) => {
+            TypecheckedExpression::LessThan(_, dst, lhs, rhs) => {
+                let typ = lhs
+                    .to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
+                    .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -1055,17 +1137,19 @@ impl TypecheckedExpression {
                     build_int_compare(IntPredicate::SLT),
                     build_int_compare(IntPredicate::ULT),
                     build_float_compare(FloatPredicate::ULT),
-                    "tc should have errored if you try to compare 2 non-int/float values"
+                    "tc should have errored if you try to compare 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::LAnd(location, dst, lhs, rhs) => todo!(),
-            TypecheckedExpression::LOr(location, dst, lhs, rhs) => todo!(),
-            TypecheckedExpression::GreaterThanEq(location, dst, lhs, rhs) => {
+            TypecheckedExpression::LAnd(..) => todo!(),
+            TypecheckedExpression::LOr(..) => todo!(),
+            TypecheckedExpression::GreaterThanEq(_, dst, lhs, rhs) => {
+                let typ = lhs
+                    .to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
+                    .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -1074,15 +1158,17 @@ impl TypecheckedExpression {
                     build_int_compare(IntPredicate::SGE),
                     build_int_compare(IntPredicate::UGE),
                     build_float_compare(FloatPredicate::UGE),
-                    "tc should have errored if you try to compare 2 non-int/float values"
+                    "tc should have errored if you try to compare 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::LessThanEq(location, dst, lhs, rhs) => {
+            TypecheckedExpression::LessThanEq(_, dst, lhs, rhs) => {
+                let typ = lhs
+                    .to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
+                    .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -1091,15 +1177,17 @@ impl TypecheckedExpression {
                     build_int_compare(IntPredicate::SLE),
                     build_int_compare(IntPredicate::ULE),
                     build_float_compare(FloatPredicate::ULE),
-                    "tc should have errored if you try to compare 2 non-int/float values"
+                    "tc should have errored if you try to compare 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::Eq(location, dst, lhs, rhs) => {
+            TypecheckedExpression::Eq(_, dst, lhs, rhs) => {
+                let typ = lhs
+                    .to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
+                    .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -1108,15 +1196,17 @@ impl TypecheckedExpression {
                     build_int_compare(IntPredicate::EQ),
                     build_int_compare(IntPredicate::EQ),
                     build_float_compare(FloatPredicate::UEQ),
-                    "tc should have errored if you try to compare 2 non-int/float values"
+                    "tc should have errored if you try to compare 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::Neq(location, dst, lhs, rhs) => {
+            TypecheckedExpression::Neq(_, dst, lhs, rhs) => {
+                let typ = lhs
+                    .to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
+                    .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                let typ = &ctx.tc_scope[*dst].0;
                 let v = f_s_u!(
                     ctx,
                     typ,
@@ -1125,12 +1215,12 @@ impl TypecheckedExpression {
                     build_int_compare(IntPredicate::NE),
                     build_int_compare(IntPredicate::NE),
                     build_float_compare(FloatPredicate::UNE),
-                    "tc should have errored if you try to compare 2 non-int/float values"
+                    "tc should have errored if you try to compare 2 non-number values"
                 );
                 ctx.push_value(*dst, v);
                 Ok(())
             }
-            TypecheckedExpression::LShift(location, dst, lhs, rhs) => {
+            TypecheckedExpression::LShift(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
@@ -1146,7 +1236,7 @@ impl TypecheckedExpression {
                     unreachable!("tc should have errored if you try to left shift a non-int value");
                 }
             }
-            TypecheckedExpression::RShift(location, dst, lhs, rhs) => {
+            TypecheckedExpression::RShift(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
@@ -1173,8 +1263,9 @@ impl TypecheckedExpression {
             TypecheckedExpression::Reference(_, dst, TypedLiteral::Void) => {
                 Ok(ctx.push_value(*dst, ctx.default_types.ptr.const_zero().into()))
             }
-            TypecheckedExpression::Reference(location, dst, rhs) => {
+            TypecheckedExpression::Reference(_, dst, rhs) => {
                 let value = match rhs {
+                    TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == Type::PrimitiveVoid(0) => ctx.default_types.ptr.const_zero().into(),
                     TypedLiteral::Dynamic(id) if !ctx.tc_scope[*id].1.stack_allocated => panic!("_{id} is not stack allocated (even tho it should have been)"),
                     TypedLiteral::Dynamic(id) => ctx.get_value_ptr(*id).into(),
                     TypedLiteral::Static(id) => ctx.statics[*id].as_basic_value_enum(),
@@ -1196,7 +1287,7 @@ impl TypecheckedExpression {
 
                 Ok(())
             }
-            TypecheckedExpression::Dereference(location, dst, rhs) => {
+            TypecheckedExpression::Dereference(_, dst, rhs) => {
                 if ctx.tc_scope[*dst].1.stack_allocated {
                     let ty = ctx.tc_scope[*dst]
                         .0
@@ -1228,7 +1319,7 @@ impl TypecheckedExpression {
             // &struct, <- i64 0, i32 <idx>
             // &[a] <- extractvalue 0 and then i64 n of that
             // &[a; n] <- i64 0 n (for getelementptr [a; n]) or i64 n (for getelementptr a)
-            TypecheckedExpression::Offset(location, dst, src, offset) => {
+            TypecheckedExpression::Offset(_, dst, src, offset) => {
                 let ty = src.to_type(&ctx.tc_scope, ctx.tc_ctx);
                 match ty.as_ref() {
                     Type::Struct {
@@ -1308,7 +1399,7 @@ impl TypecheckedExpression {
                     _ => unreachable!("cannot take offset of {ty:?}"),
                 }
             }
-            TypecheckedExpression::OffsetNonPointer(location, dst, src, offset_value) => {
+            TypecheckedExpression::OffsetNonPointer(_, dst, src, offset_value) => {
                 let src = src.fn_ctx_to_basic_value(ctx);
                 if src.is_array_value() {
                     ctx.push_value(
@@ -1333,14 +1424,8 @@ impl TypecheckedExpression {
                 }
                 Ok(())
             }
-            TypecheckedExpression::TraitCall(
-                location,
-                typed_literal,
-                typed_literal1,
-                _,
-                global_str,
-            ) => todo!(),
-            TypecheckedExpression::Alias(location, new, old) => {
+            TypecheckedExpression::TraitCall(..) => todo!(),
+            TypecheckedExpression::Alias(_, new, old) => {
                 let new_typ = &ctx.tc_scope[*new].0;
                 let old_typ = old.to_type(&ctx.tc_scope, ctx.tc_ctx);
                 if *new_typ == *old_typ {
@@ -1363,10 +1448,10 @@ impl TypecheckedExpression {
                 }
                 todo!()
             }
-            TypecheckedExpression::Literal(location, dst, src) => {
+            TypecheckedExpression::Literal(_, dst, src) => {
                 Ok(ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx)))
             }
-            TypecheckedExpression::Empty(location) => Ok(()),
+            TypecheckedExpression::Empty(_) => Ok(()),
             TypecheckedExpression::None => {
                 unreachable!("None-expressions are not valid and indicate an error")
             }

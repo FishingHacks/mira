@@ -8,7 +8,7 @@ use std::{
 };
 
 use expression::{TypecheckedExpression, TypedLiteral};
-use types::resolve_primitive_type;
+use types::{resolve_primitive_type, FunctionType};
 
 use crate::{
     annotations::Annotations,
@@ -119,7 +119,6 @@ pub struct TypecheckingContext {
 }
 
 pub struct TypecheckedModule {
-    context: Arc<TypecheckingContext>,
     scope: HashMap<GlobalStr, ModuleScopeValue>,
     exports: HashMap<GlobalStr, GlobalStr>,
     pub path: Arc<Path>,
@@ -234,7 +233,6 @@ impl TypecheckingContext {
             let scope = module_reader[module_id].scope.clone();
 
             typechecked_module_writer.push(TypecheckedModule {
-                context: me.clone(),
                 scope,
                 exports: module_reader[module_id].exports.clone(),
                 path: module_reader[module_id].path.clone(),
@@ -284,6 +282,23 @@ impl TypecheckingContext {
 
         match typ {
             TypeRef::DynReference { .. } => todo!(),
+            TypeRef::Function {
+                return_ty,
+                args,
+                num_references,
+                ..
+            } => {
+                let return_type = self.resolve_type(module_id, return_ty, generics)?;
+                let mut arguments = Vec::with_capacity(args.len());
+                for arg in args {
+                    arguments.push(self.resolve_type(module_id, arg, generics)?);
+                }
+                let function_typ = FunctionType {
+                    arguments,
+                    return_type,
+                };
+                Ok(Type::Function(function_typ.into(), *num_references))
+            }
             TypeRef::Reference {
                 num_references,
                 type_name,
@@ -435,7 +450,7 @@ impl TypecheckingContext {
         false
     }
 
-    fn type_resolution_resolve_type<F: Fn(&GlobalStr) -> bool>(
+    fn type_resolution_resolve_type<F: Fn(&GlobalStr) -> bool + Copy>(
         &self,
         typ: &TypeRef,
         is_generic_name: F,
@@ -448,6 +463,37 @@ impl TypecheckingContext {
         }
         match typ {
             TypeRef::DynReference { .. } => todo!(),
+            TypeRef::Function {
+                return_ty,
+                args,
+                num_references,
+                ..
+            } => {
+                let return_type = self.type_resolution_resolve_type(
+                    return_ty,
+                    is_generic_name,
+                    module,
+                    context.clone(),
+                    errors,
+                )?;
+                let mut arguments = Vec::with_capacity(args.len());
+                for arg in args {
+                    arguments.push(self.type_resolution_resolve_type(
+                        arg,
+                        is_generic_name,
+                        module,
+                        context.clone(),
+                        errors,
+                    )?);
+                }
+                Some(Type::Function(
+                    Arc::new(FunctionType {
+                        return_type,
+                        arguments,
+                    }),
+                    *num_references,
+                ))
+            }
             TypeRef::Reference {
                 num_references,
                 type_name,

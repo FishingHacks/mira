@@ -1,0 +1,47 @@
+use "./std.mr"::{printf, malloc, free};
+
+struct unw_cursor { inner: [u64; 127] }
+struct unw_context { inner: [u64; 121] }
+let UNW_REG_IP: u32 = 16;
+
+@alias("_Ux86_64_getcontext")
+extern fn unw_getcontext(v: &unw_context);
+@alias("_Ux86_64_init_local")
+extern fn unw_init_local(cursor: &unw_cursor, v: &unw_context);
+@alias("_Ux86_64_step")
+extern fn unw_step(cursor: &unw_cursor) -> i32;
+@alias("_Ux86_64_get_reg")
+extern fn unw_get_reg(cursor: &unw_cursor, register: u32, value: &usize);
+@alias("_Ux86_64_get_proc_name")
+extern fn unw_get_proc_name(cursor: &unw_cursor, name: &u8, name_size: usize, offset: &usize) -> i32;
+
+fn show_bt() {
+    let cursor = unw_cursor { inner: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] };
+    let context = unw_context { inner: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] };
+    let ip = 0usize;
+    let offset = 0usize;
+
+    unw_getcontext(&context);
+    unw_init_local(&cursor, &context);
+    let name_buf = malloc(4096) as &u8;
+    while (unw_step(&cursor) > 0) {
+        unw_get_reg(&cursor, UNW_REG_IP, &ip);
+        printf("0x%lx: \0" as &u8, ip);
+        *name_buf = 0;
+        if (unw_get_proc_name(&cursor, name_buf, 4096, &offset) == 0)
+            printf("(%s+0x%lx)\n\0" as &u8, name_buf, offset);
+        else printf("-- no symbol name was found\n\0" as &u8);
+    }
+}
+
+fn b() {
+    show_bt();
+}
+
+fn a() {
+    b();
+}
+
+extern fn main() {
+    a();
+}

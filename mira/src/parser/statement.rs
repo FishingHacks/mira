@@ -148,7 +148,6 @@ impl Statement {
     pub fn bake_functions(&mut self, module: &mut Module, module_id: ModuleId) {
         match self {
             Self::BakedFunction(..)
-            | Self::ExternalFunction(_, None)
             | Self::BakedExternalFunction(..)
             | Self::Trait { .. }
             | Self::BakedTrait(..)
@@ -156,15 +155,11 @@ impl Statement {
             | Self::BakedStruct(..)
             | Self::Return(None, ..)
             | Self::Export(..) => (),
-            Self::ExternalFunction(_, Some(statement)) => {
-                unreachable!("function in a non-top-level scope")
-            }
+            Self::ExternalFunction(..) => unreachable!("function in a non-top-level scope"),
             Self::Struct { location, .. } => {
                 panic!("{location}: use Module::push_statement to bake a struct")
             }
-            Self::Function(contract, statement) => {
-                unreachable!("function in a non-top-level scope")
-            }
+            Self::Function(..) => unreachable!("function in a non-top-level scope"),
             Self::Block(statements, ..) => statements
                 .iter_mut()
                 .for_each(|stmt| stmt.bake_functions(module, module_id)),

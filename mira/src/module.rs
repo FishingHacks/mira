@@ -1,10 +1,5 @@
 use parking_lot::RwLock;
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::HashMap, fmt::Debug, path::Path, sync::Arc};
 
 use crate::{
     annotations::Annotations,

@@ -13,33 +13,70 @@ use crate::{
     typechecking::{Type, TypecheckingError},
 };
 
-#[derive(Error)]
-pub enum MiraError {
-    #[error("{0}")]
-    Parsing(#[from] ParsingError),
-    #[error("{0}")]
-    Tokenization(#[from] TokenizationError),
-    #[error("{0}")]
-    ProgramForming(#[from] ProgramFormingError),
-    #[error("{0}")]
-    Typechecking(#[from] TypecheckingError),
-    #[error("{0}")]
-    Codegen(#[from] CodegenError),
-    #[error("{0}")]
-    Generic(&'static str),
-}
+#[macro_export]
+macro_rules! error_list_wrapper {
+    ($(#[$meta:tt])* $vis:vis struct $name:ident($errorty:ident);
+    $(
+        $add_fn:ident => $error_field:ident($( $field_name:ident : $field_ty:ty ),* $(,)?)
+    );* $(;)?
+    ) => {
+        $(#[$meta])*
+        $vis struct $name(pub Vec<$errorty>);
 
-impl Debug for MiraError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Parsing(v) => Debug::fmt(v, f),
-            Self::Tokenization(v) => Debug::fmt(v, f),
-            Self::ProgramForming(v) => Debug::fmt(v, f),
-            Self::Typechecking(v) => Debug::fmt(v, f),
-            Self::Codegen(v) => Debug::fmt(v, f),
-            Self::Generic(v) => f.write_str(v),
+        impl $name {
+            $(
+                pub fn $add_fn(&mut self$(, $field_name : $field_ty)*) {
+                    self.0.push($errorty::$error_field { $($field_name),* });
+                }
+            )*
+
+            pub fn into_inner(self) -> Vec<$errorty> { self.0 }
+            pub fn get_inner(&self) -> &[$errorty] { &self.0 }
+            pub fn len(&self) -> usize { self.0.len() }
+            pub fn push(&mut self, v: $errorty) { self.0.push(v) }
+            pub fn new() -> Self { Self(Vec::new()) }
         }
-    }
+    };
+}
+error_list_wrapper!(
+    pub struct MiraErrors(MiraError);
+    add_parsing => Parsing(inner: ParsingError);
+    add_tokenization => Tokenization(inner: TokenizationError);
+    add_programforming => ProgramForming(inner: ProgramFormingError);
+    add_typechecking => Typechecking(inner: TypecheckingError);
+    add_codegen => Codegen(inner: CodegenError);
+    add_generic => Generic(inner: &'static str);
+);
+
+#[derive(Error, Debug)]
+pub enum MiraError {
+    #[error("{inner}")]
+    Parsing {
+        #[from]
+        inner: ParsingError,
+    },
+    #[error("{inner}")]
+    Tokenization {
+        #[from]
+        inner: TokenizationError,
+    },
+    #[error("{inner}")]
+    ProgramForming {
+        #[from]
+        inner: ProgramFormingError,
+    },
+    #[error("{inner}")]
+    Typechecking {
+        #[from]
+        inner: TypecheckingError,
+    },
+    #[error("{inner}")]
+    Codegen {
+        #[from]
+        inner: CodegenError,
+    },
+    #[error("{inner}")]
+    Generic { inner: &'static str },
 }
 
 #[derive(Clone, Debug, Error)]
@@ -177,8 +214,8 @@ pub enum TokenizationError {
     InvalidNumberError { loc: Location },
     #[error("{loc}: Expected `\"`, but found nothing")]
     UnclosedString { loc: Location },
-    #[error("{loc}: Invalid number type")]
-    InvalidNumberType { loc: Location },
+    #[error("{0}: Invalid number type")]
+    InvalidNumberType(Location),
     #[error("{loc}: unclosed macro invocation (Expected a `{bracket}`))")]
     UnclosedMacro { loc: Location, bracket: char },
     #[error("{loc}: expected a bracket (`(`, `[` or `{{`), but found {character}")]
@@ -200,7 +237,7 @@ impl TokenizationError {
         match self {
             Self::UnclosedString { loc }
             | Self::InvalidNumberError { loc }
-            | Self::InvalidNumberType { loc }
+            | Self::InvalidNumberType(loc)
             | Self::UnclosedMacro { loc, .. }
             | Self::MacroExpectedBracket { loc, .. }
             | Self::UnknownTokenError { loc, .. } => &loc,

@@ -60,7 +60,7 @@ intrinsics! {
 }
 
 impl Intrinsic {
-    pub fn get_type(self, ctx: &TypecheckingContext) -> Type {
+    pub fn get_type(self, _: &TypecheckingContext) -> Type {
         todo!()
     }
 }
@@ -82,7 +82,7 @@ impl Annotation for IntrinsicAnnotation {
         "intrinsic"
     }
 
-    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations) -> bool {
+    fn is_valid_for(&self, thing: AnnotationReceiver, _: &Annotations) -> bool {
         thing == AnnotationReceiver::Function
     }
 }

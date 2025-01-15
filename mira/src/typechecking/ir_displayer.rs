@@ -130,18 +130,41 @@ impl Display for ExpressionDisplay<'_> {
                     .finish()
             }
             TypecheckedExpression::If {
-                loc,
                 cond,
                 if_block,
                 else_block,
-                annotations,
-            } => todo!(),
+                ..
+            } => {
+                f.write_str("if ")?;
+                Display::fmt(&TLD(cond), f)?;
+                f.debug_list()
+                    .entries(if_block.iter().map(ExpressionDisplay))
+                    .finish()?;
+                if let Some(else_block) = else_block {
+                    f.write_str("\nelse ")?;
+                    f.debug_list()
+                        .entries(else_block.iter().map(ExpressionDisplay))
+                        .finish()?;
+                }
+                Ok(())
+            }
             TypecheckedExpression::While {
-                loc,
                 cond_block,
                 cond,
                 body,
-            } => todo!(),
+                ..
+            } => {
+                f.write_str("while_cond ")?;
+                f.debug_list()
+                    .entries(cond_block.iter().map(ExpressionDisplay))
+                    .finish()?;
+                f.write_str("while ")?;
+                Display::fmt(&TLD(cond), f)?;
+                f.debug_list()
+                    .entries(body.iter().map(ExpressionDisplay))
+                    .finish()?;
+                Ok(())
+            }
             TypecheckedExpression::Range {
                 lhs,
                 rhs,
@@ -274,7 +297,7 @@ impl Display for ExpressionDisplay<'_> {
             TypecheckedExpression::OffsetNonPointer(_, lhs, rhs, offset_value) => f.write_fmt(
                 format_args!("_{} = offset_non_ptr({}, {offset_value})", lhs, TLD(rhs)),
             ),
-            TypecheckedExpression::TraitCall(_, lhs, rhs, trait_id, fn_name) => todo!(),
+            TypecheckedExpression::TraitCall(..) => todo!(),
             TypecheckedExpression::Alias(_, lhs, rhs) => {
                 f.write_fmt(format_args!("_{lhs} = {} as <unknown type T>", TLD(rhs)))
             }

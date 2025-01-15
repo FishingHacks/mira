@@ -3,6 +3,7 @@ use std::fmt::{Debug, Display, Write};
 use crate::{
     annotations::{Annotation, AnnotationReceiver, Annotations},
     error::{FunctionList, ParsingError},
+    error_list_wrapper,
     globals::GlobalStr,
     tokenizer::{Literal, Location, Token, TokenType},
     typechecking::{Type, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
@@ -21,7 +22,7 @@ impl Annotation for LangItemAnnotation {
         "lang"
     }
 
-    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations) -> bool {
+    fn is_valid_for(&self, thing: AnnotationReceiver, _: &Annotations) -> bool {
         match thing {
             AnnotationReceiver::Function
             | AnnotationReceiver::ExternalFunction
@@ -235,20 +236,63 @@ impl Display for GenericList<'_> {
     }
 }
 
+error_list_wrapper!(
+    pub struct LangItemErrors(LangItemError);
+    add_missing_item => MissingItem(langitem: &'static str, ty: LangItemType);
+    add_static_missing_trait => StaticIsMissingTrait(name: GlobalStr, langitem: &'static str);
+    add_static_is_primitive => StaticIsPrimitive(langitem: &'static str);
+    add_struct_misses_generics => StructMissesGeneric(lang_item: &'static str, generic: Vec<GlobalStr>);
+    add_struct_unexpected_generic => StructUnexpectedGeneric(lang_item: &'static str, generic: GlobalStr);
+    add_trait_excessive_fun => TraitExcessiveFunction(lang_item: &'static str, function: GlobalStr);
+    add_struct_unexpected_field => StructUnexpectedField(name: GlobalStr, langitem: &'static str);
+    add_struct_missing_fun => StructMissingFunction(lang_item: &'static str, function: GlobalStr);
+    add_struct_missing_trait => StructMissingTrait(lang_item: &'static str, trait_name: GlobalStr);
+    add_trait_missing_fun => TraitMissingFunction(lang_item: &'static str, function: GlobalStr);
+    add_struct_missing_element => StructMissingElement(name: GlobalStr, ty: Type, langitem: &'static str);
+    add_struct_mismatching_field => StructMismatchingField(name: GlobalStr, expected: Type, found: Type, langitem: &'static str);
+    add_trait_mismatching_args => TraitMismatchingArguments(expected: Vec<Type>, found: Vec<Type>, function: GlobalStr, lang_item: &'static str);
+    add_trait_mismatch_returnty => TraitMismatchingReturnType(expected: Type, found: Type, function: GlobalStr, lang_item: &'static str);
+    add_struct_mismatch_args => StructMismatchingArguments(expected: Vec<Type>, found: Vec<Type>, function: GlobalStr, lang_item: &'static str);
+    add_struct_mismatch_returnty => StructMismatchingReturnType(expected: Type, found: Type, function: GlobalStr, lang_item: &'static str);
+    add_struct_generic_mismatch => StructGenericMismatch(lang_item: &'static str, generic: GlobalStr, expected: Vec<GlobalStr>, found: Vec<GlobalStr>);
+    add_mismatching_args => MismatchingArguments(expected: Vec<Type>, found: Vec<Type>, lang_item: &'static str);
+    add_mismatching_returnty => MismatchingReturnType(expected: Type, found: Type, lang_item: &'static str);
+);
+
 #[derive(Clone, Error, Debug)]
 pub enum LangItemError {
-    #[error("No lang item for `{0}` found (type: {1})")]
-    MissingItem(&'static str, LangItemType),
-    #[error("Static lang-item `{1}` is missing trait-implementation `{0}`")]
-    StaticIsMissingTrait(GlobalStr, &'static str),
-    #[error("Static lang-item `{0}` is a primitive, who are not supported")]
-    StaticIsPrimitive(&'static str),
-    #[error("Struct lang-item `{2}` is missing field `{1}` of type `{2}`")]
-    StructMissingElement(GlobalStr, Type, &'static str),
-    #[error("Struct lang-item `{3}`'s field `{1}` is expected to be {1} but {2}")]
-    StructMismatchingField(GlobalStr, Type, Type, &'static str),
-    #[error("Struct lang-item `{1}`'s field `{0}` is not expected to be there")]
-    StructUnexpectedField(GlobalStr, &'static str),
+    #[error("No lang item for `{langitem}` found (type: {ty})")]
+    MissingItem {
+        langitem: &'static str,
+        ty: LangItemType,
+    },
+    #[error("Static lang-item `{langitem}` is missing trait-implementation `{name}`")]
+    StaticIsMissingTrait {
+        name: GlobalStr,
+        langitem: &'static str,
+    },
+    #[error("Static lang-item `{langitem}` is a primitive, who are not supported")]
+    StaticIsPrimitive { langitem: &'static str },
+    #[error("Struct lang-item `{langitem}` is missing field `{name}` of type `{ty}`")]
+    StructMissingElement {
+        name: GlobalStr,
+        ty: Type,
+        langitem: &'static str,
+    },
+    #[error(
+        "Struct lang-item `{langitem}`'s field `{name}` is expected to be {expected} but {found}"
+    )]
+    StructMismatchingField {
+        name: GlobalStr,
+        expected: Type,
+        found: Type,
+        langitem: &'static str,
+    },
+    #[error("Struct lang-item `{langitem}`'s field `{name}` is not expected to be there")]
+    StructUnexpectedField {
+        name: GlobalStr,
+        langitem: &'static str,
+    },
     #[error("Struct lang-item `{lang_item}` is missing function `{function}`")]
     StructMissingFunction {
         lang_item: &'static str,
@@ -331,10 +375,10 @@ pub enum LangItemError {
 macro_rules! check_langitem {
     (required $self:ident.$lang_item:ident: $ty:ident; $reader:ident $errors:ident $context:ident) => {
         if $self.$lang_item.is_none() {
-            $errors.push(LangItemError::MissingItem(
-                stringify!($lang_item),
-                LangItemType::$ty,
-            ));
+            $errors.push(LangItemError::MissingItem{
+                langitem: stringify!($lang_item),
+                ty: LangItemType::$ty,
+            });
         }
         check_langitem!($lang_item: $ty; $self $reader $errors $context);
     };
@@ -363,7 +407,7 @@ macro_rules! check_langitem {
                 FunctionLangItem::Internal(id) => &$context.functions.read()[id].0,
                 FunctionLangItem::External(id) => &$context.external_functions.read()[id].0,
             };
-            does_function_match(&$self.$lang_item(), func, stringify!($lang_item), $errors, $context);
+            does_function_match(&$self.$lang_item(), func, stringify!($lang_item), $errors);
         }
     };
     ($lang_item:ident: $ty: ident; $self:ident $reader:ident $errors:ident) => { compile_error!(concat!(stringify!($ty), " is not yet supported")) };
@@ -542,20 +586,14 @@ impl LangItems {
         LangItemFunction {
             return_type: Type::PrimitiveVoid(0),
             // printf(&u8, usize, &u8)
-            args: vec![
-                Type::PrimitiveU8(1),
-                Type::PrimitiveUSize(0),
-                Type::PrimitiveU8(1),
-            ],
+            args: vec![Type::PrimitiveU8(1)],
         }
     }
 
-    pub fn check(&self, errors: &mut Vec<LangItemError>, context: &TypecheckingContext) {
+    pub fn check(&self, errors: &mut LangItemErrors, context: &TypecheckingContext) {
         let trait_reader = context.traits.read();
         let struct_reader = context.structs.read();
         let static_reader = context.statics.read();
-        let function_reader = context.functions.read();
-        let external_function_reader = context.external_functions.read();
 
         check_langitem!(required self.allocator_trait: Trait; trait_reader errors context);
         check_langitem!(required self.clone_trait: Trait; trait_reader errors context);
@@ -583,17 +621,16 @@ fn does_function_match(
     func_a: &LangItemFunction,
     func_b: &TypecheckedFunctionContract,
     lang_item: &'static str,
-    errors: &mut Vec<LangItemError>,
-    context: &TypecheckingContext,
+    errors: &mut LangItemErrors,
 ) -> bool {
     let num_errs = errors.len();
 
     if func_a.return_type != func_b.return_type {
-        errors.push(LangItemError::MismatchingReturnType {
-            expected: func_a.return_type.clone(),
-            found: func_b.return_type.clone(),
+        errors.add_mismatching_returnty(
+            func_a.return_type.clone(),
+            func_b.return_type.clone(),
             lang_item,
-        });
+        );
     }
 
     if !func_a
@@ -603,11 +640,8 @@ fn does_function_match(
         .map(|(a, (_, b))| *a == *b)
         .fold(true, |a, b| a && b)
     {
-        errors.push(LangItemError::MismatchingArguments {
-            expected: func_a.args.clone(),
-            found: func_b.arguments.iter().map(|(_, v)| v.clone()).collect(),
-            lang_item,
-        });
+        let args = func_b.arguments.iter().map(|(_, v)| v).cloned().collect();
+        errors.add_mismatching_args(func_a.args.clone(), args, lang_item);
     }
 
     errors.len() == num_errs
@@ -617,7 +651,7 @@ fn does_struct_match(
     structure_a: &LangItemStruct,
     structure_b: &TypedStruct,
     lang_item: &'static str,
-    errors: &mut Vec<LangItemError>,
+    errors: &mut LangItemErrors,
     context: &TypecheckingContext,
 ) -> bool {
     let num_errs = errors.len();
@@ -627,18 +661,15 @@ fn does_struct_match(
         match structure_b.generics.get(i) {
             Some((name, other_bounds)) => {
                 if *bounds != *other_bounds {
-                    errors.push(LangItemError::StructGenericMismatch {
-                        lang_item,
-                        generic: name.clone(),
-                        expected: bounds
-                            .iter()
-                            .map(|v| trait_reader[*v].name.clone())
-                            .collect(),
-                        found: other_bounds
-                            .iter()
-                            .map(|v| trait_reader[*v].name.clone())
-                            .collect(),
-                    })
+                    let expected = bounds
+                        .iter()
+                        .map(|v| trait_reader[*v].name.clone())
+                        .collect();
+                    let found = other_bounds
+                        .iter()
+                        .map(|v| trait_reader[*v].name.clone())
+                        .collect();
+                    errors.add_struct_generic_mismatch(lang_item, name.clone(), expected, found);
                 }
             }
             None => errors.push(LangItemError::StructMissesGeneric {
@@ -666,17 +697,17 @@ fn does_struct_match(
             .find(|(v, _)| *v == *element_name)
         {
             Some(v) if v.1 == *element_type => {}
-            Some((_, other_type)) => errors.push(LangItemError::StructMismatchingField(
+            Some((_, other_type)) => errors.add_struct_mismatching_field(
                 element_name.clone(),
                 element_type.clone(),
                 other_type.clone(),
                 lang_item,
-            )),
-            None => errors.push(LangItemError::StructMissingElement(
+            ),
+            None => errors.add_struct_missing_element(
                 element_name.clone(),
                 element_type.clone(),
                 lang_item,
-            )),
+            ),
         }
     }
 
@@ -687,18 +718,12 @@ fn does_struct_match(
             .find(|(name, _)| *name == *v)
             .is_none()
     }) {
-        errors.push(LangItemError::StructUnexpectedField(
-            element_name.clone(),
-            lang_item,
-        ))
+        errors.add_struct_unexpected_field(element_name.clone(), lang_item);
     }
 
     for trait_id in structure_a.traits.iter().copied() {
         if !structure_b.trait_impl.contains_key(&trait_id) {
-            errors.push(LangItemError::StructMissingTrait {
-                lang_item,
-                trait_name: trait_reader[trait_id].name.clone(),
-            })
+            errors.add_struct_missing_trait(lang_item, trait_reader[trait_id].name.clone());
         }
     }
     drop(trait_reader);
@@ -706,21 +731,18 @@ fn does_struct_match(
 
     for (fn_name, func) in structure_a.funcs.iter() {
         let Some(func_impl) = structure_b.global_impl.get(fn_name) else {
-            errors.push(LangItemError::StructMissingFunction {
-                lang_item,
-                function: fn_name.clone(),
-            });
+            errors.add_struct_missing_fun(lang_item, fn_name.clone());
             continue;
         };
         let func_impl = &func_reader[*func_impl].0;
 
         if func_impl.return_type != func.return_type {
-            errors.push(LangItemError::StructMismatchingReturnType {
-                expected: func.return_type.clone(),
-                found: func_impl.return_type.clone(),
-                function: fn_name.clone(),
+            errors.add_struct_mismatch_returnty(
+                func.return_type.clone(),
+                func_impl.return_type.clone(),
+                fn_name.clone(),
                 lang_item,
-            });
+            );
         }
 
         if !func
@@ -730,12 +752,17 @@ fn does_struct_match(
             .map(|(a, (_, b))| *a == *b)
             .fold(true, |a, b| a && b)
         {
-            errors.push(LangItemError::StructMismatchingArguments {
-                expected: func.args.clone(),
-                found: func_impl.arguments.iter().map(|(_, v)| v.clone()).collect(),
-                function: fn_name.clone(),
+            errors.add_struct_mismatch_args(
+                func.args.clone(),
+                func_impl
+                    .arguments
+                    .iter()
+                    .map(|(_, v)| v)
+                    .cloned()
+                    .collect(),
+                fn_name.clone(),
                 lang_item,
-            });
+            );
         }
     }
 
@@ -746,47 +773,35 @@ fn does_static_match(
     traits: &[TraitId],
     typ: &Type,
     lang_item: &'static str,
-    errors: &mut Vec<LangItemError>,
+    errors: &mut LangItemErrors,
     context: &TypecheckingContext,
 ) -> bool {
     let trait_reader = context.traits.read();
     match typ {
-        Type::DynType {
-            trait_refs,
-            num_references,
-        } => {
+        Type::DynType { trait_refs, .. } => {
             let mut matches = true;
             for trait_id in traits.iter().copied() {
                 if trait_refs.iter().find(|(v, _)| *v == trait_id).is_none() {
                     matches = false;
-                    errors.push(LangItemError::StaticIsMissingTrait(
-                        trait_reader[trait_id].name.clone(),
-                        lang_item,
-                    ));
+                    errors.add_static_missing_trait(trait_reader[trait_id].name.clone(), lang_item);
                 }
             }
             matches
         }
-        Type::Struct {
-            struct_id,
-            num_references,
-            ..
-        } => {
+        Type::Struct { struct_id, .. } => {
             let struct_traits = &context.structs.read()[*struct_id].trait_impl;
             let mut matches = true;
             for trait_id in traits {
                 if !struct_traits.contains_key(trait_id) {
                     matches = false;
-                    errors.push(LangItemError::StaticIsMissingTrait(
-                        trait_reader[*trait_id].name.clone(),
-                        lang_item,
-                    ));
+                    errors
+                        .add_static_missing_trait(trait_reader[*trait_id].name.clone(), lang_item);
                 }
             }
             matches
         }
         _ => {
-            errors.push(LangItemError::StaticIsPrimitive(lang_item));
+            errors.add_static_is_primitive(lang_item);
             false
         }
     }
@@ -796,7 +811,7 @@ fn does_trait_match(
     trait_a: &LangItemTrait,
     trait_b: &TypedTrait,
     lang_item: &'static str,
-    errors: &mut Vec<LangItemError>,
+    errors: &mut LangItemErrors,
 ) -> bool {
     let mut traits_match = false;
 
@@ -807,21 +822,18 @@ fn does_trait_match(
             .find(|(name, ..)| func_name == name)
         else {
             traits_match = false;
-            errors.push(LangItemError::TraitMissingFunction {
-                lang_item,
-                function: func_name.clone(),
-            });
+            errors.add_trait_missing_fun(lang_item, func_name.clone());
             continue;
         };
 
         if func_a.return_type != *func_return_b {
             traits_match = false;
-            errors.push(LangItemError::TraitMismatchingReturnType {
-                expected: func_a.return_type.clone(),
-                found: func_return_b.clone(),
-                function: func_name.clone(),
+            errors.add_trait_mismatch_returnty(
+                func_a.return_type.clone(),
+                func_return_b.clone(),
+                func_name.clone(),
                 lang_item,
-            });
+            );
         }
 
         if func_a.args.len() != func_args_b.len()
@@ -833,12 +845,12 @@ fn does_trait_match(
                 .fold(true, |a, b| a && b)
         {
             traits_match = false;
-            errors.push(LangItemError::TraitMismatchingArguments {
-                expected: func_a.args.clone(),
-                found: func_args_b.iter().map(|(_, v)| v.clone()).collect(),
-                function: func_name.clone(),
+            errors.add_trait_mismatching_args(
+                func_a.args.clone(),
+                func_args_b.iter().map(|(_, v)| v).cloned().collect(),
+                func_name.clone(),
                 lang_item,
-            });
+            );
         }
     }
 
@@ -850,10 +862,7 @@ fn does_trait_match(
             .is_none()
         {
             traits_match = false;
-            errors.push(LangItemError::TraitExcessiveFunction {
-                lang_item,
-                function: func_name.clone(),
-            })
+            errors.add_trait_excessive_fun(lang_item, func_name.clone());
         }
     }
 

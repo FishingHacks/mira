@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    lang_items::LangItemAnnotation,
+    lang_items::{LangItemAnnotation, LangItemErrors},
     module::{
         ExternalFunctionId, FunctionId, ModuleContext, ModuleScopeValue, StaticId, StructId,
         TraitId,
@@ -164,9 +164,9 @@ impl TypecheckingContext {
         }
 
         {
-            let mut lang_item_check_errors = Vec::new();
+            let mut lang_item_check_errors = LangItemErrors::new();
             lang_items_writer.check(&mut lang_item_check_errors, self);
-            errors.extend(lang_item_check_errors.into_iter().map(Into::into));
+            errors.extend(lang_item_check_errors.0.into_iter().map(Into::into));
         }
 
         return errors;
@@ -224,7 +224,7 @@ impl TypecheckingContext {
             }
 
             let mut trait_impl = Vec::new();
-            for (name, args, return_type, annotations, trait_fn_loc) in &typed_trait.functions {
+            for (name, args, return_type, ..) in &typed_trait.functions {
                 let Some(&func_id) = implementation.get(name) else {
                     errors.push(TypecheckingError::MissingTraitItem {
                         location: loc.clone(),

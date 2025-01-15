@@ -421,9 +421,7 @@ impl Tokenizer {
 
     fn scan_token(&mut self) -> Result<(), TokenizationError> {
         let tok = self.int_scan_token()?;
-        let Some(tok) = tok else {
-            return Ok(());
-        };
+        let Some(tok) = tok else { return Ok(()) };
         match tok.typ {
             TokenType::IdentifierLiteral if self.if_char_advance('!') => match &tok.literal {
                 Some(Literal::String(str)) => {
@@ -470,15 +468,9 @@ impl Tokenizer {
             '.' => token!(Dot),
             '+' => token!(Plus, PlusAssign, '='),
             '-' if self.peek().is_ascii_digit() || self.peek() == '.' => self.parse_number('-'),
-            '-' => {
-                if self.if_char_advance('=') {
-                    token!(MinusAssign)
-                } else if self.if_char_advance('>') {
-                    token!(ReturnType)
-                } else {
-                    token!(Minus)
-                }
-            }
+            '-' if self.if_char_advance('=') => token!(MinusAssign),
+            '-' if self.if_char_advance('>') => token!(ReturnType),
+            '-' => token!(Minus),
             '/' if self.peek() != '/' => token!(Divide, DivideAssign, '='),
             '%' => token!(Modulo, ModuloAssign, '='),
             '*' => token!(Asterix, MultiplyAssign, '='),
@@ -491,26 +483,13 @@ impl Tokenizer {
             ';' => token!(Semicolon),
             '!' => token!(LogicalNot, NotEquals, '='),
             '~' => token!(BitwiseNot),
-            '&' => {
-                if self.if_char_advance('=') {
-                    token!(BitwiseAndAssign)
-                } else if self.if_char_advance('&') {
-                    token!(LogicalAnd)
-                } else {
-                    token!(Ampersand)
-                }
-            }
-            '|' => {
-                if self.if_char_advance('=') {
-                    token!(BitwiseOrAssign)
-                } else if self.if_char_advance('|') {
-                    token!(LogicalOr)
-                } else if self.if_char_advance('>') {
-                    token!(PipeOperator)
-                } else {
-                    token!(BitwiseOr)
-                }
-            }
+            '&' if self.if_char_advance('=') => token!(BitwiseAndAssign),
+            '&' if self.if_char_advance('&') => token!(LogicalAnd),
+            '&' => token!(Ampersand),
+            '|' if self.if_char_advance('=') => token!(BitwiseOrAssign),
+            '|' if self.if_char_advance('|') => token!(LogicalOr),
+            '|' if self.if_char_advance('>') => token!(PipeOperator),
+            '|' => token!(BitwiseOr),
             '^' => token!(BitwiseXor, BitwiseXorAssign, '='),
             ' ' | '\n' | '\r' | '\t' => {
                 while matches!(self.peek(), ' ' | '\n' | '\r' | '\t') {
@@ -548,10 +527,7 @@ impl Tokenizer {
             match self.peek() {
                 '0'..='9' => _ = self.advance(),
                 '.' if matches!(
-                    self.source
-                        .get(self.current + 1)
-                        .map(|c| *c)
-                        .unwrap_or('\0'),
+                    self.source.get(self.current + 1).copied().unwrap_or('\0'),
                     ('0'..='9')
                 ) =>
                 {
@@ -563,50 +539,72 @@ impl Tokenizer {
         }
     }
 
+    fn parse_numtype(
+        &mut self,
+        loc: Location,
+        first_char: char,
+        value: u64,
+        is_negative: bool,
+        allow_float: bool,
+    ) -> Result<Token, TokenizationError> {
+        let mut typ = String::from(first_char);
+
+        loop {
+            match self.peek() {
+                'a'..='z' | '0'..='9' => typ.push(self.advance()),
+                _ => {
+                    let err = TokenizationError::InvalidNumberType(
+                        loc!(self.file;self.line;self.column - typ.len()),
+                    );
+                    let Ok(number_type) = NumberType::from_str(&typ) else {
+                        return Err(err);
+                    };
+                    return match number_type {
+                        NumberType::F32 | NumberType::F64 if !allow_float => Err(err),
+                        NumberType::F32 | NumberType::F64 if is_negative => Ok(self
+                            .get_token_lit_loc(
+                                TokenType::FloatLiteral,
+                                Literal::Float(-(value as f64), number_type),
+                                loc,
+                            )),
+                        NumberType::F32 | NumberType::F64 => Ok(self.get_token_lit_loc(
+                            TokenType::FloatLiteral,
+                            Literal::Float(value as f64, number_type),
+                            loc,
+                        )),
+                        NumberType::U8
+                        | NumberType::U16
+                        | NumberType::U32
+                        | NumberType::U64
+                        | NumberType::Usize
+                            if is_negative =>
+                        {
+                            Err(err)
+                        }
+                        _ if is_negative => Ok(self.get_token_lit_loc(
+                            TokenType::SIntLiteral,
+                            Literal::SInt(-(value as i64), number_type),
+                            loc,
+                        )),
+                        _ => Ok(self.get_token_lit_loc(
+                            TokenType::SIntLiteral,
+                            Literal::UInt(value, number_type),
+                            loc,
+                        )),
+                    };
+                }
+            }
+        }
+    }
+
     fn parse_hex(
         &mut self,
         location: Location,
         is_negative: bool,
     ) -> Result<Token, TokenizationError> {
         let mut value: u64 = 0;
-        let mut typ = String::new();
 
         loop {
-            if typ.len() > 0 {
-                match self.peek() {
-                    'a'..='z' | '0'..='9' => typ.push(self.advance()),
-                    _ => {
-                        let err = TokenizationError::InvalidNumberType {
-                            loc: loc!(self.file;self.line;self.column - typ.len()),
-                        };
-                        let Ok(number_type) = NumberType::from_str(&typ) else {
-                            return Err(err);
-                        };
-                        return match number_type {
-                            NumberType::F32 | NumberType::F64 => Err(err),
-                            NumberType::U8
-                            | NumberType::U16
-                            | NumberType::U32
-                            | NumberType::U64
-                                if is_negative =>
-                            {
-                                Err(err)
-                            }
-                            _ if is_negative => Ok(self.get_token_lit_loc(
-                                TokenType::SIntLiteral,
-                                Literal::SInt(value as i64, number_type),
-                                location,
-                            )),
-                            _ => Ok(self.get_token_lit_loc(
-                                TokenType::UIntLiteral,
-                                Literal::UInt(value, number_type),
-                                location,
-                            )),
-                        };
-                    }
-                }
-                continue;
-            }
             match self.peek() {
                 '0'..='9' => value = (value << 4) | self.advance() as u64 - '0' as u64,
                 'a'..='f' => value = (value << 4) | self.advance() as u64 - 'a' as u64 + 0xa,
@@ -631,7 +629,9 @@ impl Tokenizer {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
-                'u' | 'i' => typ.push(self.advance()),
+                c @ ('u' | 'i') => {
+                    return self.parse_numtype(location, c, value, is_negative, false)
+                }
                 _ if is_negative => {
                     return Ok(self.get_token_lit_loc(
                         TokenType::SIntLiteral,
@@ -656,44 +656,8 @@ impl Tokenizer {
         is_negative: bool,
     ) -> Result<Token, TokenizationError> {
         let mut value: u64 = 0;
-        let mut typ = String::new();
 
         loop {
-            if typ.len() > 0 {
-                match self.peek() {
-                    'a'..='f' | '0'..='9' => typ.push(self.advance()),
-                    _ => {
-                        let err = TokenizationError::InvalidNumberType {
-                            loc: loc!(self.file;self.line;self.column - typ.len()),
-                        };
-                        let Ok(number_type) = NumberType::from_str(&typ) else {
-                            return Err(err);
-                        };
-                        return match number_type {
-                            NumberType::F32 | NumberType::F64 => Err(err),
-                            NumberType::U8
-                            | NumberType::U16
-                            | NumberType::U32
-                            | NumberType::U64
-                                if is_negative =>
-                            {
-                                Err(err)
-                            }
-                            _ if is_negative => Ok(self.get_token_lit_loc(
-                                TokenType::SIntLiteral,
-                                Literal::SInt(value as i64, number_type),
-                                location,
-                            )),
-                            _ => Ok(self.get_token_lit_loc(
-                                TokenType::UIntLiteral,
-                                Literal::UInt(value, number_type),
-                                location,
-                            )),
-                        };
-                    }
-                }
-                continue;
-            }
             match self.peek() {
                 '0' | '1' => value = (value << 1) | self.advance() as u64 - '0' as u64,
                 '2'..='9' => {
@@ -716,7 +680,9 @@ impl Tokenizer {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
-                'u' | 'i' => typ.push(self.advance()),
+                c @ ('u' | 'i') => {
+                    return self.parse_numtype(location, c, value, is_negative, false)
+                }
                 _ if is_negative => {
                     return Ok(self.get_token_lit_loc(
                         TokenType::SIntLiteral,
@@ -741,45 +707,8 @@ impl Tokenizer {
         is_negative: bool,
     ) -> Result<Token, TokenizationError> {
         let mut value: u64 = 0;
-        let mut typ = String::new();
 
         loop {
-            if typ.len() > 0 {
-                match self.peek() {
-                    'a'..='z' | '0'..='9' => typ.push(self.advance()),
-                    _ => {
-                        let err = TokenizationError::InvalidNumberType {
-                            loc: loc!(self.file;self.line;self.column - typ.len()),
-                        };
-                        let Ok(number_type) = NumberType::from_str(&typ) else {
-                            return Err(err);
-                        };
-                        return match number_type {
-                            NumberType::F32 | NumberType::F64 => Err(err),
-                            NumberType::U8
-                            | NumberType::U16
-                            | NumberType::U32
-                            | NumberType::U64
-                                if is_negative =>
-                            {
-                                Err(err)
-                            }
-                            _ if is_negative => Ok(self.get_token_lit_loc(
-                                TokenType::SIntLiteral,
-                                Literal::SInt(value as i64, number_type),
-                                location,
-                            )),
-                            _ => Ok(self.get_token_lit_loc(
-                                TokenType::UIntLiteral,
-                                Literal::UInt(value, number_type),
-                                location,
-                            )),
-                        };
-                    }
-                }
-                continue;
-            }
-
             match self.peek() {
                 '0'..='7' => value = (value << 3) | self.advance() as u64 - '0' as u64,
                 '8' | '9' => {
@@ -802,7 +731,9 @@ impl Tokenizer {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
-                'i' | 'u' => typ.push(self.advance()),
+                c @ ('i' | 'u') => {
+                    return self.parse_numtype(location, c, value, is_negative, false)
+                }
                 _ if is_negative => {
                     return Ok(self.get_token_lit_loc(
                         TokenType::SIntLiteral,
@@ -930,9 +861,9 @@ impl Tokenizer {
             Ok(v) if !is_float => v,
             Err(_) if typ.len() < 1 => NumberType::None,
             _ => {
-                return Err(TokenizationError::InvalidNumberType {
-                    loc: loc!(self.file;self.line;self.column - typ.len()),
-                })
+                return Err(TokenizationError::InvalidNumberType(
+                    loc!(self.file;self.line;self.column - typ.len()),
+                ))
             }
         };
 

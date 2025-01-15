@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     annotations::Annotations,
+    error::ParsingError,
     globals::GlobalStr,
     tokenizer::{Location, Token, TokenType},
 };
@@ -138,6 +139,16 @@ impl Parser {
             }
         }
         false
+    }
+
+    fn expect_tok(&mut self, token_type: TokenType) -> Result<(), ParsingError> {
+        self.match_tok(token_type)
+            .then_some(())
+            .ok_or_else(|| ParsingError::ExpectedArbitrary {
+                loc: self.peek().location.clone(),
+                expected: token_type,
+                found: self.peek().typ,
+            })
     }
 
     fn match_tok(&mut self, token_type: TokenType) -> bool {

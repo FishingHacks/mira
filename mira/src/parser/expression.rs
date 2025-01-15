@@ -557,7 +557,7 @@ impl Expression {
 
                 match &mut **right_side {
                     Expression::Literal(LiteralValue::Dynamic(..), ..) => (),
-                    Expression::Literal(v, ..) => {
+                    Expression::Literal(..) => {
                         // valid tokens: + plus, - minus, ~ bitwise not, ! logical not
                         match operator.typ {
                             TokenType::Plus

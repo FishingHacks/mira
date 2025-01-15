@@ -158,6 +158,7 @@ pub fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
             })
         }
         TypeRef::Reference { .. }
+        | TypeRef::Function { .. }
         | TypeRef::DynReference { .. }
         | TypeRef::SizedArray { .. }
         | TypeRef::UnsizedArray { .. } => None,
@@ -296,7 +297,7 @@ impl Type {
                 num_references: num_references + 1,
                 number_elements,
             },
-            Type::Function(func, refcount) => todo!(),
+            Type::Function(func, refcount) => Type::Function(func, refcount + 1),
             Type::PrimitiveVoid(refcount) => Type::PrimitiveVoid(refcount + 1),
             Type::PrimitiveNever => Type::PrimitiveNever,
             Type::PrimitiveI8(refcount) => Type::PrimitiveI8(refcount + 1),
@@ -366,7 +367,7 @@ impl Type {
                     num_references: num_references - 1,
                     number_elements,
                 },
-                Type::Function(func, refcount) => todo!(),
+                Type::Function(func, refcount) => Type::Function(func, refcount - 1),
                 Type::PrimitiveVoid(refcount) => Type::PrimitiveVoid(refcount - 1),
                 Type::PrimitiveNever => unreachable!("cannot deref never"),
                 Type::PrimitiveI8(refcount) => Type::PrimitiveI8(refcount - 1),
@@ -443,6 +444,35 @@ impl Type {
             Type::PrimitiveBool(_) => Type::PrimitiveBool(0),
             Type::PrimitiveSelf(_) => Type::PrimitiveSelf(0),
             Type::Generic(global_str, _) => Type::Generic(global_str, 0),
+        }
+    }
+
+    pub fn is_primitive(&self) -> bool {
+        match self {
+            Type::Trait { .. }
+            | Type::DynType { .. }
+            | Type::Struct { .. }
+            | Type::UnsizedArray { .. }
+            | Type::SizedArray { .. }
+            | Type::Generic(..)
+            | Type::Function(..) => false,
+            Type::PrimitiveVoid(_)
+            | Type::PrimitiveNever
+            | Type::PrimitiveI8(_)
+            | Type::PrimitiveI16(_)
+            | Type::PrimitiveI32(_)
+            | Type::PrimitiveI64(_)
+            | Type::PrimitiveISize(_)
+            | Type::PrimitiveU8(_)
+            | Type::PrimitiveU16(_)
+            | Type::PrimitiveU32(_)
+            | Type::PrimitiveU64(_)
+            | Type::PrimitiveUSize(_)
+            | Type::PrimitiveF32(_)
+            | Type::PrimitiveF64(_)
+            | Type::PrimitiveStr(_)
+            | Type::PrimitiveBool(_)
+            | Type::PrimitiveSelf(_) => true,
         }
     }
 
@@ -598,7 +628,7 @@ impl PartialEq for Type {
                 },
             ) => number_elements == other_number_elements && typ == other_typ,
             (Type::PrimitiveVoid(_), Type::PrimitiveVoid(_)) => true,
-            (Type::PrimitiveNever, Type::PrimitiveNever) => todo!(),
+            (Type::PrimitiveNever, Type::PrimitiveNever) => true,
             (Type::PrimitiveI8(_), Type::PrimitiveI8(_)) => true,
             (Type::PrimitiveI16(_), Type::PrimitiveI16(_)) => true,
             (Type::PrimitiveI32(_), Type::PrimitiveI32(_)) => true,
@@ -627,6 +657,7 @@ pub enum TypeSuggestion {
     Array(Box<TypeSuggestion>),
     UnsizedArray(Box<TypeSuggestion>),
     Number(NumberType),
+    Bool,
     #[default]
     Unknown,
 }
@@ -638,6 +669,7 @@ impl Display for TypeSuggestion {
             TypeSuggestion::Array(v) | TypeSuggestion::UnsizedArray(v) => {
                 f.write_fmt(format_args!("[{v}]"))
             }
+            TypeSuggestion::Bool => f.write_str("bool"),
             TypeSuggestion::Number(number_type) => Display::fmt(number_type, f),
             TypeSuggestion::Unknown => f.write_str("{unknown}"),
         }
@@ -675,6 +707,7 @@ impl TypeSuggestion {
                 NumberType::U64 => Type::PrimitiveU64(0),
                 NumberType::Usize => Type::PrimitiveUSize(0),
             }),
+            TypeSuggestion::Bool => Some(Type::PrimitiveBool(0)),
             TypeSuggestion::Unknown => None,
         }
     }
@@ -682,7 +715,6 @@ impl TypeSuggestion {
     pub fn from_type(typ: &Type) -> Self {
         match typ {
             Type::PrimitiveStr(_)
-            | Type::PrimitiveBool(_)
             | Type::PrimitiveSelf(_)
             | Type::Generic(..)
             | Type::Function(..)
@@ -705,6 +737,7 @@ impl TypeSuggestion {
             Type::PrimitiveUSize(_) => Self::Number(NumberType::Usize),
             Type::PrimitiveF32(_) => Self::Number(NumberType::F32),
             Type::PrimitiveF64(_) => Self::Number(NumberType::F64),
+            Type::PrimitiveBool(_) => Self::Bool,
         }
     }
 }

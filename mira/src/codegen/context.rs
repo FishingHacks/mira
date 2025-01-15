@@ -130,7 +130,7 @@ impl<'a> CodegenContext<'a> {
         let structs = struct_reader
             .iter()
             .enumerate()
-            .map(|(i, structure)| context.opaque_struct_type(&mangle_struct(&ctx, i)))
+            .map(|(i, _)| context.opaque_struct_type(&mangle_struct(&ctx, i)))
             .collect::<Vec<_>>();
         for i in 0..struct_reader.len() {
             let fields = struct_reader[i]
@@ -188,7 +188,7 @@ impl<'a> CodegenContext<'a> {
             .iter()
             .enumerate()
             .map(|(i, (c, b))| (i, c, b))
-            .map(|(i, contract, _)| {
+            .map(|(_, contract, _)| {
                 let param_types = contract
                     .arguments
                     .iter()
@@ -326,6 +326,13 @@ impl<'a> CodegenContext<'a> {
         for expr in body {
             expr.codegen(&mut function_ctx)?;
         }
+        let Some(insert_block) = self.builder.get_insert_block() else {
+            unreachable!("builder does not have a basic block to insert into even though it just built a function")
+        };
+        assert!(
+            insert_block.get_terminator().is_some(),
+            "basic block does not have a terminator"
+        );
         Ok(())
     }
 
@@ -393,10 +400,10 @@ fn collect_strings_for_expressions(
                     .map(|v| collect_strings_for_expressions(v, strings));
             }
             TypecheckedExpression::While {
-                loc,
                 cond_block,
                 cond,
                 body,
+                ..
             } => {
                 collect_strings_for_expressions(cond_block, strings);
                 collect_strings_for_expressions(body, strings);

@@ -92,7 +92,44 @@ impl TypedLiteral {
             TypedLiteral::I64(_) => Cow::Owned(Type::PrimitiveI64(0)),
             TypedLiteral::ISize(_) => Cow::Owned(Type::PrimitiveISize(0)),
             TypedLiteral::Bool(_) => Cow::Owned(Type::PrimitiveBool(0)),
-            TypedLiteral::Intrinsic(intrinsic) => panic!("intrinsic is no type"),
+            TypedLiteral::Intrinsic(_) => panic!("intrinsic is no type"),
+        }
+    }
+
+    pub fn to_primitive_type(
+        &self,
+        scope: &[(Type, ScopeTypeMetadata)],
+        ctx: &TypecheckingContext,
+    ) -> Option<Type> {
+        match self {
+            TypedLiteral::Void => Some(Type::PrimitiveVoid(0)),
+            TypedLiteral::String(_) => Some(Type::PrimitiveStr(1)),
+            TypedLiteral::F64(_) => Some(Type::PrimitiveF64(0)),
+            TypedLiteral::F32(_) => Some(Type::PrimitiveF32(0)),
+            TypedLiteral::U8(_) => Some(Type::PrimitiveU8(0)),
+            TypedLiteral::U16(_) => Some(Type::PrimitiveU16(0)),
+            TypedLiteral::U32(_) => Some(Type::PrimitiveU32(0)),
+            TypedLiteral::U64(_) => Some(Type::PrimitiveU64(0)),
+            TypedLiteral::USize(_) => Some(Type::PrimitiveUSize(0)),
+            TypedLiteral::I8(_) => Some(Type::PrimitiveI8(0)),
+            TypedLiteral::I16(_) => Some(Type::PrimitiveI16(0)),
+            TypedLiteral::I32(_) => Some(Type::PrimitiveI32(0)),
+            TypedLiteral::I64(_) => Some(Type::PrimitiveI64(0)),
+            TypedLiteral::ISize(_) => Some(Type::PrimitiveISize(0)),
+            TypedLiteral::Bool(_) => Some(Type::PrimitiveBool(0)),
+            TypedLiteral::Dynamic(id) => {
+                let ty = &scope[*id].0;
+                ty.is_primitive().then(|| ty.clone())
+            }
+            TypedLiteral::Static(id) => {
+                let ty = &ctx.statics.read()[*id].0;
+                ty.is_primitive().then(|| ty.clone())
+            }
+            TypedLiteral::Array(..)
+            | TypedLiteral::Struct(..)
+            | TypedLiteral::Function(_)
+            | TypedLiteral::Intrinsic(_)
+            | TypedLiteral::ExternalFunction(_) => None,
         }
     }
 
