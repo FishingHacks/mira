@@ -17,7 +17,7 @@ struct CAlloc {;
     }
 }
 @lang("allocator")
-let allocator: CAlloc = CAlloc {};
+let allocator: CAlloc = .{};
 
 @lang("copy_trait")
 trait Copy {}
@@ -54,14 +54,14 @@ struct Nya {
     mreow: u32,
     boop: usize;
 
-    fn new(meow: i32, mreow: u32, boop: usize) -> Nya = Nya { meow: meow, mreow: mreow, boop: boop };
+    fn new(meow: i32, mreow: u32, boop: usize) -> Nya = .{ meow: meow, mreow: mreow, boop: boop };
 }
 
 let meow: i32 = 12;
 let meowmeow: &str = "fdkjghdafhgjkdsfg";
 
 fn test() -> Nya = Nya::new(13, 14, 15);
-fn test2() -> Nya = Nya { meow: 13, mreow: 3948, boop: 0xff87cd };
+fn test2() -> Nya = .{ meow: 13, mreow: 3948, boop: 0xff87cd };
 fn test3(v: &Nya) -> &u32 = &v.mreow;
 fn test4(v: [Nya; 5], idx: usize) -> Nya = v[idx];
 fn test5(v: &[Nya]) -> usize = v[2].boop;
@@ -82,10 +82,17 @@ extern fn main(argc: usize, argv: &&u8) {
     printf("value of test 3 and test 4 is: %d\n\0" as &u8, *value3);
     let val = test10(test11, 12, 8);
     printf("value is %d\n\0" as &u8, val);
+
+    let tuple = test13();
+    printf("tuple is (%d, %d)\n\0" as &u8, tuple[0], tuple[1]);
 }
 
 fn test10(v: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 = v(a, b);
 fn test11(lhs: i32, rhs: i32) -> i32 = lhs + rhs;
+fn `lol this ident has a space in it`() -> i32 = 3456;
+
+fn test12() -> (i32, i32) = .(1, 2);
+fn test13() -> (i32, i32) = .[1, 2];
 
 use "test"::woof;
 

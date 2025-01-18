@@ -7,7 +7,7 @@ use std::path::Path;
 
 fn mangle_char(c: char, string: &mut String) {
     match c {
-        'a'..='z' | 'A'..='Z' | '_' | '.' | '-' | '0'..='9' => string.push(c),
+        'a'..='z' | 'A'..='Z' | '_' | '.' | '-' | '0'..='9' | ' ' => string.push(c),
         '<' => string.push_str("$LT$"),
         '>' => string.push_str("$GT$"),
         ',' => string.push_str("$C$"),

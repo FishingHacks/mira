@@ -49,6 +49,11 @@ pub enum TypeRef {
         loc: Location,
         num_references: u8,
     },
+    Tuple {
+        num_references: u8,
+        loc: Location,
+        elements: Vec<TypeRef>,
+    },
 }
 
 impl Display for TypeRef {
@@ -98,6 +103,16 @@ impl Display for TypeRef {
                 }
                 Ok(())
             }
+            Self::Tuple { elements, .. } => {
+                f.write_char('(')?;
+                for i in 0..elements.len() {
+                    if i != 0 {
+                        f.write_str(", ")?
+                    }
+                    Display::fmt(&elements[i], f)?;
+                }
+                f.write_char(')')
+            }
             Self::Void(..) => f.write_str("void"),
             Self::Never(_) => f.write_str("!"),
         }
@@ -105,64 +120,24 @@ impl Display for TypeRef {
 }
 
 impl TypeRef {
-    pub fn try_clone_deref(self) -> Option<Self> {
-        if self.get_ref_count() > 0 {
-            return None;
+    pub fn try_clone_deref(mut self) -> Option<Self> {
+        match &mut self {
+            TypeRef::DynReference { num_references, .. }
+            | TypeRef::Reference { num_references, .. }
+            | TypeRef::UnsizedArray { num_references, .. }
+            | TypeRef::SizedArray { num_references, .. }
+            | TypeRef::Function { num_references, .. }
+            | TypeRef::Tuple { num_references, .. }
+            | TypeRef::Void(_, num_references) => {
+                if *num_references == 0 {
+                    None
+                } else {
+                    *num_references -= 1;
+                    Some(self)
+                }
+            }
+            TypeRef::Never(_) => Some(self),
         }
-        Some(match self {
-            Self::Function {
-                return_ty,
-                args,
-                loc,
-                num_references,
-            } => Self::Function {
-                return_ty,
-                args,
-                loc,
-                num_references: num_references - 1,
-            },
-            Self::DynReference {
-                num_references,
-                loc,
-                traits,
-            } => Self::DynReference {
-                num_references: num_references - 1,
-                loc,
-                traits,
-            },
-            Self::Reference {
-                num_references: number_of_references,
-                type_name,
-                loc,
-            } => Self::Reference {
-                num_references: number_of_references - 1,
-                type_name,
-                loc,
-            },
-            Self::UnsizedArray {
-                num_references: number_of_references,
-                child,
-                loc,
-            } => Self::UnsizedArray {
-                num_references: number_of_references - 1,
-                child: child.clone(),
-                loc,
-            },
-            Self::SizedArray {
-                num_references: number_of_references,
-                child,
-                number_elements: amount_of_elements,
-                loc,
-            } => Self::SizedArray {
-                num_references: number_of_references - 1,
-                child: child.clone(),
-                number_elements: amount_of_elements,
-                loc,
-            },
-            Self::Void(loc, refcount) => Self::Void(loc, refcount - 1),
-            // Self::Never cannot be dereferenced
-            Self::Never(_) => unreachable!(),
-        })
     }
 
     pub fn can_deref(&self) -> bool {
@@ -176,6 +151,7 @@ impl TypeRef {
             | Self::UnsizedArray { num_references, .. }
             | Self::DynReference { num_references, .. }
             | Self::Function { num_references, .. }
+            | Self::Tuple { num_references, .. }
             | Self::SizedArray { num_references, .. } => *num_references,
             Self::Never(_) => 0,
         }
@@ -296,6 +272,31 @@ impl TypeRef {
                     loc,
                     num_references,
                 });
+            } else if parser.match_tok(TokenType::ParenLeft) {
+                let mut elements = Vec::new();
+                while !parser.match_tok(TokenType::ParenRight) {
+                    if elements.len() > 0 {
+                        if !parser.match_tok(TokenType::Comma) {
+                            return Err(ParsingError::ExpectedArbitrary {
+                                loc: parser.peek().location.clone(),
+                                expected: TokenType::Comma,
+                                found: parser.peek().typ,
+                            });
+                        }
+
+                        if parser.match_tok(TokenType::ParenRight) {
+                            break;
+                        }
+                    }
+
+                    elements.push(TypeRef::parse(parser)?);
+                }
+
+                return Ok(TypeRef::Tuple {
+                    num_references,
+                    loc,
+                    elements,
+                });
             } else {
                 return Err(ParsingError::ExpectedType {
                     loc: parser.peek().location.clone(),
@@ -344,6 +345,7 @@ impl TypeRef {
             | Self::SizedArray { loc, .. }
             | Self::DynReference { loc, .. }
             | Self::Function { loc, .. }
+            | Self::Tuple { loc, .. }
             | Self::UnsizedArray { loc, .. } => loc,
         }
     }
@@ -422,6 +424,18 @@ impl PartialEq for TypeRef {
                     child: other_child,
                     loc: _,
                 } => *other_nor == *self_nor && (&**other_child) == (&**self_child),
+                _ => false,
+            },
+            Self::Tuple {
+                num_references: self_refs,
+                elements: self_elems,
+                ..
+            } => match other {
+                Self::Tuple {
+                    num_references: other_refs,
+                    elements: other_elems,
+                    ..
+                } => *self_refs == *other_refs && *self_elems == *other_elems,
                 _ => false,
             },
             Self::Never(_) => matches!(other, Self::Never(_)),

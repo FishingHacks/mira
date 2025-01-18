@@ -156,6 +156,8 @@ pub enum LiteralValue {
     String(GlobalStr),
     Array(Vec<Expression>),
     Struct(HashMap<GlobalStr, (Location, Expression)>, Path),
+    AnonymousStruct(HashMap<GlobalStr, (Location, Expression)>),
+    Tuple(Vec<(Location, Expression)>),
     Float(f64, NumberType),
     SInt(i64, NumberType),
     UInt(u64, NumberType),
@@ -166,36 +168,36 @@ pub enum LiteralValue {
     Void,
 }
 
-impl PartialEq for LiteralValue {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::Float(_, num_type) | Self::UInt(_, num_type) | Self::SInt(_, num_type),
-                Self::Float(_, other) | Self::UInt(_, other) | Self::SInt(_, other),
-            ) if *num_type != *other => return false,
-            _ => (),
-        }
-        match (self, other) {
-            (Self::String(l), Self::String(r)) => l == r,
-            (Self::SInt(l, _), Self::SInt(r, _)) => *l == *r,
-            (Self::UInt(l, _), Self::UInt(r, _)) => *l == *r,
-            (Self::Float(l, _), Self::Float(r, _)) => *l == *r,
-            (Self::UInt(l, _), Self::SInt(r, _)) | (Self::SInt(r, _), Self::UInt(l, _)) => {
-                *r >= 0 && (*r as u64) == *l
-            }
-            (Self::Float(l, _), Self::SInt(r, _)) | (Self::SInt(r, _), Self::Float(l, _)) => {
-                (*l == l.floor()) && (*l as i64) == *r
-            }
-            (Self::Float(l, _), Self::UInt(r, _)) | (Self::UInt(r, _), Self::Float(l, _)) => {
-                (*l >= 0.0) && (*l == l.floor()) && (*l as u64) == *r
-            }
-            (Self::Bool(l), Self::Bool(r)) => l == r,
-            (Self::Dynamic(l), Self::Dynamic(r)) => l == r,
-            (Self::Void, Self::Void) => true,
-            _ => false,
-        }
-    }
-}
+//impl PartialEq for LiteralValue {
+//    fn eq(&self, other: &Self) -> bool {
+//        match (self, other) {
+//            (
+//                Self::Float(_, num_type) | Self::UInt(_, num_type) | Self::SInt(_, num_type),
+//                Self::Float(_, other) | Self::UInt(_, other) | Self::SInt(_, other),
+//            ) if *num_type != *other => return false,
+//            _ => (),
+//        }
+//        match (self, other) {
+//            (Self::String(l), Self::String(r)) => l == r,
+//            (Self::SInt(l, _), Self::SInt(r, _)) => *l == *r,
+//            (Self::UInt(l, _), Self::UInt(r, _)) => *l == *r,
+//            (Self::Float(l, _), Self::Float(r, _)) => *l == *r,
+//            (Self::UInt(l, _), Self::SInt(r, _)) | (Self::SInt(r, _), Self::UInt(l, _)) => {
+//                *r >= 0 && (*r as u64) == *l
+//            }
+//            (Self::Float(l, _), Self::SInt(r, _)) | (Self::SInt(r, _), Self::Float(l, _)) => {
+//                (*l == l.floor()) && (*l as i64) == *r
+//            }
+//            (Self::Float(l, _), Self::UInt(r, _)) | (Self::UInt(r, _), Self::Float(l, _)) => {
+//                (*l >= 0.0) && (*l == l.floor()) && (*l as u64) == *r
+//            }
+//            (Self::Bool(l), Self::Bool(r)) => l == r,
+//            (Self::Dynamic(l), Self::Dynamic(r)) => l == r,
+//            (Self::Void, Self::Void) => true,
+//            _ => false,
+//        }
+//    }
+//}
 
 impl Display for LiteralValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -233,6 +235,31 @@ impl Display for LiteralValue {
 
                 f.write_str(" }")
             }
+            LiteralValue::AnonymousStruct(v) => {
+                f.write_str(".{")?;
+
+                for (k, (_, v)) in v {
+                    f.write_char(' ')?;
+                    Display::fmt(k, f)?;
+                    f.write_str(": ")?;
+                    Display::fmt(v, f)?;
+                    f.write_char(',')?;
+                }
+
+                f.write_str(" }")
+            }
+            LiteralValue::Tuple(v) => {
+                f.write_str(".(")?;
+
+                for i in 0..v.len() {
+                    if i != 0 {
+                        f.write_str(", ")?
+                    }
+                    Display::fmt(&v[i].1, f)?;
+                }
+
+                f.write_char(')')
+            }
             LiteralValue::AnonymousFunction(v, body) => {
                 display_contract(f, v, false)?;
                 Display::fmt(body, f)?;
@@ -253,6 +280,8 @@ impl LiteralValue {
             LiteralValue::String(..) => "string",
             LiteralValue::Array(..) => "array",
             LiteralValue::Struct(..) => "struct",
+            LiteralValue::AnonymousStruct(..) => "anonymous struct",
+            LiteralValue::Tuple(..) => "tuple",
             LiteralValue::Void => "void",
             LiteralValue::AnonymousFunction(..) | Self::BakedAnonymousFunction(..) => "function",
         }
@@ -535,234 +564,6 @@ impl Expression {
             } => left_side.bake_functions(module, module_id),
         }
     }
-
-    pub fn optimize(&mut self) -> Result<(), ParsingError> {
-        let loc = self.loc().clone();
-
-        Ok(match self {
-            Self::Literal(val, _) => match val {
-                LiteralValue::Array(array) => {
-                    for val in array {
-                        val.optimize()?;
-                    }
-                }
-                _ => (),
-            },
-            Self::Unary {
-                operator,
-                right_side,
-            } => {
-                // right_side = Box::new(right_side.optimize()?);
-                right_side.optimize()?;
-
-                match &mut **right_side {
-                    Expression::Literal(LiteralValue::Dynamic(..), ..) => (),
-                    Expression::Literal(..) => {
-                        // valid tokens: + plus, - minus, ~ bitwise not, ! logical not
-                        match operator.typ {
-                            TokenType::Plus
-                            | TokenType::Minus
-                            | TokenType::BitwiseNot
-                            | TokenType::LogicalNot
-                            | TokenType::Ampersand
-                            | TokenType::Asterix => {}
-                            tok @ _ => {
-                                return Err(ParsingError::InvalidUnaryOperand {
-                                    loc,
-                                    operand_type: tok,
-                                })
-                            }
-                        }
-                    }
-                    // *&
-                    Expression::Unary {
-                        operator: r_op,
-                        right_side,
-                    } if operator.typ == TokenType::Asterix && r_op.typ == TokenType::Ampersand => {
-                        *self = (&**right_side).clone();
-                    }
-                    // &*
-                    Expression::Unary {
-                        operator: r_op,
-                        right_side,
-                    } if operator.typ == TokenType::Ampersand && r_op.typ == TokenType::Asterix => {
-                        *self = (&**right_side).clone();
-                    }
-                    _ => (),
-                }
-            }
-            Self::Binary {
-                operator,
-                right_side,
-                left_side,
-            } => {
-                left_side.optimize()?;
-                right_side.optimize()?;
-
-                match (&mut **left_side, &mut **right_side) {
-                    (Expression::Literal(LiteralValue::Dynamic(..), ..), _)
-                    | (_, Expression::Literal(LiteralValue::Dynamic(..), ..)) => (),
-
-                    (Expression::Literal(left, ..), Expression::Literal(right, ..)) => {
-                        // +, -, *, /, %, &, |, ^, &&, ||, >=, <=, >, <, ==, !=
-                        match operator.typ {
-                            TokenType::Plus => (),
-                            TokenType::Minus => (),
-                            TokenType::Asterix => (),
-                            TokenType::Divide => (),
-                            TokenType::Modulo => (),
-                            TokenType::LogicalAnd => match (left, right) {
-                                (LiteralValue::Bool(false), _) | (_, LiteralValue::Bool(false)) => {
-                                    *self = Self::bool(false, loc)
-                                }
-                                (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
-                                    *self = Self::bool(*left && *right, loc)
-                                }
-                                _ => (),
-                            },
-                            TokenType::LogicalOr => match (left, right) {
-                                (LiteralValue::Bool(true), _) | (_, LiteralValue::Bool(true)) => {
-                                    *self = Self::bool(true, loc)
-                                }
-                                (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
-                                    *self = Self::bool(*left && *right, loc);
-                                }
-                                _ => (),
-                            },
-                            TokenType::BitwiseXor => match (left, right) {
-                                (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
-                                    *self = Self::bool(*left ^ *right, loc);
-                                }
-                                _ => (),
-                            },
-                            TokenType::LShift => (),
-                            TokenType::RShift => (),
-                            TokenType::Ampersand => (),
-                            TokenType::BitwiseOr => match (left, right) {
-                                (LiteralValue::Bool(left), LiteralValue::Bool(right)) => {
-                                    *self = Self::bool(*left | *right, loc)
-                                }
-                                _ => (),
-                            },
-                            TokenType::GreaterThan => (),
-                            TokenType::LessThan => (),
-                            TokenType::GreaterThanEquals => (),
-                            TokenType::LessThanEquals => (),
-                            e @ (TokenType::EqualEqual | TokenType::NotEquals) => {
-                                match (left, right) {
-                                    // dynamic values, functions, arrays, objects and structs cannot be compared at compile time
-                                    (
-                                        LiteralValue::Dynamic(..)
-                                        | LiteralValue::Array(..)
-                                        | LiteralValue::Struct(..)
-                                        | LiteralValue::AnonymousFunction(..),
-                                        _,
-                                    )
-                                    | (
-                                        _,
-                                        LiteralValue::Dynamic(..)
-                                        | LiteralValue::Array(..)
-                                        | LiteralValue::Struct(..)
-                                        | LiteralValue::AnonymousFunction(..),
-                                    ) => {}
-                                    (l, r) => {
-                                        *self = Self::bool(
-                                            (*l == *r) == (e == TokenType::EqualEqual), /* this basically does the same as (e == TokenType::Equals) ? (*l == *r) : (*l != *r) */
-                                            // false == false (l != r && e == not-equals) => true
-                                            // true == false (l == r && e == not-equals) => false
-                                            // false == true ( l != r && e == equals) => false
-                                            // true == true ( l == r && e == equals) => true
-                                            loc,
-                                        )
-                                    }
-                                }
-                            }
-                            tok @ _ => {
-                                return Err(ParsingError::InvalidOperand {
-                                    loc,
-                                    operand_type: tok,
-                                })
-                            }
-                        }
-                    }
-                    _ => (),
-                }
-            }
-            Self::FunctionCall {
-                arguments,
-                identifier,
-            } => {
-                identifier.optimize()?;
-                for argument in arguments {
-                    argument.optimize()?;
-                }
-            }
-            Self::Indexing {
-                left_side,
-                right_side,
-            } => {
-                left_side.optimize()?;
-                right_side.optimize()?;
-            }
-            Self::Assignment {
-                left_side,
-                right_side: _,
-                loc,
-            } => {
-                if let Self::Literal(v, _) = &**left_side {
-                    match v {
-                        LiteralValue::Dynamic(..) => (),
-                        _ => {
-                            return Err(ParsingError::AssignmentInvalidLeftSide {
-                                loc: loc.clone(),
-                            })
-                        }
-                    }
-                }
-            }
-            Self::Range {
-                left_side,
-                right_side,
-                ..
-            } => {
-                left_side.optimize()?;
-                right_side.optimize()?;
-            }
-            Self::MemberAccess {
-                left_side, index, ..
-            } => {
-                left_side.optimize()?;
-                if let Self::MemberAccess {
-                    left_side: left_left_side,
-                    index: left_idx,
-                    loc,
-                } = &mut **left_side
-                {
-                    left_idx.extend(index.drain(..));
-                    std::mem::swap(index, left_idx);
-                    index.append(left_idx);
-                    let left_left_side = std::mem::replace(
-                        &mut **left_left_side,
-                        Self::Literal(LiteralValue::Void, loc.clone()),
-                    );
-                    drop(std::mem::replace(&mut **left_side, left_left_side));
-                }
-                if index.len() == 0 {
-                    let mut dummy_expr =
-                        Expression::Literal(LiteralValue::Void, left_side.loc().clone());
-                    std::mem::swap(&mut dummy_expr, &mut **left_side);
-                    std::mem::swap(self, &mut dummy_expr);
-                }
-            }
-            Self::TypeCast { left_side, .. } => left_side.optimize()?,
-            Self::MemberCall { lhs, arguments, .. } => {
-                lhs.optimize()?;
-                for arg in arguments {
-                    arg.optimize()?;
-                }
-            }
-        })
-    }
 }
 
 macro_rules! assign_set {
@@ -778,12 +579,6 @@ macro_rules! assign_set {
 
 impl Parser {
     pub fn parse_expression(&mut self) -> Result<Expression, ParsingError> {
-        let mut expr = self.expression()?;
-        expr.optimize()?;
-        Ok(expr)
-    }
-
-    fn expression(&mut self) -> Result<Expression, ParsingError> {
         self.comparison()
     }
 
@@ -838,7 +633,7 @@ impl Parser {
         while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
             let inclusive = self.previous().typ == TokenType::RangeInclusive;
             let loc = self.previous().location.clone();
-            let right_side = Box::new(self.expression()?);
+            let right_side = Box::new(self.parse_expression()?);
             expr = Expression::Range {
                 left_side: Box::new(expr),
                 right_side,
@@ -960,7 +755,7 @@ impl Parser {
         let expr = self.type_cast()?;
         if self.match_tok(TokenType::Equal) {
             let loc = self.previous().location.clone();
-            let value = self.expression()?;
+            let value = self.parse_expression()?;
             return Ok(Expression::Assignment {
                 left_side: Box::new(expr),
                 right_side: Box::new(value),
@@ -1025,7 +820,7 @@ impl Parser {
 
                     let next_loc = self.peek().location.clone();
                     let next_typ = self.peek().typ;
-                    if let Ok(expr) = self.expression() {
+                    if let Ok(expr) = self.parse_expression() {
                         arguments.push(expr);
                     } else {
                         return Err(ParsingError::ExpectedFunctionArgumentExpression {
@@ -1066,7 +861,7 @@ impl Parser {
             } else if self.previous().typ == TokenType::BracketLeft {
                 let next_loc = self.peek().location.clone();
                 let next_typ = self.peek().typ;
-                let Ok(indexing_expr) = self.expression() else {
+                let Ok(indexing_expr) = self.parse_expression() else {
                     return Err(ParsingError::ExpectedFunctionArgumentExpression {
                         loc: next_loc,
                         found: next_typ,
@@ -1118,6 +913,46 @@ impl Parser {
     }
 
     fn primary(&mut self) -> Result<Expression, ParsingError> {
+        if self.match_tok(TokenType::Dot) {
+            // .{} / .[] / .()
+            let typ = self.peek().typ;
+            let loc = self.peek().location.clone();
+            if typ == TokenType::ParenLeft || typ == TokenType::BracketLeft {
+                self.advance();
+                let matching_tok = if typ == TokenType::ParenLeft {
+                    TokenType::ParenRight
+                } else {
+                    TokenType::BracketRight
+                };
+                let mut elements = Vec::new();
+                while !self.match_tok(matching_tok) {
+                    if elements.len() > 0 {
+                        if !self.match_tok(TokenType::Comma) {
+                            return Err(ParsingError::ExpectedArbitrary {
+                                loc: self.peek().location.clone(),
+                                expected: TokenType::Comma,
+                                found: self.peek().typ,
+                            });
+                        }
+                        if self.match_tok(matching_tok) {
+                            break;
+                        }
+                    }
+
+                    elements.push((self.peek().location.clone(), self.parse_expression()?));
+                }
+                return Ok(Expression::Literal(LiteralValue::Tuple(elements), loc));
+            } else if typ == TokenType::CurlyLeft {
+                return self
+                    .try_object()
+                    .expect("this should never return None as we ensured the next token is of type CurlyLeft.")
+                    .map(LiteralValue::AnonymousStruct)
+                    .map(move |v| Expression::Literal(v, loc));
+            } else {
+                unreachable!()
+            }
+        }
+
         // arrays
         match self.try_array() {
             Some(v) => return v,
@@ -1158,7 +993,7 @@ impl Parser {
         }
 
         if self.match_tok(TokenType::ParenLeft) {
-            let expr = self.expression()?;
+            let expr = self.parse_expression()?;
             if self.match_tok(TokenType::ParenRight) {
                 return Ok(expr);
             }
@@ -1197,7 +1032,7 @@ impl Parser {
                     }
                 }
 
-                match self.expression() {
+                match self.parse_expression() {
                     Ok(v) => arr.push(v),
                     e @ Err(_) => return Some(e),
                 }
@@ -1256,7 +1091,7 @@ impl Parser {
                     }));
                 }
 
-                match self.expression() {
+                match self.parse_expression() {
                     Ok(expr) => obj.insert(key, (location, expr)),
                     Err(e) => return Some(Err(e)),
                 };

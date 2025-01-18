@@ -3,7 +3,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum CodegenError {
-    #[error("[LLVM Native]: {0}")]
+    #[error("[LLVM Native]: {}", _0.to_string_lossy())]
     LLVMNative(LLVMString),
     #[error("Unknown Triple: {0}")]
     UnknownTriple(TargetTriple),

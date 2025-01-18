@@ -329,6 +329,10 @@ impl Display for TLD<'_> {
                 f.write_char(' ')?;
                 f.debug_list().entries(vec.iter().map(TLD)).finish()
             }
+            TypedLiteral::Tuple(vec) => {
+                f.write_str("tuple ")?;
+                f.debug_list().entries(vec.iter().map(TLD)).finish()
+            }
             TypedLiteral::F64(v) => Display::fmt(v, f),
             TypedLiteral::F32(v) => Display::fmt(v, f),
             TypedLiteral::U8(v) => Display::fmt(v, f),

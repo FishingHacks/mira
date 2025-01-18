@@ -16,6 +16,12 @@ pub enum TypecheckingError {
     LangItemError(#[from] LangItemError),
     #[error("{0}")]
     LangItemAssignment(#[from] LangItemAssignmentError),
+    #[error("{0}: Tuple only has {1} fields, but tried to get field {2}")]
+    TupleIndexOutOfBounds(Location, usize, usize),
+    #[error("{0}: Cannot index a tuple with a dynamic value")]
+    TupleDynamicIndex(Location),
+    #[error("{0}: Cannot infer type for anonymous struct")]
+    CannotInferAnonStructType(Location),
     #[error("{0}: Statics can only have literal values")]
     StaticsNeedToBeLiteral(Location),
     #[error(

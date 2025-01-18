@@ -28,6 +28,7 @@ pub enum TypedLiteral {
     String(GlobalStr),
     Array(Type, Vec<TypedLiteral>),
     Struct(StructId, Vec<TypedLiteral>),
+    Tuple(Vec<TypedLiteral>),
     F64(f64),
     F32(f32),
     U8(u8),
@@ -79,6 +80,13 @@ impl TypedLiteral {
                 name: ctx.structs.read()[*struct_id].name.clone(),
                 num_references: 0,
             }),
+            TypedLiteral::Tuple(elems) => Cow::Owned(Type::Tuple {
+                elements: elems
+                    .iter()
+                    .map(|v| v.to_type(scope, ctx).into_owned())
+                    .collect(),
+                num_references: 0,
+            }),
             TypedLiteral::F64(_) => Cow::Owned(Type::PrimitiveF64(0)),
             TypedLiteral::F32(_) => Cow::Owned(Type::PrimitiveF32(0)),
             TypedLiteral::U8(_) => Cow::Owned(Type::PrimitiveU8(0)),
@@ -127,6 +135,7 @@ impl TypedLiteral {
             }
             TypedLiteral::Array(..)
             | TypedLiteral::Struct(..)
+            | TypedLiteral::Tuple(..)
             | TypedLiteral::Function(_)
             | TypedLiteral::Intrinsic(_)
             | TypedLiteral::ExternalFunction(_) => None,
@@ -135,7 +144,9 @@ impl TypedLiteral {
 
     pub fn is_entirely_literal(&self) -> bool {
         match self {
-            TypedLiteral::Array(_, vec) | TypedLiteral::Struct(_, vec) => vec
+            TypedLiteral::Array(_, vec)
+            | TypedLiteral::Struct(_, vec)
+            | TypedLiteral::Tuple(vec) => vec
                 .iter()
                 .map(TypedLiteral::is_entirely_literal)
                 .fold(true, std::ops::BitAnd::bitand),

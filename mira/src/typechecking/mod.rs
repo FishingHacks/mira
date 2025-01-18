@@ -354,12 +354,26 @@ impl TypecheckingContext {
                 num_references,
                 child,
                 number_elements,
-                loc: _,
+                ..
             } => Ok(Type::SizedArray {
                 typ: Box::new(self.resolve_type(module_id, &**child, generics)?),
                 num_references: *num_references,
                 number_elements: *number_elements,
             }),
+            TypeRef::Tuple {
+                num_references,
+                elements,
+                ..
+            } => {
+                let mut typed_elements = Vec::with_capacity(elements.len());
+                for i in 0..elements.len() {
+                    typed_elements.push(self.resolve_type(module_id, &elements[i], generics)?);
+                }
+                Ok(Type::Tuple {
+                    num_references: *num_references,
+                    elements: typed_elements,
+                })
+            }
         }
     }
 
@@ -597,6 +611,26 @@ impl TypecheckingContext {
                 num_references: *num_references,
                 number_elements: *number_elements,
             }),
+            TypeRef::Tuple {
+                num_references,
+                elements,
+                ..
+            } => {
+                let mut typed_elements = Vec::with_capacity(elements.len());
+                for i in 0..elements.len() {
+                    typed_elements.push(self.type_resolution_resolve_type(
+                        &elements[i],
+                        is_generic_name,
+                        module,
+                        context.clone(),
+                        errors,
+                    )?);
+                }
+                Some(Type::Tuple {
+                    elements: typed_elements,
+                    num_references: *num_references,
+                })
+            }
         }
     }
 }

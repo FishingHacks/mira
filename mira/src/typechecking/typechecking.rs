@@ -651,6 +651,88 @@ fn typecheck_expression(
                 };
                 Ok((arr_typ, TypedLiteral::Array(typ, elements)))
             }
+            LiteralValue::Tuple(values) => {
+                let mut elements = Vec::with_capacity(values.len());
+                let mut element_types = Vec::with_capacity(values.len());
+                let mut suggested_element_types = &Vec::new();
+                if let TypeSuggestion::Tuple(vec) = &type_suggestion {
+                    suggested_element_types = vec;
+                }
+
+                for i in 0..values.len() {
+                    let (typ, val) = typecheck_expression(
+                        context,
+                        module,
+                        scope,
+                        &values[i].1,
+                        exprs,
+                        suggested_element_types.get(i).cloned().unwrap_or_default(),
+                    )?;
+                    elements.push(val);
+                    element_types.push(typ);
+                }
+                Ok((
+                    Type::Tuple {
+                        elements: element_types,
+                        num_references: 0,
+                    },
+                    TypedLiteral::Tuple(elements),
+                ))
+            }
+            LiteralValue::AnonymousStruct(values) => {
+                let struct_id = if let TypeSuggestion::Struct(id) = type_suggestion {
+                    id
+                } else {
+                    return Err(TypecheckingError::CannotInferAnonStructType(
+                        location.clone(),
+                    ));
+                };
+
+                let structure = &context.structs.read()[struct_id];
+                // ensure there are no excessive values in the struct initialization
+                for k in values.keys() {
+                    if structure.elements.iter().find(|v| v.0 == *k).is_none() {
+                        return Err(TypecheckingError::NoSuchFieldFound {
+                            location: values[k].0.clone(),
+                            name: k.clone(),
+                        });
+                    }
+                }
+
+                let mut elements = Vec::with_capacity(structure.elements.len());
+                for (key, typ) in structure.elements.iter() {
+                    let Some((loc, expr)) = values.get(key) else {
+                        return Err(TypecheckingError::MissingField {
+                            location: location.clone(),
+                            name: key.clone(),
+                        });
+                    };
+                    let (expr_typ, expr_lit) = typecheck_expression(
+                        context,
+                        module,
+                        scope,
+                        expr,
+                        exprs,
+                        TypeSuggestion::from_type(typ),
+                    )?;
+                    if *typ != expr_typ {
+                        return Err(TypecheckingError::MismatchingType {
+                            expected: typ.clone(),
+                            found: expr_typ,
+                            location: loc.clone(),
+                        });
+                    }
+                    elements.push(expr_lit);
+                }
+                Ok((
+                    Type::Struct {
+                        struct_id,
+                        name: structure.name.clone(),
+                        num_references: 0,
+                    },
+                    TypedLiteral::Struct(struct_id, elements),
+                ))
+            }
             LiteralValue::Struct(values, path) => {
                 let value = typed_resolve_import(
                     context,
@@ -1451,9 +1533,25 @@ fn ref_resolve_indexing(
                 typed_literal_lhs = TypedLiteral::Dynamic(id);
             }
             assert_eq!(typ_lhs.refcount(), 0, "non-zero refcount after auto-deref");
+            let offset = indexing_resolve_rhs(context, module, scope, right_side, exprs)?;
             let typ = match typ_lhs {
                 Type::SizedArray { typ, .. } => *typ,
                 Type::UnsizedArray { typ, .. } => *typ,
+                Type::Tuple { elements, .. } => match offset {
+                    OffsetValue::Dynamic(_) => {
+                        return Err(TypecheckingError::TupleDynamicIndex(
+                            expression.loc().clone(),
+                        ))
+                    }
+                    OffsetValue::Static(idx) if idx >= elements.len() => {
+                        return Err(TypecheckingError::TupleIndexOutOfBounds(
+                            expression.loc().clone(),
+                            elements.len(),
+                            idx,
+                        ))
+                    }
+                    OffsetValue::Static(idx) => elements[idx].clone(),
+                },
                 _ => {
                     return Err(TypecheckingError::IndexNonArrayElem(
                         expression.loc().clone(),
@@ -1462,7 +1560,6 @@ fn ref_resolve_indexing(
                 }
             };
 
-            let offset = indexing_resolve_rhs(context, module, scope, right_side, exprs)?;
             let id = scope.push(typ.clone().take_ref());
             exprs.push(TypecheckedExpression::Offset(
                 expression.loc().clone(),
@@ -1631,7 +1728,10 @@ fn copy_resolve_indexing(
                 exprs,
                 TypeSuggestion::Array(Box::new(type_suggestion)),
             )?;
-            if !matches!(typ, Type::UnsizedArray { .. } | Type::SizedArray { .. }) {
+            if !matches!(
+                typ,
+                Type::UnsizedArray { .. } | Type::SizedArray { .. } | Type::Tuple { .. }
+            ) {
                 return Err(TypecheckingError::IndexNonArrayElem(
                     expression.loc().clone(),
                     typ,
@@ -1640,6 +1740,21 @@ fn copy_resolve_indexing(
             if typ.refcount() == 0 {
                 let new_typ = match typ.clone() {
                     Type::SizedArray { typ, .. } => *typ,
+                    Type::Tuple { elements, .. } => match offset {
+                        OffsetValue::Dynamic(_) => {
+                            return Err(TypecheckingError::TupleDynamicIndex(
+                                expression.loc().clone(),
+                            ))
+                        }
+                        OffsetValue::Static(v) if v >= elements.len() => {
+                            return Err(TypecheckingError::TupleIndexOutOfBounds(
+                                expression.loc().clone(),
+                                elements.len(),
+                                v,
+                            ))
+                        }
+                        OffsetValue::Static(v) => elements[v].clone(),
+                    },
                     Type::UnsizedArray { .. } => panic!("unsized element without references"),
                     _ => unreachable!(),
                 };

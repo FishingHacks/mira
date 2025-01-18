@@ -157,13 +157,13 @@ pub enum Literal {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location {
-    pub line: usize,
-    pub column: usize,
+    pub line: u32,
+    pub column: u32,
     pub file: Arc<Path>,
 }
 
 impl Location {
-    pub fn new(file: Arc<Path>, line: usize, column: usize) -> Self {
+    pub fn new(file: Arc<Path>, line: u32, column: u32) -> Self {
         Self { column, file, line }
     }
 }
@@ -298,8 +298,8 @@ impl Token {
     pub fn new(
         typ: TokenType,
         literal: Option<Literal>,
-        line_number: usize,
-        column: usize,
+        line_number: u32,
+        column: u32,
         file: Arc<Path>,
     ) -> Self {
         Self {
@@ -346,8 +346,8 @@ pub struct Tokenizer {
     tokens: Vec<Token>,
     start: usize,
     current: usize,
-    line: usize,
-    column: usize,
+    line: u32,
+    column: u32,
 }
 
 impl Tokenizer {
@@ -503,7 +503,12 @@ impl Tokenizer {
             }
             '@' => token!(AnnotationIntroducer),
             ('0'..='9') => self.parse_number(c),
-            '"' => self.parse_string(),
+            '"' => self.parse_string('"'),
+            '`' => {
+                let mut tok = self.parse_string('`')?;
+                tok.typ = TokenType::IdentifierLiteral;
+                Ok(tok)
+            }
             _ if Self::is_valid_identifier_char(c) && !matches!(c, ('0'..='9')) => {
                 self.parse_identifier(c)
             }
@@ -554,7 +559,7 @@ impl Tokenizer {
                 'a'..='z' | '0'..='9' => typ.push(self.advance()),
                 _ => {
                     let err = TokenizationError::InvalidNumberType(
-                        loc!(self.file;self.line;self.column - typ.len()),
+                        loc!(self.file;self.line;self.column - typ.len() as u32),
                     );
                     let Ok(number_type) = NumberType::from_str(&typ) else {
                         return Err(err);
@@ -862,7 +867,7 @@ impl Tokenizer {
             Err(_) if typ.len() < 1 => NumberType::None,
             _ => {
                 return Err(TokenizationError::InvalidNumberType(
-                    loc!(self.file;self.line;self.column - typ.len()),
+                    loc!(self.file;self.line;self.column - typ.len() as u32),
                 ))
             }
         };
@@ -892,7 +897,7 @@ impl Tokenizer {
         Ok(self.get_token_lit_loc(tok, lit, loc))
     }
 
-    fn parse_string(&mut self) -> Result<Token, TokenizationError> {
+    fn parse_string(&mut self, string_char: char) -> Result<Token, TokenizationError> {
         let mut is_backslash = false;
         let mut str = String::new();
         let loc = loc!(self.file;self.line;self.column);
@@ -905,13 +910,13 @@ impl Tokenizer {
                 str.push(Self::escape_char_to_real_char(c));
             } else if c == '\\' {
                 is_backslash = true;
-            } else if c == '"' {
+            } else if c == string_char {
                 break;
             } else {
                 str.push(c);
             }
         }
-        if self.cur_char() != '"' || self.source[self.current - 2] == '\\' {
+        if self.cur_char() != string_char || self.source[self.current - 2] == '\\' {
             return Err(TokenizationError::unclosed_string(
                 loc!(self.file;self.line+1),
             ));

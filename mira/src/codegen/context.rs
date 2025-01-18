@@ -6,12 +6,14 @@ use std::{
 };
 
 use super::{
+    debug_builder::DebugContext,
     error::CodegenError,
     mangling::{mangle_function, mangle_static, mangle_string, mangle_struct},
 };
 use inkwell::{
     builder::{Builder, BuilderError},
     context::Context,
+    debug_info::{AsDIScope, DWARFEmissionKind, DWARFSourceLanguage},
     module::{Linkage, Module},
     support::LLVMString,
     targets::{
@@ -21,6 +23,7 @@ use inkwell::{
     values::{FunctionValue, GlobalValue},
     AddressSpace, OptimizationLevel,
 };
+use parking_lot::RwLock;
 
 use crate::{
     globals::GlobalStr,
@@ -63,14 +66,83 @@ pub struct CodegenContext<'ctx> {
     pub(super) structs: Vec<StructType<'ctx>>,
     pub(super) statics: Vec<GlobalValue<'ctx>>,
     pub(super) string_map: HashMap<GlobalStr, GlobalValue<'ctx>>,
+    pub(super) debug_ctx: DebugContext<'ctx>,
 }
 
+const PRODUCER: &str = concat!("clang LLVM (mira version ", env!("CARGO_PKG_VERSION"), ")");
+
 impl<'a> CodegenContext<'a> {
+    pub fn finalize_debug_info(&self) {
+        self.debug_ctx.builder.finalize();
+    }
+
+    pub fn check(&self) -> Result<(), LLVMString> {
+        self.module.verify()
+    }
+
+    fn make_debug_info(
+        module: &Module<'a>,
+        path: Arc<Path>,
+        is_optimized: bool,
+        tc_ctx: &TypecheckingContext,
+    ) -> DebugContext<'a> {
+        let module_reader = tc_ctx.modules.read();
+
+        let root_filename = path
+            .file_name()
+            .map(|v| v.to_string_lossy())
+            .unwrap_or("".into());
+        let root_directory = path
+            .parent()
+            .map(|v| v.to_string_lossy())
+            .unwrap_or("".into());
+
+        let (dbg_info_builder, compile_unit) = module.create_debug_info_builder(
+            true,
+            DWARFSourceLanguage::C, /* what is an acceptable value to put here???? */
+            &root_filename,
+            &root_directory,
+            PRODUCER,
+            is_optimized,
+            "",
+            0,
+            "",
+            DWARFEmissionKind::Full,
+            0,
+            false,
+            false,
+            "",
+            "",
+        );
+        let mut dbg_ctx = DebugContext {
+            builder: dbg_info_builder,
+            current_scope: RwLock::new(compile_unit.as_debug_info_scope()),
+            compile_unit,
+            modules: Vec::with_capacity(module_reader.len()),
+        };
+        for module in module_reader.iter() {
+            let file = dbg_ctx.get_file(&module.path);
+            let namespace = dbg_ctx.builder.create_namespace(
+                file.as_debug_info_scope(),
+                &module
+                    .path
+                    .file_name()
+                    .map(|v| v.to_string_lossy())
+                    .unwrap_or("".into()),
+                false,
+            );
+            dbg_ctx.modules.push(namespace);
+        }
+        dbg_ctx
+    }
+
     pub fn make_context(
         context: &'a Context,
         triple: TargetTriple,
         ctx: Arc<TypecheckingContext>,
         module: &str,
+        path: Arc<Path>,
+        is_optimized: bool,
     ) -> Result<CodegenContext<'a>, CodegenError> {
         Target::initialize_all(&InitializationConfig::default());
         let target = Target::from_triple(&triple)?;
@@ -86,6 +158,8 @@ impl<'a> CodegenContext<'a> {
         };
         let module = context.create_module(module);
         module.set_triple(&triple);
+        let debug_ctx = Self::make_debug_info(&module, path, is_optimized, &ctx);
+
         let target_data = machine.get_target_data();
         let data_layout = target_data.get_data_layout();
         module.set_data_layout(&data_layout);
@@ -141,7 +215,7 @@ impl<'a> CodegenContext<'a> {
                     Type::PrimitiveVoid(0) | Type::PrimitiveNever => {
                         default_types.i8.array_type(0).into()
                     }
-                    t => t.to_llvm_basic_type(&default_types, &structs),
+                    t => t.to_llvm_basic_type(&default_types, &structs, context),
                 })
                 .collect::<Vec<_>>();
             assert!(
@@ -163,7 +237,10 @@ impl<'a> CodegenContext<'a> {
                     .iter()
                     .filter_map(|(_, t)| match t {
                         Type::PrimitiveVoid(0) | Type::PrimitiveNever => None,
-                        t => Some(t.to_llvm_basic_type(&default_types, &structs).into()),
+                        t => Some(
+                            t.to_llvm_basic_type(&default_types, &structs, context)
+                                .into(),
+                        ),
                     })
                     .collect::<Vec<_>>();
 
@@ -173,7 +250,7 @@ impl<'a> CodegenContext<'a> {
                     } else {
                         contract
                             .return_type
-                            .to_llvm_basic_type(&default_types, &structs)
+                            .to_llvm_basic_type(&default_types, &structs, context)
                             .fn_type(&param_types, false)
                     };
                 let name = mangle_function(&ctx, i);
@@ -194,17 +271,26 @@ impl<'a> CodegenContext<'a> {
                     .iter()
                     .filter_map(|(_, t)| match t {
                         Type::PrimitiveVoid(0) | Type::PrimitiveNever => None,
-                        t => Some(t.to_llvm_basic_type(&default_types, &structs).into()),
+                        t => Some(
+                            t.to_llvm_basic_type(&default_types, &structs, context)
+                                .into(),
+                        ),
                     })
                     .collect::<Vec<_>>();
 
                 let fn_typ =
                     if let Type::PrimitiveNever | Type::PrimitiveVoid(0) = contract.return_type {
-                        context.void_type().fn_type(&param_types, false)
+                        context.void_type().fn_type(
+                            &param_types,
+                            contract
+                                .annotations
+                                .get_first_annotation::<ExternVarArg>()
+                                .is_some(),
+                        )
                     } else {
                         contract
                             .return_type
-                            .to_llvm_basic_type(&default_types, &structs)
+                            .to_llvm_basic_type(&default_types, &structs, context)
                             .fn_type(
                                 &param_types,
                                 contract
@@ -237,7 +323,7 @@ impl<'a> CodegenContext<'a> {
             .enumerate()
             .map(|(i, v)| {
                 module.add_global(
-                    v.0.to_llvm_basic_type(&default_types, &structs),
+                    v.0.to_llvm_basic_type(&default_types, &structs, context),
                     None,
                     &mangle_static(&ctx, i),
                 )
@@ -254,6 +340,7 @@ impl<'a> CodegenContext<'a> {
                 &functions,
                 &external_functions,
                 &string_map,
+                context,
             ));
         }
         drop(static_reader);
@@ -271,6 +358,7 @@ impl<'a> CodegenContext<'a> {
             machine,
             triple,
             tc_ctx: ctx,
+            debug_ctx,
         });
     }
 
@@ -307,6 +395,8 @@ impl<'a> CodegenContext<'a> {
             .context
             .append_basic_block(func, &format!("entry_{}", fn_id));
         self.builder.position_at_end(body_basic_block);
+        self.debug_ctx
+            .set_scope(self.debug_ctx.modules[contract.module_id].as_debug_info_scope());
 
         let mut param_idx = 0;
         for (idx, arg) in contract
@@ -467,12 +557,10 @@ fn collect_strings_for_expressions(
 fn collect_strings_for_typed_literal(lit: &TypedLiteral, strings: &mut HashSet<GlobalStr>) {
     match lit {
         TypedLiteral::String(global_str) => _ = strings.insert(global_str.clone()),
-        TypedLiteral::Array(_, vec) => vec
-            .iter()
-            .for_each(|v| collect_strings_for_typed_literal(v, strings)),
-        TypedLiteral::Struct(_, vec) => vec
-            .iter()
-            .for_each(|v| collect_strings_for_typed_literal(v, strings)),
+        TypedLiteral::Array(_, vec) | TypedLiteral::Tuple(vec) | TypedLiteral::Struct(_, vec) => {
+            vec.iter()
+                .for_each(|v| collect_strings_for_typed_literal(v, strings))
+        }
         _ => (),
     }
 }

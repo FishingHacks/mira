@@ -8,7 +8,7 @@ use std::{
 };
 
 use mira::{
-    codegen::{CodegenContext, InkwellContext, TargetTriple},
+    codegen::{CodegenContext, CodegenError, InkwellContext, TargetTriple},
     error::MiraError,
     module::{Module, ModuleContext},
     parser::ParserQueueEntry,
@@ -415,7 +415,7 @@ fn run(
         .expect("file needs a filename")
         .to_string_lossy()
         .into_owned();
-    let context = parse_all(file, root_directory.into(), source.as_ref())?;
+    let context = parse_all(file.clone(), root_directory.into(), source.as_ref())?;
 
     let typechecking_context = TypecheckingContext::new(context.clone());
     let errs = typechecking_context.resolve_imports(context.clone());
@@ -473,6 +473,8 @@ fn run(
         TargetTriple::create("x86_64-unknown-linux-gnu"),
         typechecking_context.clone(),
         &filename,
+        file,
+        false,
     )
     .expect("failed to create the llvm context");
     for fn_id in 0..num_fns {
@@ -484,6 +486,12 @@ fn run(
         if let Err(e) = codegen_context.compile_fn(fn_id, scopes_ext_fns.remove(0), true) {
             errs.push(MiraError::Codegen { inner: e.into() });
         }
+    }
+    codegen_context.finalize_debug_info();
+    if let Err(e) = codegen_context.check() {
+        errs.push(MiraError::Codegen {
+            inner: CodegenError::LLVMNative(e),
+        });
     }
     if errs.len() > 0 {
         return Err(errs);

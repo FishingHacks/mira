@@ -1,5 +1,6 @@
 use context::DefaultTypes;
 use core::panic;
+use debug_builder::DebugContext;
 use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
@@ -26,6 +27,7 @@ use inkwell::{
 };
 
 mod context;
+mod debug_builder;
 mod error;
 
 impl<'ctx, 'me> CodegenContext<'ctx> {
@@ -47,6 +49,7 @@ impl<'ctx, 'me> CodegenContext<'ctx> {
             structs: &self.structs,
             statics: &self.statics,
             string_map: &self.string_map,
+            debug_ctx: &self.debug_ctx,
         }
     }
 }
@@ -56,7 +59,7 @@ pub struct FunctionCodegenContext<'ctx, 'codegen> {
     tc_ctx: &'codegen TypecheckingContext,
     _scope: Vec<BasicValueEnum<'ctx>>,
     builder: &'codegen Builder<'ctx>,
-    context: &'codegen Context,
+    context: &'ctx Context,
     default_types: DefaultTypes<'ctx>,
     current_fn: FunctionValue<'ctx>,
     functions: &'codegen Vec<FunctionValue<'ctx>>,
@@ -64,6 +67,7 @@ pub struct FunctionCodegenContext<'ctx, 'codegen> {
     structs: &'codegen Vec<StructType<'ctx>>,
     statics: &'codegen Vec<GlobalValue<'ctx>>,
     string_map: &'codegen HashMap<GlobalStr, GlobalValue<'ctx>>,
+    debug_ctx: &'codegen DebugContext<'ctx>,
 }
 
 impl<'ctx> FunctionCodegenContext<'ctx, '_> {
@@ -93,9 +97,11 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_> {
         let allocated_value = self
             .builder
             .build_alloca(
-                self.tc_scope[id]
-                    .0
-                    .to_llvm_basic_type(&self.default_types, self.structs),
+                self.tc_scope[id].0.to_llvm_basic_type(
+                    &self.default_types,
+                    self.structs,
+                    self.context,
+                ),
                 "",
             )
             .expect("failed to build alloca for a stack allocated value");
@@ -144,6 +150,7 @@ impl<'ctx> Type {
         &self,
         default_types: &DefaultTypes<'ctx>,
         structs: &[StructType<'ctx>],
+        ctx: &'ctx Context,
     ) -> BasicTypeEnum<'ctx> {
         if self.refcount() > 0 {
             if self.is_thin_ptr() {
@@ -162,12 +169,21 @@ impl<'ctx> Type {
             Type::PrimitiveSelf(_) => unreachable!("Self must be resolved at this point"),
             Type::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
             Type::Struct { struct_id, .. } => structs[*struct_id].into(),
+            Type::Tuple { elements, .. } => ctx
+                .struct_type(
+                    &elements
+                        .iter()
+                        .map(|v| v.to_llvm_basic_type(default_types, structs, ctx))
+                        .collect::<Vec<_>>(),
+                    false,
+                )
+                .into(),
             Type::SizedArray {
                 typ,
                 number_elements,
                 ..
             } => typ
-                .to_llvm_basic_type(default_types, structs)
+                .to_llvm_basic_type(default_types, structs, ctx)
                 .array_type(*number_elements as u32)
                 .into(),
             // our function types are always pointers because all function types are pointers in llvm
@@ -190,15 +206,18 @@ impl<'ctx> Type {
         &self,
         default_types: &DefaultTypes<'ctx>,
         structs: &[StructType<'ctx>],
+        ctx: &'ctx Context,
     ) -> FunctionType<'ctx> {
         let Type::Function(v, _) = self else {
             unreachable!("`self` is not a function")
         };
-        let return_ty = v.return_type.to_llvm_basic_type(default_types, structs);
+        let return_ty = v
+            .return_type
+            .to_llvm_basic_type(default_types, structs, ctx);
         let args = v
             .arguments
             .iter()
-            .map(|v| v.to_llvm_basic_type(default_types, structs).into())
+            .map(|v| v.to_llvm_basic_type(default_types, structs, ctx).into())
             .collect::<Vec<_>>();
         return_ty.fn_type(&args, false)
     }
@@ -276,6 +295,7 @@ impl<'ctx> TypedLiteral {
             ctx.functions,
             ctx.external_functions,
             ctx.string_map,
+            ctx.context,
         )
     }
     fn to_basic_value(
@@ -288,6 +308,7 @@ impl<'ctx> TypedLiteral {
         functions: &Vec<FunctionValue<'ctx>>,
         ext_functions: &Vec<FunctionValue<'ctx>>,
         string_map: &HashMap<GlobalStr, GlobalValue<'ctx>>,
+        ctx: &'ctx Context,
     ) -> BasicValueEnum<'ctx> {
         match self {
             TypedLiteral::Void => default_types.empty_struct.const_zero().into(),
@@ -322,7 +343,7 @@ impl<'ctx> TypedLiteral {
             TypedLiteral::Array(ty, elements) => {
                 if elements.len() == 0 {
                     return ty
-                        .to_llvm_basic_type(default_types, structs)
+                        .to_llvm_basic_type(default_types, structs, ctx)
                         .array_type(0)
                         .const_zero()
                         .into();
@@ -343,6 +364,7 @@ impl<'ctx> TypedLiteral {
                                     functions,
                                     ext_functions,
                                     string_map,
+                                    ctx,
                                 )
                                 .$into_val_fn();
                             if val.is_const() {
@@ -355,7 +377,7 @@ impl<'ctx> TypedLiteral {
                         $ty.const_array(&const_elements)
                     }};
                 }
-                let mut const_value = match ty.to_llvm_basic_type(default_types, structs) {
+                let mut const_value = match ty.to_llvm_basic_type(default_types, structs, ctx) {
                     BasicTypeEnum::ArrayType(array_type) => {
                         array_const_value!(array_type, into_array_value)
                     }
@@ -402,6 +424,7 @@ impl<'ctx> TypedLiteral {
                                 functions,
                                 ext_functions,
                                 string_map,
+                                ctx,
                             );
                             if is_value_const(&val) {
                                 val
@@ -420,6 +443,33 @@ impl<'ctx> TypedLiteral {
                         .into_struct_value();
                 }
                 const_value.into()
+            }
+            TypedLiteral::Tuple(values) => {
+                let mut elems = Vec::with_capacity(values.len());
+                let mut elem_types = Vec::with_capacity(values.len());
+                for v in values {
+                    let val = v.to_basic_value(
+                        scope_get_value,
+                        default_types,
+                        structs,
+                        builder,
+                        statics,
+                        functions,
+                        ext_functions,
+                        string_map,
+                        ctx,
+                    );
+                    elem_types.push(val.get_type());
+                    elems.push(val);
+                }
+                let mut value = ctx.struct_type(&elem_types, false).const_zero();
+                for i in 0..values.len() {
+                    value = builder
+                        .build_insert_value(value, elems[i], i as u32, "")
+                        .expect("integer should never be out of range")
+                        .into_struct_value();
+                }
+                value.into()
             }
             TypedLiteral::F64(v) => default_types.f64.const_float(*v).into(),
             TypedLiteral::F32(v) => default_types.f32.const_float(*v as f64).into(),
@@ -545,7 +595,7 @@ fn build_deref<'a>(
         Type::PrimitiveNever => unreachable!(),
         Type::Struct { struct_id, .. } => {
             let llvm_structure = ty
-                .to_llvm_basic_type(&ctx.default_types, ctx.structs)
+                .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
                 .into_struct_type();
             let structure = &ctx.tc_ctx.structs.read()[*struct_id];
             let mut value = llvm_structure.get_poison();
@@ -561,12 +611,30 @@ fn build_deref<'a>(
             }
             Ok(value.into())
         }
+        Type::Tuple { elements, .. } => {
+            let llvm_structure = ty
+                .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
+                .into_struct_type();
+            let mut value = llvm_structure.get_poison();
+            for i in 0..elements.len() {
+                let offset_val =
+                    ctx.builder
+                        .build_struct_gep(llvm_structure, left_side, i as u32, "")?;
+                let element_val = build_deref(offset_val, &elements[i], ctx)?;
+                value = ctx
+                    .builder
+                    .build_insert_value(value, element_val, i as u32, "")?
+                    .into_struct_value();
+            }
+            Ok(value.into())
+        }
         Type::SizedArray {
             typ,
             number_elements,
             ..
         } => {
-            let llvm_element_ty = typ.to_llvm_basic_type(&ctx.default_types, ctx.structs);
+            let llvm_element_ty =
+                typ.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             let mut value = llvm_element_ty
                 .array_type(*number_elements as u32)
                 .get_poison();
@@ -602,7 +670,7 @@ fn build_deref<'a>(
         | Type::PrimitiveF32(_)
         | Type::PrimitiveF64(_)
         | Type::PrimitiveBool(_) => Ok(ctx.builder.build_load(
-            ty.to_llvm_basic_type(&ctx.default_types, ctx.structs),
+            ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context),
             left_side,
             "",
         )?),
@@ -647,8 +715,22 @@ fn build_ptr_store(
         Type::PrimitiveNever | Type::PrimitiveVoid(_) => (),
         Type::Struct { struct_id, .. } => {
             let structure = &ctx.tc_ctx.structs.read()[*struct_id];
-            let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, &ctx.structs);
+            let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, &ctx.structs, ctx.context);
             for (idx, ty) in structure.elements.iter().map(|v| &v.1).enumerate() {
+                let val = ctx.builder.build_extract_value(
+                    right_side.into_struct_value(),
+                    idx as u32,
+                    "",
+                )?;
+                let ptr = ctx
+                    .builder
+                    .build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
+                build_ptr_store(ptr, val, ty, ctx)?;
+            }
+        }
+        Type::Tuple { elements, .. } => {
+            let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, &ctx.structs, ctx.context);
+            for (idx, ty) in elements.iter().enumerate() {
                 let val = ctx.builder.build_extract_value(
                     right_side.into_struct_value(),
                     idx as u32,
@@ -665,7 +747,7 @@ fn build_ptr_store(
             number_elements,
             ..
         } => {
-            let llvm_ty = typ.to_llvm_basic_type(&ctx.default_types, ctx.structs);
+            let llvm_ty = typ.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for i in 0..*number_elements {
                 let val =
                     ctx.builder
@@ -822,7 +904,8 @@ impl TypecheckedExpression {
                 match src {
                     TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].1.stack_allocated => {
                         let ty = &ctx.tc_scope[*id].0;
-                        let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs);
+                        let llvm_ty =
+                            ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
                         let alignment = get_alignment(llvm_ty);
                         ctx.builder.build_memmove(
                             dst.fn_ctx_to_basic_value(ctx).into_pointer_value(),
@@ -835,7 +918,8 @@ impl TypecheckedExpression {
                     }
                     TypedLiteral::Static(id) => {
                         let ty = &ctx.tc_ctx.statics.read()[*id].0;
-                        let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs);
+                        let llvm_ty =
+                            ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
                         let alignment = get_alignment(llvm_ty);
                         ctx.builder.build_memmove(
                             dst.fn_ctx_to_basic_value(ctx).into_pointer_value(),
@@ -867,25 +951,10 @@ impl TypecheckedExpression {
                     TypedLiteral::Function(_) => unreachable!("TypedLiteral::Function should have been turned into a DirectCall"),
                     TypedLiteral::ExternalFunction(_) => unreachable!("TypedLiteral::ExternalFunction should have been turned into a DirectExternCall"),
                     TypedLiteral::Intrinsic(_) => unreachable!("TypedLiteral::Intrinsic should have been turned into a IntrinsicCall"),
-                    TypedLiteral::String(_) |
-                    TypedLiteral::Array(..) |
-                    TypedLiteral::Struct(..) |
-                    TypedLiteral::F64(_) |
-                    TypedLiteral::F32(_) |
-                    TypedLiteral::U8(_) |
-                    TypedLiteral::U16(_) |
-                    TypedLiteral::U32(_) |
-                    TypedLiteral::U64(_) |
-                    TypedLiteral::USize(_) |
-                    TypedLiteral::I8(_) |
-                    TypedLiteral::I16(_) |
-                    TypedLiteral::I32(_) |
-                    TypedLiteral::I64(_) |
-                    TypedLiteral::ISize(_) |
-                    TypedLiteral::Bool(_) |
-                    TypedLiteral::Void => unreachable!("{fn_ptr:?} is not callable"),
+                    _ => unreachable!("{fn_ptr:?} is not callable"),
                 };
-                let llvm_fn_ty = fn_ty.to_llvm_fn_type(&ctx.default_types, ctx.structs);
+                let llvm_fn_ty =
+                    fn_ty.to_llvm_fn_type(&ctx.default_types, ctx.structs, ctx.context);
                 let val = ctx.builder.build_indirect_call(
                     llvm_fn_ty,
                     fn_ptr,
@@ -1289,9 +1358,11 @@ impl TypecheckedExpression {
             }
             TypecheckedExpression::Dereference(_, dst, rhs) => {
                 if ctx.tc_scope[*dst].1.stack_allocated {
-                    let ty = ctx.tc_scope[*dst]
-                        .0
-                        .to_llvm_basic_type(&ctx.default_types, ctx.structs);
+                    let ty = ctx.tc_scope[*dst].0.to_llvm_basic_type(
+                        &ctx.default_types,
+                        ctx.structs,
+                        ctx.context,
+                    );
                     let lhs_ptr = ctx.builder.build_alloca(ty, "")?;
                     let alignment = get_alignment(ty);
                     ctx.builder.build_memmove(
@@ -1328,7 +1399,7 @@ impl TypecheckedExpression {
                         ..
                     } => {
                         let offset = match offset {
-                            OffsetValue::Dynamic(id) => ctx.get_value(*id).into_int_value(),
+                            OffsetValue::Dynamic(_) => unreachable!("dynamic struct offset"),
                             OffsetValue::Static(v) => {
                                 ctx.default_types.i32.const_int(*v as u64, false)
                             }
@@ -1336,6 +1407,26 @@ impl TypecheckedExpression {
                         let value = unsafe {
                             ctx.builder.build_in_bounds_gep(
                                 ctx.structs[*struct_id],
+                                src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
+                                &[ctx.default_types.isize.const_int(0, false), offset],
+                                "",
+                            )
+                        }?;
+                        ctx.push_value(*dst, value.into());
+                        Ok(())
+                    }
+                    Type::Tuple {
+                        num_references: 1, ..
+                    } => {
+                        let offset = match offset {
+                            OffsetValue::Dynamic(_) => unreachable!("dynamic struct offset"),
+                            OffsetValue::Static(v) => {
+                                ctx.default_types.i32.const_int(*v as u64, false)
+                            }
+                        };
+                        let value = unsafe {
+                            ctx.builder.build_in_bounds_gep(
+                                ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context),
                                 src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
                                 &[ctx.default_types.isize.const_int(0, false), offset],
                                 "",
@@ -1357,7 +1448,11 @@ impl TypecheckedExpression {
                         };
                         let value = unsafe {
                             ctx.builder.build_in_bounds_gep(
-                                typ.to_llvm_basic_type(&ctx.default_types, &ctx.structs),
+                                typ.to_llvm_basic_type(
+                                    &ctx.default_types,
+                                    &ctx.structs,
+                                    ctx.context,
+                                ),
                                 src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
                                 &[offset],
                                 "",
@@ -1387,7 +1482,11 @@ impl TypecheckedExpression {
                             .into_pointer_value();
                         let value = unsafe {
                             ctx.builder.build_in_bounds_gep(
-                                typ.to_llvm_basic_type(&ctx.default_types, &ctx.structs),
+                                typ.to_llvm_basic_type(
+                                    &ctx.default_types,
+                                    &ctx.structs,
+                                    ctx.context,
+                                ),
                                 actual_ptr,
                                 &[offset],
                                 "",

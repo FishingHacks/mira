@@ -44,6 +44,10 @@ pub enum Type {
         num_references: u8,
         number_elements: usize,
     },
+    Tuple {
+        elements: Vec<Type>,
+        num_references: u8,
+    },
     Function(Arc<FunctionType>, u8),
 
     PrimitiveVoid(u8),
@@ -91,6 +95,11 @@ impl Hash for Type {
             Type::UnsizedArray { typ, .. } => {
                 "[_]".hash(state);
                 typ.hash(state);
+            }
+            Type::Tuple { elements, .. } => {
+                "(".hash(state);
+                elements.iter().for_each(|v| v.hash(state));
+                ")".hash(state);
             }
             Type::SizedArray {
                 typ,
@@ -157,11 +166,7 @@ pub fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
                 _ => None,
             })
         }
-        TypeRef::Reference { .. }
-        | TypeRef::Function { .. }
-        | TypeRef::DynReference { .. }
-        | TypeRef::SizedArray { .. }
-        | TypeRef::UnsizedArray { .. } => None,
+        _ => None,
     }
 }
 
@@ -172,6 +177,9 @@ impl Type {
             Type::Struct { num_references, .. }
             | Type::UnsizedArray { num_references, .. }
             | Type::SizedArray { num_references, .. }
+            | Type::DynType { num_references, .. }
+            | Type::Trait { num_references, .. }
+            | Type::Tuple { num_references, .. }
             | Type::Function(_, num_references)
             | Type::PrimitiveSelf(num_references)
             | Type::PrimitiveVoid(num_references)
@@ -189,8 +197,6 @@ impl Type {
             | Type::PrimitiveF64(num_references)
             | Type::PrimitiveStr(num_references)
             | Type::PrimitiveBool(num_references)
-            | Type::DynType { num_references, .. }
-            | Type::Trait { num_references, .. }
             | Type::Generic(_, num_references) => *num_references,
         }
     }
@@ -217,6 +223,7 @@ impl Type {
             Type::PrimitiveSelf(_) => unreachable!("Self should be resolved by now"),
             Type::DynType { .. } | Type::UnsizedArray { .. } | Type::PrimitiveStr(_) => false,
             Type::Struct { .. }
+            | Type::Tuple { .. }
             | Type::SizedArray { .. }
             | Type::Function(..)
             | Type::PrimitiveVoid(_)
@@ -254,196 +261,104 @@ impl Type {
         }
     }
 
-    pub fn take_ref(self) -> Self {
-        match self {
-            Type::Trait {
-                trait_refs,
-                num_references,
-                real_name,
-            } => Type::Trait {
-                trait_refs,
-                num_references: num_references + 1,
-                real_name,
-            },
-            Type::DynType {
-                trait_refs,
-                num_references,
-            } => Type::DynType {
-                trait_refs,
-                num_references: num_references + 1,
-            },
-            Type::Struct {
-                struct_id,
-                name,
-                num_references,
-            } => Type::Struct {
-                struct_id,
-                name,
-                num_references: num_references + 1,
-            },
-            Type::UnsizedArray {
-                typ,
-                num_references,
-            } => Type::UnsizedArray {
-                typ,
-                num_references: num_references + 1,
-            },
-            Type::SizedArray {
-                typ,
-                num_references,
-                number_elements,
-            } => Type::SizedArray {
-                typ,
-                num_references: num_references + 1,
-                number_elements,
-            },
-            Type::Function(func, refcount) => Type::Function(func, refcount + 1),
-            Type::PrimitiveVoid(refcount) => Type::PrimitiveVoid(refcount + 1),
-            Type::PrimitiveNever => Type::PrimitiveNever,
-            Type::PrimitiveI8(refcount) => Type::PrimitiveI8(refcount + 1),
-            Type::PrimitiveI16(refcount) => Type::PrimitiveI16(refcount + 1),
-            Type::PrimitiveI32(refcount) => Type::PrimitiveI32(refcount + 1),
-            Type::PrimitiveI64(refcount) => Type::PrimitiveI64(refcount + 1),
-            Type::PrimitiveISize(refcount) => Type::PrimitiveISize(refcount + 1),
-            Type::PrimitiveU8(refcount) => Type::PrimitiveU8(refcount + 1),
-            Type::PrimitiveU16(refcount) => Type::PrimitiveU16(refcount + 1),
-            Type::PrimitiveU32(refcount) => Type::PrimitiveU32(refcount + 1),
-            Type::PrimitiveU64(refcount) => Type::PrimitiveU64(refcount + 1),
-            Type::PrimitiveUSize(refcount) => Type::PrimitiveUSize(refcount + 1),
-            Type::PrimitiveF32(refcount) => Type::PrimitiveF32(refcount + 1),
-            Type::PrimitiveF64(refcount) => Type::PrimitiveF64(refcount + 1),
-            Type::PrimitiveStr(refcount) => Type::PrimitiveStr(refcount + 1),
-            Type::PrimitiveBool(refcount) => Type::PrimitiveBool(refcount + 1),
-            Type::PrimitiveSelf(refcount) => Type::PrimitiveSelf(refcount + 1),
-            Type::Generic(global_str, refcount) => Type::Generic(global_str, refcount + 1),
+    pub fn take_ref(mut self) -> Self {
+        match &mut self {
+            Type::Trait { num_references, .. }
+            | Type::DynType { num_references, .. }
+            | Type::Struct { num_references, .. }
+            | Type::UnsizedArray { num_references, .. }
+            | Type::SizedArray { num_references, .. }
+            | Type::Tuple { num_references, .. }
+            | Type::Function(_, num_references)
+            | Type::PrimitiveVoid(num_references)
+            | Type::PrimitiveI8(num_references)
+            | Type::PrimitiveI16(num_references)
+            | Type::PrimitiveI32(num_references)
+            | Type::PrimitiveI64(num_references)
+            | Type::PrimitiveISize(num_references)
+            | Type::PrimitiveU8(num_references)
+            | Type::PrimitiveU16(num_references)
+            | Type::PrimitiveU32(num_references)
+            | Type::PrimitiveU64(num_references)
+            | Type::PrimitiveUSize(num_references)
+            | Type::PrimitiveF32(num_references)
+            | Type::PrimitiveF64(num_references)
+            | Type::PrimitiveStr(num_references)
+            | Type::PrimitiveBool(num_references)
+            | Type::PrimitiveSelf(num_references)
+            | Type::Generic(_, num_references) => *num_references += 1,
+            Type::PrimitiveNever => {}
+        }
+        self
+    }
+
+    pub fn deref(mut self) -> Result<Self, Self> {
+        match &mut self {
+            Type::Trait { num_references, .. }
+            | Type::DynType { num_references, .. }
+            | Type::Struct { num_references, .. }
+            | Type::UnsizedArray { num_references, .. }
+            | Type::SizedArray { num_references, .. }
+            | Type::Tuple { num_references, .. }
+            | Type::Function(_, num_references)
+            | Type::PrimitiveVoid(num_references)
+            | Type::PrimitiveI8(num_references)
+            | Type::PrimitiveI16(num_references)
+            | Type::PrimitiveI32(num_references)
+            | Type::PrimitiveI64(num_references)
+            | Type::PrimitiveISize(num_references)
+            | Type::PrimitiveU8(num_references)
+            | Type::PrimitiveU16(num_references)
+            | Type::PrimitiveU32(num_references)
+            | Type::PrimitiveU64(num_references)
+            | Type::PrimitiveUSize(num_references)
+            | Type::PrimitiveF32(num_references)
+            | Type::PrimitiveF64(num_references)
+            | Type::PrimitiveStr(num_references)
+            | Type::PrimitiveBool(num_references)
+            | Type::PrimitiveSelf(num_references)
+            | Type::Generic(_, num_references) => {
+                if *num_references == 0 {
+                    Err(self)
+                } else {
+                    *num_references -= 1;
+                    Ok(self)
+                }
+            }
+            Type::PrimitiveNever => Ok(self),
         }
     }
 
-    pub fn deref(self) -> Result<Self, Self> {
-        if matches!(self, Type::PrimitiveNever) {
-            Ok(self)
-        } else if self.refcount() < 1 {
-            Err(self)
-        } else {
-            Ok(match self {
-                Type::Trait {
-                    trait_refs,
-                    num_references,
-                    real_name,
-                } => Type::Trait {
-                    trait_refs,
-                    num_references: num_references - 1,
-                    real_name,
-                },
-                Type::DynType {
-                    trait_refs,
-                    num_references,
-                } => Type::DynType {
-                    trait_refs,
-                    num_references: num_references - 1,
-                },
-                Type::Struct {
-                    struct_id,
-                    name,
-                    num_references,
-                } => Type::Struct {
-                    struct_id,
-                    name,
-                    num_references: num_references - 1,
-                },
-                Type::UnsizedArray {
-                    typ,
-                    num_references,
-                } => Type::UnsizedArray {
-                    typ,
-                    num_references: num_references - 1,
-                },
-                Type::SizedArray {
-                    typ,
-                    num_references,
-                    number_elements,
-                } => Type::SizedArray {
-                    typ,
-                    num_references: num_references - 1,
-                    number_elements,
-                },
-                Type::Function(func, refcount) => Type::Function(func, refcount - 1),
-                Type::PrimitiveVoid(refcount) => Type::PrimitiveVoid(refcount - 1),
-                Type::PrimitiveNever => unreachable!("cannot deref never"),
-                Type::PrimitiveI8(refcount) => Type::PrimitiveI8(refcount - 1),
-                Type::PrimitiveI16(refcount) => Type::PrimitiveI16(refcount - 1),
-                Type::PrimitiveI32(refcount) => Type::PrimitiveI32(refcount - 1),
-                Type::PrimitiveI64(refcount) => Type::PrimitiveI64(refcount - 1),
-                Type::PrimitiveISize(refcount) => Type::PrimitiveISize(refcount - 1),
-                Type::PrimitiveU8(refcount) => Type::PrimitiveU8(refcount - 1),
-                Type::PrimitiveU16(refcount) => Type::PrimitiveU16(refcount - 1),
-                Type::PrimitiveU32(refcount) => Type::PrimitiveU32(refcount - 1),
-                Type::PrimitiveU64(refcount) => Type::PrimitiveU64(refcount - 1),
-                Type::PrimitiveUSize(refcount) => Type::PrimitiveUSize(refcount - 1),
-                Type::PrimitiveF32(refcount) => Type::PrimitiveF32(refcount - 1),
-                Type::PrimitiveF64(refcount) => Type::PrimitiveF64(refcount - 1),
-                Type::PrimitiveStr(refcount) => Type::PrimitiveStr(refcount - 1),
-                Type::PrimitiveBool(refcount) => Type::PrimitiveBool(refcount - 1),
-                Type::PrimitiveSelf(refcount) => Type::PrimitiveSelf(refcount - 1),
-                Type::Generic(global_str, refcount) => Type::Generic(global_str, refcount - 1),
-            })
-        }
-    }
-
-    pub fn without_ref(self) -> Self {
-        match self {
-            Type::Trait {
-                trait_refs,
-                real_name,
-                ..
-            } => Type::Trait {
-                trait_refs,
-                num_references: 0,
-                real_name,
-            },
-            Type::DynType { trait_refs, .. } => Type::DynType {
-                trait_refs,
-                num_references: 0,
-            },
-            Type::Struct {
-                struct_id, name, ..
-            } => Type::Struct {
-                struct_id,
-                name,
-                num_references: 0,
-            },
-            Type::UnsizedArray { typ, .. } => Type::UnsizedArray {
-                typ,
-                num_references: 0,
-            },
-            Type::SizedArray {
-                typ,
-                number_elements,
-                ..
-            } => Type::SizedArray {
-                typ,
-                num_references: 0,
-                number_elements,
-            },
-            Type::Function(arc, _) => Type::Function(arc, 0),
-            Type::PrimitiveVoid(_) => Type::PrimitiveVoid(0),
-            Type::PrimitiveNever => Type::PrimitiveNever,
-            Type::PrimitiveI8(_) => Type::PrimitiveI8(0),
-            Type::PrimitiveI16(_) => Type::PrimitiveI16(0),
-            Type::PrimitiveI32(_) => Type::PrimitiveI32(0),
-            Type::PrimitiveI64(_) => Type::PrimitiveI64(0),
-            Type::PrimitiveISize(_) => Type::PrimitiveISize(0),
-            Type::PrimitiveU8(_) => Type::PrimitiveU8(0),
-            Type::PrimitiveU16(_) => Type::PrimitiveU16(0),
-            Type::PrimitiveU32(_) => Type::PrimitiveU32(0),
-            Type::PrimitiveU64(_) => Type::PrimitiveU64(0),
-            Type::PrimitiveUSize(_) => Type::PrimitiveUSize(0),
-            Type::PrimitiveF32(_) => Type::PrimitiveF32(0),
-            Type::PrimitiveF64(_) => Type::PrimitiveF64(0),
-            Type::PrimitiveStr(_) => Type::PrimitiveStr(0),
-            Type::PrimitiveBool(_) => Type::PrimitiveBool(0),
-            Type::PrimitiveSelf(_) => Type::PrimitiveSelf(0),
-            Type::Generic(global_str, _) => Type::Generic(global_str, 0),
+    pub fn without_ref(mut self) -> Self {
+        match &mut self {
+            Type::Trait { num_references, .. }
+            | Type::DynType { num_references, .. }
+            | Type::Struct { num_references, .. }
+            | Type::UnsizedArray { num_references, .. }
+            | Type::SizedArray { num_references, .. }
+            | Type::Tuple { num_references, .. }
+            | Type::Function(_, num_references)
+            | Type::PrimitiveVoid(num_references)
+            | Type::PrimitiveI8(num_references)
+            | Type::PrimitiveI16(num_references)
+            | Type::PrimitiveI32(num_references)
+            | Type::PrimitiveI64(num_references)
+            | Type::PrimitiveISize(num_references)
+            | Type::PrimitiveU8(num_references)
+            | Type::PrimitiveU16(num_references)
+            | Type::PrimitiveU32(num_references)
+            | Type::PrimitiveU64(num_references)
+            | Type::PrimitiveUSize(num_references)
+            | Type::PrimitiveF32(num_references)
+            | Type::PrimitiveF64(num_references)
+            | Type::PrimitiveStr(num_references)
+            | Type::PrimitiveBool(num_references)
+            | Type::PrimitiveSelf(num_references)
+            | Type::Generic(_, num_references) => {
+                *num_references = 0;
+                self
+            }
+            Type::PrimitiveNever => self,
         }
     }
 
@@ -454,6 +369,7 @@ impl Type {
             | Type::Struct { .. }
             | Type::UnsizedArray { .. }
             | Type::SizedArray { .. }
+            | Type::Tuple { .. }
             | Type::Generic(..)
             | Type::Function(..) => false,
             Type::PrimitiveVoid(_)
@@ -542,6 +458,16 @@ impl Display for Type {
                     Display::fmt(&trait_refs[i].1, f)?;
                 }
                 Ok(())
+            }
+            Type::Tuple { elements, .. } => {
+                f.write_char('(')?;
+                for i in 0..elements.len() {
+                    if i != 0 {
+                        f.write_str(", ")?
+                    }
+                    Display::fmt(&elements[i], f)?;
+                }
+                f.write_char(')')
             }
             Type::UnsizedArray { typ, .. } => {
                 f.write_char('[')?;
@@ -646,6 +572,13 @@ impl PartialEq for Type {
             (Type::PrimitiveSelf(_), Type::PrimitiveSelf(_)) => true,
             (Type::Generic(name, _), Type::Generic(other_name, _)) => name == other_name,
             (Type::Function(id, _), Type::Function(other_id, _)) => id == other_id,
+            (
+                Type::Tuple { elements, .. },
+                Type::Tuple {
+                    elements: other_elements,
+                    ..
+                },
+            ) => *elements == *other_elements,
             _ => false,
         }
     }
@@ -657,6 +590,7 @@ pub enum TypeSuggestion {
     Array(Box<TypeSuggestion>),
     UnsizedArray(Box<TypeSuggestion>),
     Number(NumberType),
+    Tuple(Vec<TypeSuggestion>),
     Bool,
     #[default]
     Unknown,
@@ -671,6 +605,16 @@ impl Display for TypeSuggestion {
             }
             TypeSuggestion::Bool => f.write_str("bool"),
             TypeSuggestion::Number(number_type) => Display::fmt(number_type, f),
+            TypeSuggestion::Tuple(elements) => {
+                f.write_char('(')?;
+                for i in 0..elements.len() {
+                    if i != 0 {
+                        f.write_str(", ")?
+                    }
+                    Display::fmt(&elements[i], f)?
+                }
+                f.write_char(')')
+            }
             TypeSuggestion::Unknown => f.write_str("{unknown}"),
         }
     }
@@ -708,6 +652,16 @@ impl TypeSuggestion {
                 NumberType::Usize => Type::PrimitiveUSize(0),
             }),
             TypeSuggestion::Bool => Some(Type::PrimitiveBool(0)),
+            TypeSuggestion::Tuple(elems) => {
+                let mut elements = Vec::with_capacity(elems.len());
+                for elem in elems {
+                    elements.push(elem.to_type(ctx)?);
+                }
+                Some(Type::Tuple {
+                    elements,
+                    num_references: 0,
+                })
+            }
             TypeSuggestion::Unknown => None,
         }
     }
@@ -738,6 +692,9 @@ impl TypeSuggestion {
             Type::PrimitiveF32(_) => Self::Number(NumberType::F32),
             Type::PrimitiveF64(_) => Self::Number(NumberType::F64),
             Type::PrimitiveBool(_) => Self::Bool,
+            Type::Tuple { elements, .. } => {
+                Self::Tuple(elements.iter().map(Self::from_type).collect())
+            }
         }
     }
 }
