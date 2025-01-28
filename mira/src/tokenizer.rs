@@ -463,7 +463,7 @@ impl Tokenizer {
             '[' => token!(BracketLeft),
             ']' => token!(BracketRight),
             ',' => token!(Comma),
-            '.' if self.if_char_advance('.') => token!(Range, RangeInclusive, '.'),
+            '.' if self.if_char_advance('.') => token!(Range, RangeInclusive, '='),
             '.' if self.peek().is_ascii_digit() => self.parse_number('.'),
             '.' => token!(Dot),
             '+' => token!(Plus, PlusAssign, '='),

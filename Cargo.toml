@@ -1,4 +1,4 @@
-workspace = { members = [ "mira"] }
+workspace = { members = ["mira"] }
 [package]
 name = "mirac"
 version = "0.1.0"
