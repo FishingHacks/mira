@@ -453,6 +453,7 @@ pub struct Struct {
     pub loc: Location,
     pub name: GlobalStr,
     pub fields: Vec<(GlobalStr, TypeRef)>,
+    pub generics: Vec<Generic>,
     pub global_impl: Implementation,
     pub trait_impls: Vec<(GlobalStr, Implementation)>,
     pub annotations: Annotations,
@@ -462,4 +463,36 @@ pub struct Struct {
 pub struct Generic {
     pub name: GlobalStr,
     pub bounds: Vec<(PathWithoutGenerics, Location)>,
+    pub sized: bool,
+}
+
+impl Generic {
+    pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
+        let sized = !parser.match_tok(TokenType::Unsized);
+        let name = parser.expect_identifier()?;
+        let mut bounds = Vec::new();
+        if !parser.match_tok(TokenType::Colon) {
+            return Ok(Self {
+                sized,
+                name,
+                bounds,
+            });
+        }
+        while parser.peek().typ == TokenType::Plus || bounds.len() == 0 {
+            if bounds.len() > 0 && !parser.match_tok(TokenType::Plus) {
+                return Err(ParsingError::ExpectedArbitrary {
+                    loc: parser.peek().location.clone(),
+                    expected: TokenType::Plus,
+                    found: parser.peek().typ,
+                });
+            }
+            let loc = parser.peek().location.clone();
+            bounds.push((PathWithoutGenerics::parse(parser)?, loc));
+        }
+        Ok(Self {
+            sized,
+            name,
+            bounds,
+        })
+    }
 }

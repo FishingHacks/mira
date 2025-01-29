@@ -13,7 +13,6 @@ use crate::{
 };
 
 use super::{
-    expression::PathWithoutGenerics,
     types::{Generic, TypeRef},
     Expression, Parser,
 };
@@ -987,28 +986,7 @@ impl Parser {
                     }
                 }
 
-                let name = self.expect_identifier()?;
-                let mut bounds = vec![];
-                if self.match_tok(TokenType::Colon) {
-                    while self.peek().typ == TokenType::IdentifierLiteral
-                        || self.peek().typ == TokenType::Plus
-                    {
-                        if bounds.len() > 0 && !self.match_tok(TokenType::Plus) {
-                            return Err(ParsingError::ExpectedArbitrary {
-                                loc: self.peek().location.clone(),
-                                expected: TokenType::Plus,
-                                found: self.peek().typ,
-                            });
-                        }
-
-                        bounds.push((
-                            PathWithoutGenerics::parse(self)?,
-                            self.peek().location.clone(),
-                        ));
-                    }
-                }
-
-                generics.push(Generic { name, bounds });
+                generics.push(Generic::parse(self)?);
             }
         }
 
@@ -1161,6 +1139,7 @@ impl Parser {
             TokenType::Impl => GlobalStr::new("impl"),
             TokenType::Fn => GlobalStr::new("fn"),
             TokenType::In => GlobalStr::new("in"),
+            TokenType::Unsized => GlobalStr::new("unsized"),
             TokenType::Struct => GlobalStr::new("struct"),
             TokenType::Trait => GlobalStr::new("trait"),
 
@@ -1431,38 +1410,7 @@ impl Parser {
                 }
             }
 
-            let name = self.expect_identifier()?;
-
-            if self.match_tok(TokenType::Colon) {
-                // trait bounds
-                let mut bounds = vec![];
-
-                loop {
-                    if matches!(self.peek().typ, TokenType::Comma | TokenType::GreaterThan) {
-                        break;
-                    }
-
-                    // expect `+` between bounds
-                    if bounds.len() > 0 && !self.match_tok(TokenType::Plus) {
-                        return Err(ParsingError::ExpectedArbitrary {
-                            loc: self.peek().location.clone(),
-                            found: self.peek().typ,
-                            expected: TokenType::Plus,
-                        });
-                    }
-
-                    bounds.push((
-                        PathWithoutGenerics::parse(self)?,
-                        self.peek().location.clone(),
-                    ));
-                }
-                generics.push(Generic { name, bounds });
-            } else {
-                generics.push(Generic {
-                    name,
-                    bounds: vec![],
-                });
-            }
+            generics.push(Generic::parse(self)?);
         }
 
         Ok(generics)

@@ -82,13 +82,14 @@ impl Path {
     }
 
     pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
+        let name = parser.expect_identifier()?;
         let generics = if parser.match_tok(TokenType::LessThan) {
             Self::parse_generics(parser)?
         } else {
             Default::default()
         };
 
-        let mut path = Self::new(parser.expect_identifier()?, generics);
+        let mut path = Self::new(name, generics);
 
         while parser.match_tok(TokenType::NamespaceAccess) {
             let subpath = parser.expect_identifier()?;
@@ -167,37 +168,6 @@ pub enum LiteralValue {
     BakedAnonymousFunction(FunctionId),
     Void,
 }
-
-//impl PartialEq for LiteralValue {
-//    fn eq(&self, other: &Self) -> bool {
-//        match (self, other) {
-//            (
-//                Self::Float(_, num_type) | Self::UInt(_, num_type) | Self::SInt(_, num_type),
-//                Self::Float(_, other) | Self::UInt(_, other) | Self::SInt(_, other),
-//            ) if *num_type != *other => return false,
-//            _ => (),
-//        }
-//        match (self, other) {
-//            (Self::String(l), Self::String(r)) => l == r,
-//            (Self::SInt(l, _), Self::SInt(r, _)) => *l == *r,
-//            (Self::UInt(l, _), Self::UInt(r, _)) => *l == *r,
-//            (Self::Float(l, _), Self::Float(r, _)) => *l == *r,
-//            (Self::UInt(l, _), Self::SInt(r, _)) | (Self::SInt(r, _), Self::UInt(l, _)) => {
-//                *r >= 0 && (*r as u64) == *l
-//            }
-//            (Self::Float(l, _), Self::SInt(r, _)) | (Self::SInt(r, _), Self::Float(l, _)) => {
-//                (*l == l.floor()) && (*l as i64) == *r
-//            }
-//            (Self::Float(l, _), Self::UInt(r, _)) | (Self::UInt(r, _), Self::Float(l, _)) => {
-//                (*l >= 0.0) && (*l == l.floor()) && (*l as u64) == *r
-//            }
-//            (Self::Bool(l), Self::Bool(r)) => l == r,
-//            (Self::Dynamic(l), Self::Dynamic(r)) => l == r,
-//            (Self::Void, Self::Void) => true,
-//            _ => false,
-//        }
-//    }
-//}
 
 impl Display for LiteralValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -288,15 +258,49 @@ impl LiteralValue {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOp {
+    Plus,
+    Minus,
+    Divide,
+    Multiply,
+    Modulo,
+    LessThan,
+    LessThanEq,
+    GreaterThan,
+    GreaterThanEq,
+    LShift,
+    RShift,
+    LogicalAnd,
+    LogicalOr,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    Equals,
+    NotEquals,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOp {
+    Plus,
+    Minus,
+    BitwiseNot,
+    LogicalNot,
+    Reference,
+    Dereference,
+}
+
 #[derive(Debug, Clone)]
 pub enum Expression {
     Literal(LiteralValue, Location),
     Unary {
-        operator: Token,
+        operator: UnaryOp,
+        loc: Location,
         right_side: Box<Expression>,
     },
     Binary {
-        operator: Token,
+        operator: BinaryOp,
+        loc: Location,
         right_side: Box<Expression>,
         left_side: Box<Expression>,
     },
@@ -344,9 +348,10 @@ impl Display for Expression {
                 operator,
                 right_side,
                 left_side,
+                ..
             } => {
                 f.write_char('(')?;
-                operator.typ.fmt(f)?;
+                operator.fmt(f)?;
                 f.write_char(' ')?;
                 Display::fmt(left_side, f)?;
                 f.write_char(' ')?;
@@ -356,9 +361,10 @@ impl Display for Expression {
             Expression::Unary {
                 operator,
                 right_side,
+                ..
             } => {
                 f.write_char('(')?;
-                operator.typ.fmt(f)?;
+                operator.fmt(f)?;
                 f.write_char(' ')?;
                 Display::fmt(right_side, f)?;
                 f.write_char(')')
@@ -463,16 +469,18 @@ impl Expression {
         Self::Literal(LiteralValue::String(value), loc)
     }
 
-    pub fn unary(operator: Token, right: Expression) -> Self {
+    pub fn unary(operator: UnaryOp, loc: Location, right: Expression) -> Self {
         Self::Unary {
             operator,
+            loc,
             right_side: Box::new(right),
         }
     }
 
-    pub fn binary(operator: Token, left: Expression, right: Expression) -> Self {
+    pub fn binary(operator: BinaryOp, loc: Location, left: Expression, right: Expression) -> Self {
         Self::Binary {
             operator,
+            loc,
             right_side: Box::new(right),
             left_side: Box::new(left),
         }
@@ -480,17 +488,13 @@ impl Expression {
 
     pub fn loc(&self) -> &Location {
         match self {
-            Self::Literal(_, v) => v,
-            Self::Unary { operator, .. } | Self::Binary { operator, .. } => &operator.location,
-            Self::Indexing {
-                right_side: identifier,
-                ..
-            }
-            | Self::MemberCall {
-                lhs: identifier, ..
-            }
-            | Self::FunctionCall { identifier, .. } => identifier.loc(),
+            Self::Indexing { right_side: i, .. }
+            | Self::MemberCall { lhs: i, .. }
+            | Self::FunctionCall { identifier: i, .. } => i.loc(),
             Self::MemberAccess { loc, .. }
+            | Self::Literal(_, loc)
+            | Self::Unary { loc, .. }
+            | Self::Binary { loc, .. }
             | Self::Assignment { loc, .. }
             | Self::Range { loc, .. }
             | Self::TypeCast { loc, .. } => loc,
@@ -567,11 +571,11 @@ impl Expression {
 }
 
 macro_rules! assign_set {
-    ($expr: expr, $right: expr, $operator: expr) => {
-        let loc = $operator.location.clone();
+    ($expr: expr, $right: expr, $operator: expr, $loc: expr) => {
+        let loc = $loc;
         $expr = Expression::Assignment {
             left_side: Box::new($expr.clone()),
-            right_side: Box::new(Expression::binary($operator, $expr, $right)),
+            right_side: Box::new(Expression::binary($operator, loc.clone(), $expr, $right)),
             loc,
         }
     };
@@ -585,19 +589,26 @@ impl Parser {
     fn comparison(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.pipe_operator()?;
 
-        while self.matches(&[
-            TokenType::EqualEqual,
-            TokenType::NotEquals,
-            TokenType::LessThan,
-            TokenType::GreaterThan,
-            TokenType::LessThanEquals,
-            TokenType::GreaterThanEquals,
-            TokenType::LogicalAnd,
-            TokenType::LogicalOr,
-        ]) {
-            let operator = self.previous().clone();
+        loop {
+            let loc = self.peek().location.clone();
+            let op = match self.peek().typ {
+                TokenType::EqualEqual => BinaryOp::Equals,
+                TokenType::NotEquals => BinaryOp::NotEquals,
+                TokenType::LogicalAnd => BinaryOp::LogicalAnd,
+                TokenType::LogicalOr => BinaryOp::LogicalOr,
+                TokenType::LessThan if self.peekpeek().typ == TokenType::Equal => {
+                    BinaryOp::LessThanEq
+                }
+                TokenType::LessThan => BinaryOp::LessThan,
+                TokenType::GreaterThan if self.peekpeek().typ == TokenType::Equal => {
+                    BinaryOp::GreaterThanEq
+                }
+                TokenType::GreaterThan => BinaryOp::GreaterThan,
+                _ => break,
+            };
+            self.advance();
             let right = self.pipe_operator()?;
-            expr = Expression::binary(operator, expr, right);
+            expr = Expression::binary(op, loc, expr, right);
         }
 
         Ok(expr)
@@ -660,13 +671,19 @@ impl Parser {
             match operator.typ {
                 TokenType::PlusAssign => {
                     operator.typ = TokenType::Plus;
-                    assign_set!(expr, right, operator);
+                    assign_set!(expr, right, BinaryOp::Plus, operator.location);
                 }
                 TokenType::MinusAssign => {
                     operator.typ = TokenType::Minus;
-                    assign_set!(expr, right, operator);
+                    assign_set!(expr, right, BinaryOp::Minus, operator.location);
                 }
-                _ => expr = Expression::binary(operator, expr, right),
+                TokenType::Plus => {
+                    expr = Expression::binary(BinaryOp::Plus, operator.location, expr, right)
+                }
+                TokenType::Minus => {
+                    expr = Expression::binary(BinaryOp::Minus, operator.location, expr, right)
+                }
+                _ => unreachable!(),
             }
         }
 
@@ -676,61 +693,27 @@ impl Parser {
     fn factor(&mut self) -> Result<Expression, ParsingError> {
         let mut expr = self.unary()?;
 
-        while self.matches(&[
-            TokenType::Divide,
-            TokenType::Modulo,
-            TokenType::Asterix,
-            TokenType::Ampersand,
-            TokenType::BitwiseOr,
-            TokenType::BitwiseXor,
-            TokenType::LShift,
-            TokenType::RShift,
-            TokenType::DivideAssign,
-            TokenType::ModuloAssign,
-            TokenType::MultiplyAssign,
-            TokenType::BitwiseAndAssign,
-            TokenType::BitwiseOrAssign,
-            TokenType::BitwiseXorAssign,
-            TokenType::BitwiseLShiftAssign,
-            TokenType::BitwiseRShiftAssign,
-        ]) {
-            let mut operator = self.previous().clone();
+        loop {
+            let op = match (self.peek().typ, self.peekpeek().typ) {
+                (TokenType::Divide, _) => BinaryOp::Divide,
+                (TokenType::Modulo, _) => BinaryOp::Modulo,
+                (TokenType::Asterix, _) => BinaryOp::Multiply,
+                (TokenType::Ampersand, _) => BinaryOp::BitwiseAnd,
+                (TokenType::BitwiseOr, _) => BinaryOp::BitwiseOr,
+                (TokenType::BitwiseXor, _) => BinaryOp::BitwiseXor,
+                (TokenType::LessThan, TokenType::LessThan) => BinaryOp::LShift,
+                (TokenType::GreaterThan, TokenType::GreaterThan) => BinaryOp::RShift,
+                _ => break,
+            };
+            let loc = self.advance().location.clone();
+            if op == BinaryOp::LShift || op == BinaryOp::RShift {
+                self.advance();
+            }
             let right = self.unary()?;
-
-            match operator.typ {
-                TokenType::DivideAssign => {
-                    operator.typ = TokenType::Divide;
-                    assign_set!(expr, right, operator);
-                }
-                TokenType::ModuloAssign => {
-                    operator.typ = TokenType::Modulo;
-                    assign_set!(expr, right, operator);
-                }
-                TokenType::MultiplyAssign => {
-                    operator.typ = TokenType::Asterix;
-                    assign_set!(expr, right, operator);
-                }
-                TokenType::BitwiseAndAssign => {
-                    operator.typ = TokenType::Ampersand;
-                    assign_set!(expr, right, operator);
-                }
-                TokenType::BitwiseOrAssign => {
-                    operator.typ = TokenType::BitwiseOr;
-                    assign_set!(expr, right, operator);
-                }
-                TokenType::BitwiseXorAssign => {
-                    operator.typ = TokenType::BitwiseXor;
-                    assign_set!(expr, right, operator);
-                }
-                TokenType::BitwiseLShiftAssign => {
-                    operator.typ = TokenType::LShift;
-                    assign_set!(expr, right, operator);
-                }
-                TokenType::BitwiseRShiftAssign => {
-                    operator.typ = TokenType::RShift;
-                    assign_set!(expr, right, operator);
-                }
-                _ => expr = Expression::binary(operator, expr, right),
+            if self.match_tok(TokenType::Equal) {
+                assign_set!(expr, right, op, loc);
+            } else {
+                expr = Expression::binary(op, loc, expr, right);
             }
         }
 
@@ -744,8 +727,15 @@ impl Parser {
             TokenType::BitwiseNot,
             TokenType::LogicalNot,
         ]) {
-            let operator = self.previous().clone();
-            return Ok(Expression::unary(operator, self.unary()?));
+            let operator = match self.previous().typ {
+                TokenType::Plus => UnaryOp::Plus,
+                TokenType::Minus => UnaryOp::Minus,
+                TokenType::BitwiseNot => UnaryOp::BitwiseNot,
+                TokenType::LogicalNot => UnaryOp::LogicalNot,
+                _ => unreachable!(),
+            };
+            let loc = self.previous().location.clone();
+            return Ok(Expression::unary(operator, loc, self.unary()?));
         }
 
         self.assignment()
@@ -784,12 +774,27 @@ impl Parser {
     fn references(&mut self) -> Result<Expression, ParsingError> {
         if self.match_tok(TokenType::Ampersand) {
             Ok(Expression::Unary {
-                operator: self.previous().clone(),
+                operator: UnaryOp::Reference,
+                loc: self.previous().location.clone(),
                 right_side: Box::new(self.references()?),
+            })
+        } else if self.match_tok(TokenType::LogicalAnd) {
+            let expr = Expression::Unary {
+                operator: UnaryOp::Reference,
+                loc: self.previous().location.clone(),
+                right_side: Box::new(self.references()?),
+            };
+            let mut loc = self.previous().location.clone();
+            loc.column += 1;
+            Ok(Expression::Unary {
+                operator: UnaryOp::Reference,
+                loc,
+                right_side: Box::new(expr),
             })
         } else if self.match_tok(TokenType::Asterix) {
             Ok(Expression::Unary {
-                operator: self.previous().clone(),
+                operator: UnaryOp::Dereference,
+                loc: self.previous().location.clone(),
                 right_side: Box::new(self.references()?),
             })
         } else {

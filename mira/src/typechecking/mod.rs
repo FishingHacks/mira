@@ -811,7 +811,7 @@ fn resolve_import(
     }
     Err(TypecheckingError::ExportNotFound {
         location: location.clone(),
-        name: import[1].clone(),
+        name: import[0].clone(),
     })
 }
 

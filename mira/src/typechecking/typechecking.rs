@@ -3,9 +3,9 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     globals::GlobalStr,
     module::{ModuleContext, ModuleId, ModuleScopeValue, StaticId},
-    parser::{Expression, LiteralValue, Statement},
+    parser::{BinaryOp, Expression, LiteralValue, Statement, UnaryOp},
     std_annotations::ext_var_arg::ExternVarArg,
-    tokenizer::{Location, NumberType, TokenType},
+    tokenizer::{Location, NumberType},
     typechecking::typed_resolve_import,
 };
 
@@ -879,63 +879,52 @@ fn typecheck_expression(
         Expression::Unary {
             operator,
             right_side,
-        } if operator.typ == TokenType::Ampersand => {
+            ..
+        } if *operator == UnaryOp::Reference => {
             typecheck_take_ref(context, module, scope, right_side, exprs, type_suggestion)
         }
         Expression::Unary {
             operator,
             right_side,
+            loc,
         } => {
             let (typ, right_side) =
                 typecheck_expression(context, module, scope, right_side, exprs, type_suggestion)?;
-            match operator.typ {
-                TokenType::Plus if typ.is_int_like() => {
-                    tc_res!(unary scope, exprs; Pos(operator.location.clone(), right_side, typ))
+            match operator {
+                UnaryOp::Plus if typ.is_int_like() => {
+                    tc_res!(unary scope, exprs; Pos(loc.clone(), right_side, typ))
                 }
-                TokenType::Plus => {
-                    Err(TypecheckingError::CannotPos(operator.location.clone(), typ))
+                UnaryOp::Plus => Err(TypecheckingError::CannotPos(loc.clone(), typ)),
+                UnaryOp::Minus if typ.is_int_like() && !typ.is_unsigned() => {
+                    tc_res!(unary scope, exprs; Neg(loc.clone(), right_side, typ))
                 }
-                TokenType::Minus if typ.is_int_like() && !typ.is_unsigned() => {
-                    tc_res!(unary scope, exprs; Neg(operator.location.clone(), right_side, typ))
+                UnaryOp::Minus => Err(TypecheckingError::CannotNeg(loc.clone(), typ)),
+                UnaryOp::LogicalNot if matches!(typ, Type::PrimitiveBool(0)) => {
+                    tc_res!(unary scope, exprs; LNot(loc.clone(), right_side, typ))
                 }
-                TokenType::Minus => {
-                    Err(TypecheckingError::CannotNeg(operator.location.clone(), typ))
-                }
-                TokenType::LogicalNot if matches!(typ, Type::PrimitiveBool(0)) => {
-                    tc_res!(unary scope, exprs; LNot(operator.location.clone(), right_side, typ))
-                }
-                TokenType::LogicalNot => Err(TypecheckingError::CannotLNot(
-                    operator.location.clone(),
-                    typ,
-                )),
-                TokenType::BitwiseNot
+                UnaryOp::LogicalNot => Err(TypecheckingError::CannotLNot(loc.clone(), typ)),
+                UnaryOp::BitwiseNot
                     if typ.is_int_like() || matches!(typ, Type::PrimitiveBool(0)) =>
                 {
-                    tc_res!(unary scope, exprs; BNot(operator.location.clone(), right_side, typ))
+                    tc_res!(unary scope, exprs; BNot(loc.clone(), right_side, typ))
                 }
-                TokenType::BitwiseNot => Err(TypecheckingError::CannotBNot(
-                    operator.location.clone(),
-                    typ,
-                )),
-                TokenType::Ampersand => unreachable!(),
-                TokenType::Asterix => match typ.deref() {
+                UnaryOp::BitwiseNot => Err(TypecheckingError::CannotBNot(loc.clone(), typ)),
+                UnaryOp::Dereference => match typ.deref() {
                     Ok(typ) => {
-                        tc_res!(unary scope, exprs; Dereference(operator.location.clone(), right_side, typ))
+                        tc_res!(unary scope, exprs; Dereference(loc.clone(), right_side, typ))
                     }
-                    Err(typ) => Err(TypecheckingError::CannotDeref(
-                        operator.location.clone(),
-                        typ,
-                    )),
+                    Err(typ) => Err(TypecheckingError::CannotDeref(loc.clone(), typ)),
                 },
-                v => unreachable!("invalid unary operator {v:?}"),
+                UnaryOp::Reference => unreachable!(),
             }
         }
         Expression::Binary {
             operator,
             right_side,
             left_side,
+            loc,
         } => {
-            if matches!(operator.typ, TokenType::LShift | TokenType::RShift) {
+            if matches!(operator, BinaryOp::LShift | BinaryOp::RShift) {
                 let (typ, left_side) = typecheck_expression(
                     context,
                     module,
@@ -954,25 +943,21 @@ fn typecheck_expression(
                 )?;
                 if !typ_right.is_int_like() || !typ_right.is_unsigned() {
                     return Err(TypecheckingError::CannotShiftByNonUInt(
-                        operator.location.clone(),
+                        loc.clone(),
                         typ_right,
                     ));
                 }
 
-                return match operator.typ {
-                    TokenType::LShift if typ.is_int_like() => {
-                        tc_res!(binary scope, exprs; LShift(operator.location.clone(), left_side, right_side, typ))
+                return match operator {
+                    BinaryOp::LShift if typ.is_int_like() => {
+                        tc_res!(binary scope, exprs; LShift(loc.clone(), left_side, right_side, typ))
                     }
-                    TokenType::RShift if typ.is_int_like() => {
-                        tc_res!(binary scope, exprs; RShift(operator.location.clone(), left_side, right_side, typ))
+                    BinaryOp::RShift if typ.is_int_like() => {
+                        tc_res!(binary scope, exprs; RShift(loc.clone(), left_side, right_side, typ))
                     }
 
-                    TokenType::LShift => {
-                        Err(TypecheckingError::CannotShl(operator.location.clone(), typ))
-                    }
-                    TokenType::RShift => {
-                        Err(TypecheckingError::CannotShr(operator.location.clone(), typ))
-                    }
+                    BinaryOp::LShift => Err(TypecheckingError::CannotShl(loc.clone(), typ)),
+                    BinaryOp::RShift => Err(TypecheckingError::CannotShr(loc.clone(), typ)),
                     _ => unreachable!(),
                 };
             }
@@ -988,81 +973,81 @@ fn typecheck_expression(
             )?;
             if typ_left != typ_right {
                 return Err(TypecheckingError::LhsNotRhs(
-                    operator.location.clone(),
+                    loc.clone(),
                     typ_left,
                     typ_right,
                 ));
             }
-            let loc = operator.location.clone();
             let typ = typ_left;
-            match operator.typ {
-                TokenType::Plus if typ.is_int_like() => {
-                    tc_res!(binary scope, exprs; Add(operator.location.clone(), left_side, right_side, typ))
+            let loc = loc.clone();
+            match operator {
+                BinaryOp::Plus if typ.is_int_like() => {
+                    tc_res!(binary scope, exprs; Add(loc, left_side, right_side, typ))
                 }
-                TokenType::Minus if typ.is_int_like() => {
-                    tc_res!(binary scope, exprs; Sub(operator.location.clone(), left_side, right_side, typ))
+                BinaryOp::Minus if typ.is_int_like() => {
+                    tc_res!(binary scope, exprs; Sub(loc, left_side, right_side, typ))
                 }
-                TokenType::Asterix if typ.is_int_like() => {
-                    tc_res!(binary scope, exprs; Mul(operator.location.clone(), left_side, right_side, typ))
+                BinaryOp::Multiply if typ.is_int_like() => {
+                    tc_res!(binary scope, exprs; Mul(loc, left_side, right_side, typ))
                 }
-                TokenType::Divide if typ.is_int_like() => {
-                    tc_res!(binary scope, exprs; Div(operator.location.clone(), left_side, right_side, typ))
+                BinaryOp::Divide if typ.is_int_like() => {
+                    tc_res!(binary scope, exprs; Div(loc, left_side, right_side, typ))
                 }
-                TokenType::Modulo if typ.is_int_like() => {
-                    tc_res!(binary scope, exprs; Mod(operator.location.clone(), left_side, right_side, typ))
+                BinaryOp::Modulo if typ.is_int_like() => {
+                    tc_res!(binary scope, exprs; Mod(loc, left_side, right_side, typ))
                 }
-                TokenType::Ampersand if typ.is_int_like() || typ.is_bool() => {
-                    tc_res!(binary scope, exprs; BAnd(operator.location.clone(), left_side, right_side, typ))
+                BinaryOp::BitwiseAnd if typ.is_int_like() || typ.is_bool() => {
+                    tc_res!(binary scope, exprs; BAnd(loc, left_side, right_side, typ))
                 }
-                TokenType::BitwiseOr if typ.is_int_like() || typ.is_bool() => {
-                    tc_res!(binary scope, exprs; BOr(operator.location.clone(), left_side, right_side, typ))
+                BinaryOp::BitwiseOr if typ.is_int_like() || typ.is_bool() => {
+                    tc_res!(binary scope, exprs; BOr(loc, left_side, right_side, typ))
                 }
-                TokenType::BitwiseXor if typ.is_int_like() || typ.is_bool() => {
-                    tc_res!(binary scope, exprs; BXor(operator.location.clone(), left_side, right_side, typ))
+                BinaryOp::BitwiseXor if typ.is_int_like() || typ.is_bool() => {
+                    tc_res!(binary scope, exprs; BXor(loc, left_side, right_side, typ))
                 }
-                TokenType::LogicalOr if typ.is_bool() => {
-                    tc_res!(binary scope, exprs; LOr(operator.location.clone(), left_side, right_side, typ))
+                BinaryOp::LogicalOr if typ.is_bool() => {
+                    tc_res!(binary scope, exprs; LOr(loc, left_side, right_side, typ))
                 }
-                TokenType::LogicalAnd if typ.is_bool() => {
-                    tc_res!(binary scope, exprs; LAnd(operator.location.clone(), left_side, right_side, typ))
+                BinaryOp::LogicalAnd if typ.is_bool() => {
+                    tc_res!(binary scope, exprs; LAnd(loc, left_side, right_side, typ))
                 }
-                TokenType::GreaterThan if typ.is_int_like() => {
-                    tc_res!(binary scope, exprs; GreaterThan(operator.location.clone(), left_side, right_side, Type::PrimitiveBool(0)))
+                BinaryOp::GreaterThan if typ.is_int_like() => {
+                    tc_res!(binary scope, exprs; GreaterThan(loc, left_side, right_side, Type::PrimitiveBool(0)))
                 }
-                TokenType::GreaterThanEquals if typ.is_int_like() => {
-                    tc_res!(binary scope, exprs; GreaterThanEq(operator.location.clone(), left_side, right_side, Type::PrimitiveBool(0)))
+                BinaryOp::GreaterThanEq if typ.is_int_like() => {
+                    tc_res!(binary scope, exprs; GreaterThanEq(loc, left_side, right_side, Type::PrimitiveBool(0)))
                 }
-                TokenType::LessThan if typ.is_int_like() => {
-                    tc_res!(binary scope, exprs; LessThan(operator.location.clone(), left_side, right_side, Type::PrimitiveBool(0)))
+                BinaryOp::LessThan if typ.is_int_like() => {
+                    tc_res!(binary scope, exprs; LessThan(loc, left_side, right_side, Type::PrimitiveBool(0)))
                 }
-                TokenType::LessThanEquals if typ.is_int_like() => {
-                    tc_res!(binary scope, exprs; LessThanEq(operator.location.clone(), left_side, right_side, Type::PrimitiveBool(0)))
+                BinaryOp::LessThanEq if typ.is_int_like() => {
+                    tc_res!(binary scope, exprs; LessThanEq(loc, left_side, right_side, Type::PrimitiveBool(0)))
                 }
-                TokenType::EqualEqual if typ.is_int_like() || typ.is_bool() => {
-                    tc_res!(binary scope, exprs; Eq(operator.location.clone(), left_side, right_side, Type::PrimitiveBool(0)))
+                BinaryOp::Equals if typ.is_int_like() || typ.is_bool() => {
+                    tc_res!(binary scope, exprs; Eq(loc, left_side, right_side, Type::PrimitiveBool(0)))
                 }
-                TokenType::NotEquals if typ.is_int_like() || typ.is_bool() => {
-                    tc_res!(binary scope, exprs; Neq(operator.location.clone(), left_side, right_side, Type::PrimitiveBool(0)))
+                BinaryOp::NotEquals if typ.is_int_like() || typ.is_bool() => {
+                    tc_res!(binary scope, exprs; Neq(loc, left_side, right_side, Type::PrimitiveBool(0)))
                 }
 
-                TokenType::Plus => Err(TypecheckingError::CannotAdd(loc, typ)),
-                TokenType::Minus => Err(TypecheckingError::CannotSub(loc, typ)),
-                TokenType::Asterix => Err(TypecheckingError::CannotMul(loc, typ)),
-                TokenType::Divide => Err(TypecheckingError::CannotDiv(loc, typ)),
-                TokenType::Modulo => Err(TypecheckingError::CannotMod(loc, typ)),
-                TokenType::Ampersand => Err(TypecheckingError::CannotBAnd(loc, typ)),
-                TokenType::BitwiseOr => Err(TypecheckingError::CannotBOr(loc, typ)),
-                TokenType::BitwiseXor => Err(TypecheckingError::CannotBXor(loc, typ)),
-                TokenType::LogicalOr => Err(TypecheckingError::CannotLOr(loc, typ)),
-                TokenType::LogicalAnd => Err(TypecheckingError::CannotLAnd(loc, typ)),
-                TokenType::GreaterThan
-                | TokenType::GreaterThanEquals
-                | TokenType::LessThan
-                | TokenType::LessThanEquals => Err(TypecheckingError::CannotCompare(loc, typ)),
-                TokenType::EqualEqual | TokenType::NotEquals => {
+                BinaryOp::Plus => Err(TypecheckingError::CannotAdd(loc, typ)),
+                BinaryOp::Minus => Err(TypecheckingError::CannotSub(loc, typ)),
+                BinaryOp::Multiply => Err(TypecheckingError::CannotMul(loc, typ)),
+                BinaryOp::Divide => Err(TypecheckingError::CannotDiv(loc, typ)),
+                BinaryOp::Modulo => Err(TypecheckingError::CannotMod(loc, typ)),
+                BinaryOp::BitwiseAnd => Err(TypecheckingError::CannotBAnd(loc, typ)),
+                BinaryOp::BitwiseOr => Err(TypecheckingError::CannotBOr(loc, typ)),
+                BinaryOp::BitwiseXor => Err(TypecheckingError::CannotBXor(loc, typ)),
+                BinaryOp::LogicalOr => Err(TypecheckingError::CannotLOr(loc, typ)),
+                BinaryOp::LogicalAnd => Err(TypecheckingError::CannotLAnd(loc, typ)),
+                BinaryOp::GreaterThan
+                | BinaryOp::GreaterThanEq
+                | BinaryOp::LessThan
+                | BinaryOp::LessThanEq => Err(TypecheckingError::CannotCompare(loc, typ)),
+                BinaryOp::Equals | BinaryOp::NotEquals => {
                     Err(TypecheckingError::CannotEq(loc, typ))
                 }
-                v => unreachable!("invalid unary operator {v:?}"),
+                BinaryOp::RShift | BinaryOp::LShift => unreachable!(),
             }
         }
         Expression::FunctionCall {
@@ -1154,9 +1139,10 @@ fn typecheck_expression(
         } => {
             let (typ_lhs, lhs) = match &**left_side {
                 Expression::Unary {
-                    operator,
+                    operator: UnaryOp::Dereference,
                     right_side,
-                } if operator.typ == TokenType::Asterix => {
+                    ..
+                } => {
                     let (typ, lhs) = typecheck_expression(
                         context,
                         module,
@@ -1238,45 +1224,162 @@ fn typecheck_expression(
             new_type,
             loc,
         } => {
+            let (typ, lhs) =
+                typecheck_expression(context, module, scope, &**left_side, exprs, type_suggestion)?;
             let new_type = context.resolve_type(module, new_type, &[])?;
-            let (typ_lhs, lhs) = typecheck_expression(
-                context,
-                module,
-                scope,
-                left_side,
-                exprs,
-                TypeSuggestion::from_type(&new_type),
-            )?;
-            if typ_lhs.refcount() == 0 && new_type.refcount() == 0 {
-                // TODO: ensure both types are primitives
-                todo!();
-            }
-
-            // only allow casting between types with the same reference count and if either of them
-            // are &{&}void or the old one is &str and the new one is &u8
-            if typ_lhs.refcount() != new_type.refcount()
-                || !(matches!(typ_lhs, Type::PrimitiveVoid(_))
-                    || matches!(new_type, Type::PrimitiveVoid(_))
-                    || (typ_lhs == Type::PrimitiveStr(1) && new_type == Type::PrimitiveU8(1)))
-            {
-                return Err(TypecheckingError::DisallowedPointerCast(
-                    loc.clone(),
-                    typ_lhs,
-                    new_type,
-                ));
-            } else {
-                if !new_type.is_thin_ptr() {
-                    return Err(TypecheckingError::DisallowedPointerCast(
-                        loc.clone(),
-                        typ_lhs,
-                        new_type,
-                    ));
-                }
-                let id = scope.push(new_type.clone());
-                exprs.push(TypecheckedExpression::Alias(loc.clone(), id, lhs));
-                Ok((new_type, TypedLiteral::Dynamic(id)))
-            }
+            typecheck_cast(scope, exprs, typ, new_type, lhs, loc.clone())
         }
+    }
+}
+
+fn typecheck_cast(
+    scope: &mut Scopes,
+    exprs: &mut Vec<TypecheckedExpression>,
+    typ: Type,
+    new_typ: Type,
+    lhs: TypedLiteral,
+    loc: Location,
+) -> Result<(Type, TypedLiteral), TypecheckingError> {
+    if typ == new_typ {
+        return Ok((new_typ, lhs));
+    }
+
+    match (&typ, &new_typ) {
+        // &str -> &[u8]
+        (
+            Type::PrimitiveStr(ref_self),
+            Type::UnsizedArray {
+                typ,
+                num_references: ref_other,
+            },
+        ) if ref_self == ref_other && **typ == Type::PrimitiveU8(0) => {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::Alias(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        // &str -> &u8
+        (Type::PrimitiveStr(1), Type::PrimitiveU8(1)) => {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::StripMetadata(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        // &T to &[T; 1]
+        (
+            _,
+            Type::SizedArray {
+                typ: typ_other,
+                num_references: ref_other,
+                number_elements: 1,
+            },
+        ) if *ref_other > 0
+            && typ.refcount() >= *ref_other
+            && typ.clone().with_num_refs(typ.refcount() - *ref_other) == **typ_other =>
+        {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::Alias(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        (
+            Type::SizedArray {
+                typ,
+                num_references: 1,
+                number_elements,
+            },
+            Type::UnsizedArray {
+                typ: typ_other,
+                num_references: 1,
+            },
+        ) if typ == typ_other => {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::MakeUnsizedSlice(
+                loc,
+                id,
+                lhs,
+                *number_elements,
+            ));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        // (&[T] -> &T)
+        (
+            Type::UnsizedArray {
+                typ,
+                num_references: 1,
+            },
+            _,
+        ) if new_typ.refcount() == 1 && new_typ == **typ => {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::StripMetadata(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        // &&void -> &void
+        (Type::PrimitiveVoid(ref_self), Type::PrimitiveVoid(1)) if *ref_self > 0 => {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        // &void -> usize
+        (Type::PrimitiveVoid(1), Type::PrimitiveUSize(0)) => {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::PtrToInt(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        // usize -> &void
+        (Type::PrimitiveUSize(0), Type::PrimitiveVoid(1)) => {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::IntToPtr(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        // &T to &void
+        (_, Type::PrimitiveVoid(ref_other))
+            if typ.refcount() == *ref_other && typ.is_thin_ptr() =>
+        {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        // &void to &T
+        (Type::PrimitiveVoid(ref_self), _)
+            if new_typ.refcount() == *ref_self && new_typ.is_thin_ptr() =>
+        {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        (
+            Type::PrimitiveU8(0) | Type::PrimitiveBool(0),
+            Type::PrimitiveU8(0) | Type::PrimitiveBool(0),
+        )
+        | (
+            Type::PrimitiveU8(0)
+            | Type::PrimitiveU16(0)
+            | Type::PrimitiveU32(0)
+            | Type::PrimitiveU64(0)
+            | Type::PrimitiveUSize(0)
+            | Type::PrimitiveI8(0)
+            | Type::PrimitiveI16(0)
+            | Type::PrimitiveI32(0)
+            | Type::PrimitiveI64(0)
+            | Type::PrimitiveISize(0)
+            | Type::PrimitiveF32(0)
+            | Type::PrimitiveF64(0),
+            Type::PrimitiveU8(0)
+            | Type::PrimitiveU16(0)
+            | Type::PrimitiveU32(0)
+            | Type::PrimitiveU64(0)
+            | Type::PrimitiveUSize(0)
+            | Type::PrimitiveI8(0)
+            | Type::PrimitiveI16(0)
+            | Type::PrimitiveI32(0)
+            | Type::PrimitiveI64(0)
+            | Type::PrimitiveISize(0)
+            | Type::PrimitiveF32(0)
+            | Type::PrimitiveF64(0),
+        ) => {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::IntCast(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        _ => Err(TypecheckingError::DisallowedCast(loc, typ, new_typ)),
     }
 }
 
@@ -1417,7 +1520,8 @@ fn typecheck_take_ref(
         Expression::Unary {
             operator,
             right_side,
-        } if operator.typ == TokenType::Asterix => {
+            ..
+        } if *operator == UnaryOp::Dereference => {
             typecheck_expression(context, module, scope, right_side, exprs, type_suggestion)
         }
         _ => {
@@ -1599,10 +1703,6 @@ fn ref_resolve_indexing(
                     ));
                     return Ok((typ, TypedLiteral::Dynamic(id)));
                 }
-            }
-
-            if typ.refcount() > 0 {
-                return Ok((typ.deref().unwrap(), typed_literal));
             }
 
             match type_suggestion {

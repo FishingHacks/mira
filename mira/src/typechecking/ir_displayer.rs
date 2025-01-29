@@ -298,7 +298,12 @@ impl Display for ExpressionDisplay<'_> {
                 format_args!("_{} = offset_non_ptr({}, {offset_value})", lhs, TLD(rhs)),
             ),
             TypecheckedExpression::TraitCall(..) => todo!(),
-            TypecheckedExpression::Alias(_, lhs, rhs) => {
+            TypecheckedExpression::Bitcast(_, lhs, rhs)
+            | TypecheckedExpression::PtrToInt(_, lhs, rhs)
+            | TypecheckedExpression::IntToPtr(_, lhs, rhs)
+            | TypecheckedExpression::Alias(_, lhs, rhs)
+            | TypecheckedExpression::StripMetadata(_, lhs, rhs)
+            | TypecheckedExpression::IntCast(_, lhs, rhs) => {
                 f.write_fmt(format_args!("_{lhs} = {} as <unknown type T>", TLD(rhs)))
             }
             TypecheckedExpression::Literal(_, lhs, rhs) => {

@@ -7,7 +7,7 @@ use crate::{
     globals::GlobalStr,
     tokenizer::{Location, Token, TokenType},
 };
-pub use expression::{Expression, LiteralValue, Path, PathWithoutGenerics};
+pub use expression::{BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, Struct, TypeRef, RESERVED_TYPE_NAMES};
 mod expression;
@@ -103,6 +103,12 @@ impl Parser {
         }
 
         &self.tokens[self.current]
+    }
+
+    fn peekpeek(&self) -> &Token {
+        self.tokens
+            .get(self.current + 1)
+            .unwrap_or(&self.tokens[self.tokens.len() - 1])
     }
 
     fn check(&self, typ: TokenType) -> bool {

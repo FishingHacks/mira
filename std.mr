@@ -69,22 +69,14 @@ fn test5(v: &[Nya]) -> usize = v[2].boop;
 fn test6() -> &[&u8] = &[&3, &4];
 fn test7(v: &[&[u8]], a: usize, b: usize) -> u8 = v[a][b];
 fn test8() -> &str = "abcdefg :3";
-fn test9() -> i32 = woof(12);
+//fn test9() -> i32 = woof(12);
 
 extern fn main(argc: usize, argv: &&u8) {
-    let v = [test2(), test2(), test2(), test2(), test2()];
-    // turn argv of &&u8 into &&str into &[&str] where the size is argc
-    printf("got %d arguments\n\0" as &u8, argc);
-    let value = test9();
-    printf("value of test9: %d\n\0" as &u8, value);
-    let value2 = test4(v, 3);
-    let value3 = test3(&value2);
-    printf("value of test 3 and test 4 is: %d\n\0" as &u8, *value3);
-    let val = test10(test11, 12, 8);
-    printf("value is %d\n\0" as &u8, val);
-
-    let tuple = test13();
-    printf("tuple is (%d, %d)\n\0" as &u8, tuple[0], tuple[1]);
+    let value = -12i32;
+    let _value = &&value;
+    let valuea = _value as &[&i32; 1];
+    let valueb = *valuea[0];
+    printf("%d\0" as &u8, valueb);
 }
 
 fn test10(v: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 = v(a, b);

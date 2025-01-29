@@ -19,9 +19,9 @@ pub use context::CodegenContext;
 pub use error::CodegenError;
 pub use inkwell::support::LLVMString;
 use inkwell::{
-    builder::{Builder, BuilderError},
+    builder::{self, Builder, BuilderError},
     context::Context,
-    types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType},
+    types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, IntType, StructType},
     values::{BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PointerValue},
     FloatPredicate, IntPredicate,
 };
@@ -1524,31 +1524,219 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::TraitCall(..) => todo!(),
-            TypecheckedExpression::Alias(_, new, old) => {
+            TypecheckedExpression::Bitcast(_, new, old) => {
                 let new_typ = &ctx.tc_scope[*new].0;
                 let old_typ = old.to_type(&ctx.tc_scope, ctx.tc_ctx);
-                if *new_typ == *old_typ {
-                    // this will copy the value, that is expected behavior
-                    return Ok(ctx.push_value(*new, old.fn_ctx_to_basic_value(ctx)));
-                }
                 if new_typ.refcount() > 0 {
-                    assert_eq!(new_typ.refcount(), old_typ.refcount());
                     assert!(new_typ.is_thin_ptr());
-                    if !old_typ.is_thin_ptr() {
-                        let val = old.fn_ctx_to_basic_value(ctx);
-                        let real_ptr =
-                            ctx.builder
-                                .build_extract_value(val.into_struct_value(), 0, "")?;
-                        ctx.push_value(*new, real_ptr);
+                    assert!(old_typ.is_thin_ptr());
+                }
+                let new_value = ctx.builder.build_bit_cast(
+                    old.fn_ctx_to_basic_value(ctx),
+                    new_typ.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context),
+                    "",
+                )?;
+                ctx.push_value(*new, new_value);
+                Ok(())
+            }
+            TypecheckedExpression::Literal(_, dst, src)
+            | TypecheckedExpression::Alias(_, dst, src) => {
+                if let TypedLiteral::Dynamic(id) = src {
+                    if ctx.tc_scope[*dst].1.stack_allocated && ctx.tc_scope[*id].1.stack_allocated {
+                        let ty = &ctx.tc_scope[*dst].0;
+                        let llvm_ty =
+                            ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
+                        let alignment = get_alignment(llvm_ty);
+                        let new_ptr = ctx.builder.build_alloca(llvm_ty, "")?;
+                        ctx.builder.build_memmove(
+                            new_ptr,
+                            alignment,
+                            ctx.get_value_ptr(*id),
+                            alignment,
+                            llvm_ty.size_of().expect("llvm type should always be sized"),
+                        )?;
+                        ctx.push_value_raw(*dst, new_ptr.into());
                         return Ok(());
-                    } else {
-                        return Ok(ctx.push_value(*new, old.fn_ctx_to_basic_value(ctx)));
+                    }
+                } else if let TypedLiteral::Static(id) = src {
+                    if ctx.tc_scope[*dst].1.stack_allocated {
+                        let ty = &ctx.tc_scope[*dst].0;
+                        let llvm_ty =
+                            ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
+                        let alignment = get_alignment(llvm_ty);
+                        let new_ptr = ctx.builder.build_alloca(llvm_ty, "")?;
+                        ctx.builder.build_memmove(
+                            new_ptr,
+                            alignment,
+                            ctx.statics[*id].as_pointer_value(),
+                            alignment,
+                            llvm_ty.size_of().expect("llvm type should always be sized"),
+                        )?;
+                        ctx.push_value_raw(*dst, new_ptr.into());
+                        return Ok(());
                     }
                 }
-                todo!()
+                ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx));
+                Ok(())
             }
-            TypecheckedExpression::Literal(_, dst, src) => {
-                Ok(ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx)))
+            TypecheckedExpression::PtrToInt(_, dst, src) => {
+                let value = ctx.builder.build_ptr_to_int(
+                    src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
+                    ctx.tc_scope[*dst]
+                        .0
+                        .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
+                        .into_int_type(),
+                    "",
+                )?;
+                ctx.push_value(*dst, value.into());
+                Ok(())
+            }
+            TypecheckedExpression::IntToPtr(_, dst, src) => {
+                let value = ctx.builder.build_int_to_ptr(
+                    src.fn_ctx_to_basic_value(ctx).into_int_value(),
+                    ctx.default_types.ptr,
+                    "",
+                )?;
+                ctx.push_value(*dst, value.into());
+                Ok(())
+            }
+            TypecheckedExpression::StripMetadata(_, dst, src) => {
+                let (value, is_ptr) = if let TypedLiteral::Dynamic(src) = src {
+                    (ctx._scope[*src], ctx.tc_scope[*src].1.stack_allocated)
+                } else if let TypedLiteral::Static(id) = src {
+                    (ctx.statics[*id].as_pointer_value().into(), true)
+                } else {
+                    (src.fn_ctx_to_basic_value(ctx), false)
+                };
+                let pointer = if is_ptr {
+                    let pointer_pointer = ctx.builder.build_struct_gep(
+                        ctx.default_types.fat_ptr,
+                        value.into_pointer_value(),
+                        0,
+                        "",
+                    )?;
+                    build_deref(pointer_pointer, &ctx.tc_scope[*dst].0, ctx)?
+                } else {
+                    ctx.builder
+                        .build_extract_value(value.into_struct_value(), 0, "")?
+                };
+                ctx.push_value(*dst, pointer);
+                Ok(())
+            }
+            Self::IntCast(_, dst, src) => {
+                let src_ty = src
+                    .to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
+                    .expect("can only cast primitive types");
+                let dst_ty = &ctx.tc_scope[*dst].0;
+                let src_value = src.fn_ctx_to_basic_value(ctx);
+                // u8 -> bool
+                if src_ty == Type::PrimitiveU8(0) && *dst_ty == Type::PrimitiveBool(0) {
+                    let value = ctx.builder.build_int_truncate(
+                        src_value.into_int_value(),
+                        ctx.default_types.bool,
+                        "",
+                    )?;
+                    ctx.push_value(*dst, value.into());
+                    return Ok(());
+                }
+                // bool -> u8
+                if src_ty == Type::PrimitiveBool(0) && *dst_ty == Type::PrimitiveU8(0) {
+                    let value = ctx.builder.build_int_z_extend(
+                        src_value.into_int_value(),
+                        ctx.default_types.i8,
+                        "",
+                    )?;
+                    ctx.push_value(*dst, value.into());
+                    return Ok(());
+                }
+                // f32 -> f64
+                if src_ty == Type::PrimitiveF32(0) && *dst_ty == Type::PrimitiveF64(0) {
+                    let value = ctx.builder.build_float_ext(
+                        src_value.into_float_value(),
+                        ctx.default_types.f64,
+                        "",
+                    )?;
+                    ctx.push_value(*dst, value.into());
+                    return Ok(());
+                }
+                // f64 -> f32
+                if src_ty == Type::PrimitiveBool(0) && *dst_ty == Type::PrimitiveU8(0) {
+                    let value = ctx.builder.build_float_trunc(
+                        src_value.into_float_value(),
+                        ctx.default_types.f32,
+                        "",
+                    )?;
+                    ctx.push_value(*dst, value.into());
+                    return Ok(());
+                }
+                if src_ty.is_int_like() && dst_ty.is_int_like() {
+                    let isize_bitwidth = ctx.default_types.isize.get_bit_width();
+                    let trunc =
+                        src_ty.get_bitwidth(isize_bitwidth) > dst_ty.get_bitwidth(isize_bitwidth);
+                    let ty = ctx
+                        .context
+                        .custom_width_int_type(dst_ty.get_bitwidth(isize_bitwidth));
+                    let value = if trunc {
+                        ctx.builder.build_int_truncate_or_bit_cast(
+                            src_value.into_int_value(),
+                            ty,
+                            "",
+                        )?
+                    } else if dst_ty.is_unsigned() {
+                        ctx.builder.build_int_z_extend_or_bit_cast(
+                            src_value.into_int_value(),
+                            ty,
+                            "",
+                        )?
+                    } else {
+                        ctx.builder.build_int_s_extend_or_bit_cast(
+                            src_value.into_int_value(),
+                            ty,
+                            "",
+                        )?
+                    };
+                    ctx.push_value(*dst, value.into());
+                    return Ok(());
+                }
+                if src_ty.is_float() {
+                    let isize_bitwidth = ctx.default_types.isize.get_bit_width();
+                    let ty = ctx
+                        .context
+                        .custom_width_int_type(dst_ty.get_bitwidth(isize_bitwidth));
+                    let value = if dst_ty.is_unsigned() {
+                        ctx.builder.build_float_to_unsigned_int(
+                            src_value.into_float_value(),
+                            ty,
+                            "",
+                        )?
+                    } else {
+                        ctx.builder.build_float_to_signed_int(
+                            src_value.into_float_value(),
+                            ty,
+                            "",
+                        )?
+                    };
+                    ctx.push_value(*dst, value.into());
+                    Ok(())
+                } else {
+                    let ty = match dst_ty {
+                        Type::PrimitiveF32(0) => ctx.default_types.f32,
+                        Type::PrimitiveF64(0) => ctx.default_types.f64,
+                        _ => unreachable!("not a float type: {:?}", dst_ty),
+                    };
+                    let value = if src_ty.is_unsigned() {
+                        ctx.builder.build_unsigned_int_to_float(
+                            src_value.into_int_value(),
+                            ty,
+                            "",
+                        )?
+                    } else {
+                        ctx.builder
+                            .build_signed_int_to_float(src_value.into_int_value(), ty, "")?
+                    };
+                    ctx.push_value(*dst, value.into());
+                    Ok(())
+                }
             }
             TypecheckedExpression::Empty(_) => Ok(()),
             TypecheckedExpression::None => {

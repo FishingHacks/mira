@@ -297,15 +297,32 @@ pub enum TypecheckedExpression {
     // _1 = Eq::eq(_2)
     // TODO: do this
     TraitCall(Location, ScopeValueId, TypedLiteral, TraitId, GlobalStr),
-    // _1 = _2
-    // used for casts, `_1 = (_2 as T)` results in `_1 = _2`.
-    Alias(Location, ScopeValueId, TypedLiteral),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
     Literal(Location, ScopeValueId, TypedLiteral),
-    // let _1 = attach_metadata(_2, _3)
-    // _2: &[_; _3]
-    MakeUnsizedSlice(Location, ScopeValueId, TypedLiteral, usize),
     Empty(Location),
+    // ### CASTS ###
+    // NOTE: All casts copy the value.
+    //
+    // Does not change the value. Used when 2 types are represented the same in
+    // llvm ir but differently in the type system.
+    // Examples: &str to &[u8]
+    // &[T] to (&T, usize)
+    // &T to &[T; 1]
+    // &A to &B
+    Alias(Location, ScopeValueId, TypedLiteral),
+    // casting u_ to i_ (for integers of the same size)
+    Bitcast(Location, ScopeValueId, TypedLiteral),
+    // i_ or u_ or f_ or bool to i_ or u_ or f_ or bool
+    IntCast(Location, ScopeValueId, TypedLiteral),
+    // casts &void to usize (only valid for thin pointers)
+    PtrToInt(Location, ScopeValueId, TypedLiteral),
+    // casts usize to &void (only valid for thin pointers)
+    IntToPtr(Location, ScopeValueId, TypedLiteral),
+    // Strips the metadata from a fat pointer, &[T] to &T
+    StripMetadata(Location, ScopeValueId, TypedLiteral),
+    // _2: &[_; _3]
+    // let _1 = attach_metadata(_2, _3)
+    MakeUnsizedSlice(Location, ScopeValueId, TypedLiteral, usize),
     None,
 }
 
@@ -322,6 +339,11 @@ impl TypecheckedExpression {
             | TypecheckedExpression::StoreAssignment(location, ..)
             | TypecheckedExpression::OffsetNonPointer(location, ..)
             | TypecheckedExpression::MakeUnsizedSlice(location, ..)
+            | TypecheckedExpression::StripMetadata(location, ..)
+            | TypecheckedExpression::Bitcast(location, ..)
+            | TypecheckedExpression::IntCast(location, ..)
+            | TypecheckedExpression::PtrToInt(location, ..)
+            | TypecheckedExpression::IntToPtr(location, ..)
             | TypecheckedExpression::Offset(location, ..)
             | TypecheckedExpression::Literal(location, ..)
             | TypecheckedExpression::Call(location, ..)

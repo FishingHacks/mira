@@ -362,6 +362,39 @@ impl Type {
         }
     }
 
+    pub fn with_num_refs(mut self, num_refs: u8) -> Self {
+        match &mut self {
+            Type::Trait { num_references, .. }
+            | Type::DynType { num_references, .. }
+            | Type::Struct { num_references, .. }
+            | Type::UnsizedArray { num_references, .. }
+            | Type::SizedArray { num_references, .. }
+            | Type::Tuple { num_references, .. }
+            | Type::Function(_, num_references)
+            | Type::PrimitiveVoid(num_references)
+            | Type::PrimitiveI8(num_references)
+            | Type::PrimitiveI16(num_references)
+            | Type::PrimitiveI32(num_references)
+            | Type::PrimitiveI64(num_references)
+            | Type::PrimitiveISize(num_references)
+            | Type::PrimitiveU8(num_references)
+            | Type::PrimitiveU16(num_references)
+            | Type::PrimitiveU32(num_references)
+            | Type::PrimitiveU64(num_references)
+            | Type::PrimitiveUSize(num_references)
+            | Type::PrimitiveF32(num_references)
+            | Type::PrimitiveF64(num_references)
+            | Type::PrimitiveStr(num_references)
+            | Type::PrimitiveBool(num_references)
+            | Type::PrimitiveSelf(num_references)
+            | Type::Generic(_, num_references) => {
+                *num_references = num_refs;
+                self
+            }
+            Type::PrimitiveNever => self,
+        }
+    }
+
     pub fn is_primitive(&self) -> bool {
         match self {
             Type::Trait { .. }
@@ -371,6 +404,7 @@ impl Type {
             | Type::SizedArray { .. }
             | Type::Tuple { .. }
             | Type::Generic(..)
+            | Type::PrimitiveSelf(..)
             | Type::Function(..) => false,
             Type::PrimitiveVoid(_)
             | Type::PrimitiveNever
@@ -387,8 +421,7 @@ impl Type {
             | Type::PrimitiveF32(_)
             | Type::PrimitiveF64(_)
             | Type::PrimitiveStr(_)
-            | Type::PrimitiveBool(_)
-            | Type::PrimitiveSelf(_) => true,
+            | Type::PrimitiveBool(_) => true,
         }
     }
 
@@ -433,6 +466,29 @@ impl Type {
 
     pub fn is_float(&self) -> bool {
         matches!(self, Self::PrimitiveF32(0) | Self::PrimitiveF64(0))
+    }
+
+    pub fn get_bitwidth(&self, isize_bitwidth: u32) -> u32 {
+        match self {
+            Type::Trait { .. }
+            | Type::DynType { .. }
+            | Type::Struct { .. }
+            | Type::UnsizedArray { .. }
+            | Type::SizedArray { .. }
+            | Type::Tuple { .. }
+            | Type::Function(..)
+            | Type::PrimitiveSelf(_)
+            | Type::Generic(..)
+            | Type::PrimitiveVoid(_)
+            | Type::PrimitiveBool(_)
+            | Type::PrimitiveStr(_)
+            | Type::PrimitiveNever => 0,
+            Type::PrimitiveU8(_) | Type::PrimitiveI8(_) => 8,
+            Type::PrimitiveU16(_) | Type::PrimitiveI16(_) => 16,
+            Type::PrimitiveF32(_) | Type::PrimitiveU32(_) | Type::PrimitiveI32(_) => 32,
+            Type::PrimitiveF64(_) | Type::PrimitiveU64(_) | Type::PrimitiveI64(_) => 64,
+            Type::PrimitiveUSize(_) | Type::PrimitiveISize(_) => isize_bitwidth,
+        }
     }
 
     pub fn is_bool(&self) -> bool {

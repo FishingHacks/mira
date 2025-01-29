@@ -503,6 +503,7 @@ fn run(
     //
     //    println!("===== [ STOPPED ] =====");
 
+    codegen_context.optimize_o3().unwrap();
     codegen_context.module.print_to_file("./out.ll").unwrap();
     println!("wrote out.ll");
 

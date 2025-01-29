@@ -19,8 +19,6 @@ pub enum TokenType {
     NotEquals,            // done, done
     LessThan,             // done, done
     GreaterThan,          // done, done
-    LessThanEquals,       // done, done
-    GreaterThanEquals,    // done, done
     LogicalNot,           // done, done
     LogicalAnd,           // done, done
     LogicalOr,            // done, done
@@ -45,13 +43,10 @@ pub enum TokenType {
     Asterix,              // done, done
     Divide,               // done, done
     Modulo,               // done, done
-    ModuloAssign,         // done, done
     BitwiseNot,           // done, done
     Ampersand,            // done, done
     BitwiseOr,            // done, done
     BitwiseXor,           // done, done
-    LShift,               // done, done
-    RShift,               // done, done
     PipeOperator,         // done, done
     Return,               // done, done
     Fn,                   // done, done
@@ -63,6 +58,7 @@ pub enum TokenType {
     While,                // done, done
     For,                  // done, done
     In,                   // done, done
+    Unsized,              // done, done
     Range,                // done, done
     RangeInclusive,       // done, done
     ReturnType,           // done, done
@@ -72,13 +68,6 @@ pub enum TokenType {
     Comma,                // done, done
     PlusAssign,           // done, done
     MinusAssign,          // done, done
-    DivideAssign,         // done, done
-    MultiplyAssign,       // done, done
-    BitwiseAndAssign,     // done, done
-    BitwiseOrAssign,      // done, done
-    BitwiseXorAssign,     // done, done
-    BitwiseLShiftAssign,  // done, done
-    BitwiseRShiftAssign,  // done, done
     Dot,                  // done, done
     As,                   // done, done
     QuestionMark,         // done, done
@@ -202,17 +191,10 @@ impl Display for Token {
             TokenType::As => f.write_str("as"),
             TokenType::Colon => f.write_str(":"),
             TokenType::Equal => f.write_str("="),
-            TokenType::BitwiseAndAssign => f.write_str("&="),
             TokenType::Ampersand => f.write_str("&"),
             TokenType::BitwiseNot => f.write_str("~"),
             TokenType::BitwiseOr => f.write_str("|"),
-            TokenType::BitwiseOrAssign => f.write_str("|="),
             TokenType::BitwiseXor => f.write_str("^"),
-            TokenType::BitwiseXorAssign => f.write_str("^="),
-            TokenType::LShift => f.write_str("<<"),
-            TokenType::BitwiseLShiftAssign => f.write_str("<<="),
-            TokenType::RShift => f.write_str(">>"),
-            TokenType::BitwiseRShiftAssign => f.write_str(">>="),
             TokenType::VoidLiteral => f.write_str("void"),
             TokenType::BooleanLiteral => match &self.literal {
                 Some(Literal::Bool(v)) => f.write_fmt(format_args!("bool({v})")),
@@ -224,7 +206,6 @@ impl Display for Token {
             TokenType::CurlyLeft => f.write_str("{"),
             TokenType::CurlyRight => f.write_str("}"),
             TokenType::Divide => f.write_str("/"),
-            TokenType::DivideAssign => f.write_str("/="),
             TokenType::Dot => f.write_str("."),
             TokenType::Else => f.write_str("else"),
             TokenType::Eof => f.write_str("<EOF>"),
@@ -233,7 +214,6 @@ impl Display for Token {
             TokenType::Fn => f.write_str("fn"),
             TokenType::For => f.write_str("for"),
             TokenType::GreaterThan => f.write_str(">"),
-            TokenType::GreaterThanEquals => f.write_str(">="),
             TokenType::IdentifierLiteral => match &self.literal {
                 Some(Literal::String(v)) => f.write_fmt(format_args!("identifier({v})")),
                 _ => f.write_str("identifier(malformed data)"),
@@ -243,8 +223,8 @@ impl Display for Token {
             TokenType::If => f.write_str("if"),
             TokenType::Impl => f.write_str("impl"),
             TokenType::In => f.write_str("in"),
+            TokenType::Unsized => f.write_str("unsized"),
             TokenType::LessThan => f.write_str("<"),
-            TokenType::LessThanEquals => f.write_str("<="),
             TokenType::Let => f.write_str("let"),
             TokenType::LogicalAnd => f.write_str("&&"),
             TokenType::LogicalNot => f.write_str("!"),
@@ -252,8 +232,6 @@ impl Display for Token {
             TokenType::Minus => f.write_str("-"),
             TokenType::MinusAssign => f.write_str("-="),
             TokenType::Modulo => f.write_str("%"),
-            TokenType::ModuloAssign => f.write_str("%="),
-            TokenType::MultiplyAssign => f.write_str("*="),
             TokenType::Asterix => f.write_str("*"),
             TokenType::NotEquals => f.write_str("!="),
             TokenType::AnnotationIntroducer => f.write_str("@"),
@@ -471,26 +449,21 @@ impl Tokenizer {
             '-' if self.if_char_advance('=') => token!(MinusAssign),
             '-' if self.if_char_advance('>') => token!(ReturnType),
             '-' => token!(Minus),
-            '/' if self.peek() != '/' => token!(Divide, DivideAssign, '='),
-            '%' => token!(Modulo, ModuloAssign, '='),
-            '*' => token!(Asterix, MultiplyAssign, '='),
+            '/' if self.peek() != '/' => token!(Divide),
+            '%' => token!(Modulo),
+            '*' => token!(Asterix),
             '=' => token!(Equal, EqualEqual, '='),
-            '<' if self.peek() != '<' => token!(LessThan, LessThanEquals, '='),
-            '<' if self.if_char_advance('<') => token!(LShift, BitwiseLShiftAssign, '='),
-            '>' if self.peek() != '>' => token!(GreaterThan, GreaterThanEquals, '='),
-            '>' if self.if_char_advance('>') => token!(RShift, BitwiseRShiftAssign, '='),
+            '<' => token!(LessThan),
+            '>' => token!(GreaterThan),
             ':' => token!(Colon, NamespaceAccess, ':'),
             ';' => token!(Semicolon),
             '!' => token!(LogicalNot, NotEquals, '='),
             '~' => token!(BitwiseNot),
-            '&' if self.if_char_advance('=') => token!(BitwiseAndAssign),
-            '&' if self.if_char_advance('&') => token!(LogicalAnd),
-            '&' => token!(Ampersand),
-            '|' if self.if_char_advance('=') => token!(BitwiseOrAssign),
+            '&' => token!(Ampersand, LogicalAnd, '&'),
             '|' if self.if_char_advance('|') => token!(LogicalOr),
             '|' if self.if_char_advance('>') => token!(PipeOperator),
             '|' => token!(BitwiseOr),
-            '^' => token!(BitwiseXor, BitwiseXorAssign, '='),
+            '^' => token!(BitwiseXor),
             ' ' | '\n' | '\r' | '\t' => {
                 while matches!(self.peek(), ' ' | '\n' | '\r' | '\t') {
                     self.advance();
@@ -1048,6 +1021,7 @@ impl Tokenizer {
             "while" => Some(TokenType::While),
             "for" => Some(TokenType::For),
             "in" => Some(TokenType::In),
+            "unsized" => Some(TokenType::Unsized),
             "struct" => Some(TokenType::Struct),
             "impl" => Some(TokenType::Impl),
             "trait" => Some(TokenType::Trait),

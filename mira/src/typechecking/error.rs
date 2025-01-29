@@ -40,8 +40,8 @@ pub enum TypecheckingError {
     IndexNonArrayElem(Location, Type),
     #[error("{0}: Could not find field `{2}` on `{1}`")]
     FieldNotFound(Location, Type, GlobalStr),
-    #[error("{0}: Invalid pointer cast, can only cast pointers with the same reference count. Did you mean to use `unsafe_pointer_cast`? (lhs: `{1}`, rhs: `{2}`)")]
-    DisallowedPointerCast(Location, Type, Type),
+    #[error("{0}: Invalid cast (lhs: `{1}`, rhs: `{2}`)")]
+    DisallowedCast(Location, Type, Type),
     #[error("{0}: Cannot assign to this expression")]
     CannotAssign(Location),
     #[error("{0}: Cannot shift by a non-uint value (found `{1}`)")]

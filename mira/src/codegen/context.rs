@@ -15,6 +15,7 @@ use inkwell::{
     context::Context,
     debug_info::{AsDIScope, DWARFEmissionKind, DWARFSourceLanguage},
     module::{Linkage, Module},
+    passes::PassBuilderOptions,
     support::LLVMString,
     targets::{
         CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
@@ -78,6 +79,30 @@ impl<'a> CodegenContext<'a> {
 
     pub fn check(&self) -> Result<(), LLVMString> {
         self.module.verify()
+    }
+
+    pub fn optimize_o0(&self) -> Result<(), LLVMString> {
+        self.run_passes("default<O0>")
+    }
+    pub fn optimize_o1(&self) -> Result<(), LLVMString> {
+        self.run_passes("default<O1>")
+    }
+    pub fn optimize_o2(&self) -> Result<(), LLVMString> {
+        self.run_passes("default<O2>")
+    }
+    pub fn optimize_o3(&self) -> Result<(), LLVMString> {
+        self.run_passes("default<O3>")
+    }
+    pub fn optimize_os(&self) -> Result<(), LLVMString> {
+        self.run_passes("default<Os>")
+    }
+    pub fn optimize_oz(&self) -> Result<(), LLVMString> {
+        self.run_passes("default<Oz>")
+    }
+
+    pub fn run_passes(&self, passes: &str) -> Result<(), LLVMString> {
+        self.module
+            .run_passes(passes, &self.machine, PassBuilderOptions::create())
     }
 
     fn make_debug_info(
@@ -546,7 +571,12 @@ fn collect_strings_for_expressions(
             | TypecheckedExpression::Pos(.., lit)
             | TypecheckedExpression::Neg(.., lit)
             | TypecheckedExpression::LNot(.., lit)
+            | TypecheckedExpression::Bitcast(.., lit)
+            | TypecheckedExpression::IntCast(.., lit)
+            | TypecheckedExpression::PtrToInt(.., lit)
+            | TypecheckedExpression::IntToPtr(.., lit)
             | TypecheckedExpression::Alias(.., lit)
+            | TypecheckedExpression::StripMetadata(.., lit)
             | TypecheckedExpression::BNot(.., lit) => {
                 collect_strings_for_typed_literal(lit, strings)
             }
