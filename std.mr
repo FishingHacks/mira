@@ -71,12 +71,13 @@ fn test7(v: &[&[u8]], a: usize, b: usize) -> u8 = v[a][b];
 fn test8() -> &str = "abcdefg :3";
 //fn test9() -> i32 = woof(12);
 
-extern fn main(argc: usize, argv: &&u8) {
+extern fn main(argc: usize, argv: &&u8) -> i32 {
     let value = -12i32;
     let _value = &&value;
     let valuea = _value as &[&i32; 1];
     let valueb = *valuea[0];
     printf("%d\0" as &u8, valueb);
+    return 0;
 }
 
 fn test10(v: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 = v(a, b);

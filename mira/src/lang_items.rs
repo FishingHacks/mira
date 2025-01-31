@@ -419,7 +419,6 @@ lang_item_def! {
     str => Struct,
     slice => Struct,
     bool => Struct, // done
-    ptr => Struct, // done
     f32 => Struct, // done
     f64 => Struct, // done
     i8 => Struct, // done
@@ -516,9 +515,6 @@ impl LangItems {
     fn isize(&self) -> LangItemStruct {
         Self::empty_struct()
     }
-    fn ptr(&self) -> LangItemStruct {
-        Self::empty_struct()
-    }
 
     fn allocator_trait(&self) -> LangItemTrait {
         // trait Allocator {
@@ -600,7 +596,6 @@ impl LangItems {
         check_langitem!(required self.copy_trait: Trait; trait_reader errors context);
         check_langitem!(required self.allocator: Static; static_reader errors context);
         check_langitem!(required self.printf: Function; static_reader errors context);
-        check_langitem!(self.ptr: Struct; struct_reader errors context);
         check_langitem!(self.bool: Struct; struct_reader errors context);
         check_langitem!(self.f32: Struct; struct_reader errors context);
         check_langitem!(self.f64: Struct; struct_reader errors context);

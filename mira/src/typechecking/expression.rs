@@ -300,6 +300,7 @@ pub enum TypecheckedExpression {
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
     Literal(Location, ScopeValueId, TypedLiteral),
     Empty(Location),
+    Unreachable(Location),
     // ### CASTS ###
     // NOTE: All casts copy the value.
     //
@@ -374,6 +375,7 @@ impl TypecheckedExpression {
             | TypecheckedExpression::Alias(location, ..)
             | TypecheckedExpression::Block(location, ..)
             | TypecheckedExpression::Return(location, ..)
+            | TypecheckedExpression::Unreachable(location)
             | TypecheckedExpression::Empty(location) => location,
             TypecheckedExpression::None => unreachable!("none expression"),
         }

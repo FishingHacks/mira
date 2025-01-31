@@ -19,9 +19,9 @@ pub use context::CodegenContext;
 pub use error::CodegenError;
 pub use inkwell::support::LLVMString;
 use inkwell::{
-    builder::{self, Builder, BuilderError},
+    builder::{Builder, BuilderError},
     context::Context,
-    types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, IntType, StructType},
+    types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType},
     values::{BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PointerValue},
     FloatPredicate, IntPredicate,
 };
@@ -840,7 +840,9 @@ impl TypecheckedExpression {
                 for expr in if_block {
                     expr.codegen(ctx)?;
                 }
-                ctx.builder.build_unconditional_branch(end_basic_block)?;
+                if if_basic_block.get_terminator().is_none() {
+                    ctx.builder.build_unconditional_branch(end_basic_block)?;
+                }
                 ctx.builder.position_at_end(end_basic_block);
                 Ok(())
             }
@@ -863,12 +865,16 @@ impl TypecheckedExpression {
                 for expr in if_block {
                     expr.codegen(ctx)?;
                 }
-                ctx.builder.build_unconditional_branch(end_basic_block)?;
+                if if_basic_block.get_terminator().is_none() {
+                    ctx.builder.build_unconditional_branch(end_basic_block)?;
+                }
                 ctx.builder.position_at_end(else_basic_block);
                 for expr in else_block {
                     expr.codegen(ctx)?;
                 }
-                ctx.builder.build_unconditional_branch(end_basic_block)?;
+                if else_basic_block.get_terminator().is_none() {
+                    ctx.builder.build_unconditional_branch(end_basic_block)?;
+                }
                 ctx.builder.position_at_end(end_basic_block);
                 Ok(())
             }
@@ -895,7 +901,9 @@ impl TypecheckedExpression {
                 for expr in body {
                     expr.codegen(ctx)?;
                 }
-                ctx.builder.build_unconditional_branch(cond_basic_block)?;
+                if body_basic_block.get_terminator().is_none() {
+                    ctx.builder.build_unconditional_branch(cond_basic_block)?;
+                }
                 ctx.builder.position_at_end(end_basic_block);
                 Ok(())
             }
@@ -1738,6 +1746,7 @@ impl TypecheckedExpression {
                     Ok(())
                 }
             }
+            TypecheckedExpression::Unreachable(_) => Ok(_ = ctx.builder.build_unreachable()?),
             TypecheckedExpression::Empty(_) => Ok(()),
             TypecheckedExpression::None => {
                 unreachable!("None-expressions are not valid and indicate an error")

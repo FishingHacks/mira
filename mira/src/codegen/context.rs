@@ -1,6 +1,7 @@
 use core::panic;
 use std::{
     collections::{HashMap, HashSet},
+    io::Write,
     path::Path,
     sync::Arc,
 };
@@ -103,6 +104,36 @@ impl<'a> CodegenContext<'a> {
     pub fn run_passes(&self, passes: &str) -> Result<(), LLVMString> {
         self.module
             .run_passes(passes, &self.machine, PassBuilderOptions::create())
+    }
+
+    pub fn emit_llvm_bitcode(&self, writer: &mut dyn Write) -> std::io::Result<()> {
+        let buf = self.module.write_bitcode_to_memory();
+        writer.write_all(buf.as_slice())
+    }
+
+    pub fn emit_llvm_ir(&self, writer: &mut dyn Write) -> std::io::Result<()> {
+        let string = self.module.print_to_string();
+        writer.write_all(string.to_bytes())
+    }
+
+    pub fn emit_assembly(&self, writer: &mut dyn Write) -> Result<(), CodegenError> {
+        let buffer = self
+            .machine
+            .write_to_memory_buffer(&self.module, FileType::Assembly)
+            .map_err(CodegenError::LLVMNative)?;
+        writer
+            .write_all(buffer.as_slice())
+            .map_err(CodegenError::IO)
+    }
+
+    pub fn emit_object(&self, writer: &mut dyn Write) -> Result<(), CodegenError> {
+        let buffer = self
+            .machine
+            .write_to_memory_buffer(&self.module, FileType::Object)
+            .map_err(CodegenError::LLVMNative)?;
+        writer
+            .write_all(buffer.as_slice())
+            .map_err(CodegenError::IO)
     }
 
     fn make_debug_info(
@@ -580,7 +611,9 @@ fn collect_strings_for_expressions(
             | TypecheckedExpression::BNot(.., lit) => {
                 collect_strings_for_typed_literal(lit, strings)
             }
-            TypecheckedExpression::Empty(_) | TypecheckedExpression::None => (),
+            TypecheckedExpression::Empty(_)
+            | TypecheckedExpression::Unreachable(_)
+            | TypecheckedExpression::None => (),
         }
     }
 }

@@ -5,6 +5,8 @@ use thiserror::Error;
 pub enum CodegenError {
     #[error("[LLVM Native]: {}", _0.to_string_lossy())]
     LLVMNative(LLVMString),
+    #[error("{}", _0)]
+    IO(#[from] std::io::Error),
     #[error("Unknown Triple: {0}")]
     UnknownTriple(TargetTriple),
     #[error("{0}")]

@@ -1,25 +1,19 @@
-use parking_lot::RwLock;
 use std::{
     collections::HashSet,
-    fs::OpenOptions,
-    io::{stdin, stdout, ErrorKind, Read, Write},
+    error::Error,
+    io::ErrorKind,
     path::{Path, PathBuf},
+    process::Command,
     sync::{Arc, LazyLock},
 };
+mod editor;
+mod repl;
+mod run;
+use editor::{get_path, run_editor};
+use repl::Repl;
+use run::{compile, link, RunOptions};
 
-use mira::{
-    codegen::{CodegenContext, CodegenError, InkwellContext, TargetTriple},
-    error::MiraError,
-    module::{Module, ModuleContext},
-    parser::ParserQueueEntry,
-    tokenizer::Tokenizer,
-    typechecking::{
-        ir_displayer::TypecheckingContextDisplay,
-        typechecking::{typecheck_function, typecheck_static},
-        TypecheckingContext,
-    },
-    AUTHORS as MIRA_AUTHORS, VERSION as VER,
-};
+use mira::{AUTHORS as MIRA_AUTHORS, VERSION as VER};
 
 const MIRAC_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MIRAC_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
@@ -31,7 +25,7 @@ pub const AUTHORS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     hashset.into_iter().collect()
 });
 
-fn print_repl_help() {
+fn print_help() {
     //┌─┐└┘│├┬┴┼┴┤
     println!("┌─[ repl commands ]──┬─────────────────────────────────────────────┐");
     println!("│ .^ <line> <code>   │ inserts code after the specified line       │");
@@ -45,14 +39,34 @@ fn print_repl_help() {
     println!("│ .delete <line>     │ deletes the specified line                  │");
     println!("│ .gc <line>         │ toggles a comment on the specified line     │");
     println!("│ .comment <line>    │ toggles a comment on the specified line     │");
-    println!("│ .clear             │ clears the current buffer                   │");
+    println!("│ .mode cli          │ makes pressing enter not launch an editor   │");
+    println!("│ .mode editor       │ makes pressing enter launch the editor      │");
     println!("│ .list [-l]         │ lists the code; -l: with line numbers       │");
     println!("│ .load <path>       │ loads the path into the buffer              │");
-    println!("│ .run               │ runs the code                               │");
+    println!("│ .write <path>      │ writes the buffer to the path               │");
+    println!("│ .edit              │ launches an editor                          │");
+    println!("│ .clear             │ clears the current buffer                   │");
     println!("│ .help              │ prints the help menu                        │");
     println!("│ .about             │ prints the about message                    │");
     println!("│ .exit              │ exits the repl                              │");
-    println!("└─[ mira v{VER} ]────┴─────────────────────────────────────────────┘");
+    println!("│ .check             │ typechecks the code                         │");
+    println!("├────────────────────┼─────────────────────────────────────────────┤");
+    println!("│ .run / .build      │ runs/builds the code                        │");
+    println!("│ Run Options:       │ Other arguments are passed to the linker    │");
+    println!("│ --llvm-ir [file]   │ emits llvm ir                               │");
+    println!("│ --llvm-bc [file]   │ emits llvm bitcode                          │");
+    println!("│ --asm [file]       │ emits the assembly                          │");
+    println!("│ --ir [file]        │ [dev] emits the intermediate representation │");
+    println!("│ --obj <file>       │ emits the object code                       │");
+    println!("│ --exec <file>      │ emits the executable                        │");
+    _ = "     └─ [ mira vN.N.N ]───┴─────────────────────────────────────────────┘";
+    // prints line as shown above
+    assert!(VER.len() <= 7);
+    print!("└─ [ mira v{VER} ]");
+    for _ in 0..(7 - VER.len()) {
+        print!("─");
+    }
+    println!("─┴─────────────────────────────────────────────┘");
 }
 
 fn print_about() {
@@ -65,35 +79,301 @@ fn print_about() {
     }
 }
 
-/// Returns the start index of the line or the number of lines
-fn get_line_start(mut line: usize, buffer: &String) -> Result<usize, usize> {
-    let mut lines = 0;
-    for (idx, c) in buffer.char_indices() {
-        if line == 0 {
-            return Ok(idx);
-        }
-        if c == '\n' {
-            line -= 1;
-            lines += 1;
-        }
-    }
-    Err(lines)
+struct Data {
+    current_dir: Arc<Path>,
+    file: Arc<Path>,
+    editor_path: Option<PathBuf>,
+    editor_mode: bool,
 }
 
-fn main() -> std::io::Result<()> {
+fn parse_opts<'a>(args: &'a str) -> Vec<String> {
+    let mut opts = Vec::new();
+    let mut buf = String::new();
+    let mut in_str = false;
+    let mut escape = false;
+    for c in args.chars() {
+        if c.is_ascii_whitespace() && !in_str {
+            if buf.len() > 0 {
+                opts.push(buf);
+            }
+            buf = String::new();
+        } else if escape {
+            escape = false;
+            buf.push(c);
+        } else if in_str && c == '"' {
+            opts.push(buf);
+            buf = String::new();
+            in_str = false;
+        } else if c == '"' {
+            in_str = true;
+        } else if c == '\\' {
+            escape = true;
+        } else {
+            buf.push(c);
+        }
+    }
+    if buf.len() > 0 {
+        opts.push(buf);
+    }
+    opts
+}
+
+fn compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
+    let _ = std::fs::remove_file("/tmp/mira_executable");
+    let _ = std::fs::remove_file("/tmp/mira_object.o");
+    _compile_run(rest, repl, run);
+    let _ = std::fs::remove_file("/tmp/mira_executable");
+    let _ = std::fs::remove_file("/tmp/mira_object.o");
+}
+
+fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
+    let mut opts = parse_opts(rest);
+    let mut run_opts = RunOptions::default();
+    let mut obj_file = None;
+    let mut exec_file = None;
+    let mut i = 0;
+    while i < opts.len() {
+        match opts[i].as_str() {
+            "--llvm-ir" => {
+                opts.remove(i);
+                if let Some(_) = opts.get(i).filter(|v| !v.starts_with('-')) {
+                    let file = opts.remove(i);
+                    let path = PathBuf::from(file);
+                    match std::fs::File::options()
+                        .write(true)
+                        .read(false)
+                        .create(true)
+                        .open(&path)
+                    {
+                        Err(e) => println!("Failed to open {}: {e:?}", path.display()),
+                        Ok(v) => run_opts.llvm_ir = Some(Box::new(v)),
+                    }
+                } else {
+                    run_opts.llvm_ir = Some(Box::new(std::io::stdout()));
+                }
+            }
+            "--llvm-bc" => {
+                opts.remove(i);
+                if let Some(_) = opts.get(i).filter(|v| !v.starts_with('-')) {
+                    let file = opts.remove(i);
+                    let path = PathBuf::from(file);
+                    match std::fs::File::options()
+                        .write(true)
+                        .read(false)
+                        .create(true)
+                        .open(&path)
+                    {
+                        Err(e) => println!("Failed to open {}: {e:?}", path.display()),
+                        Ok(v) => run_opts.llvm_bc = Some(Box::new(v)),
+                    }
+                } else {
+                    run_opts.llvm_bc = Some(Box::new(std::io::stdout()));
+                }
+            }
+            "--asm" => {
+                opts.remove(i);
+                if let Some(_) = opts.get(i).filter(|v| !v.starts_with('-')) {
+                    let file = opts.remove(i);
+                    let path = PathBuf::from(file);
+                    match std::fs::File::options()
+                        .write(true)
+                        .read(false)
+                        .create(true)
+                        .open(&path)
+                    {
+                        Err(e) => println!("Failed to open {}: {e:?}", path.display()),
+                        Ok(v) => run_opts.asm = Some(Box::new(v)),
+                    }
+                } else {
+                    run_opts.asm = Some(Box::new(std::io::stdout()));
+                }
+            }
+            "--ir" => {
+                opts.remove(i);
+                if let Some(_) = opts.get(i).filter(|v| !v.starts_with('-')) {
+                    let file = opts.remove(i);
+                    let path = PathBuf::from(file);
+                    match std::fs::File::options()
+                        .write(true)
+                        .read(false)
+                        .create(true)
+                        .open(&path)
+                    {
+                        Err(e) => println!("Failed to open {}: {e:?}", path.display()),
+                        Ok(v) => run_opts.ir = Some(Box::new(v)),
+                    }
+                } else {
+                    run_opts.ir = Some(Box::new(std::io::stdout()));
+                }
+            }
+            "--obj" => {
+                opts.remove(i);
+                if opts.get(i).is_none() {
+                    println!("`obj` option needs a file");
+                    return;
+                }
+                let file = opts.remove(i);
+                let path = PathBuf::from(file);
+                match std::fs::File::options()
+                    .write(true)
+                    .read(false)
+                    .create(true)
+                    .open(&path)
+                {
+                    Err(e) => println!("Failed to open {}: {e:?}", path.display()),
+                    Ok(v) => run_opts.obj = Some(Box::new(v)),
+                }
+                obj_file = Some(path);
+            }
+            "--exec" => {
+                opts.remove(i);
+                if opts.get(i).is_none() {
+                    println!("`obj` option needs a file");
+                    return;
+                }
+                let file = opts.remove(i);
+                let path = PathBuf::from(file);
+                exec_file = Some(path);
+            }
+            _ => i += 1,
+        }
+    }
+
+    if run && exec_file.is_none() {
+        exec_file = Some(Path::new("/tmp/mira_executable").to_path_buf());
+    }
+    if exec_file.is_some() && !obj_file.is_some() {
+        let path = Path::new("/tmp/mira_object.o");
+        match std::fs::File::options()
+            .write(true)
+            .read(false)
+            .create(true)
+            .open(&path)
+        {
+            Err(e) => return println!("Failed to open {}: {e:?}", path.display()),
+            Ok(v) => run_opts.obj = Some(Box::new(v)),
+        }
+        obj_file = Some(path.to_path_buf());
+    }
+    if let Err(e) = compile(
+        repl.data.file.clone(),
+        repl.data.current_dir.clone(),
+        &repl.buf,
+        run_opts,
+    ) {
+        for e in e {
+            println!("{e}");
+        }
+        return;
+    }
+    if !exec_file.is_some() {
+        return;
+    }
+
+    if !link(
+        obj_file.as_ref().unwrap(),
+        exec_file.as_ref().unwrap(),
+        &opts,
+    ) {
+        return;
+    }
+    if !run {
+        return;
+    }
+
+    match Command::new(exec_file.as_ref().unwrap())
+        .spawn()
+        .and_then(|mut v| v.wait())
+    {
+        Err(e) => println!("-> failed to run the program: {e:?}"),
+        Ok(v) if !v.success() => println!("\n\n  process exited with error: {:?}", v),
+        Ok(_) => println!("\n"),
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
     let current_dir: Arc<Path> = std::env::current_dir()?.into();
     let file: Arc<Path> = current_dir.join("stdin_buffer").into();
     let mut buffer = String::new();
-    let mut stdout = stdout();
-    let stdin = stdin();
+    let editor_path = get_path(None);
+    let editor_mode = editor_path.is_some();
+    if let Some(editor_path) = &editor_path {
+        run_editor(&mut buffer, editor_path);
+    }
 
+    let mut repl = Repl::<Data>::new(
+        vec![
+            ("mode", |args, r| match args.trim() {
+                v @ ("cli" | "editor") => {
+                    r.data.editor_mode = v == "editor";
+                    println!("now in {v} mode");
+                }
+                v @ _ => println!("unknown mode {v}"),
+            }),
+            ("load", |rest, r| {
+                let rest = rest.trim();
+                let path = Path::new(rest);
+                match std::fs::read_to_string(path) {
+                    Ok(v) => r.buf = v,
+                    Err(e) if e.kind() == ErrorKind::NotFound => {
+                        println!("Could not find file `{}`", rest);
+                        return;
+                    }
+                    Err(e) => return println!("Failed to read file: {e:?}"),
+                };
+                println!("read {} b", r.buf.len());
+            }),
+            ("write", |rest, r| {
+                let rest = rest.trim();
+                let path = Path::new(rest);
+                match std::fs::write(path, r.buf.as_bytes()) {
+                    Ok(_) => println!("Wrote {} bytes", r.buf.len()),
+                    Err(e) => println!("Failed to write to {}: {e:?}", path.display()),
+                }
+            }),
+            ("edit", |_, r| {
+                if let Some(path) = &r.data.editor_path {
+                    run_editor(&mut r.buf, path);
+                } else {
+                    println!("No editor found")
+                }
+            }),
+            ("check", |_, repl| compile_run("", repl, false)),
+            ("run", |args, repl| compile_run(args, repl, true)),
+            ("build", |args, repl| compile_run(args, repl, false)),
+            ("help", |_, _| print_help()),
+            ("about", |_, _| print_about()),
+        ],
+        |_, r| {
+            if r.data.editor_mode {
+                if let Some(path) = &r.data.editor_path {
+                    run_editor(&mut r.buf, path);
+                } else {
+                    println!("No editor found");
+                }
+            }
+        },
+        Data {
+            current_dir,
+            file,
+            editor_path,
+            editor_mode,
+        },
+    );
+    repl.run()
+    /*
     loop {
         write!(stdout, "> ")?;
         stdout.flush()?;
-        let mut input = String::with_capacity(50);
+        let mut input = String::new();
         stdin.read_line(&mut input)?;
         let input = input.trim_end();
         if input.len() < 1 {
+            if editor_mode {
+                if let Some(editor_path) = &editor_path {
+                    run_editor(&mut buffer, editor_path);
+                }
+            }
             continue;
         }
 
@@ -175,7 +455,7 @@ fn main() -> std::io::Result<()> {
                         let mut start = usize::MAX;
                         let mut end = usize::MAX;
                         let mut lines = 0;
-                        let mut num = line;
+                        let num = line;
                         for (idx, c) in buffer.char_indices() {
                             if c == '\n' {
                                 lines += 1;
@@ -186,8 +466,6 @@ fn main() -> std::io::Result<()> {
                             if c == '\n' && num == 0 {
                                 end = idx;
                                 break;
-                            } else if c == '\n' {
-                                num -= 1;
                             }
                         }
                         if start == usize::MAX {
@@ -344,6 +622,17 @@ fn main() -> std::io::Result<()> {
                         buffer.insert(start, '/');
                     }
                 }
+                "mode" => match rest {
+                    "cli" | "edit" => {
+                        editor_mode = rest == "edit";
+                        println!("Now in {rest} mode");
+                    }
+                    _ => println!("Unknown mode {rest}"),
+                },
+                "edit" => match &editor_path {
+                    Some(editor_path) => run_editor(&mut buffer, editor_path),
+                    None => println!("No editor found"),
+                },
                 "esc" => {
                     buffer.push_str(rest);
                     buffer.push('\n');
@@ -362,10 +651,18 @@ fn main() -> std::io::Result<()> {
                         writeln!(stdout, "{}", line)?;
                     }
                 }
+                "write" => {
+                    let rest = rest.trim();
+                    let path = Path::new(rest);
+                    match std::fs::write(path, buffer.as_bytes()) {
+                        Ok(_) => println!("Wrote {} bytes", buffer.len()),
+                        Err(e) => println!("Failed to write to {}: {e:?}", path.display()),
+                    }
+                }
                 "load" => {
                     buffer.clear();
                     let rest = rest.trim();
-                    let path = PathBuf::from(rest);
+                    let path = Path::new(rest);
                     let mut file = match OpenOptions::new().read(true).open(path) {
                         Ok(v) => v,
                         Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -379,13 +676,20 @@ fn main() -> std::io::Result<()> {
                     drop(file);
                     writeln!(stdout, "read {} b", bytes_read)?;
                 }
-                "run" => {
-                    if let Err(errs) = run(file.clone(), current_dir.clone(), &buffer) {
-                        writeln!(stdout, "-------------------------------------")?;
+                "check" => {
+                    if let Err(errs) = compile(
+                        file.clone(),
+                        current_dir.clone(),
+                        &buffer,
+                        RunOptions::default(),
+                    ) {
                         for e in errs.into_iter() {
                             writeln!(stdout, "{e}")?;
                         }
                     }
+                }
+                "run" | "compile" => {
+                    todo!();
                 }
                 "exit" => break Ok(()),
                 "help" => print_repl_help(),
@@ -401,183 +705,5 @@ fn main() -> std::io::Result<()> {
 
         buffer.push_str(input);
         buffer.push('\n');
-    }
-}
-
-fn run(
-    file: impl Into<Arc<Path>>,
-    root_directory: impl Into<Arc<Path>>,
-    source: impl AsRef<str>,
-) -> Result<(), Vec<MiraError>> {
-    let file: Arc<Path> = file.into();
-    let filename = file
-        .file_name()
-        .expect("file needs a filename")
-        .to_string_lossy()
-        .into_owned();
-    let context = parse_all(file.clone(), root_directory.into(), source.as_ref())?;
-
-    let typechecking_context = TypecheckingContext::new(context.clone());
-    let errs = typechecking_context.resolve_imports(context.clone());
-    if errs.len() > 0 {
-        return Err(errs.into_iter().map(Into::into).collect());
-    }
-    let errs = typechecking_context.resolve_types(context.clone());
-    if errs.len() > 0 {
-        return Err(errs.into_iter().map(Into::into).collect());
-    }
-
-    let num_functions = { typechecking_context.functions.read().len() };
-    let num_ext_functions = { typechecking_context.external_functions.read().len() };
-    let num_statics = { typechecking_context.statics.read().len() };
-
-    let mut errs = Vec::new();
-    let mut scopes_fns = Vec::with_capacity(num_functions);
-    let mut scopes_ext_fns = Vec::with_capacity(num_ext_functions);
-
-    for i in 0..num_functions {
-        match typecheck_function(&typechecking_context, &context, i, false) {
-            Ok(v) => scopes_fns.push(v),
-            Err(e) => errs.extend(e),
-        }
-    }
-
-    for i in 0..num_ext_functions {
-        match typecheck_function(&typechecking_context, &context, i, true) {
-            Ok(v) => scopes_ext_fns.push(v),
-            Err(e) => errs.extend(e),
-        }
-    }
-    for i in 0..num_statics {
-        typecheck_static(&typechecking_context, &context, i, &mut errs);
-    }
-
-    for err in &errs {
-        println!("{err:?}");
-    }
-
-    if errs.len() > 0 {
-        return Err(errs.into_iter().map(Into::into).collect());
-    }
-
-    print!("{}", TypecheckingContextDisplay(&typechecking_context));
-    let mut errs = Vec::new();
-
-    let num_fns = { typechecking_context.functions.read().len() };
-    let num_ext_fns = { typechecking_context.external_functions.read().len() };
-    println!("----------------------------");
-    println!("Compiling...");
-    let context = InkwellContext::create();
-    let codegen_context = CodegenContext::make_context(
-        &context,
-        TargetTriple::create("x86_64-unknown-linux-gnu"),
-        typechecking_context.clone(),
-        &filename,
-        file,
-        false,
-    )
-    .expect("failed to create the llvm context");
-    for fn_id in 0..num_fns {
-        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_fns.remove(0), false) {
-            errs.push(MiraError::Codegen { inner: e.into() });
-        }
-    }
-    for fn_id in 0..num_ext_fns {
-        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_ext_fns.remove(0), true) {
-            errs.push(MiraError::Codegen { inner: e.into() });
-        }
-    }
-    codegen_context.finalize_debug_info();
-    if let Err(e) = codegen_context.check() {
-        errs.push(MiraError::Codegen {
-            inner: CodegenError::LLVMNative(e),
-        });
-    }
-    if errs.len() > 0 {
-        return Err(errs);
-    }
-
-    //    println!("===== [ RUNNING ] =====");
-    //
-    //    codegen_context.run().unwrap();
-    //
-    //    println!("===== [ STOPPED ] =====");
-
-    codegen_context.optimize_o3().unwrap();
-    codegen_context.module.print_to_file("./out.ll").unwrap();
-    println!("wrote out.ll");
-
-    Ok(())
-}
-
-fn parse_all(
-    file: Arc<Path>,
-    root_directory: Arc<Path>,
-    source: &str,
-) -> Result<Arc<ModuleContext>, Vec<MiraError>> {
-    let mut errors = vec![];
-
-    let mut tokenizer = Tokenizer::new(source.as_ref(), file.clone());
-    if let Err(errs) = tokenizer.scan_tokens() {
-        errors.extend(
-            errs.into_iter()
-                .map(|inner| MiraError::Tokenization { inner }),
-        );
-    }
-
-    let modules = Arc::new(RwLock::new(vec![ParserQueueEntry {
-        file,
-        root: root_directory.clone(),
-    }]));
-    let mut current_parser = tokenizer.to_parser(modules.clone(), root_directory);
-
-    let module_context = Arc::new(ModuleContext::default());
-
-    loop {
-        let (statements, parsing_errors) = current_parser.parse_all();
-        errors.extend(
-            parsing_errors
-                .into_iter()
-                .map(|inner| MiraError::Parsing { inner }),
-        );
-        let (path, root) = {
-            let module = &modules.read()[module_context.modules.read().len()];
-            (module.file.clone(), module.root.clone())
-        };
-        let mut module = Module::new(module_context.clone(), current_parser.imports, path, root);
-        if let Err(errs) = module.push_all(statements, module_context.modules.read().len()) {
-            errors.extend(
-                errs.into_iter()
-                    .map(|inner| MiraError::ProgramForming { inner }),
-            );
-        }
-        let mut writer = module_context.modules.write();
-        writer.push(module);
-
-        let read_modules = modules.read();
-        if read_modules.len() > writer.len() {
-            let entry = read_modules[writer.len()].clone();
-            drop(read_modules);
-            drop(writer);
-            let mut tokenizer = Tokenizer::new(
-                &std::fs::read_to_string(&entry.file).expect("failed to read module file"),
-                entry.file,
-            );
-            if let Err(errs) = tokenizer.scan_tokens() {
-                errors.extend(
-                    errs.into_iter()
-                        .map(|inner| MiraError::Tokenization { inner }),
-                );
-            }
-            current_parser = tokenizer.to_parser(modules.clone(), entry.root);
-        } else {
-            break;
-        }
-    }
-
-    if errors.len() > 0 {
-        Err(errors)
-    } else {
-        Ok(module_context)
-    }
+    }*/
 }

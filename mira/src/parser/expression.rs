@@ -979,17 +979,20 @@ impl Parser {
         }
 
         if matches!(self.peek().typ, TokenType::IdentifierLiteral) {
-            let path = Path::parse(self)?;
-
-            // StructName { ... };
-            let loc = self.peek().location.clone();
-            if let Some(obj) = self.try_object() {
-                return match obj {
-                    Ok(v) => Ok(Expression::Literal(LiteralValue::Struct(v, path), loc)),
-                    Err(e) => Err(e),
-                };
+            let current = self.current;
+            if let Ok(path) = Path::parse(self) {
+                // StructName { ... };
+                let loc = self.peek().location.clone();
+                if let Some(obj) = self.try_object() {
+                    return match obj {
+                        Ok(v) => Ok(Expression::Literal(LiteralValue::Struct(v, path), loc)),
+                        Err(e) => Err(e),
+                    };
+                } else {
+                    return Ok(Expression::Literal(LiteralValue::Dynamic(path), loc));
+                }
             } else {
-                return Ok(Expression::Literal(LiteralValue::Dynamic(path), loc));
+                self.current = current;
             }
         }
 

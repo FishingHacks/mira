@@ -409,6 +409,10 @@ fn typecheck_statement(
                 ) {
                     Ok(true) => {
                         always_returns = true;
+                        if !matches!(statement, Statement::Return(..)) {
+                            block_exprs
+                                .push(TypecheckedExpression::Unreachable(statement.loc().clone()));
+                        }
                         break;
                     }
                     Ok(_) => {}
@@ -1395,30 +1399,59 @@ fn typecheck_membercall(
     let (mut typ_lhs, mut typed_literal_lhs) =
         typecheck_take_ref(context, module, scope, lhs, exprs, TypeSuggestion::Unknown)?;
     let function_reader = context.functions.read();
+    let langitem_reader = context.lang_items.read();
+    let struct_reader = context.structs.read();
 
-    let Some(function_id) = (match typ_lhs {
-        Type::Struct { struct_id, .. } => {
-            let structure = &context.structs.read()[struct_id];
-            structure.global_impl.get(ident).copied().or_else(|| {
-                structure
-                    .trait_impl
-                    .iter()
-                    .map(|v| {
-                        v.1.iter().find(|v| {
-                            if let Some(name) = &function_reader[**v].0.name {
-                                name == ident
-                            } else {
-                                false
-                            }
-                        })
+    let struct_id = match &typ_lhs {
+        Type::UnsizedArray { .. }
+        | Type::SizedArray { .. }
+        | Type::Tuple { .. }
+        | Type::Trait { .. }
+        | Type::DynType { .. }
+        | Type::Function(..)
+        | Type::PrimitiveVoid(_)
+        | Type::PrimitiveNever
+        | Type::PrimitiveSelf(_)
+        | Type::Generic(..) => None,
+        Type::Struct { struct_id, .. } => Some(*struct_id),
+        Type::PrimitiveI8(_) => langitem_reader.i8,
+        Type::PrimitiveI16(_) => langitem_reader.i16,
+        Type::PrimitiveI32(_) => langitem_reader.i32,
+        Type::PrimitiveI64(_) => langitem_reader.i64,
+        Type::PrimitiveISize(_) => langitem_reader.isize,
+        Type::PrimitiveU8(_) => langitem_reader.u8,
+        Type::PrimitiveU16(_) => langitem_reader.u16,
+        Type::PrimitiveU32(_) => langitem_reader.u32,
+        Type::PrimitiveU64(_) => langitem_reader.u64,
+        Type::PrimitiveUSize(_) => langitem_reader.usize,
+        Type::PrimitiveF32(_) => langitem_reader.f32,
+        Type::PrimitiveF64(_) => langitem_reader.f64,
+        Type::PrimitiveStr(_) => langitem_reader.str,
+        Type::PrimitiveBool(_) => langitem_reader.bool,
+    };
+    drop(langitem_reader);
+    let structure = struct_id.map(|v| &struct_reader[v]);
+    let function_id = structure
+        .and_then(|v| v.global_impl.get(ident))
+        .copied()
+        .or_else(|| {
+            structure?
+                .trait_impl
+                .iter()
+                .filter_map(|v| {
+                    v.1.iter().find(|v| {
+                        if let Some(name) = &function_reader[**v].0.name {
+                            name == ident
+                        } else {
+                            false
+                        }
                     })
-                    .filter_map(|v| v)
-                    .next()
-                    .copied()
-            })
-        }
-        _ => todo!(),
-    }) else {
+                })
+                .next()
+                .copied()
+        });
+    drop(struct_reader);
+    let Some(function_id) = function_id else {
         return Err(TypecheckingError::CannotFindFunctionOnType(
             lhs.loc().clone(),
             ident.clone(),
@@ -1427,10 +1460,13 @@ fn typecheck_membercall(
     };
 
     let function = &function_reader[function_id];
-    if !matches!(
-        function.0.arguments.get(0),
-        Some((_, Type::PrimitiveSelf(_)))
-    ) {
+    if function
+        .0
+        .arguments
+        .get(0)
+        .map(|v| v.1.clone().without_ref())
+        != Some(typ_lhs.clone().without_ref())
+    {
         return Err(TypecheckingError::NonMemberFunction(
             function.0.location.clone(),
             ident.clone(),

@@ -135,7 +135,7 @@ impl FromStr for NumberType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Literal {
     Float(f64, NumberType),
     SInt(i64, NumberType),
@@ -607,7 +607,7 @@ impl Tokenizer {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
-                c @ ('u' | 'i') => {
+                c if Self::is_valid_identifier_char(c) => {
                     return self.parse_numtype(location, c, value, is_negative, false)
                 }
                 _ if is_negative => {
@@ -658,7 +658,7 @@ impl Tokenizer {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
-                c @ ('u' | 'i') => {
+                c if Self::is_valid_identifier_char(c) => {
                     return self.parse_numtype(location, c, value, is_negative, false)
                 }
                 _ if is_negative => {
@@ -709,7 +709,7 @@ impl Tokenizer {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
-                c @ ('i' | 'u') => {
+                c if Self::is_valid_identifier_char(c) => {
                     return self.parse_numtype(location, c, value, is_negative, false)
                 }
                 _ if is_negative => {
@@ -823,7 +823,7 @@ impl Tokenizer {
                 }
                 is_float = true;
                 str.push(self.advance());
-            } else if matches!(self.peek(), 'i' | 'u' | 'f') {
+            } else if Self::is_valid_identifier_char(self.peek()) {
                 typ.push(self.advance());
             } else {
                 break;
@@ -883,7 +883,7 @@ impl Tokenizer {
                 str.push(Self::escape_char_to_real_char(c));
             } else if c == '\\' {
                 is_backslash = true;
-            } else if c == string_char {
+            } else if c == string_char || c == '\n' {
                 break;
             } else {
                 str.push(c);
@@ -1061,40 +1061,183 @@ impl Tokenizer {
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
-
     use super::*;
+
+    fn check_tokens(tokens: &[Token]) {
+        for token in tokens {
+            match (&token.typ, &token.literal) {
+                (TokenType::IdentifierLiteral, Some(Literal::String(..)))
+                | (TokenType::StringLiteral, Some(Literal::String(..)))
+                | (TokenType::SIntLiteral, Some(Literal::SInt(..)))
+                | (TokenType::UIntLiteral, Some(Literal::UInt(..)))
+                | (TokenType::FloatLiteral, Some(Literal::Float(..)))
+                | (TokenType::BooleanLiteral, Some(Literal::Bool(..)))
+                | (TokenType::VoidLiteral, None) => (),
+                (TokenType::IdentifierLiteral, _)
+                | (TokenType::StringLiteral, _)
+                | (TokenType::SIntLiteral, _)
+                | (TokenType::UIntLiteral, _)
+                | (TokenType::FloatLiteral, _)
+                | (TokenType::BooleanLiteral, _)
+                | (TokenType::VoidLiteral, _) => {
+                    panic!("invalid literal {:?} for {:?}", token.literal, token.typ)
+                }
+                _ => (),
+            }
+        }
+    }
+
+    fn get_tokens(str: &str) -> (Vec<Token>, Vec<TokenizationError>) {
+        let mut tokenizer = Tokenizer::new(str, Path::new("test").into());
+        let errs = tokenizer.scan_tokens().err().unwrap_or_default();
+        check_tokens(tokenizer.get_tokens());
+        (tokenizer.tokens, errs)
+    }
+
+    fn assert_token_eq(str: &str, expected_tokens: &[(TokenType, Option<Literal>)]) {
+        let eof_token = (TokenType::Eof, None);
+        let (tokens, errs) = get_tokens(str);
+        assert_eq!(errs.len(), 0, "unexpected errors: {errs:?}");
+        assert_eq!(tokens.len(), expected_tokens.len() + 1 /* eof token */);
+        for (tok, expected) in tokens
+            .iter()
+            .zip(expected_tokens.iter().chain(std::iter::once(&eof_token)))
+        {
+            if tok.typ != expected.0 || tok.literal != expected.1 {
+                assert!(
+                    false,
+                    "mismatching tokens\n  left: {tokens:?}\n  right: {expected_tokens:?}\n\n{tok:?} - {expected:?}"
+                );
+            }
+        }
+    }
+
+    macro_rules! match_errs {
+        ($str: expr; $($pat:pat),* $(,)?) => {
+            let mut i = 0;
+            let (_, errs) = get_tokens($str);
+            $(
+                if i >= errs.len() {
+                    panic!("Expected error matching {:?} ({i})", stringify!($pat));
+                }
+                if !matches!(errs[i], $pat) {
+                    panic!("Mismatching error, err: {:?}, Expected: {} ({i})", errs[i], stringify!($pat));
+                }
+                i += 1;
+            )*
+            if i < errs.len() {
+                panic!("Mismatching error, err: {:?}, expected nothing", errs[i]);
+            }
+        };
+    }
+
+    macro_rules! tok {
+        (IdentifierLiteral, $lit:ident) => {
+            (
+                TokenType::IdentifierLiteral,
+                Some(Literal::String(stringify!($lit).into())),
+            )
+        };
+        ($ty:ident) => {
+            (TokenType::$ty, None)
+        };
+        ($ty: ident, $lit:ident($val:expr)) => {
+            (TokenType::$ty, Some(Literal::$lit($val.into())))
+        };
+        ($ty: ident, $lit:ident($val:expr, _)) => {
+            (TokenType::$ty, Some(Literal::$lit($val, NumberType::None)))
+        };
+        ($ty: ident, $lit:ident($val:expr, $numty:ident)) => {
+            (
+                TokenType::$ty,
+                Some(Literal::$lit($val, NumberType::$numty)),
+            )
+        };
+    }
+
+    #[test]
+    fn test_strings() {
+        assert_token_eq(
+            r#"
+"a b c";
+"a\n\n\\t";
+"a\t\3";
+            "#,
+            &[
+                tok!(StringLiteral, String("a b c")),
+                tok!(Semicolon),
+                tok!(StringLiteral, String("a\n\n\\t")),
+                tok!(Semicolon),
+                tok!(StringLiteral, String("a\t3")),
+                tok!(Semicolon),
+            ],
+        );
+
+        match_errs!("\"a\nb\nc\";"; TokenizationError::UnclosedString { loc: _ }, TokenizationError::UnclosedString { loc: _ });
+    }
+
+    #[test]
+    fn test_idents() {
+        assert_token_eq("jkhdfgkjhdf", &[tok!(IdentifierLiteral, jkhdfgkjhdf)]);
+        assert_token_eq("_Zn3Meow", &[tok!(IdentifierLiteral, _Zn3Meow)]);
+        assert_token_eq(
+            "_3$5#12_mow",
+            &[tok!(IdentifierLiteral, String("_3$5#12_mow"))],
+        );
+        match_errs!("1289hjdsjhfgdfg_meow"; TokenizationError::InvalidNumberType(_));
+    }
 
     #[test]
     fn test_numbers() {
-        let mut tokenizer = Tokenizer::new(
-            r"
-12;
--23;
-23.9;
--29.3;
-
-0x1;
--0x1;
-0x1.2;
--0x1.2;
-
-0b1101;
--0b101;
-0b10.2;
--0b10.1;
-
-0o5;
--0o42;
-0o6.23;
--0o5.76;
-",
-            PathBuf::from("test").into(),
+        assert_token_eq(
+            "12; -23; 23.9; -29.3; 0x1; -0x1;",
+            &[
+                tok!(UIntLiteral, UInt(12, _)),
+                tok!(Semicolon),
+                tok!(SIntLiteral, SInt(-23, _)),
+                tok!(Semicolon),
+                tok!(FloatLiteral, Float(23.9, _)),
+                tok!(Semicolon),
+                tok!(FloatLiteral, Float(-29.3, _)),
+                tok!(Semicolon),
+                tok!(UIntLiteral, UInt(0x1, _)),
+                tok!(Semicolon),
+                tok!(SIntLiteral, SInt(-0x1, _)),
+                tok!(Semicolon),
+            ],
         );
 
-        let errs = tokenizer.scan_tokens().err().unwrap_or(vec![]);
-        let tokens = tokenizer.get_tokens();
+        match_errs!("0x1.2; -0x1.2";
+            TokenizationError::InvalidNumberError { loc: _ },
+            TokenizationError::InvalidNumberError { loc: _ },
+        );
 
-        insta::assert_debug_snapshot!((errs, tokens));
+        assert_token_eq(
+            "0b1101; -0b101",
+            &[
+                tok!(UIntLiteral, UInt(0b1101, _)),
+                tok!(Semicolon),
+                tok!(SIntLiteral, SInt(-(0b101), _)),
+            ],
+        );
+
+        match_errs!("0b10.2; -0b10.1";
+            TokenizationError::InvalidNumberError { loc: _ },
+            TokenizationError::InvalidNumberError { loc: _ },
+        );
+
+        assert_token_eq(
+            "0o5; -0o42",
+            &[
+                tok!(UIntLiteral, UInt(0o5, _)),
+                tok!(Semicolon),
+                tok!(SIntLiteral, SInt(-0o42, _)),
+            ],
+        );
+
+        match_errs!("0o6.23; -0o5.76";
+            TokenizationError::InvalidNumberError { loc: _ },
+            TokenizationError::InvalidNumberError { loc: _ },
+        );
     }
 }

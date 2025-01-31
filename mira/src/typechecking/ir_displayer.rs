@@ -119,6 +119,7 @@ impl Display for ModuleDisplay<'_> {
 impl Display for ExpressionDisplay<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self.0 {
+            TypecheckedExpression::Unreachable(_) => f.write_str("unreachable"),
             TypecheckedExpression::Return(_, typed_literal) => {
                 f.write_fmt(format_args!("return {}", TLD(typed_literal)))
             }
