@@ -20,13 +20,6 @@ impl Display for ExternVarArg {
         f.write_str("@ext_vararg()")
     }
 }
-pub fn parse(mut tokens: Vec<Token>, _: Location) -> Result<ExternVarArg, ParsingError> {
-    if tokens.len() > 0 {
-        return Err(ParsingError::ExpectedArbitrary {
-            loc: tokens.remove(1).location,
-            expected: TokenType::Eof,
-            found: tokens[1].typ,
-        });
-    }
-    Ok(ExternVarArg)
+pub fn parse(mut tokens: TokenStream) -> Result<ExternVarArg, ParsingError> {
+    tokens.finish().map(|_| ExternVarArg)
 }

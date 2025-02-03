@@ -179,26 +179,8 @@ impl TypeRef {
                 let child = Box::new(Self::parse(parser)?);
                 if parser.match_tok(TokenType::Semicolon) {
                     // case [<type>; <amount>]
-                    if !parser.match_tok(TokenType::UIntLiteral) {
-                        return Err(ParsingError::ExpectedArbitrary {
-                            loc: parser.peek().location.clone(),
-                            expected: TokenType::UIntLiteral,
-                            found: parser.peek().typ,
-                        });
-                    }
-                    let Some(Literal::UInt(lit, _)) = parser.previous().literal else {
-                        return Err(ParsingError::InvalidTokenization {
-                            loc: parser.previous().location.clone(),
-                        });
-                    };
-
-                    if !parser.match_tok(TokenType::BracketRight) {
-                        return Err(ParsingError::ExpectedArbitrary {
-                            loc: parser.peek().location.clone(),
-                            expected: TokenType::BracketRight,
-                            found: parser.peek().typ,
-                        });
-                    }
+                    let (lit, _) = parser.expect_tok(TokenType::UIntLiteral)?.uint_literal()?;
+                    parser.expect_tok(TokenType::BracketRight)?;
 
                     return Ok(Self::SizedArray {
                         num_references,
@@ -206,13 +188,8 @@ impl TypeRef {
                         number_elements: lit as usize,
                         loc,
                     });
-                } else if !parser.match_tok(TokenType::BracketRight) {
-                    return Err(ParsingError::ExpectedArbitrary {
-                        loc: parser.peek().location.clone(),
-                        expected: TokenType::BracketRight,
-                        found: parser.peek().typ,
-                    });
                 } else {
+                    parser.expect_tok(TokenType::BracketRight)?;
                     return Ok(Self::UnsizedArray {
                         num_references,
                         child,
@@ -228,16 +205,15 @@ impl TypeRef {
             } else if parser.match_tok(TokenType::VoidLiteral) {
                 return Ok(Self::Void(loc, num_references));
             } else if parser.peek().typ == TokenType::IdentifierLiteral {
-                return match parser.peek().literal {
-                    Some(Literal::String(ref v)) if *v == "dyn" => {
-                        Self::parse_dyn(parser, num_references, loc)
-                    }
-                    Some(Literal::String(_)) => Ok(Self::Reference {
+                let name = parser.peek().string_literal()?;
+                return if *name == "dyn" {
+                    Self::parse_dyn(parser, num_references, loc)
+                } else {
+                    Ok(Self::Reference {
                         num_references,
                         type_name: Path::parse(parser)?,
                         loc,
-                    }),
-                    _ => return Err(ParsingError::InvalidTokenization { loc }),
+                    })
                 };
             } else if parser.match_tok(TokenType::Fn) {
                 parser.expect_tok(TokenType::ParenLeft)?;
@@ -276,13 +252,7 @@ impl TypeRef {
                 let mut elements = Vec::new();
                 while !parser.match_tok(TokenType::ParenRight) {
                     if elements.len() > 0 {
-                        if !parser.match_tok(TokenType::Comma) {
-                            return Err(ParsingError::ExpectedArbitrary {
-                                loc: parser.peek().location.clone(),
-                                expected: TokenType::Comma,
-                                found: parser.peek().typ,
-                            });
-                        }
+                        parser.expect_tok(TokenType::Comma)?;
 
                         if parser.match_tok(TokenType::ParenRight) {
                             break;
@@ -479,13 +449,10 @@ impl Generic {
             });
         }
         while parser.peek().typ == TokenType::Plus || bounds.len() == 0 {
-            if bounds.len() > 0 && !parser.match_tok(TokenType::Plus) {
-                return Err(ParsingError::ExpectedArbitrary {
-                    loc: parser.peek().location.clone(),
-                    expected: TokenType::Plus,
-                    found: parser.peek().typ,
-                });
+            if bounds.len() > 0 {
+                parser.expect_tok(TokenType::Plus)?;
             }
+
             let loc = parser.peek().location.clone();
             bounds.push((PathWithoutGenerics::parse(parser)?, loc));
         }

@@ -91,8 +91,18 @@ pub enum ProgrammingLangResolveError {
 
 #[derive(Clone, Debug, Error)]
 pub enum ParsingError {
+    #[error("{loc}: Output constraint must start with `=`")]
+    OutputNotStartingWithEqual { loc: Location, output: GlobalStr },
+    #[error("{loc}: Input constraint cannot start with `=` or `~`")]
+    InputStartingWithInvalidChar { loc: Location, input: GlobalStr },
+    #[error("{loc}: Duplicate Replacer `{replacer}`")]
+    DuplicateAsmReplacer { loc: Location, replacer: GlobalStr },
+    #[error("{0}: {1} is an invalid function attribute")]
+    InvalidFunctionAttribute(Location, GlobalStr),
     #[error("{0}: {1} is an invalid intrinsic")]
     InvalidIntrinsic(Location, GlobalStr),
+    #[error("{0}: {1} is an invalid calling convention")]
+    InvalidCallConv(Location, GlobalStr),
     #[error("{loc}: Expected a type, but found {found:?}")]
     ExpectedType { loc: Location, found: TokenType },
     #[error("{loc}: Expected a function call")]
@@ -111,20 +121,8 @@ pub enum ParsingError {
     ExpectedExpression { loc: Location, found: TokenType },
     #[error("{loc}: Expected an identifier, but found {found:?}")]
     ExpectedIdentifier { loc: Location, found: TokenType },
-    #[error("{loc}: Invalid operand: {operand_type:?}")]
-    InvalidOperand {
-        loc: Location,
-        operand_type: TokenType,
-    },
-    #[error("{loc}: invalid unary operand: {operand_type:?}")]
-    InvalidUnaryOperand {
-        loc: Location,
-        operand_type: TokenType,
-    },
     #[error("{loc}: Incorrect Tokenization (this was an error of the compiler! report it!)")]
     InvalidTokenization { loc: Location },
-    #[error("{loc}: Invalid left-side of the assignment")]
-    AssignmentInvalidLeftSide { loc: Location },
     #[error("{loc}: Expected {expected:?} but found {found:?}")]
     ExpectedArbitrary {
         loc: Location,
@@ -150,8 +148,6 @@ pub enum ParsingError {
         found: TokenType,
         is_trait_impl: bool,
     },
-    #[error("{loc}: End-of-file")]
-    Eof { loc: Location },
     #[error("{loc}: Expected a statement")]
     ExpectedStatement { loc: Location },
     #[error("{loc}: Expected a let, while, if, for, block, function, struct or trait statement")]
@@ -173,12 +169,16 @@ pub enum ParsingError {
 impl ParsingError {
     pub fn get_loc(&self) -> &Location {
         match self {
-            Self::InvalidIntrinsic(loc, _)
+            Self::InvalidIntrinsic(loc, ..)
+            | Self::InvalidCallConv(loc, ..)
+            | Self::InvalidFunctionAttribute(loc, ..)
+            | Self::OutputNotStartingWithEqual { loc, .. }
+            | Self::InputStartingWithInvalidChar { loc, .. }
+            | Self::DuplicateAsmReplacer { loc, .. }
             | Self::ExpectedType { loc, .. }
             | Self::AnnotationDoesNotGoOn { loc, .. }
             | Self::ExpectedExpression { loc, .. }
             | Self::ExpectedIdentifier { loc, .. }
-            | Self::InvalidOperand { loc, .. }
             | Self::ExpectedArrayElement { loc, .. }
             | Self::ExpectedObjectElement { loc, .. }
             | Self::ExpectedFunctionArgument { loc, .. }
@@ -186,13 +186,10 @@ impl ParsingError {
             | Self::ExpectedFunctionBody { loc, .. }
             | Self::ExpectedFunctionCall { loc }
             | Self::InvalidTokenization { loc }
-            | Self::AssignmentInvalidLeftSide { loc }
-            | Self::Eof { loc }
             | Self::ExpressionAtTopLevel { loc }
             | Self::ExpectedAnnotationStatement { loc }
             | Self::StructImplRegionExpect { loc, .. }
             | Self::ExpectedArbitrary { loc, .. }
-            | Self::InvalidUnaryOperand { loc, .. }
             | Self::FunctionAlreadyDefined { loc, .. }
             | Self::UnknownAnnotation { loc, .. }
             | Self::ExpectedStatement { loc, .. }

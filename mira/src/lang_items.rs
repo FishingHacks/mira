@@ -6,6 +6,7 @@ use crate::{
     error_list_wrapper,
     globals::GlobalStr,
     tokenizer::{Literal, Location, Token, TokenType},
+    tokenstream::TokenStream,
     typechecking::{Type, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
 };
 use crate::{
@@ -39,33 +40,10 @@ impl LangItemAnnotation {
         &self.0
     }
 
-    pub fn parse(tokens: Vec<Token>, loc: Location) -> Result<Self, ParsingError> {
-        if tokens.len() < 1 {
-            return Err(ParsingError::ExpectedArbitrary {
-                loc,
-                expected: TokenType::StringLiteral,
-                found: TokenType::Eof,
-            });
-        } else if tokens[0].typ != TokenType::StringLiteral {
-            return Err(ParsingError::ExpectedArbitrary {
-                loc: tokens[0].location.clone(),
-                expected: TokenType::StringLiteral,
-                found: tokens[0].typ,
-            });
-        } else if tokens.len() > 1 {
-            return Err(ParsingError::ExpectedArbitrary {
-                loc: tokens[1].location.clone(),
-                expected: TokenType::Eof,
-                found: tokens[1].typ,
-            });
-        } else {
-            let Some(Literal::String(ref string)) = tokens[0].literal else {
-                return Err(ParsingError::InvalidTokenization {
-                    loc: tokens[0].location.clone(),
-                });
-            };
-            Ok(LangItemAnnotation(string.with(|v| v.to_string())))
-        }
+    pub fn parse(mut tokens: TokenStream) -> Result<Self, ParsingError> {
+        let (item, _) = tokens.expect_remove_string()?;
+        tokens.finish()?;
+        Ok(LangItemAnnotation(item.with(str::to_string)))
     }
 }
 
@@ -462,8 +440,6 @@ lang_item_def! {
     lte_trait => Trait,
     lshift_trait => Trait,
     rshift_trait => Trait,
-
-    printf => Function, // done
 }
 
 impl LangItems {
@@ -578,14 +554,6 @@ impl LangItems {
         }
     }
 
-    fn printf(&self) -> LangItemFunction {
-        LangItemFunction {
-            return_type: Type::PrimitiveVoid(0),
-            // printf(&u8, usize, &u8)
-            args: vec![Type::PrimitiveU8(1)],
-        }
-    }
-
     pub fn check(&self, errors: &mut LangItemErrors, context: &TypecheckingContext) {
         let trait_reader = context.traits.read();
         let struct_reader = context.structs.read();
@@ -595,7 +563,6 @@ impl LangItems {
         check_langitem!(required self.clone_trait: Trait; trait_reader errors context);
         check_langitem!(required self.copy_trait: Trait; trait_reader errors context);
         check_langitem!(required self.allocator: Static; static_reader errors context);
-        check_langitem!(required self.printf: Function; static_reader errors context);
         check_langitem!(self.bool: Struct; struct_reader errors context);
         check_langitem!(self.f32: Struct; struct_reader errors context);
         check_langitem!(self.f64: Struct; struct_reader errors context);

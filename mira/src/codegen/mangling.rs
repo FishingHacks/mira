@@ -1,9 +1,12 @@
 use crate::module::{ExternalFunctionId, ModuleScopeValue, StaticId, StructId};
-use crate::std_annotations::alias_annotation::ExternAliasAnnotation;
+use crate::std_annotations::alias::ExternAliasAnnotation;
 use crate::{module::FunctionId, typechecking::TypecheckingContext};
 use std::fmt::Write;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
+
+pub const ANON_FN_NAME: &str = "{{anonymous}}";
+pub const MANGLED_ANON_FN_NAME: &str = "25$CL$$CL$anonymous$CR$$CR$";
 
 fn mangle_char(c: char, string: &mut String) {
     match c {
@@ -58,7 +61,7 @@ pub fn mangle_function(ctx: &TypecheckingContext, id: FunctionId) -> String {
     mangle_path(path, &mut mangled_name);
 
     match fn_reader[id].0.name {
-        None => mangled_name.push_str("23$CL$$CL$anon_fn$CR$$CR$"), // {{anon_fn}}
+        None => mangled_name.push_str(MANGLED_ANON_FN_NAME),
         Some(ref v) => v.with(|v| {
             let mut name = String::new();
             v.chars().for_each(|v| mangle_char(v, &mut name));

@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    error::TokenizationError,
+    error::{ParsingError, TokenizationError},
     globals::GlobalStr,
     parser::{LiteralValue, Parser, ParserQueueEntry},
 };
@@ -55,6 +55,8 @@ pub enum TokenType {
     Export,               // done, done
     If,                   // done, done
     Else,                 // done, done
+    Asm,                  // done, done
+    Volatile,             // done, done
     While,                // done, done
     For,                  // done, done
     In,                   // done, done
@@ -208,6 +210,8 @@ impl Display for Token {
             TokenType::Divide => f.write_str("/"),
             TokenType::Dot => f.write_str("."),
             TokenType::Else => f.write_str("else"),
+            TokenType::Asm => f.write_str("asm"),
+            TokenType::Volatile => f.write_str("volatile"),
             TokenType::Eof => f.write_str("<EOF>"),
             TokenType::EqualEqual => f.write_str("=="),
             TokenType::Extern => f.write_str("extern"),
@@ -314,6 +318,60 @@ impl Token {
                 }
             }
             _ => None,
+        }
+    }
+
+    pub fn void_literal(&self) -> Result<(), ParsingError> {
+        match &self.literal {
+            None => Ok(()),
+            _ => Err(ParsingError::InvalidTokenization {
+                loc: self.location.clone(),
+            }),
+        }
+    }
+
+    pub fn string_literal(&self) -> Result<&GlobalStr, ParsingError> {
+        match &self.literal {
+            Some(Literal::String(v)) => Ok(v),
+            _ => Err(ParsingError::InvalidTokenization {
+                loc: self.location.clone(),
+            }),
+        }
+    }
+
+    pub fn bool_literal(&self) -> Result<bool, ParsingError> {
+        match &self.literal {
+            Some(Literal::Bool(v)) => Ok(*v),
+            _ => Err(ParsingError::InvalidTokenization {
+                loc: self.location.clone(),
+            }),
+        }
+    }
+
+    pub fn float_literal(&self) -> Result<(f64, NumberType), ParsingError> {
+        match &self.literal {
+            Some(Literal::Float(v, numty)) => Ok((*v, *numty)),
+            _ => Err(ParsingError::InvalidTokenization {
+                loc: self.location.clone(),
+            }),
+        }
+    }
+
+    pub fn sint_literal(&self) -> Result<(i64, NumberType), ParsingError> {
+        match &self.literal {
+            Some(Literal::SInt(v, numty)) => Ok((*v, *numty)),
+            _ => Err(ParsingError::InvalidTokenization {
+                loc: self.location.clone(),
+            }),
+        }
+    }
+
+    pub fn uint_literal(&self) -> Result<(u64, NumberType), ParsingError> {
+        match &self.literal {
+            Some(Literal::UInt(v, numty)) => Ok((*v, *numty)),
+            _ => Err(ParsingError::InvalidTokenization {
+                loc: self.location.clone(),
+            }),
         }
     }
 }
@@ -449,7 +507,7 @@ impl Tokenizer {
             '-' if self.if_char_advance('=') => token!(MinusAssign),
             '-' if self.if_char_advance('>') => token!(ReturnType),
             '-' => token!(Minus),
-            '/' if self.peek() != '/' => token!(Divide),
+            '/' if self.peek() != '/' && self.peek() != '*' => token!(Divide),
             '%' => token!(Modulo),
             '*' => token!(Asterix),
             '=' => token!(Equal, EqualEqual, '='),
@@ -467,6 +525,14 @@ impl Tokenizer {
             ' ' | '\n' | '\r' | '\t' => {
                 while matches!(self.peek(), ' ' | '\n' | '\r' | '\t') {
                     self.advance();
+                }
+                return Ok(None);
+            }
+            '/' if self.if_char_advance('*') => {
+                loop {
+                    if self.advance() == '*' && self.if_char_advance('/') {
+                        break;
+                    }
                 }
                 return Ok(None);
             }
@@ -1018,6 +1084,8 @@ impl Tokenizer {
             "return" => Some(TokenType::Return),
             "if" => Some(TokenType::If),
             "else" => Some(TokenType::Else),
+            "asm" => Some(TokenType::Asm),
+            "volatile" => Some(TokenType::Volatile),
             "while" => Some(TokenType::While),
             "for" => Some(TokenType::For),
             "in" => Some(TokenType::In),

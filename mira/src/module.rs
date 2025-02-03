@@ -66,6 +66,7 @@ pub struct Module {
     pub exports: HashMap<GlobalStr, GlobalStr>,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
+    pub assembly: Vec<(Location, String)>,
 }
 
 impl Debug for Module {
@@ -92,6 +93,7 @@ impl Module {
             exports: HashMap::new(),
             path,
             root,
+            assembly: Vec::new(),
         }
     }
 
@@ -274,6 +276,7 @@ impl Module {
                 }
                 self.exports.insert(exported_key, key);
             }
+            Statement::ModuleAsm(loc, strn) => self.assembly.push((loc, strn)),
             _ => {
                 return Err(ProgramFormingError::NoCodeOutsideOfFunctions(
                     statement.loc().clone(),

@@ -1,4 +1,10 @@
-use "./std.mr"::{printf, malloc, free};
+@callconv(c)
+extern fn malloc(size: usize) -> &void;
+@callconv(c)
+extern fn free(ptr: &void);
+@callconv(c)
+@ext_vararg()
+extern fn printf(pat: &u8);
 
 struct unw_cursor { inner: [u64; 127] }
 struct unw_context { inner: [u64; 121] }
@@ -44,4 +50,27 @@ fn a() {
 
 extern fn main() {
     a();
+}
+
+
+@lang("allocator_trait")
+trait Allocator {
+    fn alloc(self: &Self, size: usize) -> &void;
+    fn realloc(self: &Self, ptr: &void, size: usize) -> &void;
+    fn free(self: &Self, ptr: &void);
+}
+struct CAlloc {;
+    impl Allocator {
+        fn alloc(self: &Self, size: usize) -> &void = &void;
+        fn realloc(self: &Self, ptr: &void, size: usize) -> &void = ptr;
+        fn free(self: &Self, ptr: &void) = void;
+    }
+}
+@lang("allocator")
+let allocator: CAlloc = .{};
+@lang("copy_trait")
+trait Copy {}
+@lang("clone_trait")
+trait Clone {
+    fn clone(self: &Self) -> Self;
 }

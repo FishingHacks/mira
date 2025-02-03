@@ -200,15 +200,15 @@ pub enum TypecheckedExpression {
     If {
         loc: Location,
         cond: TypedLiteral,
-        if_block: Box<[TypecheckedExpression]>,
-        else_block: Option<Box<[TypecheckedExpression]>>,
+        if_block: (Box<[TypecheckedExpression]>, Location),
+        else_block: Option<(Box<[TypecheckedExpression]>, Location)>,
         annotations: Annotations,
     },
     While {
         loc: Location,
         cond_block: Box<[TypecheckedExpression]>,
         cond: TypedLiteral,
-        body: Box<[TypecheckedExpression]>,
+        body: (Box<[TypecheckedExpression]>, Location),
     },
 
     // _dst = _lhs..=_rhs
@@ -220,6 +220,15 @@ pub enum TypecheckedExpression {
         rhs: TypedLiteral,
         inclusive: bool,
         dst: ScopeValueId,
+    },
+    // _1 = asm(...)
+    Asm {
+        location: Location,
+        dst: ScopeValueId,
+        inputs: Vec<ScopeValueId>,
+        registers: String,
+        volatile: bool,
+        asm: String,
     },
     // *_1 = _2
     StoreAssignment(Location, TypedLiteral, TypedLiteral),
@@ -299,6 +308,7 @@ pub enum TypecheckedExpression {
     TraitCall(Location, ScopeValueId, TypedLiteral, TraitId, GlobalStr),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
     Literal(Location, ScopeValueId, TypedLiteral),
+    DeclareVariable(Location, ScopeValueId, Type, GlobalStr),
     Empty(Location),
     Unreachable(Location),
     // ### CASTS ###
@@ -331,8 +341,10 @@ impl TypecheckedExpression {
     pub fn location(&self) -> &Location {
         match self {
             TypecheckedExpression::Range { location, .. }
+            | TypecheckedExpression::Asm { location, .. }
             | TypecheckedExpression::If { loc: location, .. }
             | TypecheckedExpression::While { loc: location, .. }
+            | TypecheckedExpression::DeclareVariable(location, ..)
             | TypecheckedExpression::IntrinsicCall(location, ..)
             | TypecheckedExpression::DirectCall(location, ..)
             | TypecheckedExpression::DirectExternCall(location, ..)

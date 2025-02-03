@@ -10,9 +10,9 @@ pub fn resolve_module(
 ) -> Result<(PathBuf, Option<PathBuf>), ProgrammingLangResolveError> {
     let mut name_override = None;
     // file: the string of the rest of the import statement, excluding `./` or `<module_name>/`
-    // if the file is "", it will be resolved to the `directory/<directory name>.lang`.
-    // "." in `~/test/meow.lang` will be resolved to `~/test/test.lang`
-    // "std" in `~/test/test.lang` will be resolved to `~/test/.lang/modules/std/std.lang`
+    // if the file is "", it will be resolved to the `directory/<directory name>.mr`.
+    // "." in `~/test/meow.mr` will be resolved to `~/test/test.lang`
+    // "std" in `~/test/test.mr` will be resolved to `~/test/.lang/modules/std/std.lang`
     // the `@root` package will always resolve to the root directory.
     let (mut directory, file, root) = if name.starts_with("./") {
         (current_directory.to_path_buf(), &name[2..], None)
@@ -92,7 +92,7 @@ pub fn resolve_module(
             ));
         };
         let mut name = name.to_os_string();
-        name.push(".lang");
+        name.push(".mr");
         directory.set_file_name(name);
         if directory.exists() {
             Ok((directory, root))

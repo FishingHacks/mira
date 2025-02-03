@@ -61,7 +61,12 @@ impl<Data> Repl<Data> {
                 continue;
             }
 
-            if input.starts_with('.') {
+            if !input.starts_with('.') {
+                if self.buf.len() > 0 && !self.buf.ends_with('\n') {
+                    self.buf.push('\n');
+                }
+                self.buf.push_str(input);
+            } else {
                 let input = &input[1..];
                 let (cmd, rest) = {
                     let mut chars = input.chars();

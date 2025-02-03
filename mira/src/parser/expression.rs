@@ -69,13 +69,10 @@ impl Path {
         let mut types = vec![];
 
         while !parser.match_tok(TokenType::GreaterThan) {
-            if types.len() > 0 && !parser.match_tok(TokenType::Comma) {
-                return Err(ParsingError::ExpectedArbitrary {
-                    loc: parser.peek().location.clone(),
-                    expected: TokenType::Comma,
-                    found: parser.peek().typ,
-                });
+            if types.len() > 0 {
+                parser.expect_tok(TokenType::Comma)?;
             }
+
             types.push(TypeRef::parse(parser)?);
         }
         Ok(types)
@@ -338,6 +335,14 @@ pub enum Expression {
         new_type: TypeRef,
         loc: Location,
     },
+    Asm {
+        loc: Location,
+        asm: String,
+        volatile: bool,
+        output: TypeRef,
+        registers: String, // input + output + clobber
+        inputs: Vec<(Location, GlobalStr)>,
+    },
 }
 
 impl Display for Expression {
@@ -456,6 +461,36 @@ impl Display for Expression {
                 }
                 f.write_char(')')
             }
+            Self::Asm {
+                asm,
+                volatile,
+                output,
+                registers,
+                inputs,
+                ..
+            } => {
+                f.write_str("asm ")?;
+                if *volatile {
+                    f.write_str("volatile ")?;
+                }
+                f.write_char('(')?;
+                for asm in asm.split('\n') {
+                    Debug::fmt(asm, f)?;
+                    f.write_char('\n')?;
+                }
+                f.write_str(": ")?;
+                Display::fmt(output, f)?;
+                f.write_str("\n: ")?;
+                for i in 0..inputs.len() {
+                    if i != 0 {
+                        f.write_str(", ")?;
+                    }
+                    Display::fmt(&inputs[i].1, f)?;
+                }
+                f.write_str("\n: ")?;
+                Debug::fmt(registers, f)?;
+                f.write_str(");")
+            }
         }
     }
 }
@@ -494,6 +529,7 @@ impl Expression {
             Self::MemberAccess { loc, .. }
             | Self::Literal(_, loc)
             | Self::Unary { loc, .. }
+            | Self::Asm { loc, .. }
             | Self::Binary { loc, .. }
             | Self::Assignment { loc, .. }
             | Self::Range { loc, .. }
@@ -503,6 +539,7 @@ impl Expression {
 
     pub fn bake_functions(&mut self, module: &mut Module, module_id: ModuleId) {
         match self {
+            Self::Asm { .. } => (),
             Self::Literal(val, ..) => {
                 if let LiteralValue::AnonymousFunction(contract, statements) = val {
                     let id = module.push_fn(
@@ -581,8 +618,163 @@ macro_rules! assign_set {
     };
 }
 
+// asm expression
+impl Parser {
+    /// Parses [<.0>] "<.1>" (<.2>)
+    fn parse_asm_binding(&mut self) -> Result<(GlobalStr, GlobalStr, GlobalStr), ParsingError> {
+        self.expect_tok(TokenType::BracketLeft)?;
+        let name = self.expect_identifier()?;
+        self.expect_tok(TokenType::BracketRight)?;
+        let bound = self
+            .expect_tok(TokenType::StringLiteral)?
+            .string_literal()?
+            .clone();
+        self.expect_tok(TokenType::ParenLeft)?;
+        let ident = self.expect_identifier()?;
+        self.expect_tok(TokenType::ParenRight)?;
+        Ok((name, bound, ident))
+    }
+
+    fn parse_asm(&mut self) -> Result<Expression, ParsingError> {
+        let loc = self.advance().location.clone();
+        let volatile = self.match_tok(TokenType::Volatile);
+        self.expect_tok(TokenType::ParenLeft)?;
+
+        let mut replacers: Vec<(String, String)> = Vec::new();
+        let mut registers = String::new();
+        let mut inputs = Vec::new();
+        let mut output = TypeRef::Void(loc.clone(), 0);
+        let mut asm = String::new();
+        while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
+            if asm.len() > 0 {
+                self.expect_tok(TokenType::Comma)?;
+                if self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
+                    break;
+                }
+            }
+            let tok = self.expect_tok(TokenType::StringLiteral)?;
+            tok.string_literal()?.with(|v| {
+                if asm.len() > 0 {
+                    asm.push('\n');
+                }
+                asm.push_str(v);
+            });
+        }
+
+        'out: {
+            if self.current().typ != TokenType::Colon {
+                break 'out;
+            }
+
+            // outputs
+            'outputs: {
+                if self.peek().typ == TokenType::Colon {
+                    break 'outputs;
+                }
+                // [v] "=" (ty)
+                let loc = self.peek().location.clone();
+                let (replacer, register, type_name) = self.parse_asm_binding()?;
+                let replacer_string = replacer.with(|v| format!("%[{v}]"));
+                if replacers.iter().find(|v| v.0 == replacer_string).is_some() {
+                    return Err(ParsingError::DuplicateAsmReplacer { loc, replacer });
+                }
+                if !register.with(|v| v.starts_with('=')) {
+                    return Err(ParsingError::OutputNotStartingWithEqual {
+                        loc,
+                        output: register,
+                    });
+                }
+                replacers.push((replacer_string, format!("${{{}}}", replacers.len())));
+                register.with(|v| registers.push_str(v));
+                output = TypeRef::Reference {
+                    num_references: 0,
+                    type_name: Path::new(type_name, Vec::new()),
+                    loc,
+                }
+            };
+
+            if !self.match_tok(TokenType::Colon) {
+                self.expect_tok(TokenType::ParenRight)?;
+                break 'out;
+            }
+
+            // inuputs
+            while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
+                if inputs.len() > 0 {
+                    self.expect_tok(TokenType::Comma)?;
+                    if self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
+                        break;
+                    }
+                }
+
+                let loc = self.peek().location.clone();
+                let (replacer, register, variable) = self.parse_asm_binding()?;
+                let replacer_string = replacer.with(|v| format!("%[{v}]"));
+                if replacers.iter().find(|v| v.0 == replacer_string).is_some() {
+                    return Err(ParsingError::DuplicateAsmReplacer { loc, replacer });
+                }
+                if register.with(|v| v.starts_with('=') || v.starts_with('~')) {
+                    return Err(ParsingError::InputStartingWithInvalidChar {
+                        loc,
+                        input: register,
+                    });
+                }
+                replacers.push((replacer_string, format!("${{{}}}", replacers.len())));
+                if registers.len() > 0 {
+                    registers.push(',');
+                }
+                register.with(|v| registers.push_str(v));
+                inputs.push((loc, variable));
+            }
+
+            if self.current().typ != TokenType::Colon {
+                break 'out;
+            }
+            if self.match_tok(TokenType::ParenRight) {
+                break 'out;
+            }
+            if registers.len() > 0 {
+                registers.push(',');
+            }
+            registers.push_str("~{");
+            self.expect_tok(TokenType::StringLiteral)?
+                .string_literal()?
+                .with(|v| registers.push_str(v));
+            registers.push('}');
+
+            while !self.match_tok(TokenType::ParenRight) {
+                self.expect_tok(TokenType::Comma)?;
+                registers.push_str(",~{");
+                self.expect_tok(TokenType::StringLiteral)?
+                    .string_literal()?
+                    .with(|v| registers.push_str(v));
+                registers.push('}');
+            }
+        }
+
+        while let Some((to_replace, value)) = replacers.last() {
+            let Some(occurence) = asm.find(to_replace) else {
+                replacers.pop();
+                continue;
+            };
+            asm.replace_range(occurence..occurence + to_replace.len(), value);
+        }
+        Ok(Expression::Asm {
+            loc,
+            asm,
+            volatile,
+            output,
+            registers,
+            inputs,
+        })
+    }
+}
+
 impl Parser {
     pub fn parse_expression(&mut self) -> Result<Expression, ParsingError> {
+        if self.peek().typ == TokenType::Asm {
+            return self.parse_asm();
+        }
         self.comparison()
     }
 
@@ -642,8 +834,8 @@ impl Parser {
         let mut expr = self.term()?;
 
         while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
-            let inclusive = self.previous().typ == TokenType::RangeInclusive;
-            let loc = self.previous().location.clone();
+            let inclusive = self.current().typ == TokenType::RangeInclusive;
+            let loc = self.current().location.clone();
             let right_side = Box::new(self.parse_expression()?);
             expr = Expression::Range {
                 left_side: Box::new(expr),
@@ -665,7 +857,7 @@ impl Parser {
             TokenType::PlusAssign,
             TokenType::MinusAssign,
         ]) {
-            let mut operator = self.previous().clone();
+            let mut operator = self.current().clone();
             let right = self.factor()?;
 
             match operator.typ {
@@ -727,14 +919,14 @@ impl Parser {
             TokenType::BitwiseNot,
             TokenType::LogicalNot,
         ]) {
-            let operator = match self.previous().typ {
+            let operator = match self.current().typ {
                 TokenType::Plus => UnaryOp::Plus,
                 TokenType::Minus => UnaryOp::Minus,
                 TokenType::BitwiseNot => UnaryOp::BitwiseNot,
                 TokenType::LogicalNot => UnaryOp::LogicalNot,
                 _ => unreachable!(),
             };
-            let loc = self.previous().location.clone();
+            let loc = self.current().location.clone();
             return Ok(Expression::unary(operator, loc, self.unary()?));
         }
 
@@ -744,7 +936,7 @@ impl Parser {
     fn assignment(&mut self) -> Result<Expression, ParsingError> {
         let expr = self.type_cast()?;
         if self.match_tok(TokenType::Equal) {
-            let loc = self.previous().location.clone();
+            let loc = self.current().location.clone();
             let value = self.parse_expression()?;
             return Ok(Expression::Assignment {
                 left_side: Box::new(expr),
@@ -759,7 +951,7 @@ impl Parser {
         let mut expr = self.references()?;
 
         while self.match_tok(TokenType::As) {
-            let loc = self.previous().location.clone();
+            let loc = self.current().location.clone();
             let new_type = TypeRef::parse(self)?;
             expr = Expression::TypeCast {
                 left_side: Box::new(expr),
@@ -775,16 +967,16 @@ impl Parser {
         if self.match_tok(TokenType::Ampersand) {
             Ok(Expression::Unary {
                 operator: UnaryOp::Reference,
-                loc: self.previous().location.clone(),
+                loc: self.current().location.clone(),
                 right_side: Box::new(self.references()?),
             })
         } else if self.match_tok(TokenType::LogicalAnd) {
             let expr = Expression::Unary {
                 operator: UnaryOp::Reference,
-                loc: self.previous().location.clone(),
+                loc: self.current().location.clone(),
                 right_side: Box::new(self.references()?),
             };
-            let mut loc = self.previous().location.clone();
+            let mut loc = self.current().location.clone();
             loc.column += 1;
             Ok(Expression::Unary {
                 operator: UnaryOp::Reference,
@@ -794,7 +986,7 @@ impl Parser {
         } else if self.match_tok(TokenType::Asterix) {
             Ok(Expression::Unary {
                 operator: UnaryOp::Dereference,
-                loc: self.previous().location.clone(),
+                loc: self.current().location.clone(),
                 right_side: Box::new(self.references()?),
             })
         } else {
@@ -806,7 +998,7 @@ impl Parser {
         let mut expr = self.primary()?;
 
         while self.matches(&[TokenType::BracketLeft, TokenType::ParenLeft, TokenType::Dot]) {
-            if self.previous().typ == TokenType::ParenLeft {
+            if self.current().typ == TokenType::ParenLeft {
                 // function call
                 let mut arguments: Vec<Expression> = vec![];
                 loop {
@@ -817,8 +1009,8 @@ impl Parser {
                         // , or ), but ) is alr handled by the thing above
                         if self.advance().typ != TokenType::Comma {
                             return Err(ParsingError::ExpectedFunctionArgument {
-                                loc: self.previous().location.clone(),
-                                found: self.previous().typ,
+                                loc: self.current().location.clone(),
+                                found: self.current().typ,
                             });
                         }
                     }
@@ -863,7 +1055,7 @@ impl Parser {
                         arguments,
                     };
                 }
-            } else if self.previous().typ == TokenType::BracketLeft {
+            } else if self.current().typ == TokenType::BracketLeft {
                 let next_loc = self.peek().location.clone();
                 let next_typ = self.peek().typ;
                 let Ok(indexing_expr) = self.parse_expression() else {
@@ -873,42 +1065,23 @@ impl Parser {
                     });
                 };
 
-                if self.match_tok(TokenType::BracketRight) {
-                    expr = Expression::Indexing {
-                        left_side: Box::new(expr),
-                        right_side: Box::new(indexing_expr),
-                    };
+                self.expect_tok(TokenType::BracketRight)?;
+                expr = Expression::Indexing {
+                    left_side: Box::new(expr),
+                    right_side: Box::new(indexing_expr),
+                };
+            } else if self.current().typ == TokenType::Dot {
+                let loc = self.peek().location.clone();
+                let name = self.expect_identifier()?;
+                if let Expression::MemberAccess { index, .. } = &mut expr {
+                    index.push(name.clone());
                     continue;
                 }
-
-                let found_token = self.peek();
-                return Err(ParsingError::ExpectedArbitrary {
-                    loc: found_token.location.clone(),
-                    found: found_token.typ,
-                    expected: TokenType::BracketRight,
-                });
-            } else if self.previous().typ == TokenType::Dot {
-                let identifier = self.advance();
-                if identifier.typ != TokenType::IdentifierLiteral {
-                    return Err(ParsingError::ExpectedIdentifier {
-                        loc: identifier.location.clone(),
-                        found: identifier.typ,
-                    });
-                } else if let Some(Literal::String(str)) = &identifier.literal {
-                    if let Expression::MemberAccess { index, .. } = &mut expr {
-                        index.push(str.clone());
-                        continue;
-                    }
-                    expr = Expression::MemberAccess {
-                        left_side: Box::new(expr),
-                        index: vec![str.clone()],
-                        loc: identifier.location.clone(),
-                    };
-                } else {
-                    return Err(ParsingError::InvalidTokenization {
-                        loc: identifier.location.clone(),
-                    });
-                }
+                expr = Expression::MemberAccess {
+                    left_side: Box::new(expr),
+                    index: vec![name.clone()],
+                    loc,
+                };
             } else {
                 unreachable!();
             }
@@ -932,13 +1105,8 @@ impl Parser {
                 let mut elements = Vec::new();
                 while !self.match_tok(matching_tok) {
                     if elements.len() > 0 {
-                        if !self.match_tok(TokenType::Comma) {
-                            return Err(ParsingError::ExpectedArbitrary {
-                                loc: self.peek().location.clone(),
-                                expected: TokenType::Comma,
-                                found: self.peek().typ,
-                            });
-                        }
+                        self.expect_tok(TokenType::Comma)?;
+
                         if self.match_tok(matching_tok) {
                             break;
                         }
@@ -1002,16 +1170,8 @@ impl Parser {
 
         if self.match_tok(TokenType::ParenLeft) {
             let expr = self.parse_expression()?;
-            if self.match_tok(TokenType::ParenRight) {
-                return Ok(expr);
-            }
-
-            let found_token = self.peek();
-            return Err(ParsingError::ExpectedArbitrary {
-                loc: found_token.location.clone(),
-                found: found_token.typ,
-                expected: TokenType::ParenRight,
-            });
+            self.expect_tok(TokenType::ParenRight)?;
+            return Ok(expr);
         }
 
         let found_token = self.peek();
@@ -1023,7 +1183,7 @@ impl Parser {
 
     fn try_array(&mut self) -> Option<Result<Expression, ParsingError>> {
         if self.match_tok(TokenType::BracketLeft) {
-            let loc = self.previous().location.clone();
+            let loc = self.current().location.clone();
             let mut arr = vec![];
             while !self.match_tok(TokenType::BracketRight) {
                 if arr.len() > 0 {
@@ -1080,23 +1240,19 @@ impl Parser {
                         found: self.peek().typ,
                     }));
                 } else {
-                    match self.previous().literal {
+                    match self.current().literal {
                         Some(Literal::String(ref v)) => v.clone(),
                         _ => {
                             return Some(Err(ParsingError::InvalidTokenization {
-                                loc: self.previous().location.clone(),
+                                loc: self.current().location.clone(),
                             }))
                         }
                     }
                 };
-                let location = self.previous().location.clone();
+                let location = self.current().location.clone();
 
-                if !self.match_tok(TokenType::Colon) {
-                    return Some(Err(ParsingError::ExpectedArbitrary {
-                        loc: self.peek().location.clone(),
-                        expected: TokenType::Colon,
-                        found: self.peek().typ,
-                    }));
+                if let Err(e) = self.expect_tok(TokenType::Colon) {
+                    return Some(Err(e));
                 }
 
                 match self.parse_expression() {

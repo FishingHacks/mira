@@ -25,9 +25,15 @@ pub const AUTHORS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     hashset.into_iter().collect()
 });
 
-fn print_help() {
+fn print_help(editor_mode: bool) {
     //┌─┐└┘│├┬┴┼┴┤
-    println!("┌─[ repl commands ]──┬─────────────────────────────────────────────┐");
+    if editor_mode {
+        println!("┌─[ repl commands ]──┬────────────────────────────[ mode: editor ]─┐");
+    } else {
+        println!("┌─[ repl commands ]──┬───────────────────────────────[ mode: cli ]─┐");
+    }
+    // prints line as shown below:
+    _ = _ = ("┌─[ repl commands ]──┬────────────────────────────[ mode: <mode> ]─┐",);
     println!("│ .^ <line> <code>   │ inserts code after the specified line       │");
     println!("│ .v <line> <code>   │ inserts code before the specified line      │");
     println!("│ .% <line> <code>   │ replaces the specified line with the code   │");
@@ -59,6 +65,8 @@ fn print_help() {
     println!("│ --ir [file]        │ [dev] emits the intermediate representation │");
     println!("│ --obj <file>       │ emits the object code                       │");
     println!("│ --exec <file>      │ emits the executable                        │");
+    println!("│ --nolibc           │ don't link with libc                        │");
+    println!("│ --file <file>      │ set the file used in the debug info         │");
     _ = "     └─ [ mira vN.N.N ]───┴─────────────────────────────────────────────┘";
     // prints line as shown above
     assert!(VER.len() <= 7);
@@ -131,6 +139,8 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     let mut run_opts = RunOptions::default();
     let mut obj_file = None;
     let mut exec_file = None;
+    let mut nolibc = false;
+    let mut file = None;
     let mut i = 0;
     while i < opts.len() {
         match opts[i].as_str() {
@@ -235,6 +245,29 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                 let path = PathBuf::from(file);
                 exec_file = Some(path);
             }
+            "--file" => {
+                opts.remove(i);
+                if opts.get(i).is_none() {
+                    println!("`file` needs a file");
+                    return;
+                }
+                let filename = opts.remove(i);
+                let path = match Path::new(&filename).is_absolute() {
+                    true => PathBuf::from(filename),
+                    false => {
+                        let Ok(mut dir) = std::env::current_dir() else {
+                            return println!("failed to get current directory");
+                        };
+                        dir.push(Path::new(&filename));
+                        dir
+                    }
+                };
+                file = Some(path);
+            }
+            "--nolibc" => {
+                opts.remove(i);
+                nolibc = true;
+            }
             _ => i += 1,
         }
     }
@@ -255,9 +288,13 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         }
         obj_file = Some(path.to_path_buf());
     }
+    let debug_file = file
+        .map(Into::into)
+        .unwrap_or_else(|| repl.data.file.clone());
     if let Err(e) = compile(
         repl.data.file.clone(),
         repl.data.current_dir.clone(),
+        debug_file,
         &repl.buf,
         run_opts,
     ) {
@@ -274,6 +311,7 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         obj_file.as_ref().unwrap(),
         exec_file.as_ref().unwrap(),
         &opts,
+        nolibc,
     ) {
         return;
     }
@@ -294,12 +332,8 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
 fn main() -> Result<(), Box<dyn Error>> {
     let current_dir: Arc<Path> = std::env::current_dir()?.into();
     let file: Arc<Path> = current_dir.join("stdin_buffer").into();
-    let mut buffer = String::new();
     let editor_path = get_path(None);
     let editor_mode = editor_path.is_some();
-    if let Some(editor_path) = &editor_path {
-        run_editor(&mut buffer, editor_path);
-    }
 
     let mut repl = Repl::<Data>::new(
         vec![
@@ -313,15 +347,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             ("load", |rest, r| {
                 let rest = rest.trim();
                 let path = Path::new(rest);
-                match std::fs::read_to_string(path) {
-                    Ok(v) => r.buf = v,
+                let read = match std::fs::read_to_string(path) {
+                    Ok(v) => {
+                        r.buf.push_str(&v);
+                        v.len()
+                    }
                     Err(e) if e.kind() == ErrorKind::NotFound => {
                         println!("Could not find file `{}`", rest);
                         return;
                     }
                     Err(e) => return println!("Failed to read file: {e:?}"),
                 };
-                println!("read {} b", r.buf.len());
+                println!("read {} b", read);
             }),
             ("write", |rest, r| {
                 let rest = rest.trim();
@@ -341,7 +378,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ("check", |_, repl| compile_run("", repl, false)),
             ("run", |args, repl| compile_run(args, repl, true)),
             ("build", |args, repl| compile_run(args, repl, false)),
-            ("help", |_, _| print_help()),
+            ("help", |_, repl| print_help(repl.data.editor_mode)),
             ("about", |_, _| print_about()),
         ],
         |_, r| {

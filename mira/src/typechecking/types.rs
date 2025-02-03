@@ -11,15 +11,15 @@ use crate::{
     tokenizer::NumberType,
 };
 
-use super::TypecheckingContext;
+use super::{TypecheckingContext, TypedStruct};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionType {
     pub arguments: Vec<Type>,
     pub return_type: Type,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq)]
 pub enum Type {
     Trait {
         trait_refs: Vec<TraitId>,
@@ -170,7 +170,115 @@ pub fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
     }
 }
 
+fn align(value: u64, alignment: u32) -> u64 {
+    if value % alignment as u64 == 0 {
+        value
+    } else {
+        alignment as u64 - (value % alignment as u64) + value
+    }
+}
+
 impl Type {
+    pub fn alignment(&self, ptr_size: u64, structs: &[TypedStruct]) -> u32 {
+        if self.refcount() > 0 {
+            return ptr_size as u32;
+        }
+
+        match self {
+            Type::Trait { .. }
+            | Type::Generic(..)
+            | Type::PrimitiveSelf(..)
+            | Type::PrimitiveStr(..)
+            | Type::DynType { .. }
+            | Type::UnsizedArray { .. } => {
+                unreachable!("generics, self and unsized types don't have an alignment")
+            }
+            Type::Struct { struct_id, .. } => structs[*struct_id]
+                .elements
+                .iter()
+                .map(|v| v.1.alignment(ptr_size, structs))
+                .max()
+                .unwrap_or(1),
+            Type::SizedArray { typ, .. } => typ.alignment(ptr_size, structs),
+            Type::Tuple { elements, .. } => elements
+                .iter()
+                .map(|v| v.alignment(ptr_size, structs))
+                .max()
+                .unwrap_or(1),
+            Type::PrimitiveVoid(_)
+            | Type::PrimitiveNever
+            | Type::PrimitiveBool(_)
+            | Type::PrimitiveU8(_)
+            | Type::PrimitiveI8(_) => 1,
+            Type::PrimitiveU16(_) | Type::PrimitiveI16(_) => 2,
+            Type::PrimitiveF32(_) | Type::PrimitiveU32(_) | Type::PrimitiveI32(_) => 4,
+            Type::PrimitiveF64(_) | Type::PrimitiveU64(_) | Type::PrimitiveI64(_) => 8,
+            Type::Function(..) | Type::PrimitiveUSize(_) | Type::PrimitiveISize(_) => {
+                ptr_size as u32
+            }
+        }
+    }
+
+    pub fn size_and_alignment(&self, ptr_size: u64, structs: &[TypedStruct]) -> (u64, u32) {
+        if self.refcount() > 0 {
+            return if self.is_thin_ptr() {
+                (ptr_size, ptr_size as u32)
+            } else {
+                (ptr_size * 2, ptr_size as u32)
+            };
+        }
+
+        match self {
+            Type::Trait { .. }
+            | Type::Generic(..)
+            | Type::PrimitiveSelf(..)
+            | Type::PrimitiveStr(..)
+            | Type::DynType { .. }
+            | Type::UnsizedArray { .. } => {
+                unreachable!("generics, self and unsized types don't have an alignment")
+            }
+            Type::Struct { struct_id, .. } => {
+                let mut size = 0;
+                let mut alignment = 1;
+                for (_, element) in structs[*struct_id].elements.iter() {
+                    let (typ_size, typ_alignment) = element.size_and_alignment(ptr_size, structs);
+                    alignment = alignment.max(typ_alignment);
+                    size = align(size, typ_alignment) + typ_size;
+                }
+                (align(size, alignment), alignment)
+            }
+            Type::SizedArray {
+                typ,
+                number_elements,
+                ..
+            } => {
+                let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
+                (size * *number_elements as u64, alignment)
+            }
+            Type::Tuple { elements, .. } => {
+                let mut size = 0;
+                let mut alignment = 1;
+                for element in elements {
+                    let (typ_size, typ_alignment) = element.size_and_alignment(ptr_size, structs);
+                    alignment = alignment.max(typ_alignment);
+                    size = align(size, typ_alignment) + typ_size;
+                }
+                (align(size, alignment), alignment)
+            }
+            Type::PrimitiveVoid(_)
+            | Type::PrimitiveNever
+            | Type::PrimitiveBool(_)
+            | Type::PrimitiveU8(_)
+            | Type::PrimitiveI8(_) => (1, 1),
+            Type::PrimitiveU16(_) | Type::PrimitiveI16(_) => (2, 2),
+            Type::PrimitiveF32(_) | Type::PrimitiveU32(_) | Type::PrimitiveI32(_) => (4, 4),
+            Type::PrimitiveF64(_) | Type::PrimitiveU64(_) | Type::PrimitiveI64(_) => (8, 8),
+            Type::Function(..) | Type::PrimitiveUSize(_) | Type::PrimitiveISize(_) => {
+                (ptr_size, ptr_size as u32)
+            }
+        }
+    }
+
     pub fn refcount(&self) -> u8 {
         match self {
             Type::PrimitiveNever => 0,
@@ -215,6 +323,10 @@ impl Type {
     }
 
     pub fn is_thin_ptr(&self) -> bool {
+        // &&str is a thin pointer as it is a reference to a fat pointer, which is a thin pointer
+        if self.refcount() > 1 {
+            return true;
+        }
         match self {
             Type::Generic(..) | Type::Trait { .. } => {
                 unreachable!("generics don't yet have size info")
@@ -395,34 +507,45 @@ impl Type {
         }
     }
 
+    pub fn is_asm_primitive(&self) -> bool {
+        matches!(
+            self,
+            Type::PrimitiveI8(0)
+                | Type::PrimitiveI16(0)
+                | Type::PrimitiveI32(0)
+                | Type::PrimitiveI64(0)
+                | Type::PrimitiveISize(0)
+                | Type::PrimitiveU8(0)
+                | Type::PrimitiveU16(0)
+                | Type::PrimitiveU32(0)
+                | Type::PrimitiveU64(0)
+                | Type::PrimitiveUSize(0)
+                | Type::PrimitiveF32(0)
+                | Type::PrimitiveF64(0)
+                | Type::PrimitiveBool(0)
+        )
+    }
+
     pub fn is_primitive(&self) -> bool {
-        match self {
-            Type::Trait { .. }
-            | Type::DynType { .. }
-            | Type::Struct { .. }
-            | Type::UnsizedArray { .. }
-            | Type::SizedArray { .. }
-            | Type::Tuple { .. }
-            | Type::Generic(..)
-            | Type::PrimitiveSelf(..)
-            | Type::Function(..) => false,
+        matches!(
+            self,
             Type::PrimitiveVoid(_)
-            | Type::PrimitiveNever
-            | Type::PrimitiveI8(_)
-            | Type::PrimitiveI16(_)
-            | Type::PrimitiveI32(_)
-            | Type::PrimitiveI64(_)
-            | Type::PrimitiveISize(_)
-            | Type::PrimitiveU8(_)
-            | Type::PrimitiveU16(_)
-            | Type::PrimitiveU32(_)
-            | Type::PrimitiveU64(_)
-            | Type::PrimitiveUSize(_)
-            | Type::PrimitiveF32(_)
-            | Type::PrimitiveF64(_)
-            | Type::PrimitiveStr(_)
-            | Type::PrimitiveBool(_) => true,
-        }
+                | Type::PrimitiveNever
+                | Type::PrimitiveI8(_)
+                | Type::PrimitiveI16(_)
+                | Type::PrimitiveI32(_)
+                | Type::PrimitiveI64(_)
+                | Type::PrimitiveISize(_)
+                | Type::PrimitiveU8(_)
+                | Type::PrimitiveU16(_)
+                | Type::PrimitiveU32(_)
+                | Type::PrimitiveU64(_)
+                | Type::PrimitiveUSize(_)
+                | Type::PrimitiveF32(_)
+                | Type::PrimitiveF64(_)
+                | Type::PrimitiveStr(_)
+                | Type::PrimitiveBool(_)
+        )
     }
 
     /// Returns whether the type is an integer or unsigned integer

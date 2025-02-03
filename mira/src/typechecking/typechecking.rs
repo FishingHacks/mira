@@ -3,14 +3,15 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     globals::GlobalStr,
     module::{ModuleContext, ModuleId, ModuleScopeValue, StaticId},
-    parser::{BinaryOp, Expression, LiteralValue, Statement, UnaryOp},
-    std_annotations::ext_var_arg::ExternVarArg,
+    parser::{BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp},
+    std_annotations::ext_vararg::ExternVarArg,
     tokenizer::{Location, NumberType},
     typechecking::typed_resolve_import,
 };
 
 use super::{
     expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
+    intrinsics::IntrinsicAnnotation,
     types::{FunctionType, Type, TypeSuggestion},
     TypecheckingContext, TypecheckingError,
 };
@@ -172,11 +173,13 @@ pub fn typecheck_function(
         let contract = &context.functions.read()[function_id].0;
         (contract.return_type.clone(), contract.arguments.clone())
     };
-    for arg in args {
-        scope.insert_value(arg.0, arg.1);
-    }
 
     let mut exprs = vec![];
+    for arg in args {
+        let (id, _) = scope.insert_value(arg.0, arg.1);
+        scope.make_stack_allocated(id);
+    }
+
     match typecheck_statement(
         context,
         &mut scope,
@@ -296,10 +299,10 @@ fn typecheck_statement(
             exprs.push(TypecheckedExpression::If {
                 loc: location.clone(),
                 cond,
-                if_block: if_exprs.into_boxed_slice(),
+                if_block: (if_exprs.into_boxed_slice(), if_stmt.loc().clone()),
                 else_block: else_stmt
                     .as_ref()
-                    .map(move |_| else_exprs.into_boxed_slice()),
+                    .map(move |stmt| (else_exprs.into_boxed_slice(), stmt.loc().clone())),
                 annotations: annotations.clone(),
             });
             Ok(if_stmt_exits && else_stmt_exits)
@@ -348,7 +351,7 @@ fn typecheck_statement(
                 loc: location.clone(),
                 cond_block: condition_block.into_boxed_slice(),
                 cond,
-                body: body.into_boxed_slice(),
+                body: (body.into_boxed_slice(), child.loc().clone()),
             });
 
             Ok(always_exits)
@@ -478,6 +481,13 @@ fn typecheck_statement(
                 }
             };
             scope.insert(name.clone(), id);
+            exprs.push(TypecheckedExpression::DeclareVariable(
+                location.clone(),
+                id,
+                typ,
+                name.clone(),
+            ));
+            scope.make_stack_allocated(id);
             Ok(false)
         }
         Statement::Expression(expression) => typecheck_expression(
@@ -497,6 +507,7 @@ fn typecheck_statement(
         | Statement::BakedStatic(..)
         | Statement::Struct { .. }
         | Statement::Export(..)
+        | Statement::ModuleAsm(..)
         | Statement::Trait(_)
         | Statement::BakedTrait(..)
         | Statement::BakedExternalFunction(..) => {
@@ -838,10 +849,14 @@ fn typecheck_expression(
                             return_type: reader.0.return_type.clone(),
                             arguments: reader.0.arguments.iter().map(|v| v.1.clone()).collect(),
                         };
-                        Ok((
-                            Type::Function(Arc::new(function_typ), 0),
-                            TypedLiteral::Function(id),
-                        ))
+                        let literal = reader
+                            .0
+                            .annotations
+                            .get_first_annotation::<IntrinsicAnnotation>()
+                            .map(IntrinsicAnnotation::get)
+                            .map(TypedLiteral::Intrinsic)
+                            .unwrap_or(TypedLiteral::Function(id));
+                        Ok((Type::Function(Arc::new(function_typ), 0), literal))
                     }
                     ModuleScopeValue::ExternalFunction(id) => {
                         let reader = &context.external_functions.read()[id];
@@ -880,6 +895,70 @@ fn typecheck_expression(
             LiteralValue::AnonymousFunction(..) => unreachable!("unbaked function"),
             LiteralValue::Void => Ok((Type::PrimitiveVoid(0), TypedLiteral::Void)),
         },
+        Expression::Asm {
+            loc,
+            asm,
+            volatile,
+            output,
+            registers,
+            inputs,
+        } => {
+            let name = match output {
+                crate::parser::TypeRef::Reference { type_name, .. } => {
+                    Some(type_name.entries[0].0.clone())
+                }
+                _ => None,
+            };
+            // this should never fail unless this is an incompatible type (non-primitive)
+            let output = context
+                .resolve_type(module, output, &[])
+                .ok()
+                .filter(|v| {
+                    // we have to do this match because output is either TypeRef::Reference or
+                    // TypeRef::Void(0) in the case no output was specified. This means that name
+                    // can only be None if the the type is `TypeRef::Void(0)`, but the user
+                    // could've specified `void` as their type which is why we have to check for
+                    // both. However, when this returns false, it's as such ensured that name is
+                    // some.
+                    (matches!(v, Type::PrimitiveVoid(0)) && name.is_none()) || v.is_asm_primitive()
+                })
+                .ok_or_else(|| {
+                    TypecheckingError::AsmNonNumericType(
+                        loc.clone(),
+                        name.unwrap(), /* see comment above as to why this is fine */
+                    )
+                })?;
+            let mut typed_inputs = Vec::with_capacity(inputs.len());
+            for (loc, name) in inputs {
+                let Some(((entry_ty, _), id)) = scope.get(name) else {
+                    return Err(TypecheckingError::CannotFindValue(
+                        loc.clone(),
+                        Path::new(name.clone(), Vec::new()),
+                    ));
+                };
+                if !entry_ty.is_asm_primitive() {
+                    return Err(TypecheckingError::AsmNonNumericTypeResolved(
+                        loc.clone(),
+                        entry_ty.clone(),
+                    ));
+                }
+                typed_inputs.push(id);
+            }
+            let id = scope.push(output.clone());
+            exprs.push(TypecheckedExpression::Asm {
+                location: loc.clone(),
+                dst: id,
+                inputs: typed_inputs,
+                registers: registers.clone(),
+                volatile: *volatile,
+                asm: asm.clone(),
+            });
+            if matches!(output, Type::PrimitiveVoid(0)) {
+                return Ok((output, TypedLiteral::Void));
+            } else {
+                return Ok((output, TypedLiteral::Dynamic(id)));
+            }
+        }
         Expression::Unary {
             operator,
             right_side,
@@ -1333,18 +1412,20 @@ fn typecheck_cast(
             exprs.push(TypecheckedExpression::IntToPtr(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
+        // fn to &void
+        (Type::Function(_, 0), Type::PrimitiveVoid(1)) => {
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
         // &T to &void
-        (_, Type::PrimitiveVoid(ref_other))
-            if typ.refcount() == *ref_other && typ.is_thin_ptr() =>
-        {
+        (_, Type::PrimitiveVoid(ref_other)) if *ref_other > 0 && typ.is_thin_ptr() => {
             let id = scope.push(new_typ.clone());
             exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // &void to &T
-        (Type::PrimitiveVoid(ref_self), _)
-            if new_typ.refcount() == *ref_self && new_typ.is_thin_ptr() =>
-        {
+        (Type::PrimitiveVoid(ref_self), _) if *ref_self > 0 && new_typ.is_thin_ptr() => {
             let id = scope.push(new_typ.clone());
             exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))

@@ -65,7 +65,7 @@ pub struct ParserQueueEntry {
 
 #[derive(Debug)]
 pub struct Parser {
-    file: Arc<std::path::Path>,
+    pub file: Arc<std::path::Path>,
     root_directory: Arc<std::path::Path>,
 
     pub tokens: Vec<Token>,
@@ -126,7 +126,7 @@ impl Parser {
         &self.tokens[self.current - 1]
     }
 
-    fn previous(&self) -> &Token {
+    fn current(&self) -> &Token {
         if self.current < 1 {
             &self.tokens[0]
         } else {
@@ -147,20 +147,19 @@ impl Parser {
         false
     }
 
-    fn expect_tok(&mut self, token_type: TokenType) -> Result<(), ParsingError> {
-        self.match_tok(token_type)
-            .then_some(())
-            .ok_or_else(|| ParsingError::ExpectedArbitrary {
+    fn expect_tok(&mut self, token_type: TokenType) -> Result<&Token, ParsingError> {
+        if self.check(token_type) {
+            Ok(self.advance())
+        } else {
+            Err(ParsingError::ExpectedArbitrary {
                 loc: self.peek().location.clone(),
                 expected: token_type,
                 found: self.peek().typ,
             })
+        }
     }
 
     fn match_tok(&mut self, token_type: TokenType) -> bool {
-        if self.is_at_end() {
-            return false;
-        }
         if self.check(token_type) {
             self.advance();
             return true;
@@ -174,7 +173,7 @@ impl Parser {
         self.advance();
 
         while !self.is_at_end() {
-            if self.previous().typ == TokenType::Semicolon {
+            if self.current().typ == TokenType::Semicolon {
                 break;
             }
 

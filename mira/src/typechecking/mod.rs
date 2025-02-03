@@ -123,6 +123,7 @@ pub struct TypecheckedModule {
     exports: HashMap<GlobalStr, GlobalStr>,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
+    pub assembly: Vec<(Location, String)>,
 }
 
 impl Debug for TypecheckedModule {
@@ -227,20 +228,21 @@ impl TypecheckingContext {
         });
 
         let mut typechecked_module_writer = me.modules.write();
-        let module_reader = context.modules.read();
+        let mut module_writer = context.modules.write();
 
-        for module_id in 0..module_reader.len() {
-            let scope = module_reader[module_id].scope.clone();
+        for module_id in 0..module_writer.len() {
+            let scope = module_writer[module_id].scope.clone();
 
             typechecked_module_writer.push(TypecheckedModule {
                 scope,
-                exports: module_reader[module_id].exports.clone(),
-                path: module_reader[module_id].path.clone(),
-                root: module_reader[module_id].root.clone(),
+                exports: module_writer[module_id].exports.clone(),
+                path: module_writer[module_id].path.clone(),
+                root: module_writer[module_id].root.clone(),
+                assembly: std::mem::take(&mut module_writer[module_id].assembly),
             });
         }
 
-        drop(module_reader);
+        drop(module_writer);
         drop(typechecked_module_writer);
 
         me

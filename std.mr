@@ -1,6 +1,6 @@
-extern fn malloc(size: usize) -> &void;
-extern fn realloc(ptr: &void, size: usize) -> &void;
-extern fn free(ptr: &void);
+//extern fn malloc(size: usize) -> &void;
+//extern fn realloc(ptr: &void, size: usize) -> &void;
+//extern fn free(ptr: &void);
 
 @lang("allocator_trait")
 trait Allocator {
@@ -11,9 +11,12 @@ trait Allocator {
 
 struct CAlloc {;
     impl Allocator {
-        fn alloc(self: &Self, size: usize) -> &void = malloc(size);
-        fn realloc(self: &Self, ptr: &void, size: usize) -> &void = realloc(ptr, size);
-        fn free(self: &Self, ptr: &void) = free(ptr);
+        //fn alloc(self: &Self, size: usize) -> &void = malloc(size);
+        //fn realloc(self: &Self, ptr: &void, size: usize) -> &void = realloc(ptr, size);
+        //fn free(self: &Self, ptr: &void) = free(ptr);
+        fn alloc(self: &Self, size: usize) -> &void = &void;
+        fn realloc(self: &Self, ptr: &void, size: usize) -> &void = ptr;
+        fn free(self: &Self, ptr: &void) = void;
     }
 }
 @lang("allocator")
@@ -27,9 +30,8 @@ trait Clone {
     fn clone(self: &Self) -> Self;
 }
 
-@lang("printf")
-@ext_vararg()
-extern fn printf(pat: &u8);
+//@ext_vararg()
+//extern fn printf(pat: &u8);
 
 @lang("eq_trait")
 trait Eq {
@@ -41,54 +43,140 @@ trait Neq {
     fn neq(self: &Self, other: &Self) -> bool;
 }
 
-struct Test2 {
-    test: &Test
-}
-
-struct Test {
-    value: i32
-}
-
-struct Nya {
-    meow: i32,
-    mreow: u32,
-    boop: usize;
-
-    fn new(meow: i32, mreow: u32, boop: usize) -> Nya = .{ meow: meow, mreow: mreow, boop: boop };
-}
-
-let meow: i32 = 12;
-let meowmeow: &str = "fdkjghdafhgjkdsfg";
-
-fn test() -> Nya = Nya::new(13, 14, 15);
-fn test2() -> Nya = .{ meow: 13, mreow: 3948, boop: 0xff87cd };
-fn test3(v: &Nya) -> &u32 = &v.mreow;
-fn test4(v: [Nya; 5], idx: usize) -> Nya = v[idx];
-fn test5(v: &[Nya]) -> usize = v[2].boop;
-
-fn test6() -> &[&u8] = &[&3, &4];
-fn test7(v: &[&[u8]], a: usize, b: usize) -> u8 = v[a][b];
-fn test8() -> &str = "abcdefg :3";
-//fn test9() -> i32 = woof(12);
-
+@intrinsic("return_address")
+fn ret_addr() -> &void = 0 as &void;
 extern fn main(argc: usize, argv: &&u8) -> i32 {
-    let value = -12i32;
-    let _value = &&value;
-    let valuea = _value as &[&i32; 1];
-    let valueb = *valuea[0];
-    printf("%d\0" as &u8, valueb);
-    return 0;
+    print_str("meow::meow() = ");
+    print_usize(meow());
+    print_newline();
+
+    print_str("main = \0");
+    print_usize_hex(main as &void as usize);
+    print_newline();
+
+    //printf("main = 0x%zx\n\0" as &u8, main as &void as usize);
+    //print_str("hello, world!\n");
+
+    //let value = -12i32;
+    //let _value = &&value;
+    //let valuea = _value as &[&i32; 1];
+    //let valueb = *valuea[0];
+    //printf("%d\0" as &u8, valueb);
+    //printf("Got %zu arguments at 0x%zx\n\0" as &u8, argc, argv);
+    print_str("Got ");
+    print_usize(argc);
+    print_str(" arguments at ");
+    print_usize_hex(argv as &void as usize);
+    print_newline();
+
+    let argv_ptr = argv as &void as usize;
+    let i = 0usize;
+    while (i < argc) {
+        let ptr = (argv_ptr + i * 8) as &void as &&u8;
+        //printf("%s \0" as &u8, *ptr);
+        write(1, *ptr, cstrlen(*ptr));
+        print_str(" ");
+        i += 1;
+    }
+    //printf("\n\0" as &u8);
+    print_newline();
+    exit(0);
 }
 
-fn test10(v: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 = v(a, b);
-fn test11(lhs: i32, rhs: i32) -> i32 = lhs + rhs;
-fn `lol this ident has a space in it`() -> i32 = 3456;
+fn print_str(string: &str) = write(1, string as &u8, len(string));
+fn print_char(c: u8) = write(1, &c, 1);
+fn print_newline() = print_char(0xa);
+fn print_str_newline(string: &str) {
+    print_str(string);
+    print_newline();
+}
+fn print_usize_hex(val: usize) {
+    print_str("0x");
+    if (val == 0) {
+        return print_str("0");
+    }
 
-fn test12() -> (i32, i32) = .(1, 2);
-fn test13() -> (i32, i32) = .[1, 2];
+    while (val > 0) {
+        let v = (val & 0xf) as u8;
+        if (v < 10) print_char(v + 48); // 48 = '0'
+        else print_char(v - 10 + 97); // 97 = 'a'
+        val = val >> 4;
+    }
+}
+fn print_usize(val: usize) {
+    if (val == 0) {
+        return print_str("0");
+    }
+
+    while (val > 0) {
+        print_char((val % 10) as u8 + 48); /* 48 = '0' */
+        val = val / 10;
+    }
+}
+
+fn len(strn: &str) -> usize {
+    let strn_addr = &strn as &void as usize;
+    return asm(
+        "movq 8(%[straddr]), %[out]"
+        : [out] "=r" (usize)
+        : [straddr] "r" (strn_addr)
+    );
+}
+
+fn cstrlen(cstr: &u8) -> usize {
+    let len = 0usize;
+    while (*cstr != 0) {
+        len += 1;
+        cstr = (cstr as &void as usize + 1) as &void as &u8;
+    }
+    return len;
+}
+
+@callconv(naked)
+extern fn _start() {
+    asm(
+        ".cfi_undefined %rip",
+        "xorl %ebp, %ebp",
+        "popq %rdi",
+        "movq %rsp, %rsi",
+        "andq $$-16, %rsp",
+        "call main",
+        : : : "ebp", "rdi", "rsp", "rsi"
+    );
+}
+
+fn exit(code: u32) -> ! {
+    syscall1(60, code as usize);
+    while (true) {}
+}
+
+fn write(fd: u32, buf: &u8, size: usize) {
+    syscall3(1 /* sys_write */, fd as usize, buf as &void as usize, size);
+}
+
+fn syscall1(num: u32, arg1: usize) -> usize {
+    return asm volatile ("syscall",
+        : [ret] "={rax}" (usize)
+        : [number] "{rax}" (num),
+          [arg1] "{rdi}" (arg1),
+        : "rcx", "r11", "memory"
+    );
+}
+
+fn syscall3(num: u32, arg1: usize, arg2: usize, arg3: usize) -> usize {
+    return asm volatile ("syscall",
+        : [ret] "={rax}" (usize)
+        : [number] "{rax}" (num),
+          [arg1] "{rdi}" (arg1),
+          [arg2] "{rsi}" (arg2),
+          [arg3] "{rdx}" (arg3),
+        : "rcx", "r11", "memory"
+    );
+}
 
 use "test"::woof;
+use "./meow"::meow;
 
-export printf;
-export malloc;
-export free;
+//export printf;
+//export malloc;
+//export free;

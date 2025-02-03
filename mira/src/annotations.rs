@@ -10,6 +10,7 @@ use crate::{
     lang_items::LangItemAnnotation,
     std_annotations,
     tokenizer::{Location, Token},
+    tokenstream::TokenStream,
     typechecking::intrinsics::IntrinsicAnnotation,
 };
 
@@ -73,16 +74,23 @@ impl Clone for Box<dyn ClonableAnnotation> {
 }
 
 type AnnotationParser =
-    Box<dyn Fn(Vec<Token>, Location) -> Result<Box<dyn ClonableAnnotation>, ParsingError>>;
+    Box<dyn Fn(TokenStream) -> Result<Box<dyn ClonableAnnotation>, ParsingError>>;
 
 thread_local! {
     static ANNOTATIONS_REGISTRY: RefCell<HashMap<&'static str, AnnotationParser>> = {
         let mut hashmap: HashMap<&'static str, AnnotationParser> = HashMap::new();
 
-        hashmap.insert("lang", Box::new(|a, b| Ok(Box::new(LangItemAnnotation::parse(a, b)?))));
-        hashmap.insert("intrinsic", Box::new(|a, b| Ok(Box::new(IntrinsicAnnotation::parse(a, b)?))));
-        hashmap.insert("alias", Box::new(|a, b| Ok(Box::new(std_annotations::alias_annotation::parse(a, b)?))));
-        hashmap.insert("ext_vararg", Box::new(|a, b| Ok(Box::new(std_annotations::ext_var_arg::parse(a, b)?))));
+        macro_rules! annotations {
+            ($($name:literal => $func:path),* $(,)?) => {
+                $(hashmap.insert($name, Box::new(|stream| Ok(Box::new($func(stream)?))));)*
+            };
+        }
+
+        annotations!(
+            "lang" => LangItemAnnotation::parse,
+            "intrinsic" => IntrinsicAnnotation::parse,
+        );
+        std_annotations::add_annotations(&mut hashmap);
 
         RefCell::new(hashmap)
     };
@@ -95,13 +103,26 @@ pub fn parse_annotation(
 ) -> Result<Box<dyn ClonableAnnotation>, ParsingError> {
     ANNOTATIONS_REGISTRY.with_borrow(|annotations| {
         if let Some(parser) = annotations.get(name) {
-            parser(tokens, loc)
+            parser(TokenStream::new(tokens, loc))
         } else {
             Err(ParsingError::UnknownAnnotation {
                 loc,
                 name: name.to_string(),
             })
         }
+    })
+}
+
+pub fn parse_annotation_tokenstream(
+    name: &str,
+    tokenstream: TokenStream,
+) -> Result<Box<dyn ClonableAnnotation>, ParsingError> {
+    ANNOTATIONS_REGISTRY.with_borrow(|annotations| match annotations.get(name) {
+        Some(parser) => parser(tokenstream),
+        None => Err(ParsingError::UnknownAnnotation {
+            loc: tokenstream.to_inner().1,
+            name: name.to_string(),
+        }),
     })
 }
 

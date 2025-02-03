@@ -1,11 +1,13 @@
 use std::fmt::{Display, Write};
+use std::ptr::drop_in_place;
 use std::str::FromStr;
 
 use crate::annotations::{Annotation, AnnotationReceiver, Annotations};
 use crate::error::ParsingError;
 use crate::tokenizer::{Literal, Location, Token, TokenType};
+use crate::tokenstream::TokenStream;
 
-use super::{Type, TypecheckingContext};
+use super::{Type, TypecheckingContext, TypecheckingError};
 
 macro_rules! intrinsics {
     ($($name:ident => $value:ident),* $(,)? ) => {
@@ -41,8 +43,9 @@ intrinsics! {
     Forget => forget, // <T>(v: T), causes the value to not be dropped
     SizeOf => size_of, // <T>() -> usize, returns the size of T in bytes
     SizeOfVal => size_of_val, // <unsized T>(v: &T) -> usize, returns the size of v in bytes
-    Breakpoint => breakpoint,
-    Location => location,
+    Breakpoint => breakpoint, // () -> void
+    Trap => trap, // () -> !
+    Location => location, // () -> (u64, u64, &str)
     Offset => offset, // <unsized T>(v: &T, off: usize) -> &T, offsets a pointer
     GetMetadata => get_metadata, // <unsized T>(v: &T) -> usize, returns the metadata of a fat
     // pointer or 0 for a thin pointer
@@ -50,18 +53,119 @@ intrinsics! {
     // data to the ptr, assuming T is unsized. Errors if T is sized.
     TypeName => type_name, // <unsized T>() -> &str, returns the name of the type T
     Unreachable => unreachable, // marks a location as unreachable
-    VtableSize => vtable_size, // (vtable: &void) -> usize, returns the size of the vtable
-    VtableDrop => vtable_drop, // (vtable: &void) -> fn(v: &void), returns the drop function of a
-    // vtable. May require transmuting the function pointer in case the vtable belongs to an
-    // unsized type.
     Read => read, // <T>(v: &T) -> T, reads a memory location even if T is not Copy
     Write => write, // <T>(v: &T, value: T), writes a memory location without dropping the value
     // that was previously there
+    ReturnAddress => return_address, // (level: i32) -> usize, returns the address a "return" would
+    Select => select, // <T>(cond: bool, a: T, b: T) -> T, equivalent to cond ? a : b
+    VolatileRead => volatile_reade, // <T>(ptr: &T) -> T
+    VolatileWrite => volatile_write, // <T>(ptr: &T, val: T);
+    // jump to
+    // ### INTEGER INTRINSICS ###
+    // The following are *only* valid for ints
+    ByteSwap => byte_swap, // <T>(v: T) -> T
+    BitReverse => reverse_bits, // <T>(v: T) -> T
+    CountLeadingZeros => count_leading_zeros, // <T>(v: T) -> u32
+    CountTrailingZeros => count_trailing_zeros, // <T>(v: T) -> u32
+    CountOnes => count_ones, // <T>(v: T) -> u32
+    AddWithOverflow => add_with_overflow, // <T>(a: T, b: T) -> T
+    SubWithOverflow => sub_with_overflow, // <T>(a: T, b: T) -> T
+    MulWithOverflow => mul_with_overflow, // <T>(a: T, b: T) -> T
+    WrappingAdd => wrapping_add, // <T>(a: T, b: T) -> T
+    WrappingSub => wrapping_sub, // <T>(a: T, b: T) -> T
+    WrappingMul => wrapping_mul, // <T>(a: T, b: T) -> T
+    SaturatingAdd => saturating_add, // <T>(a: T, b: T) -> T
+    SaturatingSub => saturating_sub, // <T>(a: T, b: T) -> T
+    UncheckedAdd => unchecked_add, // <T>(a: T, b: T) -> T
+    UncheckedSub => unchecked_sub, // <T>(a: T, b: T) -> T
+    UncheckedMul => unchecked_mul, // <T>(a: T, b: T) -> T
+    UncheckedDiv => unchecked_div, // <T>(a: T, b: T) -> T
+    UncheckedMod => unchecked_mod, // <T>(a: T, b: T) -> T
+    UncheckedShl => unchecked_shl, // <T>(a: T, b: T) -> T
+    UncheckedShr => unchecked_shr, // <T>(a: T, b: T) -> T
 }
 
 impl Intrinsic {
-    pub fn get_type(self, _: &TypecheckingContext) -> Type {
-        todo!()
+    fn generic_count(&self) -> usize {
+        match self {
+            Intrinsic::Breakpoint
+            | Intrinsic::Trap
+            | Intrinsic::Location
+            | Intrinsic::Unreachable
+            | Intrinsic::ReturnAddress => 0,
+            _ => 1,
+        }
+    }
+
+    pub fn is_valid_for(&self, loc: Location, generics: &[Type]) -> Result<(), TypecheckingError> {
+        let required_generics = self.generic_count();
+        if generics.len() != required_generics {
+            return Err(TypecheckingError::MismatchingGenericCount(
+                loc,
+                generics.len(),
+                required_generics,
+            ));
+        }
+
+        match self {
+            // -------------------------
+            // - sized-only intrinsics -
+            // -------------------------
+            Intrinsic::Drop
+            | Intrinsic::SizeOf
+            | Intrinsic::Read
+            | Intrinsic::Write
+            | Intrinsic::Select
+            | Intrinsic::VolatileRead
+            | Intrinsic::VolatileWrite
+            | Intrinsic::Forget => generics[0]
+                .is_sized()
+                .then_some(())
+                .ok_or_else(|| TypecheckingError::NonSizedType(loc, generics[0].clone())),
+            // ----------------------
+            // - integer intrinsics -
+            // ----------------------
+            Intrinsic::ByteSwap
+            | Intrinsic::BitReverse
+            | Intrinsic::CountLeadingZeros
+            | Intrinsic::CountTrailingZeros
+            | Intrinsic::CountOnes
+            | Intrinsic::AddWithOverflow
+            | Intrinsic::SubWithOverflow
+            | Intrinsic::MulWithOverflow
+            | Intrinsic::WrappingAdd
+            | Intrinsic::WrappingSub
+            | Intrinsic::WrappingMul
+            | Intrinsic::SaturatingAdd
+            | Intrinsic::SaturatingSub
+            | Intrinsic::UncheckedAdd
+            | Intrinsic::UncheckedSub
+            | Intrinsic::UncheckedMul
+            | Intrinsic::UncheckedDiv
+            | Intrinsic::UncheckedMod
+            | Intrinsic::UncheckedShl
+            | Intrinsic::UncheckedShr => generics[0]
+                .is_int_like()
+                .then_some(())
+                .ok_or_else(|| TypecheckingError::IntOnlyIntrinsic(loc, generics[0].clone())),
+            // --------------------------
+            // - genericless intrinsics -
+            // --------------------------
+            Intrinsic::Unreachable
+            | Intrinsic::Breakpoint
+            | Intrinsic::Trap
+            | Intrinsic::Location
+            | Intrinsic::ReturnAddress => Ok(()),
+            // ------------------------
+            // - all types intrinsics -
+            // ------------------------
+            Intrinsic::DropInPlace
+            | Intrinsic::SizeOfVal
+            | Intrinsic::Offset
+            | Intrinsic::GetMetadata
+            | Intrinsic::WithMetadata
+            | Intrinsic::TypeName => Ok(()),
+        }
     }
 }
 
@@ -82,49 +186,26 @@ impl Annotation for IntrinsicAnnotation {
         "intrinsic"
     }
 
-    fn is_valid_for(&self, thing: AnnotationReceiver, _: &Annotations) -> bool {
+    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations) -> bool {
         thing == AnnotationReceiver::Function
+            && annotations
+                .get_annotations::<Self>()
+                .skip(1)
+                .next()
+                .is_none()
     }
 }
 
 impl IntrinsicAnnotation {
-    pub fn parse(mut tokens: Vec<Token>, loc: Location) -> Result<Self, ParsingError> {
-        if tokens.len() < 1 {
-            return Err(ParsingError::ExpectedArbitrary {
-                loc,
-                expected: TokenType::StringLiteral,
-                found: TokenType::Eof,
-            });
-        } else if tokens[0].typ != TokenType::StringLiteral {
-            return Err(ParsingError::ExpectedArbitrary {
-                loc: tokens[0].location.clone(),
-                expected: TokenType::StringLiteral,
-                found: tokens[0].typ,
-            });
-        } else if tokens.len() > 1 {
-            return Err(ParsingError::ExpectedArbitrary {
-                loc: tokens[1].location.clone(),
-                expected: TokenType::Eof,
-                found: tokens[1].typ,
-            });
-        } else {
-            let token = tokens.remove(0);
-            let Some(Literal::String(string)) = token.literal else {
-                return Err(ParsingError::InvalidTokenization {
-                    loc: tokens[0].location.clone(),
-                });
-            };
-            match string.with(|str| Intrinsic::from_str(str)) {
-                Ok(v) => Ok(Self(v)),
-                Err(_) => Err(ParsingError::InvalidIntrinsic(token.location, string)),
-            }
-        }
+    pub fn parse(mut tokens: TokenStream) -> Result<Self, ParsingError> {
+        let (name, loc) = tokens.expect_remove_string()?;
+        tokens.finish()?;
+        name.with(Intrinsic::from_str)
+            .map(Self)
+            .map_err(|_| ParsingError::InvalidIntrinsic(loc, name))
     }
 
     pub fn get(&self) -> Intrinsic {
         self.0
-    }
-    pub fn get_type(&self, ctx: &TypecheckingContext) -> Type {
-        self.0.get_type(ctx)
     }
 }

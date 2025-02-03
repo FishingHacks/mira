@@ -16,6 +16,16 @@ pub enum TypecheckingError {
     LangItemError(#[from] LangItemError),
     #[error("{0}")]
     LangItemAssignment(#[from] LangItemAssignmentError),
+    #[error("{0}: Expected {1} generics, but found {2}")]
+    MismatchingGenericCount(Location, usize, usize),
+    #[error("{0}: The size of {1} needs to be known at compiletime")]
+    NonSizedType(Location, Type),
+    #[error("{0}: Intrinsics accepts only integers, supplied: {1}")]
+    IntOnlyIntrinsic(Location, Type),
+    #[error("{0}: Assembly instructions can only accept numeric types (i_, u_, f_ and bool). Specified Type: `{1}`")]
+    AsmNonNumericTypeResolved(Location, Type),
+    #[error("{0}: Assembly instructions can only accept numeric types (i_, u_, f_ and bool). Specified Type: `{1}`")]
+    AsmNonNumericType(Location, GlobalStr),
     #[error("{0}: Tuple only has {1} fields, but tried to get field {2}")]
     TupleIndexOutOfBounds(Location, usize, usize),
     #[error("{0}: Cannot index a tuple with a dynamic value")]

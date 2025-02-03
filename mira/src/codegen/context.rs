@@ -9,12 +9,15 @@ use std::{
 use super::{
     debug_builder::DebugContext,
     error::CodegenError,
+    intrinsics::LLVMIntrinsics,
     mangling::{mangle_function, mangle_static, mangle_string, mangle_struct},
 };
 use inkwell::{
+    attributes::{Attribute, AttributeLoc},
     builder::{Builder, BuilderError},
     context::Context,
-    debug_info::{AsDIScope, DWARFEmissionKind, DWARFSourceLanguage},
+    debug_info::AsDIScope,
+    llvm_sys::LLVMCallConv,
     module::{Linkage, Module},
     passes::PassBuilderOptions,
     support::LLVMString,
@@ -25,12 +28,14 @@ use inkwell::{
     values::{FunctionValue, GlobalValue},
     AddressSpace, OptimizationLevel,
 };
-use parking_lot::RwLock;
 
 use crate::{
     globals::GlobalStr,
     module::FunctionId,
-    std_annotations::{alias_annotation::ExternAliasAnnotation, ext_var_arg::ExternVarArg},
+    std_annotations::{
+        alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
+        noinline::Noinline,
+    },
     typechecking::{
         expression::{TypecheckedExpression, TypedLiteral},
         typechecking::ScopeTypeMetadata,
@@ -39,7 +44,7 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-pub struct DefaultTypes<'ctx> {
+pub(super) struct DefaultTypes<'ctx> {
     pub isize: IntType<'ctx>,
     pub i8: IntType<'ctx>,
     pub i16: IntType<'ctx>,
@@ -60,6 +65,7 @@ pub struct CodegenContext<'ctx> {
     pub(super) builder: Builder<'ctx>,
     pub(super) context: &'ctx Context,
     pub(super) default_types: DefaultTypes<'ctx>,
+    pub(super) retaddr: FunctionValue<'ctx>,
     pub module: Module<'ctx>,
     pub machine: TargetMachine,
     pub triple: TargetTriple,
@@ -69,9 +75,8 @@ pub struct CodegenContext<'ctx> {
     pub(super) statics: Vec<GlobalValue<'ctx>>,
     pub(super) string_map: HashMap<GlobalStr, GlobalValue<'ctx>>,
     pub(super) debug_ctx: DebugContext<'ctx>,
+    pub(super) intrinsics: LLVMIntrinsics,
 }
-
-const PRODUCER: &str = concat!("clang LLVM (mira version ", env!("CARGO_PKG_VERSION"), ")");
 
 impl<'a> CodegenContext<'a> {
     pub fn finalize_debug_info(&self) {
@@ -136,62 +141,6 @@ impl<'a> CodegenContext<'a> {
             .map_err(CodegenError::IO)
     }
 
-    fn make_debug_info(
-        module: &Module<'a>,
-        path: Arc<Path>,
-        is_optimized: bool,
-        tc_ctx: &TypecheckingContext,
-    ) -> DebugContext<'a> {
-        let module_reader = tc_ctx.modules.read();
-
-        let root_filename = path
-            .file_name()
-            .map(|v| v.to_string_lossy())
-            .unwrap_or("".into());
-        let root_directory = path
-            .parent()
-            .map(|v| v.to_string_lossy())
-            .unwrap_or("".into());
-
-        let (dbg_info_builder, compile_unit) = module.create_debug_info_builder(
-            true,
-            DWARFSourceLanguage::C, /* what is an acceptable value to put here???? */
-            &root_filename,
-            &root_directory,
-            PRODUCER,
-            is_optimized,
-            "",
-            0,
-            "",
-            DWARFEmissionKind::Full,
-            0,
-            false,
-            false,
-            "",
-            "",
-        );
-        let mut dbg_ctx = DebugContext {
-            builder: dbg_info_builder,
-            current_scope: RwLock::new(compile_unit.as_debug_info_scope()),
-            compile_unit,
-            modules: Vec::with_capacity(module_reader.len()),
-        };
-        for module in module_reader.iter() {
-            let file = dbg_ctx.get_file(&module.path);
-            let namespace = dbg_ctx.builder.create_namespace(
-                file.as_debug_info_scope(),
-                &module
-                    .path
-                    .file_name()
-                    .map(|v| v.to_string_lossy())
-                    .unwrap_or("".into()),
-                false,
-            );
-            dbg_ctx.modules.push(namespace);
-        }
-        dbg_ctx
-    }
-
     pub fn make_context(
         context: &'a Context,
         triple: TargetTriple,
@@ -204,7 +153,7 @@ impl<'a> CodegenContext<'a> {
         let target = Target::from_triple(&triple)?;
         let Some(machine) = target.create_target_machine(
             &triple,
-            "",
+            "x86-64",
             "",
             OptimizationLevel::Aggressive,
             RelocMode::PIC,
@@ -214,7 +163,6 @@ impl<'a> CodegenContext<'a> {
         };
         let module = context.create_module(module);
         module.set_triple(&triple);
-        let debug_ctx = Self::make_debug_info(&module, path, is_optimized, &ctx);
 
         let target_data = machine.get_target_data();
         let data_layout = target_data.get_data_layout();
@@ -234,6 +182,10 @@ impl<'a> CodegenContext<'a> {
             fat_ptr: context.struct_type(&[ptr_type.into(), isize_type.into()], false),
             empty_struct: context.struct_type(&[], false),
         };
+
+        let debug_ctx =
+            DebugContext::new(context, &module, default_types, &ctx, &path, is_optimized);
+
         let builder = context.create_builder();
         let mut strings = collect_strings(&ctx);
         let mut string_map = HashMap::new();
@@ -310,7 +262,52 @@ impl<'a> CodegenContext<'a> {
                             .fn_type(&param_types, false)
                     };
                 let name = mangle_function(&ctx, i);
-                module.add_function(name.as_str(), fn_typ, Some(Linkage::Internal))
+                let func = module.add_function(name.as_str(), fn_typ, Some(Linkage::Internal));
+                if let Some(callconv) = contract
+                    .annotations
+                    .get_first_annotation::<CallConvAnnotation>()
+                {
+                    match callconv {
+                        CallConvAnnotation::C => {
+                            func.set_call_conventions(LLVMCallConv::LLVMCCallConv as u32)
+                        }
+                        CallConvAnnotation::Fast => {
+                            func.set_call_conventions(LLVMCallConv::LLVMFastCallConv as u32)
+                        }
+                        CallConvAnnotation::Cold => {
+                            func.set_call_conventions(LLVMCallConv::LLVMColdCallConv as u32)
+                        }
+                        CallConvAnnotation::Inline => func.add_attribute(
+                            AttributeLoc::Function,
+                            context.create_enum_attribute(
+                                Attribute::get_named_enum_kind_id("alwaysinline"),
+                                0,
+                            ),
+                        ),
+                        CallConvAnnotation::Naked => func.add_attribute(
+                            AttributeLoc::Function,
+                            context.create_enum_attribute(
+                                Attribute::get_named_enum_kind_id("naked"),
+                                0,
+                            ),
+                        ),
+                    }
+                }
+                if contract
+                    .annotations
+                    .get_first_annotation::<Noinline>()
+                    .is_some()
+                {
+                    func.add_attribute(
+                        AttributeLoc::Function,
+                        context.create_enum_attribute(
+                            Attribute::get_named_enum_kind_id("noinline"),
+                            0,
+                        ),
+                    );
+                }
+                func.set_subprogram(debug_ctx.funcs[i]);
+                func
             })
             .collect::<Vec<_>>();
         drop(function_reader);
@@ -321,7 +318,7 @@ impl<'a> CodegenContext<'a> {
             .iter()
             .enumerate()
             .map(|(i, (c, b))| (i, c, b))
-            .map(|(_, contract, _)| {
+            .map(|(i, contract, _)| {
                 let param_types = contract
                     .arguments
                     .iter()
@@ -368,7 +365,52 @@ impl<'a> CodegenContext<'a> {
                         .expect("external functions should always have a name")
                 };
 
-                name.with(|name| module.add_function(name, fn_typ, None))
+                let func = name.with(|name| module.add_function(name, fn_typ, None));
+                if let Some(callconv) = contract
+                    .annotations
+                    .get_first_annotation::<CallConvAnnotation>()
+                {
+                    match callconv {
+                        CallConvAnnotation::C => {
+                            func.set_call_conventions(LLVMCallConv::LLVMCCallConv as u32)
+                        }
+                        CallConvAnnotation::Fast => {
+                            func.set_call_conventions(LLVMCallConv::LLVMFastCallConv as u32)
+                        }
+                        CallConvAnnotation::Cold => {
+                            func.set_call_conventions(LLVMCallConv::LLVMColdCallConv as u32)
+                        }
+                        CallConvAnnotation::Inline => func.add_attribute(
+                            AttributeLoc::Function,
+                            context.create_enum_attribute(
+                                Attribute::get_named_enum_kind_id("alwaysinline"),
+                                0,
+                            ),
+                        ),
+                        CallConvAnnotation::Naked => func.add_attribute(
+                            AttributeLoc::Function,
+                            context.create_enum_attribute(
+                                Attribute::get_named_enum_kind_id("naked"),
+                                0,
+                            ),
+                        ),
+                    }
+                }
+                if contract
+                    .annotations
+                    .get_first_annotation::<Noinline>()
+                    .is_some()
+                {
+                    func.add_attribute(
+                        AttributeLoc::Function,
+                        context.create_enum_attribute(
+                            Attribute::get_named_enum_kind_id("noinline"),
+                            0,
+                        ),
+                    );
+                }
+                func.set_subprogram(debug_ctx.ext_funcs[i]);
+                func
             })
             .collect::<Vec<_>>();
         drop(ext_function_reader);
@@ -401,6 +443,26 @@ impl<'a> CodegenContext<'a> {
         }
         drop(static_reader);
 
+        let module_reader = ctx.modules.read();
+        for tc_module in module_reader.iter() {
+            let mut inline_assembly = String::new();
+            for asm in tc_module.assembly.iter() {
+                if inline_assembly.len() > 0 {
+                    inline_assembly.push('\n');
+                }
+                inline_assembly.push_str(&asm.1);
+            }
+            module.set_inline_assembly(&inline_assembly);
+        }
+        drop(module_reader);
+
+        let retaddr = module.add_function(
+            "llvm.returnaddress",
+            default_types
+                .ptr
+                .fn_type(&[default_types.i32.into()], false),
+            None,
+        );
         return Ok(CodegenContext {
             context,
             module,
@@ -415,64 +477,94 @@ impl<'a> CodegenContext<'a> {
             triple,
             tc_ctx: ctx,
             debug_ctx,
+            intrinsics: LLVMIntrinsics::init(),
+            retaddr,
         });
     }
 
     pub fn compile_fn(
-        &self,
+        &mut self,
         fn_id: FunctionId,
-        scope: Vec<(Type, ScopeTypeMetadata)>,
+        tc_scope: Vec<(Type, ScopeTypeMetadata)>,
         is_external: bool,
     ) -> Result<(), BuilderError> {
+        let ext_fn_reader = self.tc_ctx.external_functions.read();
+        if is_external && ext_fn_reader[fn_id].1.is_none() {
+            return Ok(());
+        }
+        drop(ext_fn_reader);
+
         let func = if is_external {
             self.external_functions[fn_id]
         } else {
             self.functions[fn_id]
         };
-        let function_reader = self.tc_ctx.functions.read();
-        let ext_function_reader = self.tc_ctx.external_functions.read();
-        let body = if is_external {
-            let Some(v) = &ext_function_reader[fn_id].1 else {
-                return Ok(());
-            };
-            &**v
+        let body_basic_block = self
+            .context
+            .append_basic_block(func, &format!("entry_{}", fn_id));
+        let void_arg = self.default_types.empty_struct.const_zero().into();
+
+        self.builder.position_at_end(body_basic_block);
+        let scope = if is_external {
+            self.debug_ctx.ext_funcs[fn_id].as_debug_info_scope()
         } else {
-            &*function_reader[fn_id].1
+            self.debug_ctx.funcs[fn_id].as_debug_info_scope()
         };
+
+        let mut function_ctx = self.make_function_codegen_context(tc_scope, func, body_basic_block);
+        function_ctx.goto(body_basic_block);
+        let function_reader = function_ctx.tc_ctx.functions.read();
+        let ext_function_reader = function_ctx.tc_ctx.external_functions.read();
+        let structs_reader = function_ctx.tc_ctx.structs.read();
         let contract = if is_external {
             &ext_function_reader[fn_id].0
         } else {
             &function_reader[fn_id].0
         };
-        let mut function_ctx = self.make_function_codegen_context(scope, func);
-        let void_arg = self.default_types.empty_struct.const_zero().into();
+        let body = if is_external {
+            let Some(v) = &ext_function_reader[fn_id].1 else {
+                unreachable!()
+            };
+            &**v
+        } else {
+            &*function_reader[fn_id].1
+        };
 
-        let body_basic_block = self
-            .context
-            .append_basic_block(func, &format!("entry_{}", fn_id));
-        self.builder.position_at_end(body_basic_block);
-        self.debug_ctx
-            .set_scope(self.debug_ctx.modules[contract.module_id].as_debug_info_scope());
+        function_ctx
+            .builder
+            .set_current_debug_location(function_ctx.debug_ctx.location(scope, &contract.location));
 
         let mut param_idx = 0;
-        for (idx, arg) in contract
-            .arguments
-            .iter()
-            .enumerate()
-            .map(|v| (v.0, &v.1 .1))
-        {
+        for (idx, (name, arg)) in contract.arguments.iter().enumerate() {
             if matches!(arg, Type::PrimitiveVoid(0) | Type::PrimitiveNever) {
                 function_ctx.push_value(idx, void_arg);
             } else {
                 function_ctx.push_value(idx, func.get_nth_param(param_idx).unwrap());
                 param_idx += 1;
             }
+            let ptr = function_ctx.get_value_ptr(idx);
+            function_ctx.debug_ctx.declare_param(
+                ptr,
+                scope,
+                &contract.location,
+                arg,
+                name,
+                function_ctx.current_block,
+                contract.module_id,
+                &structs_reader,
+                idx as u32,
+            );
         }
 
+        drop(structs_reader);
+
         for expr in body {
-            expr.codegen(&mut function_ctx)?;
+            expr.codegen(&mut function_ctx, scope, contract.module_id)?;
         }
-        let Some(insert_block) = self.builder.get_insert_block() else {
+
+        drop(function_reader);
+        drop(ext_function_reader);
+        let Some(insert_block) = function_ctx.builder.get_insert_block() else {
             unreachable!("builder does not have a basic block to insert into even though it just built a function")
         };
         assert!(
@@ -540,10 +632,10 @@ fn collect_strings_for_expressions(
                 ..
             } => {
                 collect_strings_for_typed_literal(cond, strings);
-                collect_strings_for_expressions(if_block, strings);
+                collect_strings_for_expressions(&if_block.0, strings);
                 _ = else_block
                     .as_ref()
-                    .map(|v| collect_strings_for_expressions(v, strings));
+                    .map(|v| collect_strings_for_expressions(&v.0, strings));
             }
             TypecheckedExpression::While {
                 cond_block,
@@ -552,7 +644,7 @@ fn collect_strings_for_expressions(
                 ..
             } => {
                 collect_strings_for_expressions(cond_block, strings);
-                collect_strings_for_expressions(body, strings);
+                collect_strings_for_expressions(&body.0, strings);
                 collect_strings_for_typed_literal(&cond, strings);
             }
             TypecheckedExpression::Call(_, _, lhs, args) => {
@@ -613,6 +705,8 @@ fn collect_strings_for_expressions(
             }
             TypecheckedExpression::Empty(_)
             | TypecheckedExpression::Unreachable(_)
+            | TypecheckedExpression::DeclareVariable(..)
+            | TypecheckedExpression::Asm { .. }
             | TypecheckedExpression::None => (),
         }
     }

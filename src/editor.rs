@@ -6,17 +6,20 @@ use std::{
 pub fn get_path(path: Option<&str>) -> Option<PathBuf> {
     let mut editor_path = path
         .map(PathBuf::from)
-        .and_then(|v| std::env::var_os("EDITOR").map(PathBuf::from))
-        .and_then(|v| v.exists().then_some(v));
+        .filter(|v| v.exists())
+        .or_else(|| std::env::var_os("EDITOR").map(PathBuf::from))
+        .filter(|v| v.exists());
 
     let paths = [
         // TODO: Add paths for macos and windows
         Path::new("/bin/nvim"),
         Path::new("/bin/vim"),
         Path::new("/bin/nano"),
+        Path::new("/bin/hx"),
         Path::new("/usr/bin/nvim"),
         Path::new("/usr/bin/vim"),
         Path::new("/usr/bin/nano"),
+        Path::new("/usr/bin/hx"),
     ];
     for path in paths {
         if editor_path.is_some() {

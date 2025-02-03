@@ -13,4 +13,5 @@ pub mod module;
 pub mod parser;
 pub(crate) mod std_annotations;
 pub mod tokenizer;
+pub mod tokenstream;
 pub mod typechecking;

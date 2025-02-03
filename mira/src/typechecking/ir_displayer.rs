@@ -120,6 +120,46 @@ impl Display for ExpressionDisplay<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self.0 {
             TypecheckedExpression::Unreachable(_) => f.write_str("unreachable"),
+            TypecheckedExpression::DeclareVariable(_, id, typ, name) => {
+                // let <name>: <ty> = _<id>
+                f.write_str("let ")?;
+                Display::fmt(name, f)?;
+                f.write_str(": ")?;
+                Display::fmt(typ, f)?;
+                f.write_str(" = _")?;
+                Display::fmt(id, f)
+            }
+            TypecheckedExpression::Asm {
+                dst,
+                inputs,
+                registers,
+                volatile,
+                asm,
+                ..
+            } => {
+                f.write_char('_')?;
+                Display::fmt(dst, f)?;
+                f.write_str(" = asm ")?;
+                if *volatile {
+                    f.write_str("volatile ")?;
+                }
+                f.write_char('(')?;
+                for line in asm.split('\n') {
+                    Debug::fmt(line, f)?;
+                    f.write_char('\n')?;
+                }
+                f.write_str(": ")?;
+                Debug::fmt(registers, f)?;
+                f.write_str(": (")?;
+                for i in 0..inputs.len() {
+                    if i != 0 {
+                        f.write_str(", ")?
+                    }
+                    f.write_char('_')?;
+                    Display::fmt(&inputs[i], f)?;
+                }
+                f.write_str(")\n)")
+            }
             TypecheckedExpression::Return(_, typed_literal) => {
                 f.write_fmt(format_args!("return {}", TLD(typed_literal)))
             }
@@ -139,12 +179,12 @@ impl Display for ExpressionDisplay<'_> {
                 f.write_str("if ")?;
                 Display::fmt(&TLD(cond), f)?;
                 f.debug_list()
-                    .entries(if_block.iter().map(ExpressionDisplay))
+                    .entries(if_block.0.iter().map(ExpressionDisplay))
                     .finish()?;
                 if let Some(else_block) = else_block {
                     f.write_str("\nelse ")?;
                     f.debug_list()
-                        .entries(else_block.iter().map(ExpressionDisplay))
+                        .entries(else_block.0.iter().map(ExpressionDisplay))
                         .finish()?;
                 }
                 Ok(())
@@ -162,7 +202,7 @@ impl Display for ExpressionDisplay<'_> {
                 f.write_str("while ")?;
                 Display::fmt(&TLD(cond), f)?;
                 f.debug_list()
-                    .entries(body.iter().map(ExpressionDisplay))
+                    .entries(body.0.iter().map(ExpressionDisplay))
                     .finish()?;
                 Ok(())
             }

@@ -23,15 +23,26 @@ pub struct RunOptions {
     pub obj: Option<Box<dyn Write>>,
 }
 
-pub fn link(obj_file: &Path, exec_file: &Path, args: &[String]) -> bool {
+pub fn link(obj_file: &Path, exec_file: &Path, args: &[String], nolibc: bool) -> bool {
     let mut c_compiler_path = None;
     if let Some(paths) = std::env::var_os("PATH") {
-        for mut path in std::env::split_paths(&paths) {
+        'outer: for mut path in std::env::split_paths(&paths) {
+            if nolibc {
+                for compiler in ["ld", "ld.lld"] {
+                    path.push(compiler);
+                    if path.exists() {
+                        c_compiler_path = Some(path);
+                        break 'outer;
+                    }
+                    path.pop();
+                }
+            }
+
             for compiler in ["gcc", "clang", "cc"] {
                 path.push(compiler);
                 if path.exists() {
                     c_compiler_path = Some(path);
-                    break;
+                    break 'outer;
                 }
                 path.pop();
             }
@@ -42,14 +53,21 @@ pub fn link(obj_file: &Path, exec_file: &Path, args: &[String]) -> bool {
         return false;
     };
 
-    match Command::new(program)
+    let mut command = Command::new(program);
+
+    if nolibc {
+        command.arg("-nostdlib");
+    }
+
+    command
         .arg(obj_file)
         .arg("-o")
         .arg(exec_file)
         .args(args)
-        .spawn()
-        .and_then(|mut v| v.wait())
-    {
+        .arg("-g");
+    println!("Running {command:?}");
+
+    match command.spawn().and_then(|mut v| v.wait()) {
         Err(e) => {
             println!("failed to launchj c compiler: {e:?}");
             false
@@ -63,18 +81,18 @@ pub fn link(obj_file: &Path, exec_file: &Path, args: &[String]) -> bool {
 }
 
 pub fn compile(
-    file: impl Into<Arc<Path>>,
-    root_directory: impl Into<Arc<Path>>,
+    file: Arc<Path>,
+    root_directory: Arc<Path>,
+    debug_file: Arc<Path>,
     source: impl AsRef<str>,
     mut config: RunOptions,
 ) -> Result<(), Vec<MiraError>> {
-    let file: Arc<Path> = file.into();
-    let filename = file
-        .file_name()
-        .expect("file needs a filename")
-        .to_string_lossy()
-        .into_owned();
-    let context = parse_all(file.clone(), root_directory.into(), source.as_ref())?;
+    let context = parse_all(
+        file.clone(),
+        debug_file.clone(),
+        root_directory.into(),
+        source.as_ref(),
+    )?;
 
     let typechecking_context = TypecheckingContext::new(context.clone());
     let errs = typechecking_context.resolve_imports(context.clone());
@@ -124,12 +142,17 @@ pub fn compile(
     let num_fns = { typechecking_context.functions.read().len() };
     let num_ext_fns = { typechecking_context.external_functions.read().len() };
     let context = InkwellContext::create();
-    let codegen_context = CodegenContext::make_context(
+
+    let debug_filename = debug_file
+        .file_name()
+        .expect("debug file needs a filename")
+        .to_string_lossy();
+    let mut codegen_context = CodegenContext::make_context(
         &context,
         TargetTriple::create("x86_64-unknown-linux-gnu"),
         typechecking_context.clone(),
-        &filename,
-        file,
+        &debug_filename,
+        debug_file.clone(),
         false,
     )
     .expect("failed to create the llvm context");
@@ -196,12 +219,13 @@ pub fn compile(
 
 fn parse_all(
     file: Arc<Path>,
+    debug_file: Arc<Path>,
     root_directory: Arc<Path>,
     source: &str,
 ) -> Result<Arc<ModuleContext>, Vec<MiraError>> {
     let mut errors = vec![];
 
-    let mut tokenizer = Tokenizer::new(source.as_ref(), file.clone());
+    let mut tokenizer = Tokenizer::new(source.as_ref(), debug_file.clone());
     if let Err(errs) = tokenizer.scan_tokens() {
         errors.extend(
             errs.into_iter()
@@ -210,10 +234,11 @@ fn parse_all(
     }
 
     let modules = Arc::new(RwLock::new(vec![ParserQueueEntry {
-        file,
+        file: debug_file,
         root: root_directory.clone(),
     }]));
     let mut current_parser = tokenizer.to_parser(modules.clone(), root_directory);
+    current_parser.file = file;
 
     let module_context = Arc::new(ModuleContext::default());
 

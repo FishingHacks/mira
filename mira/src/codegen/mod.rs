@@ -1,10 +1,12 @@
 use context::DefaultTypes;
 use core::panic;
 use debug_builder::DebugContext;
+use intrinsics::LLVMIntrinsics;
 use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
     globals::GlobalStr,
+    module::ModuleId,
     typechecking::{
         expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
         intrinsics::Intrinsic,
@@ -19,8 +21,12 @@ pub use context::CodegenContext;
 pub use error::CodegenError;
 pub use inkwell::support::LLVMString;
 use inkwell::{
+    basic_block::BasicBlock,
     builder::{Builder, BuilderError},
     context::Context,
+    debug_info::{AsDIScope, DIScope},
+    module::Module,
+    targets::TargetMachine,
     types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType},
     values::{BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PointerValue},
     FloatPredicate, IntPredicate,
@@ -28,13 +34,16 @@ use inkwell::{
 
 mod context;
 mod debug_builder;
+mod debug_constants;
 mod error;
+mod intrinsics;
 
 impl<'ctx, 'me> CodegenContext<'ctx> {
     pub fn make_function_codegen_context(
-        &'me self,
+        &'me mut self,
         tc_scope: Vec<(Type, ScopeTypeMetadata)>,
         current_fn: FunctionValue<'ctx>,
+        bb: BasicBlock<'ctx>,
     ) -> FunctionCodegenContext<'ctx, 'me> {
         FunctionCodegenContext {
             tc_scope,
@@ -49,8 +58,29 @@ impl<'ctx, 'me> CodegenContext<'ctx> {
             structs: &self.structs,
             statics: &self.statics,
             string_map: &self.string_map,
-            debug_ctx: &self.debug_ctx,
+            debug_ctx: &mut self.debug_ctx,
+            triple: &self.triple,
+            machine: &self.machine,
+            intrinsics: &self.intrinsics,
+            module: &self.module,
+            retaddr: self.retaddr,
+            current_block: bb,
         }
+    }
+}
+
+impl<'ctx> FunctionCodegenContext<'ctx, '_> {
+    pub fn goto(&mut self, bb: BasicBlock<'ctx>) {
+        self.builder.position_at_end(bb);
+        self.current_block = bb;
+    }
+
+    /// uses the function to build a terminator if none was built yet
+    pub fn terminate<T, E>(&self, func: impl FnOnce() -> Result<T, E>) -> Result<(), E> {
+        if self.current_block.get_terminator().is_none() {
+            func()?;
+        }
+        Ok(())
     }
 }
 
@@ -67,7 +97,13 @@ pub struct FunctionCodegenContext<'ctx, 'codegen> {
     structs: &'codegen Vec<StructType<'ctx>>,
     statics: &'codegen Vec<GlobalValue<'ctx>>,
     string_map: &'codegen HashMap<GlobalStr, GlobalValue<'ctx>>,
-    debug_ctx: &'codegen DebugContext<'ctx>,
+    debug_ctx: &'codegen mut DebugContext<'ctx>,
+    triple: &'codegen TargetTriple,
+    machine: &'codegen TargetMachine,
+    intrinsics: &'codegen LLVMIntrinsics,
+    retaddr: FunctionValue<'ctx>,
+    module: &'codegen Module<'ctx>,
+    current_block: BasicBlock<'ctx>,
 }
 
 impl<'ctx> FunctionCodegenContext<'ctx, '_> {
@@ -699,7 +735,7 @@ fn build_ptr_store(
                     .build_struct_gep(ctx.default_types.fat_ptr, left_side, 0, "")?;
             let metadata_ptr =
                 ctx.builder
-                    .build_struct_gep(ctx.default_types.fat_ptr, left_side, 0, "")?;
+                    .build_struct_gep(ctx.default_types.fat_ptr, left_side, 1, "")?;
             ctx.builder.build_store(actual_ptr_ptr, actual_ptr)?;
             ctx.builder.build_store(metadata_ptr, metadata)?;
             return Ok(());
@@ -784,8 +820,29 @@ fn build_ptr_store(
 }
 
 impl TypecheckedExpression {
-    fn codegen(&self, ctx: &mut FunctionCodegenContext) -> Result<(), BuilderError> {
+    fn codegen<'ctx>(
+        &self,
+        ctx: &mut FunctionCodegenContext<'ctx, '_>,
+        scope: DIScope<'ctx>,
+        module_id: ModuleId,
+    ) -> Result<(), BuilderError> {
+        ctx.builder
+            .set_current_debug_location(ctx.debug_ctx.location(scope, self.location()));
         match self {
+            TypecheckedExpression::DeclareVariable(loc, id, typ, name) => {
+                let ptr = ctx.get_value_ptr(*id);
+                ctx.debug_ctx.declare_variable(
+                    ptr,
+                    scope,
+                    loc,
+                    typ,
+                    name,
+                    ctx.current_block,
+                    module_id,
+                    &ctx.tc_ctx.structs.read(),
+                );
+                Ok(())
+            }
             TypecheckedExpression::Return(_, typed_literal) => {
                 if typed_literal.to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
                     == Some(Type::PrimitiveVoid(0))
@@ -817,9 +874,77 @@ impl TypecheckedExpression {
                 };
                 Ok(())
             }
-            TypecheckedExpression::Block(_, child, _) => {
+            TypecheckedExpression::Asm {
+                dst,
+                inputs,
+                registers,
+                volatile,
+                asm,
+                ..
+            } => {
+                let input_types = inputs
+                    .iter()
+                    .map(|v| {
+                        ctx.tc_scope[*v]
+                            .0
+                            .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
+                            .into()
+                    })
+                    .collect::<Vec<_>>();
+                let fn_ty = if matches!(ctx.tc_scope[*dst].0, Type::PrimitiveVoid(0)) {
+                    ctx.context.void_type().fn_type(&input_types, false)
+                } else {
+                    ctx.tc_scope[*dst]
+                        .0
+                        .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
+                        .fn_type(&input_types, false)
+                };
+                let mut constraints = registers.clone();
+
+                // For some targets, Clang unconditionally adds some clobbers to all inline assembly.
+                // While this is probably not strictly necessary, if we don't follow Clang's lead
+                // here then we may risk tripping LLVM bugs since anything not used by Clang tends
+                // to be buggy and regress often.
+                // TODO: Add this for mips
+                let cpu = ctx.machine.get_cpu();
+                match cpu.to_bytes() {
+                    b"x86" | b"x86_64" | b"x86-64" => {
+                        if constraints.len() > 0 {
+                            constraints.push(',');
+                        }
+                        constraints.push_str("~{dirflag},~{fpsr},~{flags}");
+                    }
+                    _ => (),
+                }
+
+                let asm_fn_ptr = ctx.context.create_inline_asm(
+                    fn_ty,
+                    asm.clone(),
+                    constraints,
+                    *volatile,
+                    false,
+                    None,
+                    false,
+                );
+                let args = inputs
+                    .iter()
+                    .map(|v| ctx.get_value(*v).into())
+                    .collect::<Vec<_>>();
+                let val = ctx
+                    .builder
+                    .build_indirect_call(fn_ty, asm_fn_ptr, &args, "")?;
+                ctx.push_value(
+                    *dst,
+                    val.try_as_basic_value()
+                        .left_or_else(|_| ctx.default_types.empty_struct.const_zero().into()),
+                );
+                Ok(())
+            }
+            TypecheckedExpression::Block(loc, child, _) => {
+                let block = ctx.debug_ctx.new_block(scope, loc, module_id);
+                let scope = block.as_debug_info_scope();
                 for c in child {
-                    c.codegen(ctx)?;
+                    c.codegen(ctx, scope, module_id)?;
                 }
                 Ok(())
             }
@@ -836,14 +961,14 @@ impl TypecheckedExpression {
                     if_basic_block,
                     end_basic_block,
                 )?;
-                ctx.builder.position_at_end(if_basic_block);
-                for expr in if_block {
-                    expr.codegen(ctx)?;
+                ctx.goto(if_basic_block);
+                let block = ctx.debug_ctx.new_block(scope, &if_block.1, module_id);
+                let scope = block.as_debug_info_scope();
+                for expr in if_block.0.iter() {
+                    expr.codegen(ctx, scope, module_id)?;
                 }
-                if if_basic_block.get_terminator().is_none() {
-                    ctx.builder.build_unconditional_branch(end_basic_block)?;
-                }
-                ctx.builder.position_at_end(end_basic_block);
+                ctx.terminate(|| ctx.builder.build_unconditional_branch(end_basic_block))?;
+                ctx.goto(end_basic_block);
                 Ok(())
             }
 
@@ -861,21 +986,22 @@ impl TypecheckedExpression {
                     if_basic_block,
                     else_basic_block,
                 )?;
-                ctx.builder.position_at_end(if_basic_block);
-                for expr in if_block {
-                    expr.codegen(ctx)?;
+                ctx.goto(if_basic_block);
+                let block = ctx.debug_ctx.new_block(scope, &if_block.1, module_id);
+                let scope = block.as_debug_info_scope();
+                for expr in if_block.0.iter() {
+                    expr.codegen(ctx, scope, module_id)?;
                 }
-                if if_basic_block.get_terminator().is_none() {
-                    ctx.builder.build_unconditional_branch(end_basic_block)?;
+
+                ctx.terminate(|| ctx.builder.build_unconditional_branch(end_basic_block))?;
+                ctx.goto(else_basic_block);
+                let block = ctx.debug_ctx.new_block(scope, &else_block.1, module_id);
+                let scope = block.as_debug_info_scope();
+                for expr in else_block.0.iter() {
+                    expr.codegen(ctx, scope, module_id)?;
                 }
-                ctx.builder.position_at_end(else_basic_block);
-                for expr in else_block {
-                    expr.codegen(ctx)?;
-                }
-                if else_basic_block.get_terminator().is_none() {
-                    ctx.builder.build_unconditional_branch(end_basic_block)?;
-                }
-                ctx.builder.position_at_end(end_basic_block);
+                ctx.terminate(|| ctx.builder.build_unconditional_branch(end_basic_block))?;
+                ctx.goto(end_basic_block);
                 Ok(())
             }
             TypecheckedExpression::While {
@@ -888,23 +1014,25 @@ impl TypecheckedExpression {
                 let body_basic_block = ctx.context.append_basic_block(ctx.current_fn, "while-body");
                 let end_basic_block = ctx.context.append_basic_block(ctx.current_fn, "while-end");
                 ctx.builder.build_unconditional_branch(cond_basic_block)?;
-                ctx.builder.position_at_end(cond_basic_block);
+                ctx.goto(cond_basic_block);
                 for expr in cond_block {
-                    expr.codegen(ctx)?;
+                    expr.codegen(ctx, scope, module_id)?;
                 }
-                ctx.builder.build_conditional_branch(
-                    cond.fn_ctx_to_basic_value(ctx).into_int_value(),
-                    body_basic_block,
-                    end_basic_block,
-                )?;
-                ctx.builder.position_at_end(body_basic_block);
-                for expr in body {
-                    expr.codegen(ctx)?;
+                ctx.terminate(|| {
+                    ctx.builder.build_conditional_branch(
+                        cond.fn_ctx_to_basic_value(ctx).into_int_value(),
+                        body_basic_block,
+                        end_basic_block,
+                    )
+                })?;
+                ctx.goto(body_basic_block);
+                let block = ctx.debug_ctx.new_block(scope, &body.1, module_id);
+                let scope = block.as_debug_info_scope();
+                for expr in body.0.iter() {
+                    expr.codegen(ctx, scope, module_id)?;
                 }
-                if body_basic_block.get_terminator().is_none() {
-                    ctx.builder.build_unconditional_branch(cond_basic_block)?;
-                }
-                ctx.builder.position_at_end(end_basic_block);
+                ctx.terminate(|| ctx.builder.build_unconditional_branch(cond_basic_block))?;
+                ctx.goto(end_basic_block);
                 Ok(())
             }
             TypecheckedExpression::Range { .. } => todo!(),
@@ -1010,6 +1138,7 @@ impl TypecheckedExpression {
                         .collect::<Vec<_>>(),
                     "",
                 )?;
+                val.set_call_convention(func_value.get_call_conventions());
                 ctx.push_value(
                     *dst,
                     val.try_as_basic_value()
@@ -1017,24 +1146,74 @@ impl TypecheckedExpression {
                 );
                 Ok(())
             }
-            TypecheckedExpression::IntrinsicCall(.., intrinsic, _) => {
+            TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, _) => {
                 match intrinsic {
+                    Intrinsic::Unreachable => {
+                        ctx.builder.build_unreachable()?;
+                        ctx.push_value(*dst, ctx.default_types.empty_struct.const_zero().into());
+                    }
+                    Intrinsic::Trap => {
+                        ctx.intrinsics
+                            .trap
+                            .build_call(ctx.module, ctx.builder, &[], &[])?;
+                        ctx.push_value(*dst, ctx.default_types.empty_struct.const_zero().into());
+                    }
+                    Intrinsic::Breakpoint => {
+                        ctx.intrinsics
+                            .breakpoint
+                            .build_call(ctx.module, ctx.builder, &[], &[])?;
+                        ctx.push_value(*dst, ctx.default_types.empty_struct.const_zero().into());
+                    }
+                    Intrinsic::ReturnAddress => {
+                        let ret = ctx.builder.build_direct_call(
+                            ctx.retaddr,
+                            &[ctx.default_types.i32.const_zero().into()],
+                            "",
+                        )?;
+
+                        ctx.push_value(
+                            *dst,
+                            ret.try_as_basic_value().expect_left(
+                                "returnaddress is (i32) -> ptr, and ptr is a basic value",
+                            ),
+                        );
+                    }
+
                     Intrinsic::Drop => todo!(),
                     Intrinsic::DropInPlace => todo!(),
                     Intrinsic::Forget => todo!(),
                     Intrinsic::SizeOf => todo!(),
                     Intrinsic::SizeOfVal => todo!(),
-                    Intrinsic::Breakpoint => todo!(),
                     Intrinsic::Location => {}
                     Intrinsic::Offset => todo!(),
                     Intrinsic::GetMetadata => todo!(),
                     Intrinsic::WithMetadata => todo!(),
                     Intrinsic::TypeName => todo!(),
-                    Intrinsic::Unreachable => todo!(),
-                    Intrinsic::VtableSize => todo!(),
-                    Intrinsic::VtableDrop => todo!(),
                     Intrinsic::Read => todo!(),
                     Intrinsic::Write => todo!(),
+                    Intrinsic::Select => todo!(),
+                    Intrinsic::VolatileRead => todo!(),
+                    Intrinsic::VolatileWrite => todo!(),
+                    Intrinsic::ByteSwap => todo!(),
+                    Intrinsic::BitReverse => todo!(),
+                    Intrinsic::CountLeadingZeros => todo!(),
+                    Intrinsic::CountTrailingZeros => todo!(),
+                    Intrinsic::CountOnes => todo!(),
+                    Intrinsic::AddWithOverflow => todo!(),
+                    Intrinsic::SubWithOverflow => todo!(),
+                    Intrinsic::MulWithOverflow => todo!(),
+                    Intrinsic::WrappingAdd => todo!(),
+                    Intrinsic::WrappingSub => todo!(),
+                    Intrinsic::WrappingMul => todo!(),
+                    Intrinsic::SaturatingAdd => todo!(),
+                    Intrinsic::SaturatingSub => todo!(),
+                    Intrinsic::UncheckedAdd => todo!(),
+                    Intrinsic::UncheckedSub => todo!(),
+                    Intrinsic::UncheckedMul => todo!(),
+                    Intrinsic::UncheckedDiv => todo!(),
+                    Intrinsic::UncheckedMod => todo!(),
+                    Intrinsic::UncheckedShl => todo!(),
+                    Intrinsic::UncheckedShr => todo!(),
                 }
                 Ok(())
             }
