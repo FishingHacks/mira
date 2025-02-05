@@ -303,9 +303,9 @@ pub enum TypecheckedExpression {
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = _2.a.b.c.d
     OffsetNonPointer(Location, ScopeValueId, TypedLiteral, usize),
-    // _1 = Eq::eq(_2)
-    // TODO: do this
-    TraitCall(Location, ScopeValueId, TypedLiteral, TraitId, GlobalStr),
+    // Eq::val(&dyn Eq, ...)
+    // The last value is the offset into the function pointer part of the vtable.
+    DynCall(Location, ScopeValueId, Vec<TypedLiteral>, u32),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
     Literal(Location, ScopeValueId, TypedLiteral),
     DeclareVariable(Location, ScopeValueId, Type, GlobalStr),
@@ -334,6 +334,9 @@ pub enum TypecheckedExpression {
     // _2: &[_; _3]
     // let _1 = attach_metadata(_2, _3)
     MakeUnsizedSlice(Location, ScopeValueId, TypedLiteral, usize),
+    // _2: &<value>
+    // let _1 = attach_vtable(_2, trait_1, trait_2)
+    AttachVtable(Location, ScopeValueId, TypedLiteral, (Type, Vec<TraitId>)),
     None,
 }
 
@@ -344,11 +347,12 @@ impl TypecheckedExpression {
             | TypecheckedExpression::Asm { location, .. }
             | TypecheckedExpression::If { loc: location, .. }
             | TypecheckedExpression::While { loc: location, .. }
+            | TypecheckedExpression::AttachVtable(location, ..)
             | TypecheckedExpression::DeclareVariable(location, ..)
             | TypecheckedExpression::IntrinsicCall(location, ..)
             | TypecheckedExpression::DirectCall(location, ..)
             | TypecheckedExpression::DirectExternCall(location, ..)
-            | TypecheckedExpression::TraitCall(location, ..)
+            | TypecheckedExpression::DynCall(location, ..)
             | TypecheckedExpression::StoreAssignment(location, ..)
             | TypecheckedExpression::OffsetNonPointer(location, ..)
             | TypecheckedExpression::MakeUnsizedSlice(location, ..)

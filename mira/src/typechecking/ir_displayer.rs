@@ -16,12 +16,17 @@ macro_rules! display_to_debug {
     };
 }
 
-pub struct TypecheckingContextDisplay<'a>(pub &'a TypecheckingContext);
+pub struct TCContextDisplay<'a>(pub &'a TypecheckingContext);
 // TypedLiteralDisplay
+#[repr(transparent)]
 struct TLD<'a>(&'a TypedLiteral);
+#[repr(transparent)]
 struct ExpressionDisplay<'a>(&'a TypecheckedExpression);
+#[repr(transparent)]
 struct ModuleDisplay<'a>(&'a TypecheckedModule);
+#[repr(transparent)]
 struct FuncDisplay<'a>(&'a TypecheckedFunctionContract);
+#[repr(transparent)]
 struct ArgList<'a>(&'a [(GlobalStr, Type)]);
 //struct Display<'a>(&'a TypecheckingContext);
 
@@ -31,7 +36,7 @@ macro_rules! format_tlds {
     };
 }
 
-impl Display for TypecheckingContextDisplay<'_> {
+impl Display for TCContextDisplay<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         for module in self.0.modules.read().iter() {
             Display::fmt(&ModuleDisplay(module), f)?;
@@ -338,7 +343,17 @@ impl Display for ExpressionDisplay<'_> {
             TypecheckedExpression::OffsetNonPointer(_, lhs, rhs, offset_value) => f.write_fmt(
                 format_args!("_{} = offset_non_ptr({}, {offset_value})", lhs, TLD(rhs)),
             ),
-            TypecheckedExpression::TraitCall(..) => todo!(),
+            TypecheckedExpression::DynCall(_, dst, args, offset) => {
+                f.write_char('_')?;
+                Display::fmt(dst, f)?;
+                f.write_str(" = dyncall(")?;
+                Display::fmt(offset, f)?;
+                for arg in args {
+                    f.write_str(", ")?;
+                    Display::fmt(&TLD(arg), f)?;
+                }
+                f.write_char(')')
+            }
             TypecheckedExpression::Bitcast(_, lhs, rhs)
             | TypecheckedExpression::PtrToInt(_, lhs, rhs)
             | TypecheckedExpression::IntToPtr(_, lhs, rhs)
@@ -350,6 +365,9 @@ impl Display for ExpressionDisplay<'_> {
             TypecheckedExpression::Literal(_, lhs, rhs) => {
                 f.write_fmt(format_args!("let _{} = {}", lhs, TLD(rhs)))
             }
+            TypecheckedExpression::AttachVtable(_, lhs, rhs, (_, traits)) => f.write_fmt(
+                format_args!("_{lhs} = attach_vtable({}, {traits:?})", TLD(rhs)),
+            ),
             TypecheckedExpression::MakeUnsizedSlice(_, lhs, rhs, size) => f.write_fmt(
                 format_args!("_{lhs} = attach_size_metadata({}, {size})", TLD(rhs)),
             ),

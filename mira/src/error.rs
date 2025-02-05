@@ -9,6 +9,7 @@ use crate::{
     annotations::AnnotationReceiver,
     codegen::CodegenError,
     globals::GlobalStr,
+    linking::LinkerError,
     tokenizer::{Location, TokenType},
     typechecking::{Type, TypecheckingError},
 };
@@ -46,6 +47,7 @@ error_list_wrapper!(
     add_typechecking => Typechecking(inner: TypecheckingError);
     add_codegen => Codegen(inner: CodegenError);
     add_generic => Generic(inner: &'static str);
+    add_io => IO(inner: std::io::Error);
 );
 
 #[derive(Error, Debug)]
@@ -77,6 +79,16 @@ pub enum MiraError {
     },
     #[error("{inner}")]
     Generic { inner: &'static str },
+    #[error("{inner}")]
+    IO {
+        #[from]
+        inner: std::io::Error,
+    },
+    #[error("{inner}")]
+    Linking {
+        #[from]
+        inner: LinkerError,
+    },
 }
 
 #[derive(Clone, Debug, Error)]
@@ -91,6 +103,8 @@ pub enum ProgrammingLangResolveError {
 
 #[derive(Clone, Debug, Error)]
 pub enum ParsingError {
+    #[error("{loc}: Expected let, fn, extern, struct, use or trait, but found {typ:?} ")]
+    ExpectedElementForPub { loc: Location, typ: TokenType },
     #[error("{loc}: Output constraint must start with `=`")]
     OutputNotStartingWithEqual { loc: Location, output: GlobalStr },
     #[error("{loc}: Input constraint cannot start with `=` or `~`")]
@@ -172,6 +186,7 @@ impl ParsingError {
             Self::InvalidIntrinsic(loc, ..)
             | Self::InvalidCallConv(loc, ..)
             | Self::InvalidFunctionAttribute(loc, ..)
+            | Self::ExpectedElementForPub { loc, .. }
             | Self::OutputNotStartingWithEqual { loc, .. }
             | Self::InputStartingWithInvalidChar { loc, .. }
             | Self::DuplicateAsmReplacer { loc, .. }

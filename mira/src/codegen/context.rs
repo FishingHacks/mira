@@ -22,7 +22,8 @@ use inkwell::{
     passes::PassBuilderOptions,
     support::LLVMString,
     targets::{
-        CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
+        CodeModel, FileType, InitializationConfig, RelocMode, Target as LLVMTarget, TargetMachine,
+        TargetTriple,
     },
     types::{BasicType, FloatType, IntType, PointerType, StructType},
     values::{FunctionValue, GlobalValue},
@@ -31,11 +32,12 @@ use inkwell::{
 
 use crate::{
     globals::GlobalStr,
-    module::FunctionId,
+    module::{FunctionId, TraitId},
     std_annotations::{
         alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
-        noinline::Noinline,
+        noinline::Noinline, section::SectionAnnotation,
     },
+    target::Target,
     typechecking::{
         expression::{TypecheckedExpression, TypedLiteral},
         typechecking::ScopeTypeMetadata,
@@ -76,34 +78,107 @@ pub struct CodegenContext<'ctx> {
     pub(super) string_map: HashMap<GlobalStr, GlobalValue<'ctx>>,
     pub(super) debug_ctx: DebugContext<'ctx>,
     pub(super) intrinsics: LLVMIntrinsics,
+    pub(super) vtables: HashMap<(Type, Vec<TraitId>), GlobalValue<'ctx>>,
+    pub(super) config: CodegenConfig<'ctx>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Optimizations {
+    /// No Optimizations (Like clangs -O1)
+    None,
+    /// low optimizations (Like clangs -O1)
+    Low,
+    /// normal optimizations (Like clangs -O2)
+    Normal,
+    /// aggressive optimizations (Like clangs -O3)
+    High,
+    /// optimizations with respect to binary size (Like clangs -Os)
+    Small,
+    /// optimizations on binary size above all (Like clangs -Oz)
+    ExtremelySmall,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CodegenConfig<'a> {
+    pub optimizations: Optimizations,
+    pub runtime_safety: bool,
+    pub target: Target,
+    pub cpu_features: &'a str,
+    pub reloc_mode: RelocMode,
+}
+
+macro_rules! setter {
+    ($($v:ident: $ty:ty),* $(,)?) => {
+        $(pub fn $v(mut self, $v: $ty) -> Self {
+            self.$v = $v;
+            self
+        })*
+    };
+}
+
+impl<'a> CodegenConfig<'a> {
+    pub fn new(target: Target) -> Self {
+        Self {
+            target,
+            optimizations: Optimizations::Normal,
+            runtime_safety: true,
+            cpu_features: "",
+            reloc_mode: RelocMode::Default,
+        }
+    }
+
+    fn new_with_opt(target: Target, optimizations: Optimizations, runtime_safety: bool) -> Self {
+        Self {
+            optimizations,
+            runtime_safety,
+            ..Self::new(target)
+        }
+    }
+
+    pub fn new_debug(target: Target) -> Self {
+        Self::new(target)
+    }
+    pub fn new_release_fast(target: Target) -> Self {
+        Self::new_with_opt(target, Optimizations::High, false)
+    }
+    pub fn new_release_safe(target: Target) -> Self {
+        Self::new_with_opt(target, Optimizations::High, true)
+    }
+    pub fn new_release_small(target: Target) -> Self {
+        Self::new_with_opt(target, Optimizations::Small, false)
+    }
+    pub fn new_release_tiny(target: Target) -> Self {
+        Self::new_with_opt(target, Optimizations::ExtremelySmall, false)
+    }
+
+    setter!(cpu_features: &'a str, reloc_mode: RelocMode, runtime_safety: bool, optimizations: Optimizations, target: Target);
 }
 
 impl<'a> CodegenContext<'a> {
+    pub fn finish(&self) -> Result<(), LLVMString> {
+        self.finalize_debug_info();
+        self.check()?;
+        self.optimize()
+    }
+
     pub fn finalize_debug_info(&self) {
         self.debug_ctx.builder.finalize();
     }
 
-    pub fn check(&self) -> Result<(), LLVMString> {
-        self.module.verify()
+    pub fn optimize(&self) -> Result<(), LLVMString> {
+        let passes = match self.config.optimizations {
+            Optimizations::None => "default<O0>",
+            Optimizations::Low => "default<O1>",
+            Optimizations::Normal => "default<O2>",
+            Optimizations::High => "default<O3>",
+            Optimizations::Small => "default<Os>",
+            Optimizations::ExtremelySmall => "default<Oz>",
+        };
+        self.run_passes(passes)
     }
 
-    pub fn optimize_o0(&self) -> Result<(), LLVMString> {
-        self.run_passes("default<O0>")
-    }
-    pub fn optimize_o1(&self) -> Result<(), LLVMString> {
-        self.run_passes("default<O1>")
-    }
-    pub fn optimize_o2(&self) -> Result<(), LLVMString> {
-        self.run_passes("default<O2>")
-    }
-    pub fn optimize_o3(&self) -> Result<(), LLVMString> {
-        self.run_passes("default<O3>")
-    }
-    pub fn optimize_os(&self) -> Result<(), LLVMString> {
-        self.run_passes("default<Os>")
-    }
-    pub fn optimize_oz(&self) -> Result<(), LLVMString> {
-        self.run_passes("default<Oz>")
+    pub fn check(&self) -> Result<(), LLVMString> {
+        self.module.verify()
     }
 
     pub fn run_passes(&self, passes: &str) -> Result<(), LLVMString> {
@@ -111,17 +186,17 @@ impl<'a> CodegenContext<'a> {
             .run_passes(passes, &self.machine, PassBuilderOptions::create())
     }
 
-    pub fn emit_llvm_bitcode(&self, writer: &mut dyn Write) -> std::io::Result<()> {
+    pub fn write_bitcode(&self, writer: &mut dyn Write) -> std::io::Result<()> {
         let buf = self.module.write_bitcode_to_memory();
         writer.write_all(buf.as_slice())
     }
 
-    pub fn emit_llvm_ir(&self, writer: &mut dyn Write) -> std::io::Result<()> {
+    pub fn write_ir(&self, writer: &mut dyn Write) -> std::io::Result<()> {
         let string = self.module.print_to_string();
         writer.write_all(string.to_bytes())
     }
 
-    pub fn emit_assembly(&self, writer: &mut dyn Write) -> Result<(), CodegenError> {
+    pub fn write_assembly(&self, writer: &mut dyn Write) -> Result<(), CodegenError> {
         let buffer = self
             .machine
             .write_to_memory_buffer(&self.module, FileType::Assembly)
@@ -131,7 +206,7 @@ impl<'a> CodegenContext<'a> {
             .map_err(CodegenError::IO)
     }
 
-    pub fn emit_object(&self, writer: &mut dyn Write) -> Result<(), CodegenError> {
+    pub fn write_object(&self, writer: &mut dyn Write) -> Result<(), CodegenError> {
         let buffer = self
             .machine
             .write_to_memory_buffer(&self.module, FileType::Object)
@@ -141,20 +216,20 @@ impl<'a> CodegenContext<'a> {
             .map_err(CodegenError::IO)
     }
 
-    pub fn make_context(
+    pub fn new(
         context: &'a Context,
-        triple: TargetTriple,
         ctx: Arc<TypecheckingContext>,
         module: &str,
         path: Arc<Path>,
-        is_optimized: bool,
+        config: CodegenConfig<'a>,
     ) -> Result<CodegenContext<'a>, CodegenError> {
-        Target::initialize_all(&InitializationConfig::default());
-        let target = Target::from_triple(&triple)?;
-        let Some(machine) = target.create_target_machine(
+        LLVMTarget::initialize_all(&InitializationConfig::default());
+        let (triple, _) = config.target.to_llvm_triple();
+        let llvm_target = LLVMTarget::from_triple(&triple)?;
+        let Some(machine) = llvm_target.create_target_machine(
             &triple,
-            "x86-64",
-            "",
+            config.target.arch.to_llvm_cpu(),
+            &config.cpu_features,
             OptimizationLevel::Aggressive,
             RelocMode::PIC,
             CodeModel::Default,
@@ -183,11 +258,17 @@ impl<'a> CodegenContext<'a> {
             empty_struct: context.struct_type(&[], false),
         };
 
-        let debug_ctx =
-            DebugContext::new(context, &module, default_types, &ctx, &path, is_optimized);
+        let debug_ctx = DebugContext::new(
+            context,
+            &module,
+            default_types,
+            &ctx,
+            &path,
+            config.optimizations != Optimizations::None,
+        );
 
         let builder = context.create_builder();
-        let mut strings = collect_strings(&ctx);
+        let (mut strings, mut vtables) = collect_data(&ctx);
         let mut string_map = HashMap::new();
         for strn in strings.drain() {
             let (constant, length, mangled_name) = strn.with(|v| {
@@ -231,7 +312,6 @@ impl<'a> CodegenContext<'a> {
                 "struct should not yet be initialized"
             );
         }
-        drop(struct_reader);
 
         // functions
         let function_reader = ctx.functions.read();
@@ -240,6 +320,17 @@ impl<'a> CodegenContext<'a> {
             .enumerate()
             .map(|(i, (c, b))| (i, c, b))
             .map(|(i, contract, _)| {
+                if !contract.return_type.is_sized()
+                    || contract
+                        .arguments
+                        .iter()
+                        .filter(|(_, v)| !v.is_sized())
+                        .next()
+                        .is_some()
+                {
+                    unreachable!("typechecking should've validated the return type and arguments.");
+                }
+
                 let param_types = contract
                     .arguments
                     .iter()
@@ -318,7 +409,7 @@ impl<'a> CodegenContext<'a> {
             .iter()
             .enumerate()
             .map(|(i, (c, b))| (i, c, b))
-            .map(|(i, contract, _)| {
+            .map(|(i, contract, body)| {
                 let param_types = contract
                     .arguments
                     .iter()
@@ -330,6 +421,18 @@ impl<'a> CodegenContext<'a> {
                         ),
                     })
                     .collect::<Vec<_>>();
+                if !contract.return_type.is_primitive()
+                    || (!contract.return_type.is_thin_ptr() && contract.return_type.refcount() > 0)
+                    || !contract.return_type.is_sized()
+                    || contract
+                        .arguments
+                        .iter()
+                        .filter(|(_, v)| !v.is_sized())
+                        .next()
+                        .is_some()
+                {
+                    unreachable!("typechecking should've validated the return type and arguments.");
+                }
 
                 let fn_typ =
                     if let Type::PrimitiveNever | Type::PrimitiveVoid(0) = contract.return_type {
@@ -410,6 +513,16 @@ impl<'a> CodegenContext<'a> {
                     );
                 }
                 func.set_subprogram(debug_ctx.ext_funcs[i]);
+                if let Some(section) = contract
+                    .annotations
+                    .get_first_annotation::<SectionAnnotation>()
+                {
+                    section.0.with(|name| func.set_section(Some(name)));
+                }
+                match body {
+                    Some(_) => func.set_linkage(Linkage::DLLExport),
+                    None => func.set_linkage(Linkage::DLLImport),
+                }
                 func
             })
             .collect::<Vec<_>>();
@@ -456,6 +569,51 @@ impl<'a> CodegenContext<'a> {
         }
         drop(module_reader);
 
+        let mut vtable_map = HashMap::new();
+        let trait_reader = ctx.traits.read();
+        for (ty, traits) in vtables.drain() {
+            let mut typs = vec![default_types.isize.into()];
+            for trait_id in traits.iter() {
+                for _ in trait_reader[*trait_id].functions.iter() {
+                    // func pointer
+                    typs.push(default_types.ptr.into());
+                }
+            }
+            let vtable_ty = context.struct_type(&typs, false);
+            let mut field_values = vec![default_types
+                .isize
+                .const_int(
+                    ty.size_and_alignment(
+                        (default_types.isize.get_bit_width() / 8) as u64,
+                        &struct_reader,
+                    )
+                    .0,
+                    false,
+                )
+                .into()];
+            for trait_id in traits.iter() {
+                match &ty {
+                    Type::Struct { struct_id, .. } => {
+                        for fn_id in struct_reader[*struct_id].trait_impl[trait_id]
+                            .iter()
+                            .copied()
+                        {
+                            field_values
+                                .push(functions[fn_id].as_global_value().as_pointer_value().into());
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            let global = module.add_global(vtable_ty, Default::default(), "vtable");
+            global.set_linkage(Linkage::LinkOnceODR);
+            global.set_initializer(&vtable_ty.const_named_struct(&field_values));
+            vtable_map.insert((ty, traits), global);
+        }
+        drop(trait_reader);
+        drop(struct_reader);
+        drop(vtables);
+
         let retaddr = module.add_function(
             "llvm.returnaddress",
             default_types
@@ -479,6 +637,8 @@ impl<'a> CodegenContext<'a> {
             debug_ctx,
             intrinsics: LLVMIntrinsics::init(),
             retaddr,
+            vtables: vtable_map,
+            config,
         });
     }
 
@@ -578,52 +738,39 @@ impl<'a> CodegenContext<'a> {
         self.machine
             .write_to_file(&self.module, FileType::Object, path.as_ref())
     }
-
-    pub fn run(&self) -> Result<(), LLVMString> {
-        let execution_engine = self
-            .module
-            .create_jit_execution_engine(OptimizationLevel::Aggressive)?;
-        let func = unsafe {
-            execution_engine
-                .get_function::<unsafe extern "C" fn(usize, *const *const u8)>("main")
-                .expect("failed to get function main")
-        };
-        unsafe {
-            func.call(0, std::ptr::null());
-        }
-        Ok(())
-    }
 }
 
-fn collect_strings(ctx: &TypecheckingContext) -> HashSet<GlobalStr> {
+fn collect_data(ctx: &TypecheckingContext) -> (HashSet<GlobalStr>, HashSet<(Type, Vec<TraitId>)>) {
     let function_reader = ctx.functions.read();
     let ext_function_reader = ctx.external_functions.read();
     let statics_reader = ctx.statics.read();
     let mut strings = HashSet::new();
+    let mut vtables = HashSet::new();
 
     for (_, body) in function_reader.iter() {
-        collect_strings_for_expressions(body, &mut strings);
+        collect_strings_for_expressions(body, &mut strings, &mut vtables);
     }
     for (_, body) in ext_function_reader.iter() {
         if let Some(body) = body {
-            collect_strings_for_expressions(body, &mut strings);
+            collect_strings_for_expressions(body, &mut strings, &mut vtables);
         }
     }
     for static_value in statics_reader.iter() {
         collect_strings_for_typed_literal(&static_value.1, &mut strings);
     }
 
-    strings
+    (strings, vtables)
 }
 
 fn collect_strings_for_expressions(
     exprs: &[TypecheckedExpression],
     strings: &mut HashSet<GlobalStr>,
+    vtables: &mut HashSet<(Type, Vec<TraitId>)>,
 ) {
     for expr in exprs {
         match expr {
             TypecheckedExpression::Block(_, exprs, _) => {
-                collect_strings_for_expressions(exprs, strings)
+                collect_strings_for_expressions(exprs, strings, vtables)
             }
             TypecheckedExpression::If {
                 cond,
@@ -632,10 +779,10 @@ fn collect_strings_for_expressions(
                 ..
             } => {
                 collect_strings_for_typed_literal(cond, strings);
-                collect_strings_for_expressions(&if_block.0, strings);
+                collect_strings_for_expressions(&if_block.0, strings, vtables);
                 _ = else_block
                     .as_ref()
-                    .map(|v| collect_strings_for_expressions(&v.0, strings));
+                    .map(|v| collect_strings_for_expressions(&v.0, strings, vtables));
             }
             TypecheckedExpression::While {
                 cond_block,
@@ -643,8 +790,8 @@ fn collect_strings_for_expressions(
                 body,
                 ..
             } => {
-                collect_strings_for_expressions(cond_block, strings);
-                collect_strings_for_expressions(&body.0, strings);
+                collect_strings_for_expressions(cond_block, strings, vtables);
+                collect_strings_for_expressions(&body.0, strings, vtables);
                 collect_strings_for_typed_literal(&cond, strings);
             }
             TypecheckedExpression::Call(_, _, lhs, args) => {
@@ -654,6 +801,7 @@ fn collect_strings_for_expressions(
                 }
             }
             TypecheckedExpression::DirectCall(.., args)
+            | TypecheckedExpression::DynCall(.., args, _)
             | TypecheckedExpression::DirectExternCall(.., args)
             | TypecheckedExpression::IntrinsicCall(.., args) => {
                 for v in args {
@@ -688,7 +836,6 @@ fn collect_strings_for_expressions(
             | TypecheckedExpression::Dereference(.., lit)
             | TypecheckedExpression::Offset(.., lit, _)
             | TypecheckedExpression::OffsetNonPointer(.., lit, _)
-            | TypecheckedExpression::TraitCall(.., lit, _, _)
             | TypecheckedExpression::Literal(.., lit)
             | TypecheckedExpression::MakeUnsizedSlice(.., lit, _)
             | TypecheckedExpression::Pos(.., lit)
@@ -702,6 +849,10 @@ fn collect_strings_for_expressions(
             | TypecheckedExpression::StripMetadata(.., lit)
             | TypecheckedExpression::BNot(.., lit) => {
                 collect_strings_for_typed_literal(lit, strings)
+            }
+            TypecheckedExpression::AttachVtable(_, _, lit, (ty, traits)) => {
+                collect_strings_for_typed_literal(lit, strings);
+                vtables.insert((ty.clone(), traits.clone()));
             }
             TypecheckedExpression::Empty(_)
             | TypecheckedExpression::Unreachable(_)

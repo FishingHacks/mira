@@ -9,12 +9,12 @@ use crate::{
     globals::GlobalStr,
     module::{FunctionId, Module, ModuleId, StaticId, StructId, TraitId},
     parser::{module_resolution::resolve_module, ParserQueueEntry},
-    tokenizer::{Literal, Location, TokenType},
+    tokenizer::{Literal, Location, Token, TokenType},
 };
 
 use super::{
     types::{Generic, TypeRef},
-    Expression, Parser, Path,
+    Expression, Parser,
 };
 
 #[derive(Clone, Debug)]
@@ -464,6 +464,7 @@ impl Parser {
                 | TokenType::While
                 | TokenType::Let
                 | TokenType::Trait
+                | TokenType::Pub
                 | TokenType::If => false,
 
                 _ => true,
@@ -482,6 +483,7 @@ impl Parser {
             TokenType::Use if !is_global => invalid_kw!("use"),
             TokenType::Export if !is_global => invalid_kw!("export"),
             TokenType::Trait if !is_global => invalid_kw!("trait"),
+            TokenType::Pub if !is_global => invalid_kw!("pub"),
 
             TokenType::Return if is_global => invalid_kw!("return"),
             TokenType::CurlyLeft if is_global => invalid_kw!("code block"),
@@ -519,6 +521,7 @@ impl Parser {
             }
             TokenType::Use => self.parse_use().map(|_| None),
             TokenType::Export => self.parse_export().map(Some),
+            TokenType::Pub => self.parse_pub().map(Some),
             _ if is_global => {
                 return Err(ParsingError::ExpressionAtTopLevel {
                     loc: self.peek().location.clone(),
@@ -535,6 +538,68 @@ impl Parser {
         }
 
         Ok(maybe_statement)
+    }
+
+    fn parse_pub(&mut self) -> Result<Statement, ParsingError> {
+        let loc = self.advance().location.clone();
+        let stmt = match self.peek().typ {
+            TokenType::Fn => self.parse_callable(false).and_then(|(contract, body)| {
+                contract
+                    .annotations
+                    .are_annotations_valid_for(AnnotationReceiver::Function)?;
+                Ok(Statement::Function(contract, Box::new(body)))
+            })?,
+
+            TokenType::Let => self.parse_let_stmt(true)?,
+            TokenType::Struct => self.parse_struct()?,
+            TokenType::Extern => self.parse_external()?,
+            TokenType::Trait => self.parse_trait()?,
+            _ => {
+                return Err(ParsingError::ExpectedElementForPub {
+                    loc,
+                    typ: self.peek().typ,
+                })
+            }
+        };
+        let (symbol, loc) = match &stmt {
+            Statement::Function(c, _) | Statement::ExternalFunction(c, _) => (
+                c.name
+                    .as_ref()
+                    .cloned()
+                    .expect("global functions should always have a name"),
+                c.location.clone(),
+            ),
+            Statement::Trait(Trait { name, location, .. })
+            | Statement::Var(name, .., location, _)
+            | Statement::Struct { name, location, .. } => (name.clone(), location.clone()),
+            _ => unreachable!(),
+        };
+        self.tokens.insert(
+            self.current,
+            Token {
+                typ: TokenType::Export,
+                literal: None,
+                location: loc.clone(),
+            },
+        );
+        self.tokens.insert(
+            self.current + 1,
+            Token {
+                typ: TokenType::IdentifierLiteral,
+                literal: Some(Literal::String(symbol)),
+                location: loc.clone(),
+            },
+        );
+        self.tokens.insert(
+            self.current + 2,
+            Token {
+                typ: TokenType::Semicolon,
+                literal: None,
+                location: loc,
+            },
+        );
+
+        Ok(stmt)
     }
 
     fn parse_global_asm(&mut self) -> Result<Statement, ParsingError> {
@@ -1048,6 +1113,7 @@ impl Parser {
             TokenType::If => GlobalStr::new("if"),
             TokenType::While => GlobalStr::new("while"),
             TokenType::For => GlobalStr::new("for"),
+            TokenType::Pub => GlobalStr::new("pub"),
             TokenType::As => GlobalStr::new("as"),
             TokenType::Else => GlobalStr::new("else"),
             TokenType::Asm => GlobalStr::new("asm"),

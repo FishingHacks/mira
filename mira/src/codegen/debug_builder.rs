@@ -390,7 +390,10 @@ impl<'ctx> DebugContext<'ctx> {
                     Type::Trait { .. } | Type::PrimitiveSelf(_) | Type::Generic(..) => {
                         unreachable!("generics and self should be resolved by now")
                     }
-                    Type::DynType { .. } => todo!(),
+                    Type::DynType { .. } => (
+                        self.get_type(&Type::PrimitiveVoid(1), structs),
+                        self.get_type(&Type::PrimitiveVoid(1), structs),
+                    ),
                     Type::UnsizedArray { typ, .. } => (
                         self.get_type(&Type::PrimitiveUSize(0), structs),
                         self.get_type(&typ.clone().take_ref(), structs),

@@ -4,7 +4,7 @@ use crate::{
     error::FunctionList,
     globals::GlobalStr,
     lang_items::{LangItemAssignmentError, LangItemError},
-    parser::Path,
+    parser::{Path, PathWithoutGenerics},
     tokenizer::Location,
 };
 
@@ -16,6 +16,24 @@ pub enum TypecheckingError {
     LangItemError(#[from] LangItemError),
     #[error("{0}")]
     LangItemAssignment(#[from] LangItemAssignmentError),
+    // NOTE: This is due to each ABI handling how to return values differently. LLVM doesn't handle
+    // this for us, but, as far as i can tell, it's fine if we return structs from non-extern
+    // functions as that should never produce incorrect behavior. IF how ever, it turns out to,
+    // then the "internal" ABI will pass all structs whose size is greather than 128 as an sret
+    // first argument (fn(_) -> v turns into fn(&v, _) if sizeof(v) > 128)
+    //
+    // For further references: Zig's implementation of if something needs to be passed as an sret:
+    // https://github.com/ziglang/zig/blob/master/src/codegen/llvm.zig#L12021
+    #[error("{0}: Extern functions can as of now only return primitive values and thin pointers")]
+    InvalidExternReturnType(Location),
+    #[error("{0}: Unsized Type {1} is not a return type")]
+    UnsizedReturnType(Location, Type),
+    #[error("{0}: Unsized Type {1} is not a valid argument")]
+    UnsizedArgument(Location, Type),
+    #[error("{0}: Function {1} on trait {2} is not valid for &dyn {2} types")]
+    InvalidDynTypeFunc(Location, GlobalStr, GlobalStr),
+    #[error("{0}: Cannot find trait {1}")]
+    CannotFindTrait(Location, PathWithoutGenerics),
     #[error("{0}: Expected {1} generics, but found {2}")]
     MismatchingGenericCount(Location, usize, usize),
     #[error("{0}: The size of {1} needs to be known at compiletime")]
@@ -138,6 +156,8 @@ pub enum TypecheckingError {
     IsNotTraitMember { location: Location, name: GlobalStr },
     #[error("{location}: missing trait item `{name}`")]
     MissingTraitItem { location: Location, name: GlobalStr },
+    #[error("{0}: Type {1} is expected to implement the traits {2:?}")]
+    MismatchingTraits(Location, Type, Vec<GlobalStr>),
     #[error("{location}: Expected {}, but found {}", FunctionList(.expected), FunctionList(.found))]
     MismatchingArguments {
         location: Location,

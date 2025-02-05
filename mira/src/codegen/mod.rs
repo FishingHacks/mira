@@ -6,7 +6,7 @@ use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
     globals::GlobalStr,
-    module::ModuleId,
+    module::{ModuleId, TraitId},
     typechecking::{
         expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
         intrinsics::Intrinsic,
@@ -15,9 +15,8 @@ use crate::{
     },
 };
 pub use inkwell::context::Context as InkwellContext;
-pub use inkwell::targets::TargetTriple;
 pub mod mangling;
-pub use context::CodegenContext;
+pub use context::{CodegenConfig, CodegenContext};
 pub use error::CodegenError;
 pub use inkwell::support::LLVMString;
 use inkwell::{
@@ -26,9 +25,12 @@ use inkwell::{
     context::Context,
     debug_info::{AsDIScope, DIScope},
     module::Module,
-    targets::TargetMachine,
+    targets::{TargetMachine, TargetTriple},
     types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType},
-    values::{BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PointerValue},
+    values::{
+        BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, IntValue,
+        PointerValue,
+    },
     FloatPredicate, IntPredicate,
 };
 
@@ -58,6 +60,7 @@ impl<'ctx, 'me> CodegenContext<'ctx> {
             structs: &self.structs,
             statics: &self.statics,
             string_map: &self.string_map,
+            vtables: &self.vtables,
             debug_ctx: &mut self.debug_ctx,
             triple: &self.triple,
             machine: &self.machine,
@@ -97,6 +100,7 @@ pub struct FunctionCodegenContext<'ctx, 'codegen> {
     structs: &'codegen Vec<StructType<'ctx>>,
     statics: &'codegen Vec<GlobalValue<'ctx>>,
     string_map: &'codegen HashMap<GlobalStr, GlobalValue<'ctx>>,
+    vtables: &'codegen HashMap<(Type, Vec<TraitId>), GlobalValue<'ctx>>,
     debug_ctx: &'codegen mut DebugContext<'ctx>,
     triple: &'codegen TargetTriple,
     machine: &'codegen TargetMachine,
@@ -819,6 +823,36 @@ fn build_ptr_store(
     Ok(())
 }
 
+fn make_fat_ptr<'ctx>(
+    builder: &Builder<'ctx>,
+    default_types: &DefaultTypes<'ctx>,
+    ptr: PointerValue<'ctx>,
+    metadata: IntValue<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, BuilderError> {
+    let mut data = [
+        default_types.ptr.const_zero().into(),
+        default_types.isize.const_zero().into(),
+    ];
+    if ptr.is_const() {
+        data[0] = ptr.into();
+    }
+    if metadata.is_const() {
+        data[1] = metadata.into();
+    }
+    let mut fat_ptr = default_types.fat_ptr.const_named_struct(&data);
+    if !ptr.is_const() {
+        fat_ptr = builder
+            .build_insert_value(fat_ptr, ptr, 0, "")?
+            .into_struct_value();
+    }
+    if !metadata.is_const() {
+        fat_ptr = builder
+            .build_insert_value(fat_ptr, metadata, 1, "")?
+            .into_struct_value();
+    }
+    Ok(fat_ptr.into())
+}
+
 impl TypecheckedExpression {
     fn codegen<'ctx>(
         &self,
@@ -829,6 +863,20 @@ impl TypecheckedExpression {
         ctx.builder
             .set_current_debug_location(ctx.debug_ctx.location(scope, self.location()));
         match self {
+            TypecheckedExpression::AttachVtable(_, dst, src, vtable_id) => {
+                let vtable_value = ctx.vtables[vtable_id].as_pointer_value();
+                let vtable_isize =
+                    ctx.builder
+                        .build_bit_cast(vtable_value, ctx.default_types.isize, "")?;
+                let fat_ptr = make_fat_ptr(
+                    ctx.builder,
+                    &ctx.default_types,
+                    src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
+                    vtable_isize.into_int_value(),
+                )?;
+                ctx.push_value(*dst, fat_ptr.into());
+                Ok(())
+            }
             TypecheckedExpression::DeclareVariable(loc, id, typ, name) => {
                 let ptr = ctx.get_value_ptr(*id);
                 ctx.debug_ctx.declare_variable(
@@ -1710,7 +1758,62 @@ impl TypecheckedExpression {
                 }
                 Ok(())
             }
-            TypecheckedExpression::TraitCall(..) => todo!(),
+            TypecheckedExpression::DynCall(_, dst, args, offset) => {
+                let mut arguments = args
+                    .iter()
+                    .map(|v| v.fn_ctx_to_basic_value(ctx).into())
+                    .collect::<Vec<BasicMetadataValueEnum<'ctx>>>();
+                let dyn_ptr = arguments[0].into_struct_value();
+                let real_ptr = ctx.builder.build_extract_value(dyn_ptr, 0, "")?;
+                arguments[0] = real_ptr.into();
+                let vtable_ptr_isize = ctx
+                    .builder
+                    .build_extract_value(dyn_ptr, 1, "")?
+                    .into_int_value();
+                let vtable_ptr =
+                    ctx.builder
+                        .build_int_to_ptr(vtable_ptr_isize, ctx.default_types.ptr, "")?;
+                let fn_ptr_ptr = unsafe {
+                    ctx.builder.build_gep(
+                        ctx.default_types.ptr,
+                        vtable_ptr,
+                        &[ctx
+                            .default_types
+                            .isize
+                            .const_int(*offset as u64 + 1 /* skip length */, false)],
+                        "",
+                    )
+                }?;
+                let fn_ptr = ctx
+                    .builder
+                    .build_load(ctx.default_types.ptr, fn_ptr_ptr, "")?
+                    .into_pointer_value();
+                let param_types = std::iter::once(ctx.default_types.ptr.into())
+                    .chain(args.iter().skip(1).map(|v| {
+                        v.to_type(&ctx.tc_scope, ctx.tc_ctx)
+                            .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
+                            .into()
+                    }))
+                    .collect::<Vec<_>>();
+                let fn_ty = match &ctx.tc_scope[*dst].0 {
+                    Type::PrimitiveNever | Type::PrimitiveVoid(0) => {
+                        ctx.context.void_type().fn_type(&param_types, false)
+                    }
+                    v => v
+                        .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
+                        .fn_type(&param_types, false),
+                };
+
+                let res = ctx
+                    .builder
+                    .build_indirect_call(fn_ty, fn_ptr, &arguments, "")?;
+                ctx.push_value(
+                    *dst,
+                    res.try_as_basic_value()
+                        .left_or_else(|_| ctx.default_types.empty_struct.const_zero().into()),
+                );
+                Ok(())
+            }
             TypecheckedExpression::Bitcast(_, new, old) => {
                 let new_typ = &ctx.tc_scope[*new].0;
                 let old_typ = old.to_type(&ctx.tc_scope, ctx.tc_ctx);

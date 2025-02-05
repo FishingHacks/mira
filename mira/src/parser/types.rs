@@ -4,11 +4,8 @@ use std::{
 };
 
 use crate::{
-    error::ParsingError,
-    globals::GlobalStr,
-    module::FunctionId,
-    parser::Location,
-    tokenizer::{Literal, TokenType},
+    error::ParsingError, globals::GlobalStr, module::FunctionId, parser::Location,
+    tokenizer::TokenType,
 };
 
 use super::{expression::PathWithoutGenerics, Annotations, Parser, Path};

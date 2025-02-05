@@ -283,7 +283,33 @@ impl TypecheckingContext {
         }
 
         match typ {
-            TypeRef::DynReference { .. } => todo!(),
+            TypeRef::DynReference {
+                traits,
+                num_references,
+                loc,
+            } => {
+                let mut trait_refs = Vec::with_capacity(traits.len());
+                for trait_name in traits.iter() {
+                    let v = typed_resolve_import(
+                        self,
+                        module_id,
+                        trait_name.as_slice(),
+                        loc,
+                        &mut Vec::new(),
+                    );
+                    let Ok(ModuleScopeValue::Trait(id)) = v else {
+                        return Err(TypecheckingError::CannotFindTrait(
+                            loc.clone(),
+                            trait_name.clone(),
+                        ));
+                    };
+                    trait_refs.push((id, trait_name.as_slice().last().unwrap().clone()));
+                }
+                Ok(Type::DynType {
+                    trait_refs,
+                    num_references: *num_references,
+                })
+            }
             TypeRef::Function {
                 return_ty,
                 args,

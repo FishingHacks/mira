@@ -59,6 +59,7 @@ pub enum TokenType {
     Volatile,             // done, done
     While,                // done, done
     For,                  // done, done
+    Pub,                  // done, done
     In,                   // done, done
     Unsized,              // done, done
     Range,                // done, done
@@ -217,6 +218,7 @@ impl Display for Token {
             TokenType::Extern => f.write_str("extern"),
             TokenType::Fn => f.write_str("fn"),
             TokenType::For => f.write_str("for"),
+            TokenType::Pub => f.write_str("pub"),
             TokenType::GreaterThan => f.write_str(">"),
             TokenType::IdentifierLiteral => match &self.literal {
                 Some(Literal::String(v)) => f.write_fmt(format_args!("identifier({v})")),
@@ -1088,6 +1090,7 @@ impl Tokenizer {
             "volatile" => Some(TokenType::Volatile),
             "while" => Some(TokenType::While),
             "for" => Some(TokenType::For),
+            "pub" => Some(TokenType::Pub),
             "in" => Some(TokenType::In),
             "unsized" => Some(TokenType::Unsized),
             "struct" => Some(TokenType::Struct),

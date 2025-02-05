@@ -178,7 +178,43 @@ fn align(value: u64, alignment: u32) -> u64 {
     }
 }
 
+fn values_match(left: &[TraitId], right: &[TraitId]) -> bool {
+    for v in right {
+        if !left.contains(v) {
+            return false;
+        }
+    }
+    true
+}
+
 impl Type {
+    pub fn implements(&self, traits: &[TraitId], tc_ctx: &TypecheckingContext) -> bool {
+        match self {
+            Type::Trait {
+                trait_refs,
+                num_references: 0,
+                ..
+            } => values_match(&trait_refs, traits),
+            Type::DynType {
+                trait_refs,
+                num_references: 1,
+            } => values_match(&trait_refs.iter().map(|v| v.0).collect::<Vec<_>>(), traits),
+            Type::Struct {
+                struct_id,
+                num_references: 0,
+                ..
+            } => values_match(
+                &tc_ctx.structs.read()[*struct_id]
+                    .trait_impl
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                traits,
+            ),
+            _ => false,
+        }
+    }
+
     pub fn alignment(&self, ptr_size: u64, structs: &[TypedStruct]) -> u32 {
         if self.refcount() > 0 {
             return ptr_size as u32;
@@ -710,6 +746,23 @@ impl PartialEq for Type {
         }
 
         match (self, other) {
+            (
+                Type::DynType {
+                    trait_refs: self_traits,
+                    ..
+                },
+                Type::DynType {
+                    trait_refs: other_traits,
+                    ..
+                },
+            ) => {
+                self_traits.len() == other_traits.len()
+                    && self_traits
+                        .iter()
+                        .map(|v| v.0)
+                        .zip(other_traits.iter().map(|v| v.0))
+                        .fold(true, |a, b| a && (b.0 == b.1))
+            }
             (
                 Type::Struct {
                     struct_id: structure,

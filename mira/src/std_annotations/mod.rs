@@ -21,4 +21,11 @@ macro_rules! annotations {
     };
 }
 
-annotations!(alias, ext_vararg, callconv, function_attr, noinline);
+annotations!(
+    alias,
+    ext_vararg,
+    callconv,
+    function_attr,
+    noinline,
+    section
+);

@@ -1,19 +1,22 @@
 use std::{
     collections::HashSet,
     error::Error,
-    io::ErrorKind,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, LazyLock},
 };
 mod editor;
 mod repl;
-mod run;
 use editor::{get_path, run_editor};
 use repl::Repl;
-use run::{compile, link, RunOptions};
 
-use mira::{AUTHORS as MIRA_AUTHORS, VERSION as VER};
+use mira::{
+    codegen::CodegenConfig,
+    linking::{run_full_compilation_pipeline, FullCompilationOptions},
+    target::Target,
+    AUTHORS as MIRA_AUTHORS, VERSION as VER,
+};
 
 const MIRAC_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MIRAC_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
@@ -65,8 +68,9 @@ fn print_help(editor_mode: bool) {
     println!("│ --ir [file]        │ [dev] emits the intermediate representation │");
     println!("│ --obj <file>       │ emits the object code                       │");
     println!("│ --exec <file>      │ emits the executable                        │");
-    println!("│ --nolibc           │ don't link with libc                        │");
     println!("│ --file <file>      │ set the file used in the debug info         │");
+    println!("│ --nolibc           │ don't link with libc                        │");
+    println!("│ --verbose          │ Output what the compiler is doing           │");
     _ = "     └─ [ mira vN.N.N ]───┴─────────────────────────────────────────────┘";
     // prints line as shown above
     assert!(VER.len() <= 7);
@@ -136,14 +140,22 @@ fn compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
 
 fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     let mut opts = parse_opts(rest);
-    let mut run_opts = RunOptions::default();
+    let mut llvm_ir_writer: Option<Box<dyn Write>> = None;
+    let mut llvm_bc_writer: Option<Box<dyn Write>> = None;
+    let mut asm_writer: Option<Box<dyn Write>> = None;
+    let mut ir_writer: Option<Box<dyn Write>> = None;
     let mut obj_file = None;
     let mut exec_file = None;
     let mut nolibc = false;
+    let mut verbose = false;
     let mut file = None;
     let mut i = 0;
     while i < opts.len() {
         match opts[i].as_str() {
+            "--verbose" => {
+                opts.remove(i);
+                verbose = true;
+            }
             "--llvm-ir" => {
                 opts.remove(i);
                 if let Some(_) = opts.get(i).filter(|v| !v.starts_with('-')) {
@@ -156,10 +168,10 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                         .open(&path)
                     {
                         Err(e) => println!("Failed to open {}: {e:?}", path.display()),
-                        Ok(v) => run_opts.llvm_ir = Some(Box::new(v)),
+                        Ok(v) => llvm_ir_writer = Some(Box::new(v)),
                     }
                 } else {
-                    run_opts.llvm_ir = Some(Box::new(std::io::stdout()));
+                    llvm_ir_writer = Some(Box::new(std::io::stdout()));
                 }
             }
             "--llvm-bc" => {
@@ -174,10 +186,10 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                         .open(&path)
                     {
                         Err(e) => println!("Failed to open {}: {e:?}", path.display()),
-                        Ok(v) => run_opts.llvm_bc = Some(Box::new(v)),
+                        Ok(v) => llvm_bc_writer = Some(Box::new(v)),
                     }
                 } else {
-                    run_opts.llvm_bc = Some(Box::new(std::io::stdout()));
+                    llvm_bc_writer = Some(Box::new(std::io::stdout()));
                 }
             }
             "--asm" => {
@@ -192,10 +204,10 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                         .open(&path)
                     {
                         Err(e) => println!("Failed to open {}: {e:?}", path.display()),
-                        Ok(v) => run_opts.asm = Some(Box::new(v)),
+                        Ok(v) => asm_writer = Some(Box::new(v)),
                     }
                 } else {
-                    run_opts.asm = Some(Box::new(std::io::stdout()));
+                    asm_writer = Some(Box::new(std::io::stdout()));
                 }
             }
             "--ir" => {
@@ -210,10 +222,10 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                         .open(&path)
                     {
                         Err(e) => println!("Failed to open {}: {e:?}", path.display()),
-                        Ok(v) => run_opts.ir = Some(Box::new(v)),
+                        Ok(v) => ir_writer = Some(Box::new(v)),
                     }
                 } else {
-                    run_opts.ir = Some(Box::new(std::io::stdout()));
+                    ir_writer = Some(Box::new(std::io::stdout()));
                 }
             }
             "--obj" => {
@@ -224,15 +236,6 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                 }
                 let file = opts.remove(i);
                 let path = PathBuf::from(file);
-                match std::fs::File::options()
-                    .write(true)
-                    .read(false)
-                    .create(true)
-                    .open(&path)
-                {
-                    Err(e) => println!("Failed to open {}: {e:?}", path.display()),
-                    Ok(v) => run_opts.obj = Some(Box::new(v)),
-                }
                 obj_file = Some(path);
             }
             "--exec" => {
@@ -277,52 +280,54 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     }
     if exec_file.is_some() && !obj_file.is_some() {
         let path = Path::new("/tmp/mira_object.o");
-        match std::fs::File::options()
-            .write(true)
-            .read(false)
-            .create(true)
-            .open(&path)
-        {
-            Err(e) => return println!("Failed to open {}: {e:?}", path.display()),
-            Ok(v) => run_opts.obj = Some(Box::new(v)),
-        }
         obj_file = Some(path.to_path_buf());
     }
     let debug_file = file
         .map(Into::into)
         .unwrap_or_else(|| repl.data.file.clone());
-    if let Err(e) = compile(
-        repl.data.file.clone(),
-        repl.data.current_dir.clone(),
+
+    if let Err(e) = run_full_compilation_pipeline(FullCompilationOptions {
+        file: repl.data.file.clone(),
+        root_directory: repl.data.current_dir.clone(),
         debug_file,
-        &repl.buf,
-        run_opts,
-    ) {
-        for e in e {
+        source: Some(&repl.buf),
+        shared_object: false,
+        linker_script: None,
+        obj_path: obj_file,
+        add_extension_to_exe: false,
+        exec_path: exec_file.clone(),
+        codegen_opts: CodegenConfig::new_release_safe(Target::from_name("x86_64-linux")),
+        link_with_crt: !nolibc,
+        additional_linker_args: &opts,
+        additional_linker_directories: &[],
+        verbose,
+        with_debug_info: true,
+        ir_writer,
+        llvm_ir_writer,
+        llvm_bc_writer,
+        asm_writer,
+    }) {
+        println!("Failed to compile:");
+        for e in e.iter() {
             println!("{e}");
         }
-        return;
-    }
-    if !exec_file.is_some() {
+        drop(e);
         return;
     }
 
-    if !link(
-        obj_file.as_ref().unwrap(),
-        exec_file.as_ref().unwrap(),
-        &opts,
-        nolibc,
-    ) {
-        return;
-    }
     if !run {
         return;
     }
 
-    match Command::new(exec_file.as_ref().unwrap())
-        .spawn()
-        .and_then(|mut v| v.wait())
-    {
+    let Some(exec_file) = exec_file else {
+        unreachable!("run is specified, but exec_file is None")
+    };
+    let mut cmd = Command::new(&exec_file);
+    if verbose {
+        println!("[INFO] Running {cmd:?}");
+        println!("----[ run output ]----");
+    }
+    match cmd.spawn().and_then(|mut v| v.wait()) {
         Err(e) => println!("-> failed to run the program: {e:?}"),
         Ok(v) if !v.success() => println!("\n\n  process exited with error: {:?}", v),
         Ok(_) => println!("\n"),

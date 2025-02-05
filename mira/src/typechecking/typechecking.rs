@@ -166,13 +166,39 @@ pub fn typecheck_function(
 
     let mut scope = Scopes::new();
 
-    let (return_type, args) = if is_external {
+    let (return_type, args, loc) = if is_external {
         let contract = &context.external_functions.read()[function_id].0;
-        (contract.return_type.clone(), contract.arguments.clone())
+        (
+            contract.return_type.clone(),
+            contract.arguments.clone(),
+            contract.location.clone(),
+        )
     } else {
         let contract = &context.functions.read()[function_id].0;
-        (contract.return_type.clone(), contract.arguments.clone())
+        (
+            contract.return_type.clone(),
+            contract.arguments.clone(),
+            contract.location.clone(),
+        )
     };
+
+    let mut errs = vec![];
+    if is_external {
+        if !return_type.is_primitive() || (!return_type.is_thin_ptr() && return_type.refcount() > 0)
+        {
+            errs.push(TypecheckingError::InvalidExternReturnType(loc.clone()));
+        }
+    }
+    if !return_type.is_sized() {
+        errs.push(TypecheckingError::UnsizedReturnType(
+            loc.clone(),
+            return_type.clone(),
+        ));
+    }
+    for (_, arg) in args.iter().filter(|v| !v.1.is_sized()) {
+        errs.push(TypecheckingError::UnsizedArgument(loc.clone(), arg.clone()));
+    }
+    (errs.len() == 0).then_some(()).ok_or(errs)?;
 
     let mut exprs = vec![];
     for arg in args {
@@ -1245,13 +1271,18 @@ fn typecheck_expression(
                         context,
                         module,
                         scope,
-                        left_side,
+                        &Expression::Unary {
+                            operator: UnaryOp::Reference,
+                            loc: loc.clone(),
+                            right_side: left_side.clone(),
+                        },
                         exprs,
                         TypeSuggestion::Unknown,
                     )?;
-                    let dst_typed_lit =
-                        make_reference(scope, exprs, typ.clone(), lhs, left_side.loc().clone());
-                    (typ, dst_typed_lit)
+                    (
+                        typ.deref().expect("&_ should never fail to dereference"),
+                        lhs,
+                    )
                 }
             };
             let (typ_rhs, rhs) = typecheck_expression(
@@ -1310,7 +1341,7 @@ fn typecheck_expression(
             let (typ, lhs) =
                 typecheck_expression(context, module, scope, &**left_side, exprs, type_suggestion)?;
             let new_type = context.resolve_type(module, new_type, &[])?;
-            typecheck_cast(scope, exprs, typ, new_type, lhs, loc.clone())
+            typecheck_cast(scope, exprs, typ, new_type, lhs, loc.clone(), context)
         }
     }
 }
@@ -1322,6 +1353,7 @@ fn typecheck_cast(
     new_typ: Type,
     lhs: TypedLiteral,
     loc: Location,
+    context: &TypecheckingContext,
 ) -> Result<(Type, TypedLiteral), TypecheckingError> {
     if typ == new_typ {
         return Ok((new_typ, lhs));
@@ -1362,6 +1394,37 @@ fn typecheck_cast(
             exprs.push(TypecheckedExpression::Alias(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
+        // &T -> &dyn _
+        (
+            v,
+            Type::DynType {
+                trait_refs,
+                num_references: 1,
+            },
+        ) if v.is_thin_ptr() && v.refcount() > 0 => {
+            let traits = trait_refs.iter().map(|v| v.0).collect::<Vec<_>>();
+            let ty = v.clone().deref().expect("v should have a refcount of > 0");
+            if !ty.implements(&traits, context) {
+                let trait_reader = context.traits.read();
+                return Err(TypecheckingError::MismatchingTraits(
+                    loc,
+                    typ,
+                    traits
+                        .iter()
+                        .map(|v| trait_reader[*v].name.clone())
+                        .collect(),
+                ));
+            }
+            let id = scope.push(new_typ.clone());
+            exprs.push(TypecheckedExpression::AttachVtable(
+                loc,
+                id,
+                lhs,
+                (ty, traits),
+            ));
+            Ok((new_typ, TypedLiteral::Dynamic(id)))
+        }
+        // &[T; N] -> &[T]
         (
             Type::SizedArray {
                 typ,
@@ -1468,6 +1531,124 @@ fn typecheck_cast(
     }
 }
 
+fn typecheck_dyn_membercall(
+    context: &TypecheckingContext,
+    scope: &mut Scopes,
+    module: ModuleId,
+    exprs: &mut Vec<TypecheckedExpression>,
+    ident: &GlobalStr,
+    args: &[Expression],
+    lhs: TypedLiteral,
+    lhs_loc: Location,
+    trait_refs: Vec<(usize, GlobalStr)>,
+    num_references: u8,
+) -> Result<(Type, TypedLiteral), TypecheckingError> {
+    let trait_reader = context.traits.read();
+    let mut offset = 0;
+    let (mut arg_typs, mut return_ty, trait_name) = 'out: {
+        for trait_id in trait_refs.iter().map(|v| v.0) {
+            for func in trait_reader[trait_id].functions.iter() {
+                if func.0 == *ident {
+                    break 'out (
+                        func.1.clone(),
+                        func.2.clone(),
+                        trait_reader[trait_id].name.clone(),
+                    );
+                }
+                offset += 1;
+            }
+        }
+
+        return Err(TypecheckingError::CannotFindFunctionOnType(
+            lhs_loc,
+            ident.clone(),
+            Type::DynType {
+                trait_refs,
+                num_references,
+            },
+        ));
+    };
+    drop(trait_reader);
+
+    match &arg_typs[0].1 {
+        Type::PrimitiveSelf(_) => {}
+        _ => {
+            return Err(TypecheckingError::InvalidDynTypeFunc(
+                lhs_loc,
+                ident.clone(),
+                trait_name,
+            ))
+        }
+    }
+    if matches!(return_ty, Type::PrimitiveSelf(_))
+        || arg_typs
+            .iter()
+            .skip(1) // skip first arg for fn(&self, ...)
+            .filter(|v| matches!(v.1, Type::PrimitiveSelf(_)))
+            .next()
+            .is_some()
+    {
+        return Err(TypecheckingError::InvalidDynTypeFunc(
+            lhs_loc,
+            ident.clone(),
+            trait_name,
+        ));
+    }
+
+    let mut typ = Type::DynType {
+        trait_refs,
+        num_references,
+    };
+    let mut lhs = lhs;
+    while typ.refcount() > 1 {
+        typ = typ.deref().expect("dereferencing &_ should never fail");
+        let id = scope.push(typ.clone());
+        exprs.push(TypecheckedExpression::Dereference(lhs_loc.clone(), id, lhs));
+        lhs = TypedLiteral::Dynamic(id);
+    }
+
+    let mut typed_args = Vec::with_capacity(args.len() + 1);
+    typed_args.push(lhs);
+
+    if args.len() < arg_typs.len() - 1 {
+        return Err(TypecheckingError::MissingArguments { location: lhs_loc });
+    }
+    if args.len() > arg_typs.len() - 1 {
+        return Err(TypecheckingError::TooManyArguments {
+            location: args[arg_typs.len() - 1].loc().clone(),
+        });
+    }
+
+    for i in 0..args.len() {
+        let (ty, lit) = typecheck_expression(
+            context,
+            module,
+            scope,
+            &args[i],
+            exprs,
+            TypeSuggestion::from_type(&arg_typs[i + 1].1),
+        )?;
+        if ty != arg_typs[i + 1].1 {
+            return Err(TypecheckingError::MismatchingType {
+                expected: arg_typs.remove(i + 1).1,
+                found: typ,
+                location: args[i].loc().clone(),
+            });
+        }
+        typed_args.push(lit);
+    }
+
+    let is_void = matches!(return_ty, Type::PrimitiveNever | Type::PrimitiveVoid(0));
+    let id = scope.push(return_ty.clone());
+    exprs.push(TypecheckedExpression::DynCall(
+        lhs_loc, id, typed_args, offset,
+    ));
+    if is_void {
+        return Ok((return_ty, TypedLiteral::Void));
+    }
+    Ok((return_ty, TypedLiteral::Dynamic(id)))
+}
+
 fn typecheck_membercall(
     context: &TypecheckingContext,
     module: ModuleId,
@@ -1479,6 +1660,27 @@ fn typecheck_membercall(
 ) -> Result<(Type, TypedLiteral), TypecheckingError> {
     let (mut typ_lhs, mut typed_literal_lhs) =
         typecheck_take_ref(context, module, scope, lhs, exprs, TypeSuggestion::Unknown)?;
+    match typ_lhs {
+        Type::DynType {
+            trait_refs,
+            num_references,
+        } if num_references > 0 => {
+            return typecheck_dyn_membercall(
+                context,
+                scope,
+                module,
+                exprs,
+                ident,
+                args,
+                typed_literal_lhs,
+                lhs.loc().clone(),
+                trait_refs,
+                num_references,
+            );
+        }
+        _ => (),
+    }
+
     let function_reader = context.functions.read();
     let langitem_reader = context.lang_items.read();
     let struct_reader = context.structs.read();
@@ -1588,7 +1790,7 @@ fn typecheck_membercall(
     }
     if args.len() > function.0.arguments.len() - 1 {
         return Err(TypecheckingError::TooManyArguments {
-            location: args[function.0.arguments.len() - 2].loc().clone(),
+            location: args[function.0.arguments.len() - 1].loc().clone(),
         });
     }
     for i in 0..function.0.arguments.len() - 1 {
@@ -1642,8 +1844,15 @@ fn typecheck_take_ref(
             typecheck_expression(context, module, scope, right_side, exprs, type_suggestion)
         }
         _ => {
-            let (typ, expr) =
-                ref_resolve_indexing(context, module, scope, expression, exprs, type_suggestion)?;
+            let (typ, expr) = ref_resolve_indexing(
+                context,
+                module,
+                scope,
+                expression,
+                exprs,
+                type_suggestion,
+                true,
+            )?;
             let typ = typ.take_ref();
             Ok((typ, expr))
         }
@@ -1660,6 +1869,7 @@ fn ref_resolve_indexing(
     expression: &Expression,
     exprs: &mut Vec<TypecheckedExpression>,
     type_suggestion: TypeSuggestion,
+    increase_ref: bool,
 ) -> Result<(Type, TypedLiteral), TypecheckingError> {
     match expression {
         Expression::MemberAccess {
@@ -1674,6 +1884,7 @@ fn ref_resolve_indexing(
                 left_side,
                 exprs,
                 TypeSuggestion::Unknown,
+                false,
             )?;
             for element_name in index {
                 while typ_lhs.refcount() > 0 {
@@ -1740,6 +1951,7 @@ fn ref_resolve_indexing(
                 left_side,
                 exprs,
                 TypeSuggestion::Array(Box::new(type_suggestion)),
+                false,
             )?;
             while typ_lhs.refcount() > 0 {
                 typ_lhs = typ_lhs
@@ -1820,6 +2032,14 @@ fn ref_resolve_indexing(
                     ));
                     return Ok((typ, TypedLiteral::Dynamic(id)));
                 }
+            }
+
+            if typ.refcount() > 0 && !increase_ref {
+                return Ok((
+                    typ.deref()
+                        .expect("&_ should never fail to be dereferenced"),
+                    typed_literal,
+                ));
             }
 
             match type_suggestion {

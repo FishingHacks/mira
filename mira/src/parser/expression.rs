@@ -135,6 +135,10 @@ impl PathWithoutGenerics {
 
         Ok(path)
     }
+
+    pub fn as_slice(&self) -> &[GlobalStr] {
+        &self.entries
+    }
 }
 
 impl Display for PathWithoutGenerics {
