@@ -13,6 +13,7 @@ use crate::{
 };
 
 use super::{
+    module_resolution::ResolvedPath,
     types::{Generic, TypeRef},
     Expression, Parser,
 };
@@ -637,39 +638,36 @@ impl Parser {
     }
 
     fn parse_use(&mut self) -> Result<(), ParsingError> {
-        let location = self.advance().location.clone();
+        let loc = self.advance().location.clone();
         let name = self
             .expect_tok(TokenType::StringLiteral)?
-            .string_literal()?;
-        let (module_file, module_root) = name
-            .clone()
+            .string_literal()?
+            .clone();
+        let ResolvedPath { root_dir, file } = name
             .with(|name| {
                 resolve_module(
                     name,
                     self.file
                         .parent()
                         .expect("file should have a parent directory"),
-                    &self.root_directory,
-                    &location,
+                    self.root_directory.clone(),
+                    &loc,
+                    &self.resolvers,
+                    &*self.path_exists,
+                    &*self.path_is_dir,
                 )
             })
-            .map_err(ParsingError::ModuleResolution)?;
+            .ok_or_else(|| ParsingError::CannotResolveModule {
+                loc: loc.clone(),
+                name,
+            })?;
 
-        let module_id = self
-            .modules
-            .read()
-            .iter()
-            .position(|v| (*v.file).eq(&module_file));
+        let module_id = self.modules.read().iter().position(|v| v.file == file);
         let module_id = match module_id {
             Some(v) => v,
             None => {
                 let mut vec = self.modules.write();
-                vec.push(ParserQueueEntry {
-                    root: module_root
-                        .map(Into::into)
-                        .unwrap_or_else(|| self.root_directory.clone()),
-                    file: module_file.into(),
-                });
+                vec.push(ParserQueueEntry { root_dir, file });
                 vec.len() - 1
             }
         };
@@ -682,7 +680,7 @@ impl Parser {
 
         if self.match_tok(TokenType::As) {
             let name = self.expect_identifier()?;
-            self.imports.insert(name, (location, module_id, Vec::new()));
+            self.imports.insert(name, (loc, module_id, Vec::new()));
             self.consume_semicolon()?;
             return Ok(());
         }
@@ -706,11 +704,11 @@ impl Parser {
                 if self.match_tok(TokenType::As) {
                     let alias_name = self.expect_identifier()?;
                     self.imports
-                        .insert(alias_name, (location.clone(), module_id, import_name));
+                        .insert(alias_name, (loc.clone(), module_id, import_name));
                 } else {
                     self.imports.insert(
                         import_name[import_name.len() - 1].clone(),
-                        (location.clone(), module_id, import_name),
+                        (loc.clone(), module_id, import_name),
                     );
                 }
             }
@@ -723,14 +721,14 @@ impl Parser {
         if self.match_tok(TokenType::As) {
             let alias_name = self.expect_identifier()?;
             self.imports
-                .insert(alias_name, (location, module_id, import_name));
+                .insert(alias_name, (loc, module_id, import_name));
             self.consume_semicolon()?;
             return Ok(());
         }
 
         self.imports.insert(
             import_name[import_name.len() - 1].clone(),
-            (location, module_id, import_name),
+            (loc, module_id, import_name),
         );
         self.consume_semicolon()?;
         Ok(())

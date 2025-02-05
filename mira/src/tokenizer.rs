@@ -9,6 +9,7 @@ use std::{
 use crate::{
     error::{ParsingError, TokenizationError},
     globals::GlobalStr,
+    module_resolution::ModuleResolver,
     parser::{LiteralValue, Parser, ParserQueueEntry},
 };
 
@@ -1125,8 +1126,23 @@ impl Tokenizer {
         &self.tokens
     }
 
-    pub fn to_parser(self, modules: Arc<RwLock<Vec<ParserQueueEntry>>>, root: Arc<Path>) -> Parser {
-        Parser::new(self.tokens, modules, self.file, root)
+    pub fn to_parser(
+        self,
+        modules: Arc<RwLock<Vec<ParserQueueEntry>>>,
+        root: Arc<Path>,
+        resolvers: Arc<[Box<dyn ModuleResolver>]>,
+        path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
+        path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+    ) -> Parser {
+        Parser::new(
+            self.tokens,
+            modules,
+            self.file,
+            root,
+            resolvers,
+            path_exists,
+            path_is_dir,
+        )
     }
 }
 

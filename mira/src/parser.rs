@@ -1,3 +1,4 @@
+use module_resolution::ModuleResolver;
 use parking_lot::RwLock;
 use std::{collections::HashMap, sync::Arc};
 
@@ -11,7 +12,7 @@ pub use expression::{BinaryOp, Expression, LiteralValue, Path, PathWithoutGeneri
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, Struct, TypeRef, RESERVED_TYPE_NAMES};
 mod expression;
-mod module_resolution;
+pub mod module_resolution;
 mod statement;
 mod types;
 
@@ -60,10 +61,9 @@ impl Display for Annotation {
 #[derive(Clone, Debug)]
 pub struct ParserQueueEntry {
     pub file: Arc<std::path::Path>,
-    pub root: Arc<std::path::Path>,
+    pub root_dir: Arc<std::path::Path>,
 }
 
-#[derive(Debug)]
 pub struct Parser {
     pub file: Arc<std::path::Path>,
     root_directory: Arc<std::path::Path>,
@@ -78,9 +78,49 @@ pub struct Parser {
     /// a map of idents => imports. if the size of the vec is 0, the identifier refers to the
     /// module itself. otherwise, it refers to something in it.
     pub imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
+    resolvers: Arc<[Box<dyn ModuleResolver>]>,
+    path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
+    path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+}
+
+impl std::fmt::Debug for Parser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parser")
+            .field("file", &self.file)
+            .field("root_directory", &self.root_directory)
+            .field("tokens", &self.tokens)
+            .field("current", &self.current)
+            .field("current_annotations", &self.current_annotations)
+            .field("modules", &self.modules)
+            .field("imports", &self.imports)
+            .finish()
+    }
 }
 
 impl Parser {
+    pub fn new(
+        tokens: Vec<Token>,
+        modules: Arc<RwLock<Vec<ParserQueueEntry>>>,
+        file: Arc<std::path::Path>,
+        root_directory: Arc<std::path::Path>,
+        resolvers: Arc<[Box<dyn ModuleResolver>]>,
+        path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
+        path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+    ) -> Self {
+        Self {
+            tokens,
+            current: 0,
+            current_annotations: Default::default(),
+            imports: HashMap::new(),
+            modules,
+            file,
+            root_directory,
+            resolvers,
+            path_exists,
+            path_is_dir,
+        }
+    }
+
     pub fn add_tokens<I: IntoIterator<Item = Token>>(&mut self, tokens: I) {
         self.tokens.extend(tokens);
     }

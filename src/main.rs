@@ -14,6 +14,7 @@ use repl::Repl;
 use mira::{
     codegen::CodegenConfig,
     linking::{run_full_compilation_pipeline, FullCompilationOptions},
+    module_resolution::{AbsoluteResolver, BasicModuleResolver, RelativeResolver},
     target::Target,
     AUTHORS as MIRA_AUTHORS, VERSION as VER,
 };
@@ -306,6 +307,16 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         llvm_ir_writer,
         llvm_bc_writer,
         asm_writer,
+        path_exists: Arc::new(std::path::Path::exists),
+        path_is_dir: Arc::new(std::path::Path::is_dir),
+        resolvers: Arc::new([
+            Box::new(RelativeResolver),
+            Box::new(AbsoluteResolver),
+            Box::new(BasicModuleResolver(vec![
+                ".mira/modules/$name",
+                ".mira/modules/$name/src",
+            ])),
+        ]),
     }) {
         println!("Failed to compile:");
         for e in e.iter() {

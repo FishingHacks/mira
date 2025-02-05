@@ -95,22 +95,38 @@ fn print_usize_hex(val: usize) {
     if (val == 0) {
         return print_str("0");
     }
+    let chars: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let char_idx = 0usize;
 
     while (val > 0) {
         let v = (val & 0xf) as u8;
-        if (v < 10) print_char(v + 48); // 48 = '0'
-        else print_char(v - 10 + 97); // 97 = 'a'
+        if (v < 10) chars[char_idx] = v + 48; // 48 = '0'
+        else chars[char_idx] = v - 10 + 97; // 97 = 'a'
         val = val >> 4;
+        char_idx += 1;
+    }
+
+    while (char_idx > 0) {
+        char_idx -= 1;
+        print_char(chars[char_idx]);
     }
 }
 fn print_usize(val: usize) {
     if (val == 0) {
         return print_str("0");
     }
+    let chars: [u8; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let char_idx = 0usize;
 
     while (val > 0) {
-        print_char((val % 10) as u8 + 48); /* 48 = '0' */
+        chars[char_idx] = (val % 10) as u8 + 48; // 48 = '0'
         val = val / 10;
+        char_idx += 1;
+    }
+
+    while (char_idx > 0) {
+        char_idx -= 1;
+        print_char(chars[char_idx]);
     }
 }
 

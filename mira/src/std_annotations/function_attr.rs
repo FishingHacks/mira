@@ -47,7 +47,7 @@ pub fn parse(mut tokens: TokenStream) -> Result<FunctionAttr, ParsingError> {
             "cold" => Some(function_attr.hotness = Some(false)),
             _ => None,
         })
-        .ok_or_else(|| ParsingError::InvalidFunctionAttribute(loc, name))?;
+        .ok_or_else(|| ParsingError::InvalidFunctionAttribute { loc, name })?;
     }
     Ok(function_attr)
 }

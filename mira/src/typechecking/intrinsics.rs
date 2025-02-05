@@ -202,7 +202,7 @@ impl IntrinsicAnnotation {
         tokens.finish()?;
         name.with(Intrinsic::from_str)
             .map(Self)
-            .map_err(|_| ParsingError::InvalidIntrinsic(loc, name))
+            .map_err(|_| ParsingError::InvalidIntrinsic { loc, name })
     }
 
     pub fn get(&self) -> Intrinsic {

@@ -15,6 +15,7 @@ use crate::{
     codegen::{CodegenConfig, CodegenContext, CodegenError},
     error::MiraError,
     module::{Module, ModuleContext},
+    module_resolution::ModuleResolver,
     parser::ParserQueueEntry,
     tokenizer::Tokenizer,
     typechecking::{
@@ -205,6 +206,12 @@ pub struct FullCompilationOptions<'a> {
     /// Has to be specified if `self.file` points at a file that does not actually exists
     /// (e.g. because this is running in a repl)
     pub source: Option<&'a str>,
+    /// A list of resolvers to use to resolve imports.
+    pub resolvers: Arc<[Box<dyn ModuleResolver>]>,
+    /// The resolvers will use this function to check if a path exists
+    pub path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
+    /// The resolvers will use this function to check if a path is an directory
+    pub path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
     /// Set to true if you need a shared object (.so / .dll)
     pub shared_object: bool,
     /// An Optional path to a linker script
@@ -296,6 +303,9 @@ pub fn run_full_compilation_pipeline(
         opts.debug_file.clone(),
         source,
         opts.verbose,
+        opts.resolvers,
+        opts.path_exists,
+        opts.path_is_dir,
     );
     vprintln!("Parsing took {:?}", Instant::now().duration_since(now));
     let module_context = module_context?;
@@ -501,6 +511,9 @@ pub fn parse_all(
     debug_file: Arc<Path>,
     source: &str,
     verbose: bool,
+    resolvers: Arc<[Box<dyn ModuleResolver>]>,
+    path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
+    path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
 ) -> Result<Arc<ModuleContext>, Vec<MiraError>> {
     let mut errors = vec![];
     macro_rules! vprintln {
@@ -524,9 +537,15 @@ pub fn parse_all(
 
     let modules = Arc::new(RwLock::new(vec![ParserQueueEntry {
         file: debug_file,
-        root: root_directory.clone(),
+        root_dir: root_directory.clone(),
     }]));
-    let mut current_parser = tokenizer.to_parser(modules.clone(), root_directory);
+    let mut current_parser = tokenizer.to_parser(
+        modules.clone(),
+        root_directory,
+        resolvers.clone(),
+        path_exists.clone(),
+        path_is_dir.clone(),
+    );
     current_parser.file = file;
 
     let module_context = Arc::new(ModuleContext::default());
@@ -541,7 +560,7 @@ pub fn parse_all(
         );
         let (path, root) = {
             let module = &modules.read()[module_context.modules.read().len()];
-            (module.file.clone(), module.root.clone())
+            (module.file.clone(), module.root_dir.clone())
         };
         let mut module = Module::new(module_context.clone(), current_parser.imports, path, root);
         if let Err(errs) = module.push_all(statements, module_context.modules.read().len()) {
@@ -569,7 +588,13 @@ pub fn parse_all(
                         .map(|inner| MiraError::Tokenization { inner }),
                 );
             }
-            current_parser = tokenizer.to_parser(modules.clone(), entry.root);
+            current_parser = tokenizer.to_parser(
+                modules.clone(),
+                entry.root_dir,
+                resolvers.clone(),
+                path_exists.clone(),
+                path_is_dir.clone(),
+            );
         } else {
             break;
         }

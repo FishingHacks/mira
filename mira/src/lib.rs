@@ -17,3 +17,4 @@ pub mod target;
 pub mod tokenizer;
 pub mod tokenstream;
 pub mod typechecking;
+pub use parser::module_resolution;

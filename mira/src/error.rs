@@ -1,7 +1,4 @@
-use std::{
-    fmt::{Debug, Display, Write},
-    path::PathBuf,
-};
+use std::fmt::{Debug, Display, Write};
 
 use thiserror::Error;
 
@@ -92,18 +89,10 @@ pub enum MiraError {
 }
 
 #[derive(Clone, Debug, Error)]
-pub enum ProgrammingLangResolveError {
-    #[error("{0}: Could not find file at `{1}`")]
-    FileNotFound(Location, PathBuf),
-    #[error("{0}: Could not find module `{1}`")]
-    ModuleNotFound(Location, String),
-    #[error("{0}: Absolute paths in use statements are not allowed")]
-    AbsolutePath(Location),
-}
-
-#[derive(Clone, Debug, Error)]
 pub enum ParsingError {
-    #[error("{loc}: Expected let, fn, extern, struct, use or trait, but found {typ:?} ")]
+    #[error("{loc}: Cannot resolved import {name:?}")]
+    CannotResolveModule { loc: Location, name: GlobalStr },
+    #[error("{loc}: Expected let, fn, extern, struct, use or trait, but found {typ:?}")]
     ExpectedElementForPub { loc: Location, typ: TokenType },
     #[error("{loc}: Output constraint must start with `=`")]
     OutputNotStartingWithEqual { loc: Location, output: GlobalStr },
@@ -111,12 +100,12 @@ pub enum ParsingError {
     InputStartingWithInvalidChar { loc: Location, input: GlobalStr },
     #[error("{loc}: Duplicate Replacer `{replacer}`")]
     DuplicateAsmReplacer { loc: Location, replacer: GlobalStr },
-    #[error("{0}: {1} is an invalid function attribute")]
-    InvalidFunctionAttribute(Location, GlobalStr),
-    #[error("{0}: {1} is an invalid intrinsic")]
-    InvalidIntrinsic(Location, GlobalStr),
-    #[error("{0}: {1} is an invalid calling convention")]
-    InvalidCallConv(Location, GlobalStr),
+    #[error("{loc}: {name} is an invalid function attribute")]
+    InvalidFunctionAttribute { loc: Location, name: GlobalStr },
+    #[error("{loc}: {name} is an invalid intrinsic")]
+    InvalidIntrinsic { loc: Location, name: GlobalStr },
+    #[error("{loc}: {name} is an invalid calling convention")]
+    InvalidCallConv { loc: Location, name: GlobalStr },
     #[error("{loc}: Expected a type, but found {found:?}")]
     ExpectedType { loc: Location, found: TokenType },
     #[error("{loc}: Expected a function call")]
@@ -166,8 +155,6 @@ pub enum ParsingError {
     ExpectedStatement { loc: Location },
     #[error("{loc}: Expected a let, while, if, for, block, function, struct or trait statement")]
     ExpectedAnnotationStatement { loc: Location },
-    #[error("{0}")]
-    ModuleResolution(#[from] ProgrammingLangResolveError),
     #[error("{loc}: expected a statement, but found an expression")]
     ExpressionAtTopLevel { loc: Location },
     #[error("{loc}: annotation `{name}` cannot go on a {thing}")]
@@ -183,9 +170,9 @@ pub enum ParsingError {
 impl ParsingError {
     pub fn get_loc(&self) -> &Location {
         match self {
-            Self::InvalidIntrinsic(loc, ..)
-            | Self::InvalidCallConv(loc, ..)
-            | Self::InvalidFunctionAttribute(loc, ..)
+            Self::InvalidIntrinsic { loc, .. }
+            | Self::InvalidCallConv { loc, .. }
+            | Self::InvalidFunctionAttribute { loc, .. }
             | Self::ExpectedElementForPub { loc, .. }
             | Self::OutputNotStartingWithEqual { loc, .. }
             | Self::InputStartingWithInvalidChar { loc, .. }
@@ -208,12 +195,8 @@ impl ParsingError {
             | Self::FunctionAlreadyDefined { loc, .. }
             | Self::UnknownAnnotation { loc, .. }
             | Self::ExpectedStatement { loc, .. }
+            | Self::CannotResolveModule { loc, .. }
             | Self::InvalidKeyword { loc, .. } => loc,
-            Self::ModuleResolution(err) => match err {
-                ProgrammingLangResolveError::FileNotFound(loc, _)
-                | ProgrammingLangResolveError::ModuleNotFound(loc, _)
-                | ProgrammingLangResolveError::AbsolutePath(loc) => loc,
-            },
         }
     }
 }

@@ -1269,21 +1269,4 @@ impl Parser {
             None
         }
     }
-
-    pub fn new(
-        tokens: Vec<Token>,
-        modules: Arc<RwLock<Vec<ParserQueueEntry>>>,
-        file: Arc<std::path::Path>,
-        root_directory: Arc<std::path::Path>,
-    ) -> Self {
-        Self {
-            tokens,
-            current: 0,
-            current_annotations: Default::default(),
-            imports: HashMap::new(),
-            modules,
-            file,
-            root_directory,
-        }
-    }
 }

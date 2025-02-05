@@ -57,5 +57,5 @@ pub fn parse(mut tokens: TokenStream) -> Result<CallConvAnnotation, ParsingError
         "inline" | "Inline" => Some(CallConvAnnotation::Inline),
         _ => None,
     })
-    .ok_or_else(|| ParsingError::InvalidIntrinsic(loc, name))
+    .ok_or_else(|| ParsingError::InvalidIntrinsic { loc, name })
 }
