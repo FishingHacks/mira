@@ -5,7 +5,7 @@ use crate::{
     error::{FunctionList, ParsingError},
     error_list_wrapper,
     globals::GlobalStr,
-    tokenizer::{Literal, Location, Token, TokenType},
+    tokenizer::Location,
     tokenstream::TokenStream,
     typechecking::{Type, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
 };
@@ -24,14 +24,14 @@ impl Annotation for LangItemAnnotation {
     }
 
     fn is_valid_for(&self, thing: AnnotationReceiver, _: &Annotations) -> bool {
-        match thing {
+        matches!(
+            thing,
             AnnotationReceiver::Function
-            | AnnotationReceiver::ExternalFunction
-            | AnnotationReceiver::Struct
-            | AnnotationReceiver::Trait
-            | AnnotationReceiver::Static => true,
-            _ => false,
-        }
+                | AnnotationReceiver::ExternalFunction
+                | AnnotationReceiver::Struct
+                | AnnotationReceiver::Trait
+                | AnnotationReceiver::Static
+        )
     }
 }
 
@@ -121,7 +121,7 @@ macro_rules! lang_item_def {
             }
 
             #[allow(unreachable_code)]
-            fn internal_push_fn(&mut self, id: FunctionLangItem, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            fn internal_push_fn(&mut self, _: FunctionLangItem, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_function $ty, self, $lang_item, id, loc),)*
@@ -579,6 +579,7 @@ impl LangItems {
     }
 }
 
+#[allow(dead_code)]
 fn does_function_match(
     func_a: &LangItemFunction,
     func_b: &TypecheckedFunctionContract,
@@ -599,8 +600,7 @@ fn does_function_match(
         .args
         .iter()
         .zip(func_b.arguments.iter())
-        .map(|(a, (_, b))| *a == *b)
-        .fold(true, |a, b| a && b)
+        .all(|(a, (_, b))| *a == *b)
     {
         let args = func_b.arguments.iter().map(|(_, v)| v).cloned().collect();
         errors.add_mismatching_args(func_a.args.clone(), args, lang_item);
@@ -673,13 +673,11 @@ fn does_struct_match(
         }
     }
 
-    for (element_name, _) in structure_b.elements.iter().filter(|(v, _)| {
-        structure_a
-            .fields
-            .iter()
-            .find(|(name, _)| *name == *v)
-            .is_none()
-    }) {
+    for (element_name, _) in structure_b
+        .elements
+        .iter()
+        .filter(|(v, _)| !structure_a.fields.iter().any(|(name, _)| *name == *v))
+    {
         errors.add_struct_unexpected_field(element_name.clone(), lang_item);
     }
 
@@ -711,8 +709,7 @@ fn does_struct_match(
             .args
             .iter()
             .zip(func_impl.arguments.iter())
-            .map(|(a, (_, b))| *a == *b)
-            .fold(true, |a, b| a && b)
+            .all(|(a, (_, b))| *a == *b)
         {
             errors.add_struct_mismatch_args(
                 func.args.clone(),
@@ -743,7 +740,7 @@ fn does_static_match(
         Type::DynType { trait_refs, .. } => {
             let mut matches = true;
             for trait_id in traits.iter().copied() {
-                if trait_refs.iter().find(|(v, _)| *v == trait_id).is_none() {
+                if !trait_refs.iter().any(|(v, _)| *v == trait_id) {
                     matches = false;
                     errors.add_static_missing_trait(trait_reader[trait_id].name.clone(), lang_item);
                 }
@@ -803,8 +800,7 @@ fn does_trait_match(
                 .args
                 .iter()
                 .zip(func_args_b.iter())
-                .map(|(a, (_, b))| a == b)
-                .fold(true, |a, b| a && b)
+                .all(|(a, (_, b))| a == b)
         {
             traits_match = false;
             errors.add_trait_mismatching_args(
@@ -817,12 +813,7 @@ fn does_trait_match(
     }
 
     for (func_name, ..) in trait_b.functions.iter() {
-        if trait_a
-            .funcs
-            .iter()
-            .find(|(name, ..)| name == func_name)
-            .is_none()
-        {
+        if !trait_a.funcs.iter().any(|(name, ..)| name == func_name) {
             traits_match = false;
             errors.add_trait_excessive_fun(lang_item, func_name.clone());
         }

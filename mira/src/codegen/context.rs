@@ -229,7 +229,7 @@ impl<'a> CodegenContext<'a> {
         let Some(machine) = llvm_target.create_target_machine(
             &triple,
             config.target.arch.to_llvm_cpu(),
-            &config.cpu_features,
+            config.cpu_features,
             OptimizationLevel::Aggressive,
             RelocMode::PIC,
             CodeModel::Default,
@@ -274,7 +274,7 @@ impl<'a> CodegenContext<'a> {
             let (constant, length, mangled_name) = strn.with(|v| {
                 (
                     context.const_string(v.as_bytes(), false),
-                    v.as_bytes().len(),
+                    v.len(),
                     mangle_string(v),
                 )
             });
@@ -321,12 +321,7 @@ impl<'a> CodegenContext<'a> {
             .map(|(i, (c, b))| (i, c, b))
             .map(|(i, contract, _)| {
                 if !contract.return_type.is_sized()
-                    || contract
-                        .arguments
-                        .iter()
-                        .filter(|(_, v)| !v.is_sized())
-                        .next()
-                        .is_some()
+                    || contract.arguments.iter().any(|(_, v)| !v.is_sized())
                 {
                     unreachable!("typechecking should've validated the return type and arguments.");
                 }
@@ -422,14 +417,9 @@ impl<'a> CodegenContext<'a> {
                     })
                     .collect::<Vec<_>>();
                 if !contract.return_type.is_primitive()
-                    || (!contract.return_type.is_thin_ptr() && contract.return_type.refcount() > 0)
+                    || (contract.return_type.refcount() > 0 && !contract.return_type.is_thin_ptr())
                     || !contract.return_type.is_sized()
-                    || contract
-                        .arguments
-                        .iter()
-                        .filter(|(_, v)| !v.is_sized())
-                        .next()
-                        .is_some()
+                    || contract.arguments.iter().any(|(_, v)| !v.is_sized())
                 {
                     unreachable!("typechecking should've validated the return type and arguments.");
                 }
@@ -560,7 +550,7 @@ impl<'a> CodegenContext<'a> {
         for tc_module in module_reader.iter() {
             let mut inline_assembly = String::new();
             for asm in tc_module.assembly.iter() {
-                if inline_assembly.len() > 0 {
+                if !inline_assembly.is_empty() {
                     inline_assembly.push('\n');
                 }
                 inline_assembly.push_str(&asm.1);
@@ -621,7 +611,7 @@ impl<'a> CodegenContext<'a> {
                 .fn_type(&[default_types.i32.into()], false),
             None,
         );
-        return Ok(CodegenContext {
+        Ok(CodegenContext {
             context,
             module,
             builder,
@@ -639,7 +629,7 @@ impl<'a> CodegenContext<'a> {
             retaddr,
             vtables: vtable_map,
             config,
-        });
+        })
     }
 
     pub fn compile_fn(
@@ -792,7 +782,7 @@ fn collect_strings_for_expressions(
             } => {
                 collect_strings_for_expressions(cond_block, strings, vtables);
                 collect_strings_for_expressions(&body.0, strings, vtables);
-                collect_strings_for_typed_literal(&cond, strings);
+                collect_strings_for_typed_literal(cond, strings);
             }
             TypecheckedExpression::Call(_, _, lhs, args) => {
                 collect_strings_for_typed_literal(lhs, strings);

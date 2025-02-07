@@ -11,7 +11,7 @@ pub struct Repl<Data> {
 }
 
 /// Returns the start index of the line or the number of lines
-fn get_line_start(mut line: usize, buffer: &String) -> Result<usize, usize> {
+fn get_line_start(mut line: usize, buffer: &str) -> Result<usize, usize> {
     let mut lines = 0;
     for (idx, c) in buffer.char_indices() {
         if line == 0 {
@@ -34,19 +34,6 @@ impl<Data> Repl<Data> {
             buf: String::new(),
         }
     }
-    pub fn new_with_buf(
-        commands: CmdList<Data>,
-        on_no_input: Cmd<Data>,
-        data: Data,
-        buf: String,
-    ) -> Self {
-        Self {
-            commands,
-            on_no_input,
-            data,
-            buf,
-        }
-    }
 
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
@@ -56,13 +43,13 @@ impl<Data> Repl<Data> {
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
             let input = input.trim_end();
-            if input.len() < 1 {
+            if input.is_empty() {
                 (self.on_no_input)("", self);
                 continue;
             }
 
             if !input.starts_with('.') {
-                if self.buf.len() > 0 && !self.buf.ends_with('\n') {
+                if !self.buf.is_empty() && !self.buf.ends_with('\n') {
                     self.buf.push('\n');
                 }
                 self.buf.push_str(input);

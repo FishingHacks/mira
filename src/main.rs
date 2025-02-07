@@ -4,6 +4,7 @@ use std::{
     io::{ErrorKind, Write},
     path::{Path, PathBuf},
     process::Command,
+    str::FromStr,
     sync::{Arc, LazyLock},
 };
 mod editor;
@@ -14,14 +15,16 @@ use repl::Repl;
 use mira::{
     codegen::CodegenConfig,
     linking::{run_full_compilation_pipeline, FullCompilationOptions},
-    module_resolution::{AbsoluteResolver, BasicModuleResolver, RelativeResolver},
+    module_resolution::{
+        AbsoluteResolver, BasicModuleResolver, RelativeResolver, SingleFileModuleResolver,
+    },
     target::Target,
     AUTHORS as MIRA_AUTHORS, VERSION as VER,
 };
 
 const MIRAC_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MIRAC_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
-pub const AUTHORS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+static AUTHORS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let hashset = MIRA_AUTHORS
         .split(':')
         .chain(MIRAC_AUTHORS.split(':'))
@@ -37,7 +40,7 @@ fn print_help(editor_mode: bool) {
         println!("┌─[ repl commands ]──┬───────────────────────────────[ mode: cli ]─┐");
     }
     // prints line as shown below:
-    _ = _ = ("┌─[ repl commands ]──┬────────────────────────────[ mode: <mode> ]─┐",);
+    let _ = ("┌─[ repl commands ]──┬────────────────────────────[ mode: <mode> ]─┐",);
     println!("│ .^ <line> <code>   │ inserts code after the specified line       │");
     println!("│ .v <line> <code>   │ inserts code before the specified line      │");
     println!("│ .% <line> <code>   │ replaces the specified line with the code   │");
@@ -57,6 +60,7 @@ fn print_help(editor_mode: bool) {
     println!("│ .edit              │ launches an editor                          │");
     println!("│ .clear             │ clears the current buffer                   │");
     println!("│ .help              │ prints the help menu                        │");
+    println!("│ .targets           │ print targets                               │");
     println!("│ .about             │ prints the about message                    │");
     println!("│ .exit              │ exits the repl                              │");
     println!("│ .check             │ typechecks the code                         │");
@@ -70,9 +74,9 @@ fn print_help(editor_mode: bool) {
     println!("│ --obj <file>       │ emits the object code                       │");
     println!("│ --exec <file>      │ emits the executable                        │");
     println!("│ --file <file>      │ set the file used in the debug info         │");
-    println!("│ --nolibc           │ don't link with libc                        │");
+    println!("│ --target <target>  │ set the target (<arch>-<os>[-<abi>])        │");
     println!("│ --verbose          │ Output what the compiler is doing           │");
-    _ = "     └─ [ mira vN.N.N ]───┴─────────────────────────────────────────────┘";
+    let _ = ("└─ [ mira vN.N.N ]───┴─────────────────────────────────────────────┘",);
     // prints line as shown above
     assert!(VER.len() <= 7);
     print!("└─ [ mira v{VER} ]");
@@ -99,14 +103,14 @@ struct Data {
     editor_mode: bool,
 }
 
-fn parse_opts<'a>(args: &'a str) -> Vec<String> {
+fn parse_opts(args: &str) -> Vec<String> {
     let mut opts = Vec::new();
     let mut buf = String::new();
     let mut in_str = false;
     let mut escape = false;
     for c in args.chars() {
         if c.is_ascii_whitespace() && !in_str {
-            if buf.len() > 0 {
+            if !buf.is_empty() {
                 opts.push(buf);
             }
             buf = String::new();
@@ -125,7 +129,7 @@ fn parse_opts<'a>(args: &'a str) -> Vec<String> {
             buf.push(c);
         }
     }
-    if buf.len() > 0 {
+    if !buf.is_empty() {
         opts.push(buf);
     }
     opts
@@ -147,7 +151,7 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     let mut ir_writer: Option<Box<dyn Write>> = None;
     let mut obj_file = None;
     let mut exec_file = None;
-    let mut nolibc = false;
+    let mut target = Target::from_name("x86_64-linux");
     let mut verbose = false;
     let mut file = None;
     let mut i = 0;
@@ -159,13 +163,14 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
             }
             "--llvm-ir" => {
                 opts.remove(i);
-                if let Some(_) = opts.get(i).filter(|v| !v.starts_with('-')) {
+                if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
                     let path = PathBuf::from(file);
                     match std::fs::File::options()
                         .write(true)
                         .read(false)
                         .create(true)
+                        .truncate(true)
                         .open(&path)
                     {
                         Err(e) => println!("Failed to open {}: {e:?}", path.display()),
@@ -177,13 +182,14 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
             }
             "--llvm-bc" => {
                 opts.remove(i);
-                if let Some(_) = opts.get(i).filter(|v| !v.starts_with('-')) {
+                if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
                     let path = PathBuf::from(file);
                     match std::fs::File::options()
                         .write(true)
                         .read(false)
                         .create(true)
+                        .truncate(true)
                         .open(&path)
                     {
                         Err(e) => println!("Failed to open {}: {e:?}", path.display()),
@@ -195,13 +201,14 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
             }
             "--asm" => {
                 opts.remove(i);
-                if let Some(_) = opts.get(i).filter(|v| !v.starts_with('-')) {
+                if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
                     let path = PathBuf::from(file);
                     match std::fs::File::options()
                         .write(true)
                         .read(false)
                         .create(true)
+                        .truncate(true)
                         .open(&path)
                     {
                         Err(e) => println!("Failed to open {}: {e:?}", path.display()),
@@ -213,13 +220,14 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
             }
             "--ir" => {
                 opts.remove(i);
-                if let Some(_) = opts.get(i).filter(|v| !v.starts_with('-')) {
+                if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
                     let path = PathBuf::from(file);
                     match std::fs::File::options()
                         .write(true)
                         .read(false)
                         .create(true)
+                        .truncate(true)
                         .open(&path)
                     {
                         Err(e) => println!("Failed to open {}: {e:?}", path.display()),
@@ -268,9 +276,19 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                 };
                 file = Some(path);
             }
-            "--nolibc" => {
+            "--target" => {
                 opts.remove(i);
-                nolibc = true;
+                if opts.get(i).is_none() {
+                    println!("`target` needs a target");
+                    return;
+                }
+                match Target::from_str(&opts.remove(i)) {
+                    Ok(v) => target = v,
+                    Err(e) => {
+                        println!("Failed to parse target: {e}.");
+                        println!("Reverting to previous target {target}");
+                    }
+                }
             }
             _ => i += 1,
         }
@@ -279,7 +297,7 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     if run && exec_file.is_none() {
         exec_file = Some(Path::new("/tmp/mira_executable").to_path_buf());
     }
-    if exec_file.is_some() && !obj_file.is_some() {
+    if exec_file.is_some() && obj_file.is_none() {
         let path = Path::new("/tmp/mira_object.o");
         obj_file = Some(path.to_path_buf());
     }
@@ -297,8 +315,8 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         obj_path: obj_file,
         add_extension_to_exe: false,
         exec_path: exec_file.clone(),
-        codegen_opts: CodegenConfig::new_release_safe(Target::from_name("x86_64-linux")),
-        link_with_crt: !nolibc,
+        codegen_opts: CodegenConfig::new_release_safe(target),
+        link_with_crt: false,
         additional_linker_args: &opts,
         additional_linker_directories: &[],
         verbose,
@@ -312,11 +330,17 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         resolvers: Arc::new([
             Box::new(RelativeResolver),
             Box::new(AbsoluteResolver),
+            Box::new(SingleFileModuleResolver::new(
+                "\0__root",
+                repl.data.file.clone(),
+                None,
+            )),
             Box::new(BasicModuleResolver(vec![
                 ".mira/modules/$name",
                 ".mira/modules/$name/src",
             ])),
         ]),
+        always_include: Some("./start.mr".into()),
     }) {
         println!("Failed to compile:");
         for e in e.iter() {
@@ -358,7 +382,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     r.data.editor_mode = v == "editor";
                     println!("now in {v} mode");
                 }
-                v @ _ => println!("unknown mode {v}"),
+                v => println!("unknown mode {v}"),
             }),
             ("load", |rest, r| {
                 let rest = rest.trim();
@@ -396,6 +420,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             ("build", |args, repl| compile_run(args, repl, false)),
             ("help", |_, repl| print_help(repl.data.editor_mode)),
             ("about", |_, _| print_about()),
+            ("targets", |_, _| {
+                println!("Targets:");
+                for target in Target::targets() {
+                    println!("{target}");
+                }
+            }),
         ],
         |_, r| {
             if r.data.editor_mode {

@@ -41,12 +41,11 @@ impl TokenStream {
 
     /// returns true if the inner vec is empty or there's only an Eof token left.
     pub fn is_at_end(&self) -> bool {
-        self.0.len() == 0 || (self.0.len() == 1 && self.0[0].typ == TokenType::Eof)
+        self.0.is_empty() || (self.0.len() == 1 && self.0[0].typ == TokenType::Eof)
     }
 
     pub fn expect_token(&self, expected: TokenType) -> Result<&Token, ParsingError> {
-        self.0
-            .get(0)
+        self.0.first()
             .filter(|v| v.typ == expected)
             .ok_or_else(|| ParsingError::ExpectedArbitrary {
                 loc: self.1.clone(),
@@ -189,7 +188,7 @@ impl TokenStream {
     /// Finishes parsing. Will error if there are any tokens remaining, unless there's only a
     /// single `Eof` token.
     pub fn finish(&mut self) -> Result<(), ParsingError> {
-        if (self.0.len() == 1 && self.0[0].typ == TokenType::Eof) || self.0.len() < 1 {
+        if (self.0.len() == 1 && self.0[0].typ == TokenType::Eof) || self.0.is_empty() {
             Ok(())
         } else {
             Err(ParsingError::ExpectedArbitrary {

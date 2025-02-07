@@ -22,7 +22,6 @@ impl Display for FunctionAttr {
         f.write_char('@')?;
         f.write_str(self.get_name())?;
         f.write_char('(')?;
-        let mut put_comma = self.hotness.is_some();
         match self.hotness {
             None => {}
             Some(true) => f.write_str("hot")?,
@@ -42,6 +41,7 @@ pub fn parse(mut tokens: TokenStream) -> Result<FunctionAttr, ParsingError> {
             needs_comma = true;
         }
         let (name, loc) = tokens.expect_remove_identifier()?;
+        #[allow(clippy::unit_arg)]
         name.with(|v| match v {
             "hot" => Some(function_attr.hotness = Some(true)),
             "cold" => Some(function_attr.hotness = Some(false)),

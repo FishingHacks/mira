@@ -29,7 +29,7 @@ macro_rules! str_enum {
         }
 
         impl $name {
-            fn to_str(&self) -> &str {
+            fn to_str(self) -> &'static str {
                 match self {
                     $(Self::$tag => $value,)*
                 }
@@ -47,15 +47,11 @@ Os:
 
 impl Os {
     pub fn exe_file_ext(&self) -> &str {
-        match self {
-            _ => "",
-        }
+        ""
     }
 
     pub fn dynamic_lib_ext(&self) -> &str {
-        match self {
-            _ => "so",
-        }
+        "so"
     }
 
     pub fn to_llvm(&self) -> &str {
@@ -100,6 +96,13 @@ impl Arch {
         match self {
             Arch::X86_64 | Arch::X86 => self.to_str(),
         }
+    }
+
+    pub fn is_64_bit(&self) -> bool {
+        matches!(self, Arch::X86_64)
+    }
+    pub fn is_32_bit(&self) -> bool {
+        matches!(self, Arch::X86)
     }
 }
 
@@ -177,11 +180,11 @@ impl Target {
         s
     }
 
-    pub fn new(arch: Arch, os: Os, abi: Abi) -> Self {
+    pub const fn new(arch: Arch, os: Os, abi: Abi) -> Self {
         Self { arch, os, abi }
     }
 
-    pub fn new_simple(arch: Arch, os: Os) -> Self {
+    pub const fn new_simple(arch: Arch, os: Os) -> Self {
         Self::new(arch, os, Abi::None)
     }
 
@@ -192,6 +195,27 @@ impl Target {
 
     pub fn from_name(name: &str) -> Self {
         Target::from_str(name).expect("failed to parse target")
+    }
+
+    pub fn targets() -> &'static [Target] {
+        macro_rules! target {
+            ($arch:ident - $os:ident) => {
+                const { Target::new_simple(Arch::$arch, Os::$os) }
+            };
+            ($arch:ident - $os:ident - $abi:ident) => {
+                const { Target::new(Arch::$arch, Os::$os, Abi::$abi) }
+            };
+        }
+        &[
+            target!(X86_64 - Linux),
+            target!(X86_64 - Linux - Gnu),
+            target!(X86 - Linux),
+            target!(X86 - Linux - Gnu),
+            target!(X86_64 - Other),
+            target!(X86_64 - Freestanding),
+            target!(X86 - Other),
+            target!(X86 - Freestanding),
+        ]
     }
 }
 

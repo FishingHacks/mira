@@ -22,19 +22,13 @@ pub struct ScopeTypeMetadata {
     pub stack_allocated: bool,
 }
 
+#[derive(Default)]
 pub struct Scopes {
     entries: Vec<HashMap<GlobalStr, ScopeValueId>>,
     values: Vec<(Type, ScopeTypeMetadata)>,
 }
 
 impl Scopes {
-    pub fn new() -> Self {
-        Self {
-            entries: vec![HashMap::new()],
-            values: Vec::new(),
-        }
-    }
-
     pub fn get(&self, key: &GlobalStr) -> Option<(&(Type, ScopeTypeMetadata), ScopeValueId)> {
         let len = self.entries.len();
         for i in 1..=len {
@@ -59,7 +53,7 @@ impl Scopes {
     }
 
     pub fn insert(&mut self, key: GlobalStr, value: ScopeValueId) -> Option<ScopeValueId> {
-        if self.entries.len() < 1 {
+        if self.entries.is_empty() {
             self.push_scope();
         }
         let idx = self.entries.len() - 1;
@@ -70,7 +64,7 @@ impl Scopes {
         if !value.is_sized() {
             panic!("unsized type: {value:?}");
         }
-        if self.entries.len() < 1 {
+        if self.entries.is_empty() {
             self.push_scope();
         }
         self.values.push((
@@ -114,7 +108,7 @@ pub fn typecheck_static(
     match typecheck_expression(
         context,
         tc_module_reader[static_id].2,
-        &mut Scopes::new(),
+        &mut Scopes::default(),
         &Expression::Literal(expr, tc_module_reader[static_id].3.clone()),
         &mut Vec::new(),
         TypeSuggestion::from_type(typ),
@@ -164,7 +158,7 @@ pub fn typecheck_function(
         (statement, module_id)
     };
 
-    let mut scope = Scopes::new();
+    let mut scope = Scopes::default();
 
     let (return_type, args, loc) = if is_external {
         let contract = &context.external_functions.read()[function_id].0;
@@ -183,11 +177,11 @@ pub fn typecheck_function(
     };
 
     let mut errs = vec![];
-    if is_external {
-        if !return_type.is_primitive() || (!return_type.is_thin_ptr() && return_type.refcount() > 0)
-        {
-            errs.push(TypecheckingError::InvalidExternReturnType(loc.clone()));
-        }
+    if is_external
+        && (!return_type.is_primitive()
+            || (return_type.refcount() > 0 && !return_type.is_thin_ptr()))
+    {
+        errs.push(TypecheckingError::InvalidExternReturnType(loc.clone()));
     }
     if !return_type.is_sized() {
         errs.push(TypecheckingError::UnsizedReturnType(
@@ -198,7 +192,7 @@ pub fn typecheck_function(
     for (_, arg) in args.iter().filter(|v| !v.1.is_sized()) {
         errs.push(TypecheckingError::UnsizedArgument(loc.clone(), arg.clone()));
     }
-    (errs.len() == 0).then_some(()).ok_or(errs)?;
+    (errs.is_empty()).then_some(()).ok_or(errs)?;
 
     let mut exprs = vec![];
     for arg in args {
@@ -221,20 +215,14 @@ pub fn typecheck_function(
                 }]);
             }
             if !always_returns {
-                if let Err(e) = typecheck_statement(
+                typecheck_statement(
                     context,
                     &mut scope,
                     &Statement::Return(None, statement.loc().clone()),
                     module_id,
                     &return_type,
                     &mut exprs,
-                ) {
-                    return Err(e);
-                }
-                //exprs.push(TypecheckedExpression::Return(
-                //    statement.loc().clone(),
-                //    TypedLiteral::Void,
-                //));
+                )?;
             }
             if is_external {
                 let mut exprs = Some(exprs.into_boxed_slice());
@@ -319,7 +307,7 @@ fn typecheck_statement(
             let Ok(else_stmt_exits) = else_stmt_result else {
                 return Err(errs);
             };
-            if errs.len() > 0 {
+            if !errs.is_empty() {
                 return Err(errs);
             }
             exprs.push(TypecheckedExpression::If {
@@ -368,7 +356,7 @@ fn typecheck_statement(
             let Ok(mut always_exits) = body_result else {
                 return Err(errs);
             };
-            if errs.len() > 0 {
+            if !errs.is_empty() {
                 return Err(errs);
             }
             // while (true) {} also never exits
@@ -453,7 +441,7 @@ fn typecheck_statement(
 
             scope.pop_scope();
 
-            if errs.len() > 0 {
+            if !errs.is_empty() {
                 Err(errs)
             } else {
                 exprs.push(TypecheckedExpression::Block(
@@ -649,7 +637,7 @@ fn typecheck_expression(
                 Type::PrimitiveStr(1),
                 TypedLiteral::String(global_str.clone()),
             )),
-            LiteralValue::Array(vec) if vec.len() == 0 => {
+            LiteralValue::Array(vec) if vec.is_empty() => {
                 let typ = match type_suggestion {
                     TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
                         .to_type(context)
@@ -700,12 +688,12 @@ fn typecheck_expression(
                     suggested_element_types = vec;
                 }
 
-                for i in 0..values.len() {
+                for (i, (_, value)) in values.iter().enumerate() {
                     let (typ, val) = typecheck_expression(
                         context,
                         module,
                         scope,
-                        &values[i].1,
+                        value,
                         exprs,
                         suggested_element_types.get(i).cloned().unwrap_or_default(),
                     )?;
@@ -732,7 +720,7 @@ fn typecheck_expression(
                 let structure = &context.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
-                    if structure.elements.iter().find(|v| v.0 == *k).is_none() {
+                    if !structure.elements.iter().any(|v| v.0 == *k) {
                         return Err(TypecheckingError::NoSuchFieldFound {
                             location: values[k].0.clone(),
                             name: k.clone(),
@@ -796,7 +784,7 @@ fn typecheck_expression(
                 let structure = &context.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
-                    if structure.elements.iter().find(|v| v.0 == *k).is_none() {
+                    if !structure.elements.iter().any(|v| v.0 == *k) {
                         return Err(TypecheckingError::NoSuchFieldFound {
                             location: values[k].0.clone(),
                             name: k.clone(),
@@ -851,7 +839,7 @@ fn typecheck_expression(
             )),
             LiteralValue::Bool(v) => Ok((Type::PrimitiveBool(0), TypedLiteral::Bool(*v))),
             LiteralValue::Dynamic(path) => {
-                if path.entries.len() == 1 && path.entries[0].1.len() == 0 {
+                if path.entries.len() == 1 && path.entries[0].1.is_empty() {
                     if let Some(((typ, _), id)) = scope.get(&path.entries[0].0) {
                         return Ok((typ.clone(), TypedLiteral::Dynamic(id)));
                     }
@@ -899,12 +887,10 @@ fn typecheck_expression(
                         context.statics.read()[id].0.clone(),
                         TypedLiteral::Static(id),
                     )),
-                    _ => {
-                        return Err(TypecheckingError::CannotFindValue(
-                            location.clone(),
-                            path.clone(),
-                        ))
-                    }
+                    _ => Err(TypecheckingError::CannotFindValue(
+                        location.clone(),
+                        path.clone(),
+                    )),
                 }
             }
             LiteralValue::BakedAnonymousFunction(fn_id) => {
@@ -980,9 +966,9 @@ fn typecheck_expression(
                 asm: asm.clone(),
             });
             if matches!(output, Type::PrimitiveVoid(0)) {
-                return Ok((output, TypedLiteral::Void));
+                Ok((output, TypedLiteral::Void))
             } else {
-                return Ok((output, TypedLiteral::Dynamic(id)));
+                Ok((output, TypedLiteral::Dynamic(id)))
             }
         }
         Expression::Unary {
@@ -1196,12 +1182,12 @@ fn typecheck_expression(
                     location: arguments[function_type.arguments.len() - 1].loc().clone(),
                 });
             }
-            for i in 0..arguments.len() {
+            for (i, arg) in arguments.iter().enumerate() {
                 let (typ, expr) = typecheck_expression(
                     context,
                     module,
                     scope,
-                    &arguments[i],
+                    arg,
                     exprs,
                     function_type
                         .arguments
@@ -1339,7 +1325,7 @@ fn typecheck_expression(
             loc,
         } => {
             let (typ, lhs) =
-                typecheck_expression(context, module, scope, &**left_side, exprs, type_suggestion)?;
+                typecheck_expression(context, module, scope, left_side, exprs, type_suggestion)?;
             let new_type = context.resolve_type(module, new_type, &[])?;
             typecheck_cast(scope, exprs, typ, new_type, lhs, loc.clone(), context)
         }
@@ -1482,7 +1468,9 @@ fn typecheck_cast(
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // &T to &void
-        (_, Type::PrimitiveVoid(ref_other)) if *ref_other > 0 && typ.is_thin_ptr() => {
+        (_, Type::PrimitiveVoid(ref_other))
+            if *ref_other > 0 && typ.refcount() > 0 && typ.is_thin_ptr() =>
+        {
             let id = scope.push(new_typ.clone());
             exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
@@ -1531,6 +1519,7 @@ fn typecheck_cast(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn typecheck_dyn_membercall(
     context: &TypecheckingContext,
     scope: &mut Scopes,
@@ -1545,7 +1534,7 @@ fn typecheck_dyn_membercall(
 ) -> Result<(Type, TypedLiteral), TypecheckingError> {
     let trait_reader = context.traits.read();
     let mut offset = 0;
-    let (mut arg_typs, mut return_ty, trait_name) = 'out: {
+    let (mut arg_typs, return_ty, trait_name) = 'out: {
         for trait_id in trait_refs.iter().map(|v| v.0) {
             for func in trait_reader[trait_id].functions.iter() {
                 if func.0 == *ident {
@@ -1583,10 +1572,8 @@ fn typecheck_dyn_membercall(
     if matches!(return_ty, Type::PrimitiveSelf(_))
         || arg_typs
             .iter()
-            .skip(1) // skip first arg for fn(&self, ...)
-            .filter(|v| matches!(v.1, Type::PrimitiveSelf(_)))
-            .next()
-            .is_some()
+            .skip(1)
+            .any(|v| matches!(v.1, Type::PrimitiveSelf(_)))
     {
         return Err(TypecheckingError::InvalidDynTypeFunc(
             lhs_loc,
@@ -1746,7 +1733,7 @@ fn typecheck_membercall(
     if function
         .0
         .arguments
-        .get(0)
+        .first()
         .map(|v| v.1.clone().without_ref())
         != Some(typ_lhs.clone().without_ref())
     {
@@ -1793,14 +1780,14 @@ fn typecheck_membercall(
             location: args[function.0.arguments.len() - 1].loc().clone(),
         });
     }
-    for i in 0..function.0.arguments.len() - 1 {
+    for (i, (_, arg)) in function.0.arguments.iter().skip(1).enumerate() {
         let (typ, expr) = typecheck_expression(
             context,
             module,
             scope,
-            &args[i],
+            &args[i + 1], // skip one argument for the `self` argument
             exprs,
-            TypeSuggestion::from_type(&function.0.arguments[i + 1].1),
+            TypeSuggestion::from_type(arg),
         )?;
         if typ != function.0.arguments[i + 1].1 {
             return Err(TypecheckingError::MismatchingType {
@@ -2042,45 +2029,44 @@ fn ref_resolve_indexing(
                 ));
             }
 
-            match type_suggestion {
-                TypeSuggestion::UnsizedArray(_) => match typ {
+            match (type_suggestion, typ) {
+                (
+                    TypeSuggestion::UnsizedArray(_),
                     Type::SizedArray {
                         typ,
                         num_references: 0,
                         number_elements,
-                    } => {
-                        let typed_literal_sized_array_ref = make_reference(
-                            scope,
-                            exprs,
-                            Type::SizedArray {
-                                typ: typ.clone(),
-                                num_references: 0,
-                                number_elements,
-                            },
-                            typed_literal,
-                            expression.loc().clone(),
-                        );
-                        let typ = Type::UnsizedArray {
-                            typ,
+                    },
+                ) => {
+                    let typed_literal_sized_array_ref = make_reference(
+                        scope,
+                        exprs,
+                        Type::SizedArray {
+                            typ: typ.clone(),
                             num_references: 0,
-                        };
-                        let id = scope.push(typ.clone().take_ref());
-                        exprs.push(TypecheckedExpression::MakeUnsizedSlice(
-                            expression.loc().clone(),
-                            id,
-                            typed_literal_sized_array_ref,
                             number_elements,
-                        ));
-                        return Ok((typ, TypedLiteral::Dynamic(id)));
-                    }
-                    _ => (),
-                },
-                _ => (),
+                        },
+                        typed_literal,
+                        expression.loc().clone(),
+                    );
+                    let typ = Type::UnsizedArray {
+                        typ,
+                        num_references: 0,
+                    };
+                    let id = scope.push(typ.clone().take_ref());
+                    exprs.push(TypecheckedExpression::MakeUnsizedSlice(
+                        expression.loc().clone(),
+                        id,
+                        typed_literal_sized_array_ref,
+                        number_elements,
+                    ));
+                    Ok((typ, TypedLiteral::Dynamic(id)))
+                }
+                (_, typ) => Ok((
+                    typ.clone(),
+                    make_reference(scope, exprs, typ, typed_literal, expression.loc().clone()),
+                )),
             }
-            Ok((
-                typ.clone(),
-                make_reference(scope, exprs, typ, typed_literal, expression.loc().clone()),
-            ))
         }
     }
 }

@@ -30,7 +30,7 @@ fn mangle_path(path: &Path, mangled_string: &mut String) {
             continue;
         };
         tmp_escaped_name_part.clear();
-        if matches!(name.as_encoded_bytes()[0] as char, '0'..='9') {
+        if name.as_encoded_bytes()[0].is_ascii_digit() {
             tmp_escaped_name_part.push('_');
         }
         name.as_encoded_bytes()

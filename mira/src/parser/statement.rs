@@ -46,11 +46,11 @@ impl Display for Trait {
             f.write_str("    fn ")?;
             Display::fmt(name, f)?;
             f.write_char('(')?;
-            for i in 0..args.len() {
+            for (i, v) in args.iter().enumerate() {
                 if i != 0 {
                     f.write_str(", ")?;
                 }
-                Display::fmt(&args[i], f)?;
+                Display::fmt(v, f)?;
             }
             f.write_char(')')?;
             if !matches!(return_type, TypeRef::Void(_, 0)) {
@@ -103,6 +103,7 @@ pub enum Statement {
         elements: Vec<(GlobalStr, TypeRef)>,
         location: Location,
         global_impl: HashMap<GlobalStr, (FunctionContract, Statement)>,
+        #[allow(clippy::type_complexity)]
         impls: Vec<(
             GlobalStr,
             HashMap<GlobalStr, (FunctionContract, Statement)>,
@@ -276,15 +277,14 @@ impl Display for Statement {
             } => {
                 f.write_str("struct ")?;
                 Display::fmt(name, f)?;
-                if generics.len() > 0 {
+                if !generics.is_empty() {
                     f.write_char('<')?;
-                    for i in 0..generics.len() {
-                        let generic = &generics[i];
+                    for (i, generic) in generics.iter().enumerate() {
                         if i != 0 {
                             f.write_str(", ")?;
                         }
                         Display::fmt(&generic.name, f)?;
-                        if generic.bounds.len() > 0 {
+                        if !generic.bounds.is_empty() {
                             for i in 0..generic.bounds.len() {
                                 if i != 0 {
                                     f.write_str(" + ")?;
@@ -357,7 +357,7 @@ pub fn display_contract(
         f.write_str("(callable ")?;
     }
 
-    if contract.generics.len() > 0 {
+    if !contract.generics.is_empty() {
         f.write_char('<')?;
         for i in 0..contract.generics.len() {
             let generic = &contract.generics[i];
@@ -365,7 +365,7 @@ pub fn display_contract(
                 f.write_str(", ")?;
             }
             Display::fmt(&generic.name, f)?;
-            if generic.bounds.len() > 0 {
+            if !generic.bounds.is_empty() {
                 f.write_str(": ")?;
                 for i in 0..generic.bounds.len() {
                     if i != 0 {
@@ -431,14 +431,13 @@ impl Parser {
 
     pub fn parse_statement(&mut self, is_global: bool) -> Result<Statement, ParsingError> {
         while !self.is_at_end() {
-            match self.parse_statement_part(is_global)? {
-                Some(statement) => return Ok(statement),
-                None => {}
+            if let Some(statement) = self.parse_statement_part(is_global)? {
+                return Ok(statement);
             }
         }
-        return Err(ParsingError::ExpectedStatement {
+        Err(ParsingError::ExpectedStatement {
             loc: self.peek().location.clone(),
-        });
+        })
     }
 
     pub fn parse_statement_part(
@@ -454,22 +453,21 @@ impl Parser {
             };
         }
 
-        if self.current_annotations.len() > 0
-            && match self.peek().typ {
+        if !self.current_annotations.is_empty()
+            && !matches!(
+                self.peek().typ,
                 TokenType::AnnotationIntroducer
-                | TokenType::Extern
-                | TokenType::Fn
-                | TokenType::CurlyLeft
-                | TokenType::Struct
-                | TokenType::For
-                | TokenType::While
-                | TokenType::Let
-                | TokenType::Trait
-                | TokenType::Pub
-                | TokenType::If => false,
-
-                _ => true,
-            }
+                    | TokenType::Extern
+                    | TokenType::Fn
+                    | TokenType::CurlyLeft
+                    | TokenType::Struct
+                    | TokenType::For
+                    | TokenType::While
+                    | TokenType::Let
+                    | TokenType::Trait
+                    | TokenType::Pub
+                    | TokenType::If
+            )
         {
             self.bail();
             return Err(ParsingError::ExpectedAnnotationStatement {
@@ -608,7 +606,7 @@ impl Parser {
         self.expect_tok(TokenType::ParenLeft)?;
         let mut strn = String::new();
         while !self.match_tok(TokenType::ParenRight) {
-            if strn.len() > 0 {
+            if !strn.is_empty() {
                 self.expect_tok(TokenType::Comma)?;
                 if self.match_tok(TokenType::ParenRight) {
                     break;
@@ -616,7 +614,7 @@ impl Parser {
             }
             let tok = self.expect_tok(TokenType::StringLiteral)?;
             tok.string_literal()?.with(|v| {
-                if strn.len() > 0 {
+                if !strn.is_empty() {
                     strn.push('\n');
                 }
                 strn.push_str(v);
@@ -745,7 +743,7 @@ impl Parser {
         self.expect_tok(TokenType::ParenLeft)?;
 
         while !self.match_tok(TokenType::ParenRight) {
-            if arguments.len() > 0 {
+            if !arguments.is_empty() {
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
                         loc: self.peek().location.clone(),
@@ -989,7 +987,7 @@ impl Parser {
         self.expect_tok(TokenType::CurlyLeft)?;
 
         while !self.matches(&[TokenType::CurlyRight, TokenType::Semicolon]) {
-            if elements.len() > 0 {
+            if !elements.is_empty() {
                 // needs comma
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedObjectElement {
@@ -1072,7 +1070,7 @@ impl Parser {
                         }
                         impls.push((trait_name, current_impl, loc));
                     }
-                    token @ _ => {
+                    token => {
                         return Err(ParsingError::StructImplRegionExpect {
                             loc: self.peek().location.clone(),
                             found: token,
@@ -1101,7 +1099,7 @@ impl Parser {
                 found: self.peek().typ,
             });
         }
-        self.current().string_literal().map(GlobalStr::clone)
+        self.current().string_literal().cloned()
     }
     pub fn parse_annotation(&mut self) -> Result<(), ParsingError> {
         let loc = self.peek().location.clone();
@@ -1254,7 +1252,7 @@ impl Parser {
         self.expect_tok(TokenType::ParenLeft)?;
 
         while !self.match_tok(TokenType::ParenRight) {
-            if arguments.len() > 0 {
+            if !arguments.is_empty() {
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
                         loc: self.peek().location.clone(),
@@ -1321,7 +1319,7 @@ impl Parser {
         let mut generics = vec![];
 
         while !self.match_tok(TokenType::GreaterThan) {
-            if generics.len() > 0 {
+            if !generics.is_empty() {
                 self.expect_tok(TokenType::Comma)?;
 
                 // trailing comma

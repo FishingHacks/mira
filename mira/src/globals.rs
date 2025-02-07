@@ -36,7 +36,7 @@ impl<T> Slab<T> {
                 }
             }
             self.last_free = self.entries.len();
-            return entry;
+            entry
         }
     }
 
@@ -53,10 +53,10 @@ impl<T> Slab<T> {
     }
 
     pub fn get(&self, index: usize) -> Option<&T> {
-        self.entries.get(index).map(Option::as_ref).flatten()
+        self.entries.get(index).and_then(Option::as_ref)
     }
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.entries.get_mut(index).map(Option::as_mut).flatten()
+        self.entries.get_mut(index).and_then(Option::as_mut)
     }
 }
 
@@ -205,7 +205,7 @@ impl Display for GlobalStr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         STRINGS.with_borrow(|strings: &GlobalStrs| {
             if let Some(v) = strings.get(self.0) {
-                f.write_str(&*v.value)
+                f.write_str(&v.value)
             } else {
                 f.write_str("GlobalStr<missing #")?;
                 Display::fmt(&self.0, f)?;

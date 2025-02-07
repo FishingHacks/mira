@@ -144,7 +144,7 @@ pub fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
             num_references,
             type_name,
             loc: _,
-        } if type_name.entries.len() == 1 && type_name.entries[0].1.len() == 0 => {
+        } if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() => {
             type_name.entries[0].0.with(|type_name| match type_name {
                 "!" => Some(Type::PrimitiveNever),
                 "void" => Some(Type::PrimitiveVoid(*num_references)),
@@ -194,7 +194,7 @@ impl Type {
                 trait_refs,
                 num_references: 0,
                 ..
-            } => values_match(&trait_refs, traits),
+            } => values_match(trait_refs, traits),
             Type::DynType {
                 trait_refs,
                 num_references: 1,
@@ -359,6 +359,7 @@ impl Type {
     }
 
     pub fn is_thin_ptr(&self) -> bool {
+        assert!(self.refcount() != 0);
         // &&str is a thin pointer as it is a reference to a fat pointer, which is a thin pointer
         if self.refcount() > 1 {
             return true;
@@ -666,21 +667,21 @@ impl Display for Type {
             Type::Trait { real_name, .. } => Display::fmt(real_name, f),
             Type::DynType { trait_refs, .. } => {
                 f.write_str("dyn ")?;
-                for i in 0..trait_refs.len() {
+                for (i, (_, trait_ref)) in trait_refs.iter().enumerate() {
                     if i != 0 {
                         f.write_str(" + ")?;
                     }
-                    Display::fmt(&trait_refs[i].1, f)?;
+                    Display::fmt(trait_ref, f)?;
                 }
                 Ok(())
             }
             Type::Tuple { elements, .. } => {
                 f.write_char('(')?;
-                for i in 0..elements.len() {
+                for (i, elem) in elements.iter().enumerate() {
                     if i != 0 {
                         f.write_str(", ")?
                     }
-                    Display::fmt(&elements[i], f)?;
+                    Display::fmt(elem, f)?;
                 }
                 f.write_char(')')
             }
@@ -761,7 +762,7 @@ impl PartialEq for Type {
                         .iter()
                         .map(|v| v.0)
                         .zip(other_traits.iter().map(|v| v.0))
-                        .fold(true, |a, b| a && (b.0 == b.1))
+                        .all(|b| b.0 == b.1)
             }
             (
                 Type::Struct {
@@ -839,11 +840,11 @@ impl Display for TypeSuggestion {
             TypeSuggestion::Number(number_type) => Display::fmt(number_type, f),
             TypeSuggestion::Tuple(elements) => {
                 f.write_char('(')?;
-                for i in 0..elements.len() {
+                for (i, elem) in elements.iter().enumerate() {
                     if i != 0 {
                         f.write_str(", ")?
                     }
-                    Display::fmt(&elements[i], f)?
+                    Display::fmt(elem, f)?
                 }
                 f.write_char(')')
             }

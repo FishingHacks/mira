@@ -73,9 +73,9 @@ pub fn resolve_module(
 
 /// Does the following lookups ($name refers to the last part of the path):
 /// - if $name ends with .mr, returns Some if the path exists and is not a directory, otherwise
-/// returns None
+///   returns None
 /// - if $name does not exist or is not a directory and $name.mr exists and is not a directory,
-/// return $name.mr (e.g. `hello.mr` for `hello`)
+///   return $name.mr (e.g. `hello.mr` for `hello`)
 /// - if $name does not exist or is not a directory, return None
 /// - if $name/$name.mr exists and is not a directory, return it
 /// - if $name/lib.mr exists and is not a directory, return it
@@ -146,7 +146,7 @@ pub struct ResolvedPath {
     pub root_dir: Arc<Path>,
     pub file: Arc<Path>,
 }
-pub trait ModuleResolver {
+pub trait ModuleResolver: 'static + Send + Sync {
     /// uses starting with ./, will get stripped from `data.import`
     #[allow(unused_variables)]
     fn resolve_relative(&self, data: ImportData) -> Option<ResolvedPath> {
@@ -218,7 +218,7 @@ impl ModuleResolver for SingleModuleResolver {
 pub struct BasicModuleResolver(pub Vec<&'static str>);
 impl ModuleResolver for BasicModuleResolver {
     fn resolve_module(&self, data: ImportData, module_name: &str) -> Option<ResolvedPath> {
-        if self.0.len() < 1 {
+        if self.0.is_empty() {
             return None;
         }
         let root_dir = PathBuf::from(self.0[0].replace("$name", module_name)).into();
@@ -241,5 +241,38 @@ impl ModuleResolver for BasicModuleResolver {
             });
         }
         None
+    }
+}
+
+pub struct SingleFileModuleResolver {
+    pub name: String,
+    pub file: Arc<Path>,
+    pub root_dir: Arc<Path>,
+}
+impl ModuleResolver for SingleFileModuleResolver {
+    fn resolve_module(&self, data: ImportData, module_name: &str) -> Option<ResolvedPath> {
+        if !data.import.is_empty() || module_name != self.name {
+            return None;
+        }
+        Some(ResolvedPath {
+            root_dir: self.root_dir.clone(),
+            file: self.file.clone(),
+        })
+    }
+}
+
+impl SingleFileModuleResolver {
+    pub fn new(name: &str, file: Arc<Path>, root_dir: Option<Arc<Path>>) -> Self {
+        let root_dir = root_dir.unwrap_or_else(|| {
+            file.parent()
+                .map(Into::into)
+                .unwrap_or(Path::new("").into())
+        });
+        let name = name.to_string();
+        Self {
+            name,
+            file,
+            root_dir,
+        }
     }
 }

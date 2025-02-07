@@ -15,8 +15,8 @@ use inkwell::{
     basic_block::BasicBlock,
     context::Context,
     debug_info::{
-        debug_metadata_version, AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants,
-        DILexicalBlock, DILocation, DINamespace, DIScope, DISubprogram, DIType, DWARFEmissionKind,
+        debug_metadata_version, AsDIScope, DIFile, DIFlags, DIFlagsConstants, DILexicalBlock,
+        DILocation, DINamespace, DIScope, DISubprogram, DIType, DWARFEmissionKind,
         DWARFSourceLanguage, DebugInfoBuilder,
     },
     module::{FlagBehavior, Module},
@@ -33,7 +33,6 @@ pub struct DebugContext<'ctx> {
     pub(super) builder: DebugInfoBuilder<'ctx>,
     global_scope: DIScope<'ctx>,
     root_file: DIFile<'ctx>,
-    compile_unit: DICompileUnit<'ctx>,
     pub(super) modules: Vec<(DINamespace<'ctx>, DIFile<'ctx>)>,
     default_types: DefaultTypes<'ctx>,
     type_store: HashMap<Type, DIType<'ctx>>,
@@ -48,6 +47,7 @@ impl<'ctx> DebugContext<'ctx> {
             .create_debug_location(self.context, loc.line, loc.column, scope, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn declare_param(
         &mut self,
         ptr: PointerValue<'ctx>,
@@ -77,6 +77,7 @@ impl<'ctx> DebugContext<'ctx> {
             .insert_declare_at_end(ptr, Some(info), None, self.location(scope, loc), bb)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn declare_variable(
         &mut self,
         ptr: PointerValue<'ctx>,
@@ -173,7 +174,6 @@ impl<'ctx> DebugContext<'ctx> {
         let root_file = builder.create_file(&root_filename, &root_directory);
         let mut me = Self {
             builder,
-            compile_unit,
             modules: Vec::with_capacity(module_reader.len()),
             default_types,
             global_scope: compile_unit.as_debug_info_scope(),
@@ -473,6 +473,7 @@ impl<'ctx> DebugContext<'ctx> {
                             inner_ty,
                             size * 8,
                             alignment * 8,
+                            #[allow(clippy::single_range_in_vec_init)]
                             &[0..*number_elements as i64],
                         )
                         .as_type()

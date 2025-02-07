@@ -24,6 +24,7 @@ pub mod expression;
 pub mod intrinsics;
 pub mod ir_displayer;
 mod type_resolution;
+#[allow(clippy::module_inception)]
 pub mod typechecking;
 mod types;
 pub use error::TypecheckingError;
@@ -58,6 +59,7 @@ impl Hash for TypecheckedFunctionContract {
 }
 
 #[derive(Debug)]
+#[allow(clippy::type_complexity)]
 pub struct TypedTrait {
     pub name: GlobalStr,
     pub functions: Vec<(
@@ -95,6 +97,7 @@ impl Hash for TypedStruct {
 }
 
 #[derive(Debug)]
+#[allow(clippy::type_complexity)]
 pub struct TypecheckingContext {
     pub modules: RwLock<Vec<TypecheckedModule>>,
     pub functions: RwLock<Vec<(TypecheckedFunctionContract, Box<[TypecheckedExpression]>)>>,
@@ -332,13 +335,14 @@ impl TypecheckingContext {
                 type_name,
                 loc,
             } => {
-                if type_name.entries.len() == 1 && type_name.entries[0].1.len() == 0 {
-                    if generics.contains(&type_name.entries[0].0) {
-                        return Ok(Type::Generic(
-                            type_name.entries[0].0.clone(),
-                            *num_references,
-                        ));
-                    }
+                if type_name.entries.len() == 1
+                    && type_name.entries[0].1.is_empty()
+                    && generics.contains(&type_name.entries[0].0)
+                {
+                    return Ok(Type::Generic(
+                        type_name.entries[0].0.clone(),
+                        *num_references,
+                    ));
                 }
 
                 let path = type_name
@@ -349,7 +353,7 @@ impl TypecheckingContext {
                 // NOTE: this should only have a generic at the end as this is a type
                 // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
                 for (_, generics) in type_name.entries.iter() {
-                    if generics.len() > 0 {
+                    if !generics.is_empty() {
                         return Err(TypecheckingError::UnexpectedGenerics {
                             location: loc.clone(),
                         });
@@ -375,7 +379,7 @@ impl TypecheckingContext {
                 child,
                 loc: _,
             } => Ok(Type::UnsizedArray {
-                typ: Box::new(self.resolve_type(module_id, &**child, generics)?),
+                typ: Box::new(self.resolve_type(module_id, child, generics)?),
                 num_references: *num_references,
             }),
             TypeRef::SizedArray {
@@ -384,7 +388,7 @@ impl TypecheckingContext {
                 number_elements,
                 ..
             } => Ok(Type::SizedArray {
-                typ: Box::new(self.resolve_type(module_id, &**child, generics)?),
+                typ: Box::new(self.resolve_type(module_id, child, generics)?),
                 num_references: *num_references,
                 number_elements: *number_elements,
             }),
@@ -394,8 +398,8 @@ impl TypecheckingContext {
                 ..
             } => {
                 let mut typed_elements = Vec::with_capacity(elements.len());
-                for i in 0..elements.len() {
-                    typed_elements.push(self.resolve_type(module_id, &elements[i], generics)?);
+                for elem in elements.iter() {
+                    typed_elements.push(self.resolve_type(module_id, elem, generics)?);
                 }
                 Ok(Type::Tuple {
                     num_references: *num_references,
@@ -464,8 +468,7 @@ impl TypecheckingContext {
                     typed_struct
                         .generics
                         .iter()
-                        .find(|(v, ..)| *v == *generic_name)
-                        .is_some()
+                        .any(|(v, ..)| *v == *generic_name)
                 },
                 module_id,
                 context.clone(),
@@ -474,7 +477,7 @@ impl TypecheckingContext {
                 let typ = match typ {
                     Type::Generic(real_name, num_references) => {
                         match typed_struct.generics.iter().find(|(v, ..)| *v == real_name) {
-                            Some(v) if v.1.len() > 0 => Type::Trait {
+                            Some(v) if !v.1.is_empty() => Type::Trait {
                                 trait_refs: v.1.clone(),
                                 num_references,
                                 real_name,
@@ -549,16 +552,17 @@ impl TypecheckingContext {
                 // NOTE: this should only have a generic at the end as this is a type
                 // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
                 for (_, generics) in type_name.entries.iter() {
-                    if generics.len() > 0 {
+                    if !generics.is_empty() {
                         return None;
                     }
                 }
 
                 // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
-                if type_name.entries.len() == 1 && type_name.entries[0].1.len() == 0 {
-                    if is_generic_name(&type_name.entries[0].0) {
-                        return Some(Type::Generic(type_name.entries[0].0.clone(), 0));
-                    }
+                if type_name.entries.len() == 1
+                    && type_name.entries[0].1.is_empty()
+                    && is_generic_name(&type_name.entries[0].0)
+                {
+                    return Some(Type::Generic(type_name.entries[0].0.clone(), 0));
                 }
 
                 let Ok(value) = resolve_import(&context, module, &path, loc, &mut Vec::new())
@@ -645,9 +649,9 @@ impl TypecheckingContext {
                 ..
             } => {
                 let mut typed_elements = Vec::with_capacity(elements.len());
-                for i in 0..elements.len() {
+                for elem in elements.iter() {
                     typed_elements.push(self.type_resolution_resolve_type(
-                        &elements[i],
+                        elem,
                         is_generic_name,
                         module,
                         context.clone(),
@@ -670,13 +674,12 @@ fn typed_resolve_import(
     location: &Location,
     already_included: &mut Vec<(ModuleId, GlobalStr)>,
 ) -> Result<ModuleScopeValue, TypecheckingError> {
-    if import.len() < 1 {
+    if import.is_empty() {
         return Ok(ModuleScopeValue::Module(module));
     }
     if already_included
         .iter()
-        .find(|(mod_id, imp)| module.eq(mod_id) && import[0].eq(imp))
-        .is_some()
+        .any(|(mod_id, imp)| module.eq(mod_id) && import[0].eq(imp))
     {
         return Err(TypecheckingError::CyclicDependency {
             location: location.clone(),
@@ -741,13 +744,12 @@ fn resolve_import(
     location: &Location,
     already_included: &mut Vec<(ModuleId, GlobalStr)>,
 ) -> Result<ModuleScopeValue, TypecheckingError> {
-    if import.len() < 1 {
+    if import.is_empty() {
         return Ok(ModuleScopeValue::Module(module));
     }
     if already_included
         .iter()
-        .find(|(mod_id, imp)| module.eq(mod_id) && import[0].eq(imp))
-        .is_some()
+        .any(|(mod_id, imp)| module.eq(mod_id) && import[0].eq(imp))
     {
         return Err(TypecheckingError::CyclicDependency {
             location: location.clone(),

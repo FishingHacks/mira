@@ -58,7 +58,6 @@ pub fn run_editor(buffer: &mut String, editor: &Path) {
         Err(e) => {
             println!("Failed to spawn editor: {e:?}");
             let _ = std::fs::remove_file(&tmp_file);
-            return;
         }
         Ok(v) => {
             if !v.status.success() {
@@ -97,7 +96,6 @@ pub fn run_editor(buffer: &mut String, editor: &Path) {
             match std::fs::read_to_string(&tmp_file) {
                 Err(e) => {
                     println!("Failed to read the temporary file. Not deleting.\nError: {e:?}");
-                    return;
                 }
                 Ok(v) => {
                     *buffer = v;

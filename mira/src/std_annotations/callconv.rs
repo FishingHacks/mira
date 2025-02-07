@@ -19,11 +19,7 @@ impl Annotation for CallConvAnnotation {
             || (thing == AnnotationReceiver::ExternalFunction
                 && *self != CallConvAnnotation::Inline)
         {
-            return annotations
-                .get_annotations::<Self>()
-                .skip(1)
-                .next()
-                .is_none();
+            return annotations.get_annotations::<Self>().nth(1).is_none();
         } else {
             false
         }

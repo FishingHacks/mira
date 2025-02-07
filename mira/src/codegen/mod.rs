@@ -25,7 +25,7 @@ use inkwell::{
     context::Context,
     debug_info::{AsDIScope, DIScope},
     module::Module,
-    targets::{TargetMachine, TargetTriple},
+    targets::TargetMachine,
     types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType},
     values::{
         BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, IntValue,
@@ -62,7 +62,6 @@ impl<'ctx, 'me> CodegenContext<'ctx> {
             string_map: &self.string_map,
             vtables: &self.vtables,
             debug_ctx: &mut self.debug_ctx,
-            triple: &self.triple,
             machine: &self.machine,
             intrinsics: &self.intrinsics,
             module: &self.module,
@@ -102,7 +101,6 @@ pub struct FunctionCodegenContext<'ctx, 'codegen> {
     string_map: &'codegen HashMap<GlobalStr, GlobalValue<'ctx>>,
     vtables: &'codegen HashMap<(Type, Vec<TraitId>), GlobalValue<'ctx>>,
     debug_ctx: &'codegen mut DebugContext<'ctx>,
-    triple: &'codegen TargetTriple,
     machine: &'codegen TargetMachine,
     intrinsics: &'codegen LLVMIntrinsics,
     retaddr: FunctionValue<'ctx>,
@@ -274,7 +272,7 @@ fn is_value_const(v: &BasicValueEnum<'_>) -> bool {
     }
 }
 
-fn poison_val<'ctx>(v: BasicTypeEnum<'ctx>) -> BasicValueEnum<'ctx> {
+fn poison_val(v: BasicTypeEnum<'_>) -> BasicValueEnum<'_> {
     match v {
         BasicTypeEnum::ArrayType(v) => v.get_poison().into(),
         BasicTypeEnum::FloatType(v) => v.get_poison().into(),
@@ -285,7 +283,7 @@ fn poison_val<'ctx>(v: BasicTypeEnum<'ctx>) -> BasicValueEnum<'ctx> {
     }
 }
 
-fn static_to_basic_type<'ctx>(static_value: GlobalValue<'ctx>) -> BasicTypeEnum<'ctx> {
+fn static_to_basic_type(static_value: GlobalValue<'_>) -> BasicTypeEnum<'_> {
     match static_value.get_value_type() {
         AnyTypeEnum::ArrayType(ty) => ty.into(),
         AnyTypeEnum::FloatType(ty) => ty.into(),
@@ -305,12 +303,10 @@ fn get_alignment(ty: BasicTypeEnum) -> u32 {
             .get_zero_extended_constant()
             .expect("float size has to be constant") as u32,
         BasicTypeEnum::IntType(ty) => ty.get_bit_width() / 8,
-        BasicTypeEnum::PointerType(ty) => {
-            return ty
-                .size_of()
-                .get_zero_extended_constant()
-                .expect("ptr size has to be constant") as u32
-        }
+        BasicTypeEnum::PointerType(ty) => ty
+            .size_of()
+            .get_zero_extended_constant()
+            .expect("ptr size has to be constant") as u32,
         BasicTypeEnum::VectorType(ty) => get_alignment(ty.get_element_type()),
         BasicTypeEnum::ArrayType(ty) => get_alignment(ty.get_element_type()),
         BasicTypeEnum::StructType(ty) => ty
@@ -338,6 +334,7 @@ impl<'ctx> TypedLiteral {
             ctx.context,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn to_basic_value(
         &self,
         scope_get_value: &dyn Fn(usize) -> BasicValueEnum<'ctx>,
@@ -365,11 +362,10 @@ impl<'ctx> TypedLiteral {
                 builder
                     .build_load(
                         static_to_basic_type(static_value),
-                        static_value.as_pointer_value().into(),
+                        static_value.as_pointer_value(),
                         "",
                     )
                     .expect("the type should always match")
-                    .into()
             }
             TypedLiteral::String(global_str) => {
                 let ptr = string_map[global_str].as_pointer_value().into();
@@ -381,7 +377,7 @@ impl<'ctx> TypedLiteral {
                     .into()
             }
             TypedLiteral::Array(ty, elements) => {
-                if elements.len() == 0 {
+                if elements.is_empty() {
                     return ty
                         .to_llvm_basic_type(default_types, structs, ctx)
                         .array_type(0)
@@ -447,7 +443,7 @@ impl<'ctx> TypedLiteral {
                 const_value.into()
             }
             TypedLiteral::Struct(struct_id, vec) => {
-                if vec.len() < 1 {
+                if vec.is_empty() {
                     return structs[*struct_id].const_named_struct(&[]).into();
                 }
                 let mut non_const_value = Vec::new();
@@ -503,9 +499,9 @@ impl<'ctx> TypedLiteral {
                     elems.push(val);
                 }
                 let mut value = ctx.struct_type(&elem_types, false).const_zero();
-                for i in 0..values.len() {
+                for (i, elem) in elems.into_iter().enumerate() {
                     value = builder
-                        .build_insert_value(value, elems[i], i as u32, "")
+                        .build_insert_value(value, elem, i as u32, "")
                         .expect("integer should never be out of range")
                         .into_struct_value();
                 }
@@ -599,9 +595,7 @@ fn build_deref<'a>(
 
     if ty.refcount() > 0 {
         if ty.is_thin_ptr() {
-            return Ok(ctx
-                .builder
-                .build_load(ctx.default_types.ptr, left_side, "")?);
+            return ctx.builder.build_load(ctx.default_types.ptr, left_side, "");
         } else {
             let actual_ptr = ctx
                 .builder
@@ -656,11 +650,11 @@ fn build_deref<'a>(
                 .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
                 .into_struct_type();
             let mut value = llvm_structure.get_poison();
-            for i in 0..elements.len() {
+            for (i, elem) in elements.iter().enumerate() {
                 let offset_val =
                     ctx.builder
                         .build_struct_gep(llvm_structure, left_side, i as u32, "")?;
-                let element_val = build_deref(offset_val, &elements[i], ctx)?;
+                let element_val = build_deref(offset_val, elem, ctx)?;
                 value = ctx
                     .builder
                     .build_insert_value(value, element_val, i as u32, "")?
@@ -755,7 +749,7 @@ fn build_ptr_store(
         Type::PrimitiveNever | Type::PrimitiveVoid(_) => (),
         Type::Struct { struct_id, .. } => {
             let structure = &ctx.tc_ctx.structs.read()[*struct_id];
-            let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, &ctx.structs, ctx.context);
+            let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for (idx, ty) in structure.elements.iter().map(|v| &v.1).enumerate() {
                 let val = ctx.builder.build_extract_value(
                     right_side.into_struct_value(),
@@ -769,7 +763,7 @@ fn build_ptr_store(
             }
         }
         Type::Tuple { elements, .. } => {
-            let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, &ctx.structs, ctx.context);
+            let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for (idx, ty) in elements.iter().enumerate() {
                 let val = ctx.builder.build_extract_value(
                     right_side.into_struct_value(),
@@ -874,7 +868,7 @@ impl TypecheckedExpression {
                     src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
                     vtable_isize.into_int_value(),
                 )?;
-                ctx.push_value(*dst, fat_ptr.into());
+                ctx.push_value(*dst, fat_ptr);
                 Ok(())
             }
             TypecheckedExpression::DeclareVariable(loc, id, typ, name) => {
@@ -957,7 +951,7 @@ impl TypecheckedExpression {
                 let cpu = ctx.machine.get_cpu();
                 match cpu.to_bytes() {
                     b"x86" | b"x86_64" | b"x86-64" => {
-                        if constraints.len() > 0 {
+                        if !constraints.is_empty() {
                             constraints.push(',');
                         }
                         constraints.push_str("~{dirflag},~{fpsr},~{flags}");
@@ -1266,7 +1260,8 @@ impl TypecheckedExpression {
                 Ok(())
             }
             TypecheckedExpression::Pos(_, dst, src) => {
-                Ok(ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx)))
+                ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx));
+                Ok(())
             }
             TypecheckedExpression::Neg(..) => todo!(),
             TypecheckedExpression::LNot(..) => todo!(),
@@ -1565,7 +1560,8 @@ impl TypecheckedExpression {
             }
             // &void is a nullptr
             TypecheckedExpression::Reference(_, dst, TypedLiteral::Void) => {
-                Ok(ctx.push_value(*dst, ctx.default_types.ptr.const_zero().into()))
+                ctx.push_value(*dst, ctx.default_types.ptr.const_zero().into());
+                Ok(())
             }
             TypecheckedExpression::Reference(_, dst, rhs) => {
                 let value = match rhs {
@@ -1685,7 +1681,7 @@ impl TypecheckedExpression {
                             ctx.builder.build_in_bounds_gep(
                                 typ.to_llvm_basic_type(
                                     &ctx.default_types,
-                                    &ctx.structs,
+                                    ctx.structs,
                                     ctx.context,
                                 ),
                                 src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
@@ -1719,7 +1715,7 @@ impl TypecheckedExpression {
                             ctx.builder.build_in_bounds_gep(
                                 typ.to_llvm_basic_type(
                                     &ctx.default_types,
-                                    &ctx.structs,
+                                    ctx.structs,
                                     ctx.context,
                                 ),
                                 actual_ptr,
@@ -1817,10 +1813,8 @@ impl TypecheckedExpression {
             TypecheckedExpression::Bitcast(_, new, old) => {
                 let new_typ = &ctx.tc_scope[*new].0;
                 let old_typ = old.to_type(&ctx.tc_scope, ctx.tc_ctx);
-                if new_typ.refcount() > 0 {
-                    assert!(new_typ.is_thin_ptr());
-                    assert!(old_typ.is_thin_ptr());
-                }
+                assert!(new_typ.refcount() == 0 || new_typ.is_thin_ptr());
+                assert!(old_typ.refcount() == 0 || old_typ.is_thin_ptr());
                 let new_value = ctx.builder.build_bit_cast(
                     old.fn_ctx_to_basic_value(ctx),
                     new_typ.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context),

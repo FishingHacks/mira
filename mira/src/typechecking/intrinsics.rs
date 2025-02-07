@@ -1,13 +1,12 @@
 use std::fmt::{Display, Write};
-use std::ptr::drop_in_place;
 use std::str::FromStr;
 
 use crate::annotations::{Annotation, AnnotationReceiver, Annotations};
 use crate::error::ParsingError;
-use crate::tokenizer::{Literal, Location, Token, TokenType};
+use crate::tokenizer::Location;
 use crate::tokenstream::TokenStream;
 
-use super::{Type, TypecheckingContext, TypecheckingError};
+use super::{Type, TypecheckingError};
 
 macro_rules! intrinsics {
     ($($name:ident => $value:ident),* $(,)? ) => {
@@ -189,9 +188,7 @@ impl Annotation for IntrinsicAnnotation {
     fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations) -> bool {
         thing == AnnotationReceiver::Function
             && annotations
-                .get_annotations::<Self>()
-                .skip(1)
-                .next()
+                .get_annotations::<Self>().nth(1)
                 .is_none()
     }
 }

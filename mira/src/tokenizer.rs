@@ -308,18 +308,12 @@ impl Token {
                 Literal::String(string) => LiteralValue::String(string.clone()),
             }),
             TokenType::VoidLiteral => Some(LiteralValue::Void),
-            TokenType::IdentifierLiteral => {
-                if let Some(lit) = &self.literal {
-                    return match &lit {
-                        Literal::String(v) => Some(LiteralValue::Dynamic(
-                            crate::parser::Path::new(v.clone(), Vec::new()),
-                        )),
-                        _ => None,
-                    };
-                } else {
-                    return None;
-                }
-            }
+            TokenType::IdentifierLiteral => match self.literal {
+                Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(
+                    crate::parser::Path::new(v.clone(), Vec::new()),
+                )),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -393,7 +387,7 @@ impl Tokenizer {
     pub fn new(source: &str, file: Arc<Path>) -> Self {
         Self {
             source: source.chars().collect(),
-            file: file.into(),
+            file,
             start: 0,
             current: 0,
             tokens: vec![],
@@ -417,7 +411,7 @@ impl Tokenizer {
             location: loc!(self.file;self.line + 1),
         });
 
-        if errors.len() > 0 {
+        if !errors.is_empty() {
             Err(errors)
         } else {
             Ok(())
@@ -456,6 +450,10 @@ impl Tokenizer {
 
         self.advance();
         true
+    }
+
+    pub fn push_token(&mut self, tok: Token) {
+        self.tokens.push(tok);
     }
 
     fn scan_token(&mut self) -> Result<(), TokenizationError> {
@@ -551,7 +549,7 @@ impl Tokenizer {
                 tok.typ = TokenType::IdentifierLiteral;
                 Ok(tok)
             }
-            _ if Self::is_valid_identifier_char(c) && !matches!(c, ('0'..='9')) => {
+            _ if Self::is_valid_identifier_char(c) && !c.is_ascii_digit() => {
                 self.parse_identifier(c)
             }
             _ => {
@@ -573,10 +571,12 @@ impl Tokenizer {
         loop {
             match self.peek() {
                 '0'..='9' => _ = self.advance(),
-                '.' if matches!(
-                    self.source.get(self.current + 1).copied().unwrap_or('\0'),
-                    ('0'..='9')
-                ) =>
+                '.' if self
+                    .source
+                    .get(self.current + 1)
+                    .copied()
+                    .unwrap_or('\0')
+                    .is_ascii_digit() =>
                 {
                     _ = self.advance()
                 }
@@ -653,16 +653,15 @@ impl Tokenizer {
 
         loop {
             match self.peek() {
-                '0'..='9' => value = (value << 4) | self.advance() as u64 - '0' as u64,
-                'a'..='f' => value = (value << 4) | self.advance() as u64 - 'a' as u64 + 0xa,
-                'A'..='F' => value = (value << 4) | self.advance() as u64 - 'A' as u64 + 0xa,
-                '.' if matches!(
-                    self.source
-                        .get(self.current + 1)
-                        .map(|c| *c)
-                        .unwrap_or('\0'),
-                    '0'..='9' | 'a'..='f' | 'A'..='F'
-                ) =>
+                '0'..='9' => value = (value << 4) | (self.advance() as u64 - '0' as u64),
+                'a'..='f' => value = (value << 4) | (self.advance() as u64 - 'a' as u64 + 0xa),
+                'A'..='F' => value = (value << 4) | (self.advance() as u64 - 'A' as u64 + 0xa),
+                '.' if self
+                    .source
+                    .get(self.current + 1)
+                    .copied()
+                    .unwrap_or('\0')
+                    .is_ascii_hexdigit() =>
                 {
                     self.advance();
                     loop {
@@ -706,20 +705,19 @@ impl Tokenizer {
 
         loop {
             match self.peek() {
-                '0' | '1' => value = (value << 1) | self.advance() as u64 - '0' as u64,
+                '0' | '1' => value = (value << 1) | (self.advance() as u64 - '0' as u64),
                 '2'..='9' => {
                     self.advance();
                     return Err(TokenizationError::InvalidNumberError {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
-                '.' if matches!(
-                    self.source
-                        .get(self.current + 1)
-                        .map(|c| *c)
-                        .unwrap_or('\0'),
-                    ('0'..='9')
-                ) =>
+                '.' if self
+                    .source
+                    .get(self.current + 1)
+                    .copied()
+                    .unwrap_or('\0')
+                    .is_ascii_digit() =>
                 {
                     self.advance();
                     self.skip_to_after_number();
@@ -757,20 +755,19 @@ impl Tokenizer {
 
         loop {
             match self.peek() {
-                '0'..='7' => value = (value << 3) | self.advance() as u64 - '0' as u64,
+                '0'..='7' => value = (value << 3) | (self.advance() as u64 - '0' as u64),
                 '8' | '9' => {
                     self.advance();
                     return Err(TokenizationError::InvalidNumberError {
                         loc: loc!(self.file;self.line;self.column),
                     });
                 }
-                '.' if matches!(
-                    self.source
-                        .get(self.current + 1)
-                        .map(|c| *c)
-                        .unwrap_or('\0'),
-                    ('0'..='9')
-                ) =>
+                '.' if self
+                    .source
+                    .get(self.current + 1)
+                    .copied()
+                    .unwrap_or('\0')
+                    .is_ascii_digit() =>
                 {
                     self.advance();
                     self.skip_to_after_number();
@@ -825,7 +822,7 @@ impl Tokenizer {
 
         if first_char == '0' && self.peek() == 'x' {
             self.advance();
-            if !matches!(self.peek(), '0'..='9' | 'a'..='f' | 'A'..='F') {
+            if !self.peek().is_ascii_hexdigit() {
                 self.advance();
                 return Err(TokenizationError::InvalidNumberError {
                     loc: loc!(self.file;self.line;self.column),
@@ -865,24 +862,23 @@ impl Tokenizer {
         str.push(first_char);
 
         while !self.is_at_end() {
-            if typ.len() > 0 {
-                if matches!(self.peek(), 'a'..='z' | '0'..='9') {
+            if !typ.is_empty() {
+                if self.peek().is_ascii_alphanumeric() {
                     typ.push(self.advance());
                     continue;
                 }
                 break;
             }
 
-            if matches!(self.peek(), ('0'..='9')) {
+            if self.peek().is_ascii_digit() {
                 str.push(self.advance())
             } else if self.peek() == '.'
-                && matches!(
-                    self.source
-                        .get(self.current + 1)
-                        .map(|c| *c)
-                        .unwrap_or('\0'),
-                    ('0'..='9')
-                )
+                && self
+                    .source
+                    .get(self.current + 1)
+                    .copied()
+                    .unwrap_or('\0')
+                    .is_ascii_digit()
             {
                 if is_float {
                     self.skip_to_after_number();
@@ -906,7 +902,7 @@ impl Tokenizer {
                 v
             }
             Ok(v) if !is_float => v,
-            Err(_) if typ.len() < 1 => NumberType::None,
+            Err(_) if typ.is_empty() => NumberType::None,
             _ => {
                 return Err(TokenizationError::InvalidNumberType(
                     loc!(self.file;self.line;self.column - typ.len() as u32),
@@ -922,18 +918,16 @@ impl Tokenizer {
                 }
             };
             (Literal::Float(num, number_type), TokenType::FloatLiteral)
+        } else if is_negative {
+            (
+                Literal::SInt(-(Self::parse_dec(&str[1..]) as i64), number_type),
+                TokenType::SIntLiteral,
+            )
         } else {
-            if is_negative {
-                (
-                    Literal::SInt(-(Self::parse_dec(&str[1..]) as i64), number_type),
-                    TokenType::SIntLiteral,
-                )
-            } else {
-                (
-                    Literal::UInt(Self::parse_dec(&str), number_type),
-                    TokenType::UIntLiteral,
-                )
-            }
+            (
+                Literal::UInt(Self::parse_dec(&str), number_type),
+                TokenType::UIntLiteral,
+            )
         };
 
         Ok(self.get_token_lit_loc(tok, lit, loc))

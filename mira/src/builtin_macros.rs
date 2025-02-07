@@ -75,7 +75,7 @@ fn macro_concat_idents(loc: &Location, args: &[Token]) -> Vec<Token> {
 }
 
 fn macro_line(loc: &Location, args: &[Token]) -> Vec<Token> {
-    if args.len() > 0 {
+    if !args.is_empty() {
         panic!("{loc}: did not expect any arguments")
     }
     vec![Token {
@@ -86,7 +86,7 @@ fn macro_line(loc: &Location, args: &[Token]) -> Vec<Token> {
 }
 
 fn macro_column(loc: &Location, args: &[Token]) -> Vec<Token> {
-    if args.len() > 0 {
+    if !args.is_empty() {
         panic!("{loc}: did not expect any arguments")
     }
     vec![Token {
@@ -97,7 +97,7 @@ fn macro_column(loc: &Location, args: &[Token]) -> Vec<Token> {
 }
 
 fn macro_file(loc: &Location, args: &[Token]) -> Vec<Token> {
-    if args.len() > 0 {
+    if !args.is_empty() {
         panic!("{loc}: did not expect any arguments")
     }
     vec![Token {
@@ -108,7 +108,7 @@ fn macro_file(loc: &Location, args: &[Token]) -> Vec<Token> {
 }
 
 fn macro_compile_error(loc: &Location, args: &[Token]) -> Vec<Token> {
-    if let Some(lit) = args.get(0).as_ref().and_then(|v| v.literal.as_ref()) {
+    if let Some(lit) = args.first().as_ref().and_then(|v| v.literal.as_ref()) {
         match lit {
             Literal::Float(v, _) => panic!("{loc}: error: {v}"),
             Literal::SInt(v, _) => panic!("{loc}: error: {v}"),

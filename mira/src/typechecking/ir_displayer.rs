@@ -19,7 +19,7 @@ macro_rules! display_to_debug {
 pub struct TCContextDisplay<'a>(pub &'a TypecheckingContext);
 // TypedLiteralDisplay
 #[repr(transparent)]
-struct TLD<'a>(&'a TypedLiteral);
+struct Tld<'a>(&'a TypedLiteral);
 #[repr(transparent)]
 struct ExpressionDisplay<'a>(&'a TypecheckedExpression);
 #[repr(transparent)]
@@ -32,7 +32,7 @@ struct ArgList<'a>(&'a [(GlobalStr, Type)]);
 
 macro_rules! format_tlds {
     ($f:ident $fmt:tt, $first: expr, $($value:expr),* $(,)?) => {
-        $f.write_fmt(format_args!($fmt, $first$(, TLD($value))*))
+        $f.write_fmt(format_args!($fmt, $first$(, Tld($value))*))
     };
 }
 
@@ -156,17 +156,17 @@ impl Display for ExpressionDisplay<'_> {
                 f.write_str(": ")?;
                 Debug::fmt(registers, f)?;
                 f.write_str(": (")?;
-                for i in 0..inputs.len() {
+                for (i, input) in inputs.iter().enumerate() {
                     if i != 0 {
                         f.write_str(", ")?
                     }
                     f.write_char('_')?;
-                    Display::fmt(&inputs[i], f)?;
+                    Display::fmt(input, f)?;
                 }
                 f.write_str(")\n)")
             }
             TypecheckedExpression::Return(_, typed_literal) => {
-                f.write_fmt(format_args!("return {}", TLD(typed_literal)))
+                f.write_fmt(format_args!("return {}", Tld(typed_literal)))
             }
             TypecheckedExpression::Block(_, exprs, annotations) => {
                 Display::fmt(annotations, f)?;
@@ -182,7 +182,7 @@ impl Display for ExpressionDisplay<'_> {
                 ..
             } => {
                 f.write_str("if ")?;
-                Display::fmt(&TLD(cond), f)?;
+                Display::fmt(&Tld(cond), f)?;
                 f.debug_list()
                     .entries(if_block.0.iter().map(ExpressionDisplay))
                     .finish()?;
@@ -205,7 +205,7 @@ impl Display for ExpressionDisplay<'_> {
                     .entries(cond_block.iter().map(ExpressionDisplay))
                     .finish()?;
                 f.write_str("while ")?;
-                Display::fmt(&TLD(cond), f)?;
+                Display::fmt(&Tld(cond), f)?;
                 f.debug_list()
                     .entries(body.0.iter().map(ExpressionDisplay))
                     .finish()?;
@@ -221,20 +221,20 @@ impl Display for ExpressionDisplay<'_> {
                 f.write_char('_')?;
                 Display::fmt(dst, f)?;
                 f.write_str(" = ")?;
-                Display::fmt(&TLD(lhs), f)?;
+                Display::fmt(&Tld(lhs), f)?;
                 f.write_str("..")?;
                 if *inclusive {
                     f.write_char('=')?;
                 }
-                Display::fmt(&TLD(rhs), f)
+                Display::fmt(&Tld(rhs), f)
             }
             TypecheckedExpression::StoreAssignment(_, lhs, rhs) => {
                 format_tlds!(f "{}*{} = {}", "", lhs, rhs)
             }
             TypecheckedExpression::Call(_, lhs, rhs, vec) => {
-                f.write_fmt(format_args!("_{} = {}(", lhs, TLD(rhs)))?;
+                f.write_fmt(format_args!("_{} = {}(", lhs, Tld(rhs)))?;
                 for arg in vec {
-                    Display::fmt(&TLD(arg), f)?;
+                    Display::fmt(&Tld(arg), f)?;
                     f.write_char(',')?;
                 }
                 f.write_char(')')
@@ -243,10 +243,10 @@ impl Display for ExpressionDisplay<'_> {
                 f.write_fmt(format_args!(
                     "_{} = {}(",
                     typed_literal,
-                    TLD(&TypedLiteral::Function(*func))
+                    Tld(&TypedLiteral::Function(*func))
                 ))?;
                 for arg in vec {
-                    Display::fmt(&TLD(arg), f)?;
+                    Display::fmt(&Tld(arg), f)?;
                     f.write_char(',')?;
                 }
                 f.write_char(')')
@@ -255,10 +255,10 @@ impl Display for ExpressionDisplay<'_> {
                 f.write_fmt(format_args!(
                     "_{} = {}(",
                     typed_literal,
-                    TLD(&TypedLiteral::ExternalFunction(*func))
+                    Tld(&TypedLiteral::ExternalFunction(*func))
                 ))?;
                 for arg in vec {
-                    Display::fmt(&TLD(arg), f)?;
+                    Display::fmt(&Tld(arg), f)?;
                     f.write_char(',')?;
                 }
                 f.write_char(')')
@@ -267,10 +267,10 @@ impl Display for ExpressionDisplay<'_> {
                 f.write_fmt(format_args!(
                     "_{} = {}(",
                     typed_literal,
-                    TLD(&TypedLiteral::Intrinsic(*intrinsic))
+                    Tld(&TypedLiteral::Intrinsic(*intrinsic))
                 ))?;
                 for arg in vec {
-                    Display::fmt(&TLD(arg), f)?;
+                    Display::fmt(&Tld(arg), f)?;
                     f.write_char(',')?;
                 }
                 f.write_char(')')
@@ -335,13 +335,13 @@ impl Display for ExpressionDisplay<'_> {
             }
             TypecheckedExpression::Reference(_, lhs, rhs) => format_tlds!(f "_{} = &{}", lhs, rhs),
             TypecheckedExpression::Dereference(_, lhs, rhs) => {
-                f.write_fmt(format_args!("_{} = *{}", lhs, TLD(rhs)))
+                f.write_fmt(format_args!("_{} = *{}", lhs, Tld(rhs)))
             }
             TypecheckedExpression::Offset(_, lhs, rhs, offsets) => {
-                f.write_fmt(format_args!("_{} = offset({}, {offsets:?})", lhs, TLD(rhs),))
+                f.write_fmt(format_args!("_{} = offset({}, {offsets:?})", lhs, Tld(rhs),))
             }
             TypecheckedExpression::OffsetNonPointer(_, lhs, rhs, offset_value) => f.write_fmt(
-                format_args!("_{} = offset_non_ptr({}, {offset_value})", lhs, TLD(rhs)),
+                format_args!("_{} = offset_non_ptr({}, {offset_value})", lhs, Tld(rhs)),
             ),
             TypecheckedExpression::DynCall(_, dst, args, offset) => {
                 f.write_char('_')?;
@@ -350,7 +350,7 @@ impl Display for ExpressionDisplay<'_> {
                 Display::fmt(offset, f)?;
                 for arg in args {
                     f.write_str(", ")?;
-                    Display::fmt(&TLD(arg), f)?;
+                    Display::fmt(&Tld(arg), f)?;
                 }
                 f.write_char(')')
             }
@@ -360,16 +360,16 @@ impl Display for ExpressionDisplay<'_> {
             | TypecheckedExpression::Alias(_, lhs, rhs)
             | TypecheckedExpression::StripMetadata(_, lhs, rhs)
             | TypecheckedExpression::IntCast(_, lhs, rhs) => {
-                f.write_fmt(format_args!("_{lhs} = {} as <unknown type T>", TLD(rhs)))
+                f.write_fmt(format_args!("_{lhs} = {} as <unknown type T>", Tld(rhs)))
             }
             TypecheckedExpression::Literal(_, lhs, rhs) => {
-                f.write_fmt(format_args!("let _{} = {}", lhs, TLD(rhs)))
+                f.write_fmt(format_args!("let _{} = {}", lhs, Tld(rhs)))
             }
             TypecheckedExpression::AttachVtable(_, lhs, rhs, (_, traits)) => f.write_fmt(
-                format_args!("_{lhs} = attach_vtable({}, {traits:?})", TLD(rhs)),
+                format_args!("_{lhs} = attach_vtable({}, {traits:?})", Tld(rhs)),
             ),
             TypecheckedExpression::MakeUnsizedSlice(_, lhs, rhs, size) => f.write_fmt(
-                format_args!("_{lhs} = attach_size_metadata({}, {size})", TLD(rhs)),
+                format_args!("_{lhs} = attach_size_metadata({}, {size})", Tld(rhs)),
             ),
             TypecheckedExpression::Empty(_) => f.write_str("<removed>"),
             TypecheckedExpression::None => f.write_str("<none>"),
@@ -377,7 +377,7 @@ impl Display for ExpressionDisplay<'_> {
     }
 }
 
-impl Display for TLD<'_> {
+impl Display for Tld<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self.0 {
             TypedLiteral::Void => f.write_str("void"),
@@ -386,16 +386,16 @@ impl Display for TLD<'_> {
             TypedLiteral::ExternalFunction(id) => f.write_fmt(format_args!("extf_{id}")),
             TypedLiteral::Static(id) => f.write_fmt(format_args!("%{id}")),
             TypedLiteral::String(global_str) => Debug::fmt(global_str, f),
-            TypedLiteral::Array(_, vec) => f.debug_list().entries(vec.iter().map(TLD)).finish(),
+            TypedLiteral::Array(_, vec) => f.debug_list().entries(vec.iter().map(Tld)).finish(),
             TypedLiteral::Struct(id, vec) => {
                 f.write_str("s_")?;
                 Display::fmt(id, f)?;
                 f.write_char(' ')?;
-                f.debug_list().entries(vec.iter().map(TLD)).finish()
+                f.debug_list().entries(vec.iter().map(Tld)).finish()
             }
             TypedLiteral::Tuple(vec) => {
                 f.write_str("tuple ")?;
-                f.debug_list().entries(vec.iter().map(TLD)).finish()
+                f.debug_list().entries(vec.iter().map(Tld)).finish()
             }
             TypedLiteral::F64(v) => Display::fmt(v, f),
             TypedLiteral::F32(v) => Display::fmt(v, f),
@@ -417,7 +417,7 @@ impl Display for TLD<'_> {
     }
 }
 
-display_to_debug!(TLD<'_>);
+display_to_debug!(Tld<'_>);
 display_to_debug!(ExpressionDisplay<'_>);
 display_to_debug!(ArgList<'_>);
 

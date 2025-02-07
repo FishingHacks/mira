@@ -1,8 +1,6 @@
-use parking_lot::RwLock;
 use std::{
     collections::HashMap,
     fmt::{Debug, Display, Write},
-    sync::Arc,
 };
 
 use crate::{
@@ -10,13 +8,13 @@ use crate::{
     error::ParsingError,
     globals::GlobalStr,
     module::{FunctionId, Module, ModuleId},
-    tokenizer::{Literal, Location, NumberType, Token, TokenType},
+    tokenizer::{Literal, Location, NumberType, TokenType},
 };
 
 use super::{
     statement::{display_contract, FunctionContract},
     types::TypeRef,
-    Parser, ParserQueueEntry, Statement,
+    Parser, Statement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +30,7 @@ impl Display for Path {
             }
 
             Display::fmt(&self.entries[i].0, f)?;
-            if self.entries[i].1.len() > 0 {
+            if !self.entries[i].1.is_empty() {
                 f.write_char('<')?;
                 for type_idx in 0..self.entries[i].1.len() {
                     if type_idx != 0 {
@@ -69,7 +67,7 @@ impl Path {
         let mut types = vec![];
 
         while !parser.match_tok(TokenType::GreaterThan) {
-            if types.len() > 0 {
+            if !types.is_empty() {
                 parser.expect_tok(TokenType::Comma)?;
             }
 
@@ -184,11 +182,11 @@ impl Display for LiteralValue {
             LiteralValue::String(v) => Debug::fmt(v, f),
             LiteralValue::Array(v) => {
                 f.write_char('[')?;
-                for i in 0..v.len() {
+                for (i, v) in v.iter().enumerate() {
                     if i != 0 {
                         f.write_str(", ")?;
                     }
-                    Display::fmt(&v[i], f)?;
+                    Display::fmt(v, f)?;
                 }
                 f.write_char(']')
             }
@@ -222,11 +220,11 @@ impl Display for LiteralValue {
             LiteralValue::Tuple(v) => {
                 f.write_str(".(")?;
 
-                for i in 0..v.len() {
+                for (i, v) in v.iter().enumerate() {
                     if i != 0 {
                         f.write_str(", ")?
                     }
-                    Display::fmt(&v[i].1, f)?;
+                    Display::fmt(&v.1, f)?;
                 }
 
                 f.write_char(')')
@@ -385,9 +383,9 @@ impl Display for Expression {
             } => {
                 f.write_str("(call ")?;
                 Display::fmt(identifier, f)?;
-                for i in 0..arguments.len() {
+                for v in arguments.iter() {
                     f.write_char(' ')?;
-                    Display::fmt(&arguments[i], f)?;
+                    Display::fmt(v, f)?;
                 }
                 f.write_char(')')
             }
@@ -485,11 +483,11 @@ impl Display for Expression {
                 f.write_str(": ")?;
                 Display::fmt(output, f)?;
                 f.write_str("\n: ")?;
-                for i in 0..inputs.len() {
+                for (i, v) in inputs.iter().enumerate() {
                     if i != 0 {
                         f.write_str(", ")?;
                     }
-                    Display::fmt(&inputs[i].1, f)?;
+                    Display::fmt(&v.1, f)?;
                 }
                 f.write_str("\n: ")?;
                 Debug::fmt(registers, f)?;
@@ -650,7 +648,7 @@ impl Parser {
         let mut output = TypeRef::Void(loc.clone(), 0);
         let mut asm = String::new();
         while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
-            if asm.len() > 0 {
+            if !asm.is_empty() {
                 self.expect_tok(TokenType::Comma)?;
                 if self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
                     break;
@@ -658,7 +656,7 @@ impl Parser {
             }
             let tok = self.expect_tok(TokenType::StringLiteral)?;
             tok.string_literal()?.with(|v| {
-                if asm.len() > 0 {
+                if !asm.is_empty() {
                     asm.push('\n');
                 }
                 asm.push_str(v);
@@ -679,7 +677,7 @@ impl Parser {
                 let loc = self.peek().location.clone();
                 let (replacer, register, type_name) = self.parse_asm_binding()?;
                 let replacer_string = replacer.with(|v| format!("%[{v}]"));
-                if replacers.iter().find(|v| v.0 == replacer_string).is_some() {
+                if replacers.iter().any(|v| v.0 == replacer_string) {
                     return Err(ParsingError::DuplicateAsmReplacer { loc, replacer });
                 }
                 if !register.with(|v| v.starts_with('=')) {
@@ -704,7 +702,7 @@ impl Parser {
 
             // inuputs
             while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
-                if inputs.len() > 0 {
+                if !inputs.is_empty() {
                     self.expect_tok(TokenType::Comma)?;
                     if self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
                         break;
@@ -714,7 +712,7 @@ impl Parser {
                 let loc = self.peek().location.clone();
                 let (replacer, register, variable) = self.parse_asm_binding()?;
                 let replacer_string = replacer.with(|v| format!("%[{v}]"));
-                if replacers.iter().find(|v| v.0 == replacer_string).is_some() {
+                if replacers.iter().any(|v| v.0 == replacer_string) {
                     return Err(ParsingError::DuplicateAsmReplacer { loc, replacer });
                 }
                 if register.with(|v| v.starts_with('=') || v.starts_with('~')) {
@@ -724,7 +722,7 @@ impl Parser {
                     });
                 }
                 replacers.push((replacer_string, format!("${{{}}}", replacers.len())));
-                if registers.len() > 0 {
+                if !registers.is_empty() {
                     registers.push(',');
                 }
                 register.with(|v| registers.push_str(v));
@@ -737,7 +735,7 @@ impl Parser {
             if self.match_tok(TokenType::ParenRight) {
                 break 'out;
             }
-            if registers.len() > 0 {
+            if !registers.is_empty() {
                 registers.push(',');
             }
             registers.push_str("~{");
@@ -1009,7 +1007,7 @@ impl Parser {
                     if self.peek().typ == TokenType::ParenRight {
                         self.advance();
                         break;
-                    } else if arguments.len() != 0 {
+                    } else if !arguments.is_empty() {
                         // , or ), but ) is alr handled by the thing above
                         if self.advance().typ != TokenType::Comma {
                             return Err(ParsingError::ExpectedFunctionArgument {
@@ -1108,7 +1106,7 @@ impl Parser {
                 };
                 let mut elements = Vec::new();
                 while !self.match_tok(matching_tok) {
-                    if elements.len() > 0 {
+                    if !elements.is_empty() {
                         self.expect_tok(TokenType::Comma)?;
 
                         if self.match_tok(matching_tok) {
@@ -1131,9 +1129,8 @@ impl Parser {
         }
 
         // arrays
-        match self.try_array() {
-            Some(v) => return v,
-            _ => (),
+        if let Some(v) = self.try_array() {
+            return v;
         }
 
         // functions/callables
@@ -1179,10 +1176,10 @@ impl Parser {
         }
 
         let found_token = self.peek();
-        return Err(ParsingError::ExpectedExpression {
+        Err(ParsingError::ExpectedExpression {
             loc: found_token.location.clone(),
             found: found_token.typ,
-        });
+        })
     }
 
     fn try_array(&mut self) -> Option<Result<Expression, ParsingError>> {
@@ -1190,7 +1187,7 @@ impl Parser {
             let loc = self.current().location.clone();
             let mut arr = vec![];
             while !self.match_tok(TokenType::BracketRight) {
-                if arr.len() > 0 {
+                if !arr.is_empty() {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
                         return Some(Err(ParsingError::ExpectedArrayElement {
@@ -1210,20 +1207,21 @@ impl Parser {
                 }
             }
 
-            return Some(Ok(Expression::Literal(LiteralValue::Array(arr), loc)));
+            Some(Ok(Expression::Literal(LiteralValue::Array(arr), loc)))
         } else {
             None
         }
     }
 
     // { key : value, }
+    #[allow(clippy::type_complexity)]
     fn try_object(
         &mut self,
     ) -> Option<Result<HashMap<GlobalStr, (Location, Expression)>, ParsingError>> {
         if self.match_tok(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
             while !self.match_tok(TokenType::CurlyRight) {
-                if obj.len() > 0 {
+                if !obj.is_empty() {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
                         return Some(Err(ParsingError::ExpectedObjectElement {
@@ -1264,7 +1262,7 @@ impl Parser {
                     Err(e) => return Some(Err(e)),
                 };
             }
-            return Some(Ok(obj));
+            Some(Ok(obj))
         } else {
             None
         }

@@ -10,7 +10,7 @@ use crate::{
 
 use super::{expression::PathWithoutGenerics, Annotations, Parser, Path};
 
-pub static RESERVED_TYPE_NAMES: &[&'static str] = &[
+pub static RESERVED_TYPE_NAMES: &[&str] = &[
     "str", "bool", "char", "void", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
     "usize", "f16", "f32", "f64", "!",
 ];
@@ -88,11 +88,11 @@ impl Display for TypeRef {
                 return_ty, args, ..
             } => {
                 f.write_str("fn(")?;
-                for i in 0..args.len() {
+                for (i, arg) in args.iter().enumerate() {
                     if i != 0 {
                         f.write_str(", ")?
                     }
-                    Display::fmt(&args[i], f)?;
+                    Display::fmt(arg, f)?;
                 }
                 if !matches!(&**return_ty, Self::Void(_, 0) | Self::Never(_)) {
                     f.write_str(" -> ")?;
@@ -102,11 +102,11 @@ impl Display for TypeRef {
             }
             Self::Tuple { elements, .. } => {
                 f.write_char('(')?;
-                for i in 0..elements.len() {
+                for (i, elem) in elements.iter().enumerate() {
                     if i != 0 {
                         f.write_str(", ")?
                     }
-                    Display::fmt(&elements[i], f)?;
+                    Display::fmt(elem, f)?;
                 }
                 f.write_char(')')
             }
@@ -216,7 +216,7 @@ impl TypeRef {
                 parser.expect_tok(TokenType::ParenLeft)?;
                 let mut args = Vec::new();
                 while !parser.match_tok(TokenType::ParenRight) {
-                    if args.len() > 0 {
+                    if !args.is_empty() {
                         if !parser.match_tok(TokenType::Comma) {
                             return Err(ParsingError::ExpectedFunctionArgument {
                                 loc: parser.peek().location.clone(),
@@ -248,7 +248,7 @@ impl TypeRef {
             } else if parser.match_tok(TokenType::ParenLeft) {
                 let mut elements = Vec::new();
                 while !parser.match_tok(TokenType::ParenRight) {
-                    if elements.len() > 0 {
+                    if !elements.is_empty() {
                         parser.expect_tok(TokenType::Comma)?;
 
                         if parser.match_tok(TokenType::ParenRight) {
@@ -272,10 +272,10 @@ impl TypeRef {
             }
         }
 
-        return Err(ParsingError::ExpectedType {
+        Err(ParsingError::ExpectedType {
             loc: parser.peek().location.clone(),
             found: TokenType::Eof,
-        });
+        })
     }
 
     fn parse_dyn(
@@ -287,7 +287,7 @@ impl TypeRef {
         let mut traits = vec![];
 
         loop {
-            if traits.len() > 0 && !parser.match_tok(TokenType::Plus) {
+            if !traits.is_empty() && !parser.match_tok(TokenType::Plus) {
                 break;
             }
 
@@ -297,11 +297,11 @@ impl TypeRef {
             traits.push(PathWithoutGenerics::parse(parser)?);
         }
 
-        return Ok(Self::DynReference {
+        Ok(Self::DynReference {
             num_references,
             loc,
             traits,
-        });
+        })
     }
 
     pub fn loc(&self) -> &Location {
@@ -377,7 +377,7 @@ impl PartialEq for TypeRef {
                 } => {
                     *other_nor == *self_nor
                         && *other_aoe == *self_aoe
-                        && (&**other_child) == (&**self_child)
+                        && **other_child == **self_child
                 }
                 _ => false,
             },
@@ -390,7 +390,7 @@ impl PartialEq for TypeRef {
                     num_references: other_nor,
                     child: other_child,
                     loc: _,
-                } => *other_nor == *self_nor && (&**other_child) == (&**self_child),
+                } => *other_nor == *self_nor && **other_child == **self_child,
                 _ => false,
             },
             Self::Tuple {
@@ -445,8 +445,8 @@ impl Generic {
                 bounds,
             });
         }
-        while parser.peek().typ == TokenType::Plus || bounds.len() == 0 {
-            if bounds.len() > 0 {
+        while parser.peek().typ == TokenType::Plus || bounds.is_empty() {
+            if !bounds.is_empty() {
                 parser.expect_tok(TokenType::Plus)?;
             }
 

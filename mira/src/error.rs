@@ -19,6 +19,7 @@ macro_rules! error_list_wrapper {
     );* $(;)?
     ) => {
         $(#[$meta])*
+        #[derive(Default)]
         $vis struct $name(pub Vec<$errorty>);
 
         impl $name {
@@ -31,8 +32,8 @@ macro_rules! error_list_wrapper {
             pub fn into_inner(self) -> Vec<$errorty> { self.0 }
             pub fn get_inner(&self) -> &[$errorty] { &self.0 }
             pub fn len(&self) -> usize { self.0.len() }
+            pub fn is_empty(&self) -> bool { self.0.is_empty() }
             pub fn push(&mut self, v: $errorty) { self.0.push(v) }
-            pub fn new() -> Self { Self(Vec::new()) }
         }
     };
 }
@@ -235,7 +236,7 @@ impl TokenizationError {
             | Self::InvalidNumberType(loc)
             | Self::UnclosedMacro { loc, .. }
             | Self::MacroExpectedBracket { loc, .. }
-            | Self::UnknownTokenError { loc, .. } => &loc,
+            | Self::UnknownTokenError { loc, .. } => loc,
         }
     }
 }

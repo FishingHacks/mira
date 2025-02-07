@@ -53,12 +53,12 @@ pub trait Annotation: Display + Debug + Any {
     }
 }
 
-pub trait ClonableAnnotation: Annotation {
+pub trait ClonableAnnotation: Annotation + 'static + Send + Sync {
     fn clone_box(&self) -> Box<dyn ClonableAnnotation>;
     fn as_any(&self) -> &dyn Any;
 }
 
-impl<T: Annotation + Clone + 'static> ClonableAnnotation for T {
+impl<T: Annotation + Clone + 'static + Send + Sync> ClonableAnnotation for T {
     fn clone_box(&self) -> Box<dyn ClonableAnnotation> {
         Box::new(self.clone())
     }
@@ -110,19 +110,6 @@ pub fn parse_annotation(
                 name: name.to_string(),
             })
         }
-    })
-}
-
-pub fn parse_annotation_tokenstream(
-    name: &str,
-    tokenstream: TokenStream,
-) -> Result<Box<dyn ClonableAnnotation>, ParsingError> {
-    ANNOTATIONS_REGISTRY.with_borrow(|annotations| match annotations.get(name) {
-        Some(parser) => parser(tokenstream),
-        None => Err(ParsingError::UnknownAnnotation {
-            loc: tokenstream.to_inner().1,
-            name: name.to_string(),
-        }),
     })
 }
 
@@ -179,33 +166,31 @@ impl Annotations {
         self.0.iter().map(|v| &*v.0)
     }
 
-    pub fn get_annotations<'a, T: ClonableAnnotation + 'static>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a T> {
+    pub fn get_annotations<T: ClonableAnnotation + 'static>(&self) -> impl Iterator<Item = &T> {
         self.0
             .iter()
             .filter_map(|v| v.0.as_any().downcast_ref::<T>())
     }
 
-    pub fn get_first_annotation<'a, T: ClonableAnnotation + 'static>(&'a self) -> Option<&'a T> {
+    pub fn get_first_annotation<T: ClonableAnnotation + 'static>(&self) -> Option<&T> {
         self.0
             .iter()
             .filter_map(|v| v.0.as_any().downcast_ref::<T>())
             .next()
     }
 
-    pub fn get_annotations_indexed<'a, T: ClonableAnnotation + 'static>(
-        &'a self,
-    ) -> impl Iterator<Item = (&'a T, usize)> {
+    pub fn get_annotations_indexed<T: ClonableAnnotation + 'static>(
+        &self,
+    ) -> impl Iterator<Item = (&T, usize)> {
         self.0
             .iter()
             .enumerate()
             .filter_map(|(idx, v)| Some((v.0.as_any().downcast_ref::<T>()?, idx)))
     }
 
-    pub fn get_first_annotation_indexed<'a, T: ClonableAnnotation + 'static>(
-        &'a self,
-    ) -> Option<(&'a T, usize)> {
+    pub fn get_first_annotation_indexed<T: ClonableAnnotation + 'static>(
+        &self,
+    ) -> Option<(&T, usize)> {
         self.0
             .iter()
             .enumerate()

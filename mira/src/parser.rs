@@ -153,7 +153,7 @@ impl Parser {
 
     fn check(&self, typ: TokenType) -> bool {
         if self.is_at_end() {
-            return false;
+            false
         } else {
             self.peek().typ == typ
         }

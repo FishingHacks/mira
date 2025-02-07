@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use inkwell::{context::Context, object_file};
+use inkwell::context::Context;
 use parking_lot::RwLock;
 use thiserror::Error;
 
@@ -17,7 +17,8 @@ use crate::{
     module::{Module, ModuleContext},
     module_resolution::ModuleResolver,
     parser::ParserQueueEntry,
-    tokenizer::Tokenizer,
+    target::{Abi, Arch, Os, Target},
+    tokenizer::{Literal, Location, Token, TokenType, Tokenizer},
     typechecking::{
         ir_displayer::TCContextDisplay,
         typechecking::{typecheck_function, typecheck_static},
@@ -43,6 +44,7 @@ pub struct LinkOptions<'a> {
     pub verbose: bool,
     pub linker_script: Option<&'a Path>,
     pub create_dynamic_library: bool,
+    pub target: Target,
 }
 
 pub trait Linker: Send + Sync {
@@ -63,6 +65,8 @@ macro_rules! arg_if {
 pub enum LinkerError {
     #[error("Unable to find a valid linker")]
     UnableToLocateLinker,
+    #[error("Unable to find a valid program loader for the operating sytem")]
+    UnableToLocateLoader,
     #[error("failed to run command {0:?}: {1}")]
     SpawnFailed(Command, std::io::Error),
     #[error("command {0:?} exited with a failure (exit code {1:?})")]
@@ -70,6 +74,21 @@ pub enum LinkerError {
 }
 
 struct LdLikeLinker(&'static str);
+fn linux_find_loader(is_32_bit: bool) -> Option<PathBuf> {
+    for f in std::fs::read_dir("/lib").ok()?.filter_map(Result::ok) {
+        let filename = f.file_name();
+        let Some(str) = filename.to_str() else {
+            continue;
+        };
+        if is_32_bit && str.starts_with("lib/ld-linux.so.") {
+            return Some(f.path());
+        }
+        if !is_32_bit && str.starts_with("ld-linux-x86-64.so.") {
+            return Some(f.path());
+        }
+    }
+    None
+}
 
 impl Linker for LdLikeLinker {
     fn can_link_crt(&self) -> bool {
@@ -82,7 +101,28 @@ impl Linker for LdLikeLinker {
 
     fn link(&self, opts: LinkOptions) -> Result<(), LinkerError> {
         assert!(!opts.link_crt);
+
         let mut command = Command::new(opts.linker_path);
+        #[allow(clippy::single_match)]
+        match opts.target.arch {
+            Arch::X86 => _ = command.arg("-m32"),
+            _ => (),
+        }
+        #[allow(clippy::single_match)]
+        match opts.target.abi {
+            Abi::Gnu => _ = command.arg("-lc"),
+            _ => (),
+        }
+        #[allow(clippy::single_match)]
+        match opts.target.os {
+            Os::Linux => {
+                let loader = linux_find_loader(opts.target.arch.is_32_bit())
+                    .ok_or(LinkerError::UnableToLocateLoader)?;
+                command.arg("-dynamic-linker").arg(loader);
+            }
+            _ => (),
+        }
+
         arg_if!(command "-g", if opts.debug_info);
         arg_if!(command "-shared", if opts.create_dynamic_library);
         if let Some(script) = opts.linker_script.as_ref() {
@@ -125,6 +165,18 @@ impl Linker for GccLikeLinker {
 
     fn link(&self, opts: LinkOptions) -> Result<(), LinkerError> {
         let mut command = Command::new(opts.linker_path);
+
+        #[allow(clippy::single_match)]
+        match opts.target.arch {
+            Arch::X86 => _ = command.arg("-m32"),
+            _ => (),
+        }
+        #[allow(clippy::single_match)]
+        match opts.target.abi {
+            Abi::Gnu => _ = command.arg("-lc"),
+            _ => (),
+        }
+
         arg_if!(command "-g", if opts.debug_info);
         arg_if!(command "-nostdlib", if !opts.link_crt);
         arg_if!(command "-shared", if opts.create_dynamic_library);
@@ -206,6 +258,10 @@ pub struct FullCompilationOptions<'a> {
     /// Has to be specified if `self.file` points at a file that does not actually exists
     /// (e.g. because this is running in a repl)
     pub source: Option<&'a str>,
+    /// The root file will automatically have `use "<always_include>";` at the top, causing this
+    /// file to be built into each compilation. Use this for the file where you defined your procedure
+    /// that represents the entry point of the executable and calls the main function.
+    pub always_include: Option<String>,
     /// A list of resolvers to use to resolve imports.
     pub resolvers: Arc<[Box<dyn ModuleResolver>]>,
     /// The resolvers will use this function to check if a path exists
@@ -303,6 +359,7 @@ pub fn run_full_compilation_pipeline(
         opts.debug_file.clone(),
         source,
         opts.verbose,
+        opts.always_include,
         opts.resolvers,
         opts.path_exists,
         opts.path_is_dir,
@@ -313,11 +370,11 @@ pub fn run_full_compilation_pipeline(
     vprintln!("Type Resolution...");
     let typechecking_context = TypecheckingContext::new(module_context.clone());
     let errs = typechecking_context.resolve_imports(module_context.clone());
-    if errs.len() > 0 {
+    if !errs.is_empty() {
         return Err(errs.into_iter().map(Into::into).collect());
     }
     let errs = typechecking_context.resolve_types(module_context.clone());
-    if errs.len() > 0 {
+    if !errs.is_empty() {
         return Err(errs.into_iter().map(Into::into).collect());
     }
 
@@ -361,20 +418,19 @@ pub fn run_full_compilation_pipeline(
 
     let now = Instant::now();
 
-    if errs.len() > 0 {
+    if !errs.is_empty() {
         return Err(errs.into_iter().map(Into::into).collect());
     }
 
     let mut errs = Vec::new();
 
-    match opts.ir_writer.as_mut().map(|v| {
+    if let Some(Err(e)) = opts.ir_writer.as_mut().map(|v| {
         v.write_fmt(format_args!(
             "{:#}",
             TCContextDisplay(&typechecking_context)
         ))
     }) {
-        Some(Err(e)) => errs.push(e.into()),
-        _ => (),
+        errs.push(e.into())
     }
 
     vprintln!("Codegen...");
@@ -426,7 +482,7 @@ pub fn run_full_compilation_pipeline(
         }
     }
 
-    if errs.len() > 0 {
+    if !errs.is_empty() {
         return Err(errs);
     }
 
@@ -443,13 +499,14 @@ pub fn run_full_compilation_pipeline(
     }
 
     let Some(obj_path) = opts.obj_path else {
-        return (errs.len() == 0).then_some(()).ok_or(errs);
+        return (errs.is_empty()).then_some(()).ok_or(errs);
     };
     let now = Instant::now();
 
     let mut obj_file = match File::options()
         .write(true)
         .create(true)
+        .truncate(true)
         .open(&obj_path)
         .map_err(|v| errs.push(v.into()))
     {
@@ -464,7 +521,7 @@ pub fn run_full_compilation_pipeline(
     }
     drop(obj_file);
 
-    if errs.len() > 0 {
+    if !errs.is_empty() {
         return Err(errs);
     }
 
@@ -493,6 +550,7 @@ pub fn run_full_compilation_pipeline(
             verbose: opts.verbose,
             linker_script: opts.linker_script,
             create_dynamic_library: opts.shared_object,
+            target: opts.codegen_opts.target,
         })
         .map_err(|v| vec![v.into()])?;
     vprintln!("Linking took {:?}", Instant::now().duration_since(now));
@@ -505,12 +563,14 @@ pub fn run_full_compilation_pipeline(
 /// `root_directory` - The path the import `@root/` points to
 /// `debug_file` - The file that will appear in locations and debug info
 /// `source` - The source that will be parsed
+#[allow(clippy::too_many_arguments)]
 pub fn parse_all(
     file: Arc<Path>,
     root_directory: Arc<Path>,
     debug_file: Arc<Path>,
     source: &str,
     verbose: bool,
+    always_include: Option<String>,
     resolvers: Arc<[Box<dyn ModuleResolver>]>,
     path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
     path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
@@ -527,7 +587,25 @@ pub fn parse_all(
     } else {
         vprintln!("Tokenizing {file:?}");
     }
-    let mut tokenizer = Tokenizer::new(source.as_ref(), debug_file.clone());
+    let mut tokenizer = Tokenizer::new(source, debug_file.clone());
+    if let Some(path) = always_include {
+        let loc = Location::new(debug_file.clone(), 0, 0);
+        tokenizer.push_token(Token {
+            typ: TokenType::Use,
+            literal: None,
+            location: loc.clone(),
+        });
+        tokenizer.push_token(Token {
+            typ: TokenType::StringLiteral,
+            literal: Some(Literal::String(path.into())),
+            location: loc.clone(),
+        });
+        tokenizer.push_token(Token {
+            typ: TokenType::Semicolon,
+            literal: None,
+            location: loc.clone(),
+        });
+    }
     if let Err(errs) = tokenizer.scan_tokens() {
         errors.extend(
             errs.into_iter()
@@ -577,10 +655,14 @@ pub fn parse_all(
             let entry = read_modules[writer.len()].clone();
             drop(read_modules);
             drop(writer);
-            let mut tokenizer = Tokenizer::new(
-                &std::fs::read_to_string(&entry.file).expect("failed to read module file"),
-                entry.file,
-            );
+            let source = match std::fs::read_to_string(&entry.file) {
+                Ok(v) => v,
+                Err(e) => {
+                    errors.push(e.into());
+                    return Err(errors);
+                }
+            };
+            let mut tokenizer = Tokenizer::new(&source, entry.file);
             vprintln!("Tokenizing {:?}", tokenizer.file);
             if let Err(errs) = tokenizer.scan_tokens() {
                 errors.extend(
@@ -600,9 +682,9 @@ pub fn parse_all(
         }
     }
 
-    if errors.len() > 0 {
-        Err(errors)
-    } else {
+    if errors.is_empty() {
         Ok(module_context)
+    } else {
+        Err(errors)
     }
 }

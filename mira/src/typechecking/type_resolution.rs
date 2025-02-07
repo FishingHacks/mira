@@ -164,12 +164,12 @@ impl TypecheckingContext {
         }
 
         {
-            let mut lang_item_check_errors = LangItemErrors::new();
+            let mut lang_item_check_errors = LangItemErrors::default();
             lang_items_writer.check(&mut lang_item_check_errors, self);
             errors.extend(lang_item_check_errors.0.into_iter().map(Into::into));
         }
 
-        return errors;
+        errors
     }
 
     fn resolve_struct_impls(
@@ -209,11 +209,9 @@ impl TypecheckingContext {
             let typed_trait = &trait_reader[trait_id];
             if typed_trait.functions.len() != implementation.len() {
                 for (name, func_id) in &implementation {
-                    if typed_trait
+                    if !typed_trait
                         .functions
-                        .iter()
-                        .find(|(v, ..)| v == name)
-                        .is_none()
+                        .iter().any(|(v, ..)| v == name)
                     {
                         errors.push(TypecheckingError::IsNotTraitMember {
                             location: function_reader[*func_id].0.location.clone(),
@@ -240,8 +238,7 @@ impl TypecheckingContext {
                     .arguments
                     .iter()
                     .zip(args)
-                    .map(|((_, typ_a), (_, typ_b))| *typ_a == *typ_b)
-                    .fold(true, |acc, v| acc && v)
+                    .all(|((_, typ_a), (_, typ_b))| *typ_a == *typ_b)
                 {
                     let expected = args.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>();
                     let found = function_contract
@@ -290,8 +287,7 @@ impl TypecheckingContext {
                 struct_reader[struct_id]
                     .trait_impl
                     .values()
-                    .map(|v| v.iter())
-                    .flatten()
+                    .flat_map(|v| v.iter())
                     .copied(),
             )
         {

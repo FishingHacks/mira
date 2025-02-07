@@ -152,3 +152,23 @@ use "C" {
     link("raylib"); // links with raylib (e.g. libraylib.a on linux)
 };
 ```
+
+# Macros
+
+So, currently macros are done in a very limited capacity at tokenization. That is a problem because annotations are plainly just impossible for macros, as they're parsed at parsing.
+A solution to that would be to instead have tokenization only parse their invocation and store a special `MacroInvocation` token, that functions like `peek` and `advance` will evaluate.
+This allows them to check the current list of annotations and evaluate them and then still check if the macro should be invoked. In either cases, they will remove the token, but only insert the macro's evaluation result if it was supposed to be invoked. This should be done in a loop until they're at the end of the file, as a macro invocation could yield another macro invocation, e.g. in this situation:
+```rs
+// Note: cfg! is a builtin macro
+macro! print_cfg($($t:tt)*) { cfg!($($t)*).print() }
+print_cfg!(target.os);
+```
+This would result in the following token stream after tokenization:
+`[DefMacro(print_cfg, ..), InvokeMacro(print_cfg, [Ident(target), Dot, Ident(Os)])]`
+and these after fetching the first macro invocation:
+`[DefMacro(..), InvokeMacro(cfg, [Ident(target), Dot, Ident(Os)]), Dot, Ident(print), LParen, RParen]`
+and because after the invocation, there's still a macro invocation at `tokens[1]`, the cfg macro will be invoked:
+`[DefMacro(..), Str("windows"), Dot, Ident(print), LParen, RParen]`
+after which we can find the string "windows", which we can return.
+
+Please do note however, that this will introduce *extra work* in the case of printing tokens with evaluated macros, as it is of importance to parse all annotations and macros. This however shouldn't be too hard, a very simple method on the Parser should be able to take care of that.

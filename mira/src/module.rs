@@ -43,6 +43,7 @@ pub struct ModuleContext {
     pub modules: RwLock<Vec<Module>>,
     pub functions: RwLock<Vec<(FunctionContract, Statement, ModuleId)>>,
     pub external_functions: RwLock<Vec<(FunctionContract, Option<Statement>, ModuleId)>>,
+    #[allow(clippy::type_complexity)]
     pub statics: RwLock<Vec<(TypeRef, LiteralValue, ModuleId, Location, Annotations)>>, // TODO: const-eval for statics
     pub structs: RwLock<Vec<BakedStruct>>,
     pub traits: RwLock<Vec<Trait>>,
@@ -133,10 +134,10 @@ impl Module {
             .filter_map(|el| el.err())
             .collect::<Vec<_>>();
 
-        if errors.len() > 0 {
-            Err(errors)
-        } else {
+        if errors.is_empty() {
             Ok(())
+        } else {
+            Err(errors)
         }
     }
 

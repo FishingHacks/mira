@@ -44,8 +44,8 @@ trait Neq {
 }
 
 @intrinsic("return_address")
-fn ret_addr() -> &void = 0 as &void;
-extern fn main(argc: usize, argv: &&u8) -> i32 {
+fn ret_addr() -> &void = &void;
+pub fn main(argc: usize, argv: &&u8) {
     print_str("meow::meow() = ");
     print_usize(meow());
     print_newline();
@@ -80,7 +80,6 @@ extern fn main(argc: usize, argv: &&u8) -> i32 {
     }
     //printf("\n\0" as &u8);
     print_newline();
-    exit(0);
 }
 
 fn print_str(string: &str) = write(1, string as &u8, len(string));
@@ -146,19 +145,6 @@ fn cstrlen(cstr: &u8) -> usize {
         cstr = (cstr as &void as usize + 1) as &void as &u8;
     }
     return len;
-}
-
-@callconv(naked)
-extern fn _start() {
-    asm(
-        ".cfi_undefined %rip",
-        "xorl %ebp, %ebp",
-        "popq %rdi",
-        "movq %rsp, %rsi",
-        "andq $$-16, %rsp",
-        "call main",
-        : : : "ebp", "rdi", "rsp", "rsi"
-    );
 }
 
 fn exit(code: u32) -> ! {
