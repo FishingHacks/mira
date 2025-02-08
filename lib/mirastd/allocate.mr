@@ -1,0 +1,16 @@
+@lang("allocator_trait")
+pub trait Allocator {
+    fn alloc(self: &Self, size: usize) -> &void;
+    fn realloc(self: &Self, ptr: &void, size: usize) -> &void;
+    fn free(self: &Self, ptr: &void);
+}
+
+pub struct CAlloc {;
+    impl Allocator {
+        fn alloc(self: &Self, size: usize) -> &void = &void;
+        fn realloc(self: &Self, ptr: &void, size: usize) -> &void = ptr;
+        fn free(self: &Self, ptr: &void) = void;
+    }
+}
+@lang("allocator")
+pub let allocator: CAlloc = .{};

@@ -700,7 +700,7 @@ impl Parser {
                 break 'out;
             }
 
-            // inuputs
+            // inputs
             while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
                 if !inputs.is_empty() {
                     self.expect_tok(TokenType::Comma)?;

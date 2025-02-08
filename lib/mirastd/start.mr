@@ -1,4 +1,5 @@
 use "\0__root"::main;
+use "./os.mr"::exit;
 
 @callconv(naked)
 extern fn _start() {
@@ -18,14 +19,5 @@ extern fn __mira_main(argc: usize, argv: &&u8) -> ! {
     main(argc, argv);
 
     // exit with exit_code 0
-    let exit_code = 0i32;
-    let num = 60; // SYS_exit
-    asm volatile ("syscall",
-        : [ret] "={rax}" (usize)
-        : [number] "{rax}" (num),
-          [arg1] "{rdi}" (exit_code),
-        : "rcx", "r11", "memory"
-    );
-
-    while(true) asm volatile("hlt");
+    exit(0);
 }

@@ -404,6 +404,29 @@ impl<'ctx> DebugContext<'ctx> {
                     ),
                     v => unreachable!("Type {v} is not a fat pointer"),
                 };
+                let isize_bits = self.default_types.isize.get_bit_width();
+                let pointer_member_type = self.builder.create_member_type(
+                    self.global_scope,
+                    "ptr",
+                    self.root_file,
+                    0,
+                    isize_bits as u64,
+                    isize_bits,
+                    0,
+                    DIFlags::ZERO,
+                    pointer_type,
+                );
+                let metadata_member_type = self.builder.create_member_type(
+                    self.global_scope,
+                    "metadata",
+                    self.root_file,
+                    0,
+                    isize_bits as u64,
+                    isize_bits,
+                    isize_bits as u64,
+                    DIFlags::ZERO,
+                    metadata_type,
+                );
                 break 'out self
                     .builder
                     .create_struct_type(
@@ -415,7 +438,10 @@ impl<'ctx> DebugContext<'ctx> {
                         self.default_types.isize.get_bit_width(),
                         0,
                         None,
-                        &[pointer_type, metadata_type],
+                        &[
+                            pointer_member_type.as_type(),
+                            metadata_member_type.as_type(),
+                        ],
                         DWARFSourceLanguage::C as u32,
                         None,
                         &format!("{:x}", calculate_hash(typ)),
@@ -433,13 +459,31 @@ impl<'ctx> DebugContext<'ctx> {
                 Type::Struct { struct_id, .. } => {
                     let structure = &structs[*struct_id];
                     let elements = &structure.elements;
-                    let (size, alignment) = typ.size_and_alignment(
-                        (self.default_types.isize.get_bit_width() / 8) as u64,
-                        structs,
-                    );
+                    let ptr_size = (self.default_types.isize.get_bit_width() / 8) as u64;
+                    let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
                     let fields = elements
                         .iter()
-                        .map(|(_, v)| self.get_type(v, structs))
+                        .enumerate()
+                        .map(|(i, (name, v))| {
+                            let offset = typ.struct_offset(ptr_size, structs, i);
+                            let (size, alignment) = v.size_and_alignment(ptr_size, structs);
+                            let ty = self.get_type(v, structs);
+                            name.with(|name| {
+                                self.builder
+                                    .create_member_type(
+                                        self.modules[structure.module_id].0.as_debug_info_scope(),
+                                        name,
+                                        self.modules[structure.module_id].1,
+                                        structure.location.line,
+                                        size * 8,
+                                        alignment * 8,
+                                        offset * 8,
+                                        DIFlags::ZERO,
+                                        ty,
+                                    )
+                                    .as_type()
+                            })
+                        })
                         .collect::<Vec<_>>();
                     self.builder
                         .create_struct_type(

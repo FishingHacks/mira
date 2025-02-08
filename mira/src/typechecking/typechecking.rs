@@ -1179,7 +1179,9 @@ fn typecheck_expression(
             }
             if arguments.len() > function_type.arguments.len() && !has_vararg {
                 return Err(TypecheckingError::TooManyArguments {
-                    location: arguments[function_type.arguments.len() - 1].loc().clone(),
+                    location: arguments[function_type.arguments.len().saturating_sub(1)]
+                        .loc()
+                        .clone(),
                 });
             }
             for (i, arg) in arguments.iter().enumerate() {

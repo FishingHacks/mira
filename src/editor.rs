@@ -3,11 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub fn get_path(path: Option<&str>) -> Option<PathBuf> {
-    let mut editor_path = path
+pub fn get_path() -> Option<PathBuf> {
+    let mut editor_path = std::env::var_os("EDITOR")
         .map(PathBuf::from)
-        .filter(|v| v.exists())
-        .or_else(|| std::env::var_os("EDITOR").map(PathBuf::from))
         .filter(|v| v.exists());
 
     let paths = [

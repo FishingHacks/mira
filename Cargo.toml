@@ -11,3 +11,4 @@ authors = ["Skylar (github.com/FishingHacks)"]
 [dependencies]
 parking_lot = "0.12.3"
 mira = { path = "./mira" }
+clap = { version = "4.5.28", features = ["derive"] }

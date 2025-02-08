@@ -12,7 +12,7 @@ use parking_lot::RwLock;
 use thiserror::Error;
 
 use crate::{
-    codegen::{CodegenConfig, CodegenContext, CodegenError},
+    codegen::{CodegenConfig, CodegenContext, CodegenError, Optimizations},
     error::MiraError,
     module::{Module, ModuleContext},
     module_resolution::ModuleResolver,
@@ -258,7 +258,7 @@ pub struct FullCompilationOptions<'a> {
     /// Has to be specified if `self.file` points at a file that does not actually exists
     /// (e.g. because this is running in a repl)
     pub source: Option<&'a str>,
-    /// The root file will automatically have `use "<always_include>";` at the top, causing this
+    /// The root file will automatically have `use "<always_include>"::*;` at the top, causing this
     /// file to be built into each compilation. Use this for the file where you defined your procedure
     /// that represents the entry point of the executable and calls the main function.
     pub always_include: Option<String>,
@@ -278,7 +278,7 @@ pub struct FullCompilationOptions<'a> {
     /// Set to true if you want the target-specific extension of the shared object / executable to
     /// the exec_path.
     pub add_extension_to_exe: bool,
-    /// The path to the resulting executable
+    /// The path to the resulting executable or dynamic library.
     /// if not specified, this won't link the object file
     pub exec_path: Option<PathBuf>,
     /// The codegen options such as target, optimization level, etc
@@ -308,10 +308,104 @@ pub struct FullCompilationOptions<'a> {
     pub asm_writer: Option<Box<dyn Write>>,
 }
 
+macro_rules! setters {
+    ($($name:ident => $field:ident : $ty:ty),* $(,)?) => {
+        $(pub fn $name(&mut self, value: $ty) -> &mut Self {
+            self.$field = value;
+            self
+        })*
+    };
+}
+
+#[allow(dead_code)]
+impl<'a> FullCompilationOptions<'a> {
+    pub fn new(
+        file: Arc<Path>,
+        root_directory: Arc<Path>,
+        resolvers: Arc<[Box<dyn ModuleResolver>]>,
+        path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
+        path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+    ) -> Self {
+        let debug_file = file.clone();
+        Self {
+            file,
+            root_directory,
+            debug_file,
+            source: None,
+            always_include: None,
+            resolvers,
+            path_exists,
+            path_is_dir,
+            shared_object: false,
+            linker_script: None,
+            obj_path: None,
+            add_extension_to_exe: false,
+            exec_path: None,
+            codegen_opts: CodegenConfig::new_debug(),
+            link_with_crt: false,
+            additional_linker_args: &[],
+            additional_linker_directories: &[],
+            verbose: false,
+            with_debug_info: true,
+            ir_writer: None,
+            llvm_ir_writer: None,
+            llvm_bc_writer: None,
+            asm_writer: None,
+        }
+    }
+    setters![
+        with_source => source: Option<&'a str>,
+        set_file => file: Arc<Path>,
+        set_root_dir => root_directory: Arc<Path>,
+        set_debug_file => debug_file: Arc<Path>,
+        always_include_file => always_include: Option<String>,
+        set_module_resolver => resolvers: Arc<[Box<dyn ModuleResolver>]>,
+        shared_object => shared_object: bool,
+        set_linker_script => linker_script: Option<&'a Path>,
+        set_object_path => obj_path: Option<PathBuf>,
+        link_with_c_runtime => link_with_crt: bool,
+        set_additional_linker_args => additional_linker_args: &'a [String],
+        set_additional_linker_searchdirs => additional_linker_directories: &'a [PathBuf],
+        set_verbose_printing => verbose: bool,
+        generate_debug_info => with_debug_info: bool,
+        ir_writer => ir_writer: Option<Box<dyn Write>>,
+        llvm_ir_writer => llvm_ir_writer: Option<Box<dyn Write>>,
+        llvm_bc_writer => llvm_bc_writer: Option<Box<dyn Write>>,
+        asm_writer => asm_writer: Option<Box<dyn Write>>,
+        set_codegen_opts => codegen_opts: CodegenConfig<'a>,
+    ];
+    /// Set the path of the binary and if to add the target-dependent extension to it
+    pub fn set_binary_path(
+        &mut self,
+        executable_path: Option<PathBuf>,
+        add_target_specific_extension: bool,
+    ) -> &mut Self {
+        self.exec_path = executable_path;
+        self.add_extension_to_exe = add_target_specific_extension;
+        self
+    }
+    pub fn set_target(&mut self, target: Target) -> &mut Self {
+        self.codegen_opts.target = target;
+        self
+    }
+    pub fn set_optimizations(&mut self, optimizations: Optimizations) -> &mut Self {
+        self.codegen_opts.optimizations = optimizations;
+        self
+    }
+    pub fn set_runtime_safety(&mut self, runtime_safety: bool) -> &mut Self {
+        self.codegen_opts.runtime_safety = runtime_safety;
+        self
+    }
+    pub fn target(&self) -> Target {
+        self.codegen_opts.target
+    }
+}
+
 /// Runs the pipeline to turn a source file into an executable or shared object.
+/// Returns the path to the executable
 pub fn run_full_compilation_pipeline(
     mut opts: FullCompilationOptions,
-) -> Result<(), Vec<MiraError>> {
+) -> Result<Option<PathBuf>, Vec<MiraError>> {
     macro_rules! vprintln {
         (nn $($t:tt)*) => {
             if opts.verbose { print!($($t)*); _ = std::io::stdout().flush(); }
@@ -328,7 +422,18 @@ pub fn run_full_compilation_pipeline(
         } else {
             path.push(opts.codegen_opts.target.os.exe_file_ext());
         }
-        opts.exec_path = Some(PathBuf::from(path));
+        let mut path = PathBuf::from(path);
+        if path.is_relative() {
+            path = match std::env::current_dir() {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("failed to get the current directory");
+                    return Err(vec![MiraError::IO { inner: e }]);
+                }
+            }
+            .join(path);
+        }
+        opts.exec_path = Some(path);
     }
 
     if opts.verbose {
@@ -499,7 +604,7 @@ pub fn run_full_compilation_pipeline(
     }
 
     let Some(obj_path) = opts.obj_path else {
-        return (errs.is_empty()).then_some(()).ok_or(errs);
+        return (errs.is_empty()).then_some(opts.exec_path).ok_or(errs);
     };
     let now = Instant::now();
 
@@ -526,7 +631,7 @@ pub fn run_full_compilation_pipeline(
     }
 
     let Some(exec_path) = opts.exec_path else {
-        return Ok(());
+        return Ok(opts.exec_path);
     };
 
     vprintln!("Locating Linker");
@@ -554,7 +659,7 @@ pub fn run_full_compilation_pipeline(
         })
         .map_err(|v| vec![v.into()])?;
     vprintln!("Linking took {:?}", Instant::now().duration_since(now));
-    Ok(())
+    Ok(Some(exec_path))
 }
 
 /// Parses a string of text into a module

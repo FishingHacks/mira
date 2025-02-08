@@ -215,6 +215,25 @@ impl Type {
         }
     }
 
+    pub fn struct_offset(&self, ptr_size: u64, structs: &[TypedStruct], element: usize) -> u64 {
+        let struct_id = match self {
+            Self::Struct { struct_id, .. } => *struct_id,
+            _ => unreachable!(),
+        };
+        let structure = &structs[struct_id];
+        assert!(element < structure.elements.len());
+        let mut offset = 0;
+        for (_, typ) in &structure.elements[0..element] {
+            let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
+            offset = align(offset, alignment) + size;
+        }
+        offset = align(
+            offset,
+            structure.elements[element].1.alignment(ptr_size, structs),
+        );
+        offset
+    }
+
     pub fn alignment(&self, ptr_size: u64, structs: &[TypedStruct]) -> u32 {
         if self.refcount() > 0 {
             return ptr_size as u32;

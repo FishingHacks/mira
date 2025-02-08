@@ -26,12 +26,12 @@ fn get_line_start(mut line: usize, buffer: &str) -> Result<usize, usize> {
 }
 
 impl<Data> Repl<Data> {
-    pub fn new(commands: CmdList<Data>, on_no_input: Cmd<Data>, data: Data) -> Self {
+    pub fn new(commands: CmdList<Data>, on_no_input: Cmd<Data>, data: Data, buf: String) -> Self {
         Self {
             commands,
             on_no_input,
             data,
-            buf: String::new(),
+            buf,
         }
     }
 

@@ -391,7 +391,7 @@ impl Tokenizer {
             start: 0,
             current: 0,
             tokens: vec![],
-            line: 0,
+            line: 1,
             column: 0,
         }
     }

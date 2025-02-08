@@ -1,0 +1,7 @@
+@lang("copy_trait")
+pub trait Copy {}
+
+@lang("clone_trait")
+pub trait Clone {
+    fn clone(self: &Self) -> Self;
+}

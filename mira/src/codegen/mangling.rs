@@ -10,7 +10,7 @@ pub const MANGLED_ANON_FN_NAME: &str = "25$CL$$CL$anonymous$CR$$CR$";
 
 fn mangle_char(c: char, string: &mut String) {
     match c {
-        'a'..='z' | 'A'..='Z' | '_' | '.' | '-' | '0'..='9' | ' ' => string.push(c),
+        'a'..='z' | 'A'..='Z' | '_' | '.' | '-' | '0'..='9' => string.push(c),
         '<' => string.push_str("$LT$"),
         '>' => string.push_str("$GT$"),
         ',' => string.push_str("$C$"),
@@ -19,6 +19,7 @@ fn mangle_char(c: char, string: &mut String) {
         '{' => string.push_str("$CL$"),
         '}' => string.push_str("$CR$"),
         '$' => string.push_str("$D$"),
+        '#' => string.push_str("$H$"),
         _ => string.push('_'),
     }
 }

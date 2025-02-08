@@ -238,3 +238,46 @@ impl std::str::FromStr for Target {
         Ok(Self { arch, os, abi })
     }
 }
+
+mod native_target {
+    use super::{Abi, Arch, Os, Target};
+    use cfg_if::cfg_if;
+    #[allow(unused_imports)]
+    use std::compile_error;
+
+    cfg_if! {
+        if #[cfg(target_os = "linux")] {
+            const OS: Os = Os::Linux;
+        } else if #[cfg(target_os = "unknown")] {
+            const OS: Os = Os::Freestanding;
+        } else {
+            const OS: Os = Os::Other;
+        }
+    }
+
+    cfg_if! {
+        if #[cfg(target_env = "gnu")] {
+            const ABI: Abi = Abi::Gnu;
+        } else if #[cfg(target_env = "")] {
+            const ABI: Abi = Abi::None;
+        } else {
+            compile_error!("unsupported target environment");
+        }
+    }
+
+    cfg_if! {
+        if #[cfg(target_arch = "x86")] {
+            const ARCH: Arch = Arch::X86;
+        } else if #[cfg(target_arch = "x86_64")] {
+            const ARCH: Arch = Arch::X86_64;
+        } else {
+            compile_error!("unsupported arch");
+        }
+    }
+    pub const NATIVE_TARGET: Target = Target {
+        abi: ABI,
+        arch: ARCH,
+        os: OS,
+    };
+}
+pub use native_target::NATIVE_TARGET;

@@ -16,7 +16,7 @@ use crate::{
 };
 pub use inkwell::context::Context as InkwellContext;
 pub mod mangling;
-pub use context::{CodegenConfig, CodegenContext};
+pub use context::{CodegenConfig, CodegenContext, Optimizations};
 pub use error::CodegenError;
 pub use inkwell::support::LLVMString;
 use inkwell::{

@@ -194,7 +194,7 @@ impl ModuleResolver for AbsoluteResolver {
     }
 }
 
-pub struct SingleModuleResolver(String, Arc<Path>);
+pub struct SingleModuleResolver(pub String, pub Arc<Path>);
 impl ModuleResolver for SingleModuleResolver {
     fn resolve_module(&self, data: ImportData, module_name: &str) -> Option<ResolvedPath> {
         if module_name != self.0 {

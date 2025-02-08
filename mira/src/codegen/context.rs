@@ -37,7 +37,7 @@ use crate::{
         alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
         noinline::Noinline, section::SectionAnnotation,
     },
-    target::Target,
+    target::{Target, NATIVE_TARGET},
     typechecking::{
         expression::{TypecheckedExpression, TypedLiteral},
         typechecking::ScopeTypeMetadata,
@@ -135,20 +135,30 @@ impl<'a> CodegenConfig<'a> {
         }
     }
 
-    pub fn new_debug(target: Target) -> Self {
-        Self::new(target)
+    pub fn new_debug() -> Self {
+        Self::new(NATIVE_TARGET)
     }
-    pub fn new_release_fast(target: Target) -> Self {
-        Self::new_with_opt(target, Optimizations::High, false)
+    pub fn new_debug_unoptimized() -> Self {
+        Self::new_with_opt(NATIVE_TARGET, Optimizations::None, true)
     }
-    pub fn new_release_safe(target: Target) -> Self {
-        Self::new_with_opt(target, Optimizations::High, true)
+    pub fn new_release_fast() -> Self {
+        Self::new_with_opt(NATIVE_TARGET, Optimizations::High, false)
     }
-    pub fn new_release_small(target: Target) -> Self {
-        Self::new_with_opt(target, Optimizations::Small, false)
+    pub fn new_release_safe() -> Self {
+        Self::new_with_opt(NATIVE_TARGET, Optimizations::High, true)
     }
-    pub fn new_release_tiny(target: Target) -> Self {
-        Self::new_with_opt(target, Optimizations::ExtremelySmall, false)
+    pub fn new_release_small() -> Self {
+        Self::new_with_opt(NATIVE_TARGET, Optimizations::Small, false)
+    }
+    pub fn new_release_tiny() -> Self {
+        Self::new_with_opt(NATIVE_TARGET, Optimizations::ExtremelySmall, false)
+    }
+    /// Sets the current optimizations and runtime safety to that of the other.
+    /// This can be used with the other preset functions, e.g. with
+    /// `codegen_cfg.optimizations_of(CodegenConfig::new_release_safe())`
+    pub fn optimizations_of(&mut self, other: Self) {
+        self.optimizations = other.optimizations;
+        self.runtime_safety = other.runtime_safety;
     }
 
     setter!(cpu_features: &'a str, reloc_mode: RelocMode, runtime_safety: bool, optimizations: Optimizations, target: Target);
