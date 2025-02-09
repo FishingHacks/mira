@@ -61,6 +61,7 @@ pub fn main() {
 # Primitive Types
 
 | **Type** | **C Equivalent**                | **Description**                                                |
+|----------|---------------------------------|----------------------------------------------------------------|
 | `i8`     | `char`, `int8_t`                | signed 8-bit integer                                           |
 | `i16`    | `short`, `int16_t`              | signed 16-bit integer                                          |
 | `i32`    | `int`, `int32_t`                | signed 32-bit integer                                          |
@@ -86,6 +87,7 @@ Their memory-layout is the same as a slices, so `(&u8, usize)`, the first elemen
 ## Escape Sequences
 
 | Escape Sequence | Name                 |
+|-----------------|----------------------|
 | `\n`            | Newline              |
 | `\r`            | Carriage Return      |
 | `\t`            | Tab                  |
@@ -140,6 +142,7 @@ let MY_GLOBAL: i32 = 12;
 Note: While there is no operator overloading as of right now, it will be added using the `Add`, `Sub`, ... traits in the future.
 
 | Name                  | Syntax                | Types                 |
+|-----------------------|-----------------------|-----------------------|
 | Addition              | `a += b`, `a + b`     | Integers, Floats      |
 | Subtraction           | `a -= b`, `a - b`     | Integers, Floats      |
 | Multiplication        | `a *= b`, `a * b`     | Integers, Floats      |
@@ -314,6 +317,7 @@ This is similar to `#[...]` in rust.
 ## Available annotations
 
 | Name              | Valid Statements                  | Description                                                                                                   |
+|-------------------|-----------------------------------|---------------------------------------------------------------------------------------------------------------|
 | @alias            | External Functions                | Provides the symbol it should be exposed as in the compiled object                                            |
 | @callconv         | External Functions, Functions     | Provides the calling convention of a function. Supported values are `c`, `naked`, `fast`, `cold` and `inline` |
 | @ext_vararg       | External Functions                | Marks that an external function has a variable arguments (, ... in c and rust)                                |
