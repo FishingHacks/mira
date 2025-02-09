@@ -149,19 +149,19 @@ Note: While there is no operator overloading as of right now, it will be added u
 | Division              | `a /= b`, `a / b`     | Integers, Floats      |
 | Remainder Devision    | `a %= b`, `a % b`     | Integers, Floats      |
 | Bitwise and           | `a &= b`, `a & b`     | Integers, Booleans    |
-| Bitwise or            | `a |= b`, `a | b`     | Integers, Booleans    |
+| Bitwise or            | `a \|= b`, `a \| b`   | Integers, Booleans    |
 | Bitwise xor           | `a ^= b`, `a ^ b`     | Integers              |
 | Bit shift left        | `a <<= b`, `a << b`   | Integers              |
 | Bit shift right       | `a >>= b`, `a >> b`   | Integers              |
 | Logical and           | `a && b`              | Booleans              |
-| Logical or            | `a || b`              | Booleans              |
+| Logical or            | `a \|\| b`            | Booleans              |
 | Equality              | `a == b`              | Any Type              |
 | Inequality            | `a != b`              | Any Type              |
 | Greater Than          | `a > b`               | Integers              |
 | Greater or Equal      | `a >= b`              | Integers              |
 | Less Than             | `a < b`               | Integers              |
 | Lesser or Equal       | `a <= b`              | Integers              |
-| Piping                | `a |> func()`         | Any Type              |
+| Piping                | `a \|> func()`        | Any Type              |
 | Negation              | `-a`                  | Integers, Floats      |
 | Bitwise not           | `~a`                  | Integers, Booleans    |
 | Logical not           | `!a`                  | Booleans              |
