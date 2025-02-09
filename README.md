@@ -10,7 +10,7 @@ You can look at the [Language Reference](./langref.md), the [standard library do
 
 # Installation
 
-- [You can download one of the prebuilt mira binaries](github.com/fishingHacks/mira/releases)
+- [You can download one of the prebuilt mira binaries](https://github.com/fishingHacks/mira/releases)
 
 A Mira installation is composed of 2 things:
 
@@ -47,3 +47,28 @@ $ cargo build -j8 --release // <- for release mode, allows for more aggressive o
 ```
 
 Note that `-j8` denotes the amount of workers you want to use at the same time, you can increase/decrease it depending on how many threads your cpu has.
+
+# Syntax Highlighting
+
+You can use [tree-sitter-mira](htps://github.com/fishinghacks/tree-sitter-mira) for syntax highlighting in editor that support it. Please do note that in neovim this is quite a clunky process. You'll have to clone the repository somewhere, symlink the queries to `~/.config/nvim/queries/mira`, and add the following to ur lua config:
+
+```lua
+local parser_config = require('nvim-treesitter.parsers').get_parser_configs()
+parser_config.mira = {
+  install_info = {
+    -- Change this url to your grammar
+    url = '<root directory of the cloned repository>',
+    -- If you use an external scanner it needs to be included here
+    files = { 'src/parser.c', 'src/scanner.c' },
+    generate_reqires_npm = false,
+    requires_generate_from_grammar = false,
+  },
+  -- The filetype you want it registered as
+  filetype = 'mr',
+}
+vim.treesitter.language.register('mira', 'mira')
+vim.filetype.add { extension = { mr = 'mira' } }
+```
+
+and then run `:TSInstall mira` or `:TSInstallFromGrammar mira` if :TSInstall fails. You should then be able to just open .mr files and get syntax highlighting.
+Note: there might be times where treesitter fails to parse, but it does not seem to effect highlighting at all.
