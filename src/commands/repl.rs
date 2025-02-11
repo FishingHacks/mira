@@ -51,10 +51,12 @@ pub fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
         Some(EditorMode::Editor) => true,
         None => editor_path.is_some(),
     };
-    let buf = args
-        .file
-        .map(std::fs::read_to_string)
-        .unwrap_or_else(|| Ok(String::new()))?;
+    let buf = args.file.map(std::fs::read_to_string).unwrap_or_else(|| {
+        // pub fn main(argc: usize, argv: &&u8) {
+        //     "Hello, World".println();
+        // }
+        Ok("pub fn main(argc: usize, argv: &&u8) {\n    \"Hello, World\".println();\n}".into())
+    })?;
 
     let mut repl = Repl::<Data>::new(
         vec![

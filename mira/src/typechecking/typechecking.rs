@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     globals::GlobalStr,
     module::{ModuleContext, ModuleId, ModuleScopeValue, StaticId},
-    parser::{BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp},
+    parser::{ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp},
     std_annotations::ext_vararg::ExternVarArg,
     tokenizer::{Location, NumberType},
     typechecking::typed_resolve_import,
@@ -637,7 +637,7 @@ fn typecheck_expression(
                 Type::PrimitiveStr(1),
                 TypedLiteral::String(global_str.clone()),
             )),
-            LiteralValue::Array(vec) if vec.is_empty() => {
+            LiteralValue::Array(ArrayLiteral::Values(vec)) if vec.len() == 0 => {
                 let typ = match type_suggestion {
                     TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
                         .to_type(context)
@@ -646,7 +646,23 @@ fn typecheck_expression(
                 };
                 Ok((typ.clone(), TypedLiteral::Array(typ, Vec::new())))
             }
-            LiteralValue::Array(vec) => {
+            LiteralValue::Array(ArrayLiteral::CopyInitialized(value, amount)) => {
+                let suggested_typ = match type_suggestion {
+                    TypeSuggestion::UnsizedArray(v) | TypeSuggestion::Array(v) => *v,
+                    _ => TypeSuggestion::Unknown,
+                };
+                let (typ, lit) =
+                    typecheck_expression(context, module, scope, value, exprs, suggested_typ)?;
+                Ok((
+                    Type::SizedArray {
+                        typ: Box::new(typ.clone()),
+                        num_references: 0,
+                        number_elements: *amount,
+                    },
+                    TypedLiteral::ArrayInit(typ, Box::new(lit), *amount),
+                ))
+            }
+            LiteralValue::Array(ArrayLiteral::Values(vec)) => {
                 let suggested_typ = match type_suggestion {
                     TypeSuggestion::UnsizedArray(v) | TypeSuggestion::Array(v) => *v,
                     _ => TypeSuggestion::Unknown,
@@ -990,7 +1006,7 @@ fn typecheck_expression(
                     tc_res!(unary scope, exprs; Pos(loc.clone(), right_side, typ))
                 }
                 UnaryOp::Plus => Err(TypecheckingError::CannotPos(loc.clone(), typ)),
-                UnaryOp::Minus if typ.is_int_like() && !typ.is_unsigned() => {
+                UnaryOp::Minus if (typ.is_int_like() && !typ.is_unsigned()) || typ.is_float() => {
                     tc_res!(unary scope, exprs; Neg(loc.clone(), right_side, typ))
                 }
                 UnaryOp::Minus => Err(TypecheckingError::CannotNeg(loc.clone(), typ)),
@@ -1440,7 +1456,7 @@ fn typecheck_cast(
                 num_references: 1,
             },
             _,
-        ) if new_typ.refcount() == 1 && new_typ == **typ => {
+        ) if new_typ.refcount() == 1 && new_typ == typ.clone().take_ref() => {
             let id = scope.push(new_typ.clone());
             exprs.push(TypecheckedExpression::StripMetadata(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))

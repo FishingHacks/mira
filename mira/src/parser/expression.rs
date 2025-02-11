@@ -152,9 +152,15 @@ impl Display for PathWithoutGenerics {
 }
 
 #[derive(Debug, Clone)]
+pub enum ArrayLiteral {
+    Values(Vec<Expression>),
+    CopyInitialized(Box<Expression>, usize),
+}
+
+#[derive(Debug, Clone)]
 pub enum LiteralValue {
     String(GlobalStr),
-    Array(Vec<Expression>),
+    Array(ArrayLiteral),
     Struct(HashMap<GlobalStr, (Location, Expression)>, Path),
     AnonymousStruct(HashMap<GlobalStr, (Location, Expression)>),
     Tuple(Vec<(Location, Expression)>),
@@ -182,11 +188,20 @@ impl Display for LiteralValue {
             LiteralValue::String(v) => Debug::fmt(v, f),
             LiteralValue::Array(v) => {
                 f.write_char('[')?;
-                for (i, v) in v.iter().enumerate() {
-                    if i != 0 {
-                        f.write_str(", ")?;
+                match v {
+                    ArrayLiteral::Values(values) => {
+                        for (i, v) in values.iter().enumerate() {
+                            if i != 0 {
+                                f.write_str(", ")?;
+                            }
+                            Display::fmt(v, f)?;
+                        }
                     }
-                    Display::fmt(v, f)?;
+                    ArrayLiteral::CopyInitialized(expression, amount) => {
+                        Display::fmt(expression, f)?;
+                        f.write_str("; ")?;
+                        Display::fmt(amount, f)?;
+                    }
                 }
                 f.write_char(']')
             }
@@ -1129,7 +1144,7 @@ impl Parser {
         }
 
         // arrays
-        if let Some(v) = self.try_array() {
+        if let Some(v) = self.try_array().transpose() {
             return v;
         }
 
@@ -1182,18 +1197,30 @@ impl Parser {
         })
     }
 
-    fn try_array(&mut self) -> Option<Result<Expression, ParsingError>> {
+    fn try_array(&mut self) -> Result<Option<Expression>, ParsingError> {
         if self.match_tok(TokenType::BracketLeft) {
             let loc = self.current().location.clone();
             let mut arr = vec![];
             while !self.match_tok(TokenType::BracketRight) {
+                if arr.len() == 1 && self.match_tok(TokenType::Semicolon) {
+                    let amount =
+                        self.expect_tok(TokenType::UIntLiteral)?.uint_literal()?.0 as usize;
+                    self.expect_tok(TokenType::BracketRight)?;
+                    return Ok(Some(Expression::Literal(
+                        LiteralValue::Array(ArrayLiteral::CopyInitialized(
+                            Box::new(arr.remove(0)),
+                            amount,
+                        )),
+                        loc,
+                    )));
+                }
                 if !arr.is_empty() {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
-                        return Some(Err(ParsingError::ExpectedArrayElement {
+                        return Err(ParsingError::ExpectedArrayElement {
                             loc: self.peek().location.clone(),
                             found: self.peek().typ,
-                        }));
+                        });
                     }
                     // in order to allow stuff like [1, 2, 3, ]
                     if self.match_tok(TokenType::BracketRight) {
@@ -1201,15 +1228,15 @@ impl Parser {
                     }
                 }
 
-                match self.parse_expression() {
-                    Ok(v) => arr.push(v),
-                    e @ Err(_) => return Some(e),
-                }
+                arr.push(self.parse_expression()?);
             }
 
-            Some(Ok(Expression::Literal(LiteralValue::Array(arr), loc)))
+            Ok(Some(Expression::Literal(
+                LiteralValue::Array(ArrayLiteral::Values(arr)),
+                loc,
+            )))
         } else {
-            None
+            Ok(None)
         }
     }
 

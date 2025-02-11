@@ -24,6 +24,8 @@ You also include paths using strings, not identifiers, due to not having a `mod 
 
 The use keyword also allows for importing multiple exported items using the familiar `"file"::{a, b, c, ...}` syntax. If you want to just include the module, you can use `"file" as <name>`.
 
+Also note that most primitive types (all integers, bools and strings) have a `.print` and `.println` function, `"Hello, World!".println();` would've had the same output.
+
 # Comments
 
 Mira supports the standard c-style comments of line-comments using `//` and multiline comments using `/* ... */`.

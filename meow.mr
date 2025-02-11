@@ -1,3 +1,5 @@
-fn meow() -> usize = 3;
+use "std"::panic;
 
-export meow;
+pub fn main(argc: usize, argv: &&u8) {
+    "meow meow" |> panic();
+}

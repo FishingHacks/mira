@@ -27,6 +27,7 @@ pub enum TypedLiteral {
     Static(StaticId),
     String(GlobalStr),
     Array(Type, Vec<TypedLiteral>),
+    ArrayInit(Type, Box<TypedLiteral>, usize),
     Struct(StructId, Vec<TypedLiteral>),
     Tuple(Vec<TypedLiteral>),
     F64(f64),
@@ -74,6 +75,11 @@ impl TypedLiteral {
                 typ: ty.clone().into(),
                 num_references: 0,
                 number_elements: elems.len(),
+            }),
+            TypedLiteral::ArrayInit(ty, _, elems) => Cow::Owned(Type::SizedArray {
+                typ: ty.clone().into(),
+                num_references: 0,
+                number_elements: *elems,
             }),
             TypedLiteral::Struct(struct_id, _) => Cow::Owned(Type::Struct {
                 struct_id: *struct_id,
@@ -134,6 +140,7 @@ impl TypedLiteral {
                 ty.is_primitive().then(|| ty.clone())
             }
             TypedLiteral::Array(..)
+            | TypedLiteral::ArrayInit(..)
             | TypedLiteral::Struct(..)
             | TypedLiteral::Tuple(..)
             | TypedLiteral::Function(_)
@@ -150,6 +157,7 @@ impl TypedLiteral {
                 .iter()
                 .map(TypedLiteral::is_entirely_literal)
                 .fold(true, std::ops::BitAnd::bitand),
+            TypedLiteral::ArrayInit(_, elem, amount) => *amount == 0 || elem.is_entirely_literal(),
             TypedLiteral::Static(_) | TypedLiteral::Dynamic(_) | TypedLiteral::Intrinsic(_) => {
                 false
             }

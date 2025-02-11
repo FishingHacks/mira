@@ -387,6 +387,13 @@ impl Display for Tld<'_> {
             TypedLiteral::Static(id) => f.write_fmt(format_args!("%{id}")),
             TypedLiteral::String(global_str) => Debug::fmt(global_str, f),
             TypedLiteral::Array(_, vec) => f.debug_list().entries(vec.iter().map(Tld)).finish(),
+            TypedLiteral::ArrayInit(_, elem, amount) => {
+                f.write_char('[')?;
+                Display::fmt(&Tld(elem), f)?;
+                f.write_str("; ")?;
+                Display::fmt(amount, f)?;
+                f.write_char(']')
+            }
             TypedLiteral::Struct(id, vec) => {
                 f.write_str("s_")?;
                 Display::fmt(id, f)?;

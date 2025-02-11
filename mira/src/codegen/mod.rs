@@ -376,6 +376,34 @@ impl<'ctx> TypedLiteral {
                     .const_named_struct(&[ptr, len_const])
                     .into()
             }
+
+            TypedLiteral::ArrayInit(ty, _, 0) => ty
+                .to_llvm_basic_type(default_types, structs, ctx)
+                .array_type(0)
+                .const_zero()
+                .into(),
+            TypedLiteral::ArrayInit(_, elem, amount) => {
+                let elem = elem.to_basic_value(
+                    scope_get_value,
+                    default_types,
+                    structs,
+                    builder,
+                    statics,
+                    functions,
+                    ext_functions,
+                    string_map,
+                    ctx,
+                );
+                let mut array_value = elem.get_type().array_type(*amount as u32).const_zero();
+                for i in 0..*amount {
+                    array_value = builder
+                        .build_insert_value(array_value, elem, i as u32, "")
+                        .expect("i should never be out of bounds")
+                        .into_array_value();
+                }
+
+                array_value.into()
+            }
             TypedLiteral::Array(ty, elements) => {
                 if elements.is_empty() {
                     return ty
@@ -1263,9 +1291,27 @@ impl TypecheckedExpression {
                 ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx));
                 Ok(())
             }
-            TypecheckedExpression::Neg(..) => todo!(),
-            TypecheckedExpression::LNot(..) => todo!(),
-            TypecheckedExpression::BNot(..) => todo!(),
+            TypecheckedExpression::Neg(_, dst, src) => {
+                let src = src.fn_ctx_to_basic_value(ctx);
+                let value = match src {
+                    BasicValueEnum::IntValue(int_value) => ctx
+                        .builder
+                        .build_int_neg(int_value, "")?
+                        .as_basic_value_enum(),
+                    BasicValueEnum::FloatValue(float_value) => ctx
+                        .builder
+                        .build_float_neg(float_value, "")?
+                        .as_basic_value_enum(),
+                    _ => unreachable!(),
+                };
+                ctx.push_value(*dst, value);
+                Ok(())
+            }
+            TypecheckedExpression::BNot(_, dst, src) | TypecheckedExpression::LNot(_, dst, src) => {
+                let src = src.fn_ctx_to_basic_value(ctx).into_int_value();
+                ctx.push_value(*dst, ctx.builder.build_not(src, "")?.as_basic_value_enum());
+                Ok(())
+            }
             TypecheckedExpression::Add(_, dst, lhs, rhs) => {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);

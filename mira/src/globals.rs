@@ -98,6 +98,9 @@ impl PartialEq<&str> for GlobalStr {
 
 impl Clone for GlobalStr {
     fn clone(&self) -> Self {
+        if self.0 == 0 {
+            return Self(self.0);
+        }
         STRINGS.with_borrow_mut(|strings: &mut GlobalStrs| {
             if let Some(v) = strings.get_mut(self.0) {
                 v.refs += 1;
@@ -134,6 +137,9 @@ impl GlobalStr {
             for (idx, v) in strings.entries.iter_mut().enumerate() {
                 if let Some(v) = v {
                     if (*v.value).eq(value) {
+                        if idx == 0 {
+                            return Self(0);
+                        }
                         v.refs += 1;
                         return Self(idx);
                     }
@@ -151,6 +157,9 @@ impl GlobalStr {
             for (idx, v) in strings.entries.iter_mut().enumerate() {
                 if let Some(v) = v {
                     if (*v.value).eq(&*value) {
+                        if idx == 0 {
+                            return Self(0);
+                        }
                         v.refs += 1;
                         return Self(idx);
                     }

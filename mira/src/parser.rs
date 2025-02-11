@@ -8,7 +8,9 @@ use crate::{
     globals::GlobalStr,
     tokenizer::{Location, Token, TokenType},
 };
-pub use expression::{BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp};
+pub use expression::{
+    ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
+};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, Struct, TypeRef, RESERVED_TYPE_NAMES};
 mod expression;

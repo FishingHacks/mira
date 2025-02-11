@@ -647,7 +647,10 @@ pub fn run_full_compilation_pipeline(
         .link(LinkOptions {
             linker_path,
             object_files: &[obj_path],
-            inputs: &[],
+            inputs: &[
+                LinkerInput::LinkLibrary("unwind".into()),
+                LinkerInput::LinkLibrary("unwind-x86_64".into()),
+            ],
             output: &exec_path,
             args: opts.additional_linker_args,
             link_crt: opts.link_with_crt,

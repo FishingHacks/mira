@@ -19,6 +19,10 @@ pub fn resolve_module(
     path_exists: &dyn Fn(&Path) -> bool,
     path_is_dir: &dyn Fn(&Path) -> bool,
 ) -> Option<ResolvedPath> {
+    if name.is_empty() {
+        return None;
+    }
+
     if name.as_bytes()[0] == b'.' && name[1..].starts_with(std::path::MAIN_SEPARATOR_STR) {
         let skip = std::path::MAIN_SEPARATOR_STR.len() + 1;
         let name = &name[skip..];
