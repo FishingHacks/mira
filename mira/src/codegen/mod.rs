@@ -268,7 +268,9 @@ fn is_value_const(v: &BasicValueEnum<'_>) -> bool {
         BasicValueEnum::FloatValue(v) => v.is_const(),
         BasicValueEnum::PointerValue(v) => v.is_const(),
         BasicValueEnum::StructValue(v) => v.is_const(),
-        BasicValueEnum::VectorValue(v) => v.is_const(),
+        BasicValueEnum::VectorValue(..) | BasicValueEnum::ScalableVectorValue(..) => {
+            unreachable!("vector types arent supported")
+        }
     }
 }
 
@@ -279,7 +281,9 @@ fn poison_val(v: BasicTypeEnum<'_>) -> BasicValueEnum<'_> {
         BasicTypeEnum::IntType(v) => v.get_poison().into(),
         BasicTypeEnum::PointerType(v) => v.get_poison().into(),
         BasicTypeEnum::StructType(v) => v.get_poison().into(),
-        BasicTypeEnum::VectorType(v) => v.get_poison().into(),
+        BasicTypeEnum::VectorType(..) | BasicTypeEnum::ScalableVectorType(..) => {
+            unreachable!("vector types arent supported")
+        }
     }
 }
 
@@ -291,8 +295,10 @@ fn static_to_basic_type(static_value: GlobalValue<'_>) -> BasicTypeEnum<'_> {
         AnyTypeEnum::IntType(ty) => ty.into(),
         AnyTypeEnum::PointerType(ty) => ty.into(),
         AnyTypeEnum::StructType(ty) => ty.into(),
-        AnyTypeEnum::VectorType(ty) => ty.into(),
         AnyTypeEnum::VoidType(_) => panic!("A static should never be void"),
+        AnyTypeEnum::VectorType(..) | AnyTypeEnum::ScalableVectorType(..) => {
+            unreachable!("vector types arent supported")
+        }
     }
 }
 
@@ -307,13 +313,15 @@ fn get_alignment(ty: BasicTypeEnum) -> u32 {
             .size_of()
             .get_zero_extended_constant()
             .expect("ptr size has to be constant") as u32,
-        BasicTypeEnum::VectorType(ty) => get_alignment(ty.get_element_type()),
         BasicTypeEnum::ArrayType(ty) => get_alignment(ty.get_element_type()),
         BasicTypeEnum::StructType(ty) => ty
             .get_field_types_iter()
             .map(|v| get_alignment(v))
             .max()
             .unwrap_or(1),
+        BasicTypeEnum::VectorType(..) | BasicTypeEnum::ScalableVectorType(..) => {
+            unreachable!("vector types aren't supported")
+        }
     }
 }
 
@@ -457,8 +465,8 @@ impl<'ctx> TypedLiteral {
                     BasicTypeEnum::StructType(struct_type) => {
                         array_const_value!(struct_type, into_struct_value)
                     }
-                    BasicTypeEnum::VectorType(vector_type) => {
-                        array_const_value!(vector_type, into_vector_value)
+                    BasicTypeEnum::VectorType(..) | BasicTypeEnum::ScalableVectorType(..) => {
+                        unreachable!("vector types arent supported")
                     }
                 };
 

@@ -59,7 +59,7 @@ impl<'ctx> DebugContext<'ctx> {
         module: ModuleId,
         structs: &[TypedStruct],
         arg: u32,
-    ) -> inkwell::values::InstructionValue<'ctx> {
+    ) {
         let ty = self.get_type(typ, structs);
         let info = name.with(|name| {
             self.builder.create_parameter_variable(
@@ -88,7 +88,7 @@ impl<'ctx> DebugContext<'ctx> {
         bb: BasicBlock<'ctx>,
         module: ModuleId,
         structs: &[TypedStruct],
-    ) -> inkwell::values::InstructionValue<'ctx> {
+    ) {
         let alignment = typ.alignment(
             (self.default_types.isize.get_bit_width() / 8) as u64,
             structs,
