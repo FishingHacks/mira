@@ -96,6 +96,14 @@ impl Hash for TypedStruct {
     }
 }
 
+pub type Static = (
+    Type,
+    TypedLiteral, /* guaranteed to not be `Dynamic`, `Intrinsic` or `Static` */
+    ModuleId,
+    Location,
+    Annotations,
+);
+
 #[derive(Debug)]
 #[allow(clippy::type_complexity)]
 pub struct TypecheckingContext {
@@ -107,15 +115,7 @@ pub struct TypecheckingContext {
             Option<Box<[TypecheckedExpression]>>,
         )>,
     >,
-    pub statics: RwLock<
-        Vec<(
-            Type,
-            TypedLiteral, /* guaranteed to not be `Dynamic`, `Intrinsic` or `Static` */
-            ModuleId,
-            Location,
-            Annotations,
-        )>,
-    >,
+    pub statics: RwLock<Vec<Static>>,
     pub structs: RwLock<Vec<TypedStruct>>,
     pub traits: RwLock<Vec<TypedTrait>>,
     pub lang_items: RwLock<LangItems>,

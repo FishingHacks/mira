@@ -34,7 +34,7 @@ This allows you to unpack the installation anywhere. This also does support havi
 Ensure you have the following dependencies:
 
 - System C/C++ Toolchain
-- LLVM development libraries == 17.0.x (Note that if you're building llvm, you have to clone llvm/llvm-project, just the llvm subdirectory will not work.)
+- LLVM development libraries == 19.1.x (Other versions might work. You can change the llvm feature of the `inkwell` dependency in ./mira/Cargo.toml file)
 - Cargo
 
 In case you have the llvm binaries not exposed, you can set the environment variable `LLVM_SYS_170_PREFIX` to the build directory of llvm (the one where bin/llc or bin/opt is in).
@@ -42,11 +42,9 @@ In case you have the llvm binaries not exposed, you can set the environment vari
 Then building mirac is pretty easy:
 
 ```
-$ cargo build -j8           // <- for debug mode (you probably don't want that)
-$ cargo build -j8 --release // <- for release mode, allows for more aggressive optimizations. This is recommended and the mode the prebuilt binaries are built with
+$ cargo build           // <- for debug mode (you probably don't want that)
+$ cargo build --release // <- for release mode, allows for more aggressive optimizations. This is recommended and the mode the prebuilt binaries are built with
 ```
-
-Note that `-j8` denotes the amount of workers you want to use at the same time, you can increase/decrease it depending on how many threads your cpu has.
 
 # Syntax Highlighting
 

@@ -111,7 +111,7 @@ struct MyType {
     b: MyType$b,
 }
 
-@(C)
+@callconv(c)
 extern fn test(count: i32, flags: u8, should_rethrow: u8) -> MyType;
 
 extern let has_panicked: bool;

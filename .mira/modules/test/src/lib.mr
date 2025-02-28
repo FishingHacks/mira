@@ -1,3 +1,1 @@
-fn woof(a: i32) -> i32 = a;
-
-export woof;
+pub fn woof(a: i32) -> i32 = a;

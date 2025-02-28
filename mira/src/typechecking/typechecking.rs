@@ -637,7 +637,7 @@ fn typecheck_expression(
                 Type::PrimitiveStr(1),
                 TypedLiteral::String(global_str.clone()),
             )),
-            LiteralValue::Array(ArrayLiteral::Values(vec)) if vec.len() == 0 => {
+            LiteralValue::Array(ArrayLiteral::Values(vec)) if vec.is_empty() => {
                 let typ = match type_suggestion {
                     TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
                         .to_type(context)

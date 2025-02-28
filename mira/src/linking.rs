@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::Write,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus},
     sync::Arc,
@@ -20,7 +20,7 @@ use crate::{
     target::{Abi, Arch, Os, Target},
     tokenizer::{Literal, Location, Token, TokenType, Tokenizer},
     typechecking::{
-        ir_displayer::TCContextDisplay,
+        ir_displayer::{Formatter, IoWriteWrapper, ReadOnlyTypecheckingContext, TCContextDisplay},
         typechecking::{typecheck_function, typecheck_static},
         TypecheckingContext,
     },
@@ -529,13 +529,23 @@ pub fn run_full_compilation_pipeline(
 
     let mut errs = Vec::new();
 
-    if let Some(Err(e)) = opts.ir_writer.as_mut().map(|v| {
-        v.write_fmt(format_args!(
-            "{:#}",
-            TCContextDisplay(&typechecking_context)
-        ))
-    }) {
-        errs.push(e.into())
+    if let Some(writer) = opts.ir_writer.as_mut() {
+        let readonly_ctx = ReadOnlyTypecheckingContext {
+            modules: &typechecking_context.modules.read(),
+            functions: &typechecking_context.functions.read(),
+            external_functions: &typechecking_context.external_functions.read(),
+            statics: &typechecking_context.statics.read(),
+            structs: &typechecking_context.structs.read(),
+            traits: &typechecking_context.traits.read(),
+            lang_items: &typechecking_context.lang_items.read(),
+        };
+        let mut wrapper = IoWriteWrapper(writer);
+        let mut formatter = Formatter::new(&mut wrapper, readonly_ctx);
+        if TCContextDisplay.fmt(&mut formatter).is_err() {
+            errs.push(MiraError::IO {
+                inner: ErrorKind::Other.into(),
+            });
+        }
     }
 
     vprintln!("Codegen...");
