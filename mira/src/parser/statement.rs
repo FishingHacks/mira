@@ -7,7 +7,7 @@ use crate::{
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
     globals::GlobalStr,
-    module::{FunctionId, Module, ModuleId, StaticId, StructId, TraitId},
+    module::{FunctionId, Module, ModuleContext, ModuleId, StaticId, StructId, TraitId},
     parser::{module_resolution::resolve_module, ParserQueueEntry},
     tokenizer::{Literal, Location, Token, TokenType},
 };
@@ -148,7 +148,12 @@ impl Statement {
         }
     }
 
-    pub fn bake_functions(&mut self, module: &mut Module, module_id: ModuleId) {
+    pub fn bake_functions(
+        &mut self,
+        module: &mut Module,
+        module_id: ModuleId,
+        context: &ModuleContext,
+    ) {
         match self {
             Self::BakedFunction(..)
             | Self::BakedExternalFunction(..)
@@ -166,20 +171,20 @@ impl Statement {
             Self::Function(..) => unreachable!("function in a non-top-level scope"),
             Self::Block(statements, ..) => statements
                 .iter_mut()
-                .for_each(|stmt| stmt.bake_functions(module, module_id)),
-            Self::Var(_, stmt, ..) => stmt.bake_functions(module, module_id),
-            Self::Expression(expr) => expr.bake_functions(module, module_id),
+                .for_each(|stmt| stmt.bake_functions(module, module_id, context)),
+            Self::Var(_, stmt, ..) => stmt.bake_functions(module, module_id, context),
+            Self::Expression(expr) => expr.bake_functions(module, module_id, context),
             Self::For {
                 iterator, child, ..
             } => {
-                iterator.bake_functions(module, module_id);
-                child.bake_functions(module, module_id);
+                iterator.bake_functions(module, module_id, context);
+                child.bake_functions(module, module_id, context);
             }
             Self::While {
                 condition, child, ..
             } => {
-                condition.bake_functions(module, module_id);
-                child.bake_functions(module, module_id);
+                condition.bake_functions(module, module_id, context);
+                child.bake_functions(module, module_id, context);
             }
             Self::If {
                 condition,
@@ -187,13 +192,13 @@ impl Statement {
                 else_stmt,
                 ..
             } => {
-                condition.bake_functions(module, module_id);
-                if_stmt.bake_functions(module, module_id);
+                condition.bake_functions(module, module_id, context);
+                if_stmt.bake_functions(module, module_id, context);
                 if let Some(stmt) = else_stmt {
-                    stmt.bake_functions(module, module_id);
+                    stmt.bake_functions(module, module_id, context);
                 }
             }
-            Self::Return(Some(val), ..) => val.bake_functions(module, module_id),
+            Self::Return(Some(val), ..) => val.bake_functions(module, module_id, context),
         }
     }
 }

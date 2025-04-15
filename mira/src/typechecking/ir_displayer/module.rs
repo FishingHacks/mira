@@ -15,37 +15,50 @@ impl ModuleDisplay<'_> {
         f.write_value(&id)?;
         f.write_char(' ')?;
         f.write_debug(&self.0.path)?;
-        f.write_str(" {\nscope:")?;
+        f.write_str(" {")?;
         f.push_indent();
-        for entry in self.0.scope.iter() {
-            f.write_char('\n')?;
-            f.write_value(&entry.0)?;
-            f.write_str(" : ")?;
-            fmt_module_scope_value(entry.1, f)?;
-        }
-        f.pop_indent();
-        f.write_str("\nexports:")?;
-        f.push_indent();
-        for (name, exported_name) in self.0.exports.iter() {
-            f.write_char('\n')?;
-            f.write_value(name)?;
-            if name != exported_name {
-                f.write_str(" as ")?;
-                f.write_value(exported_name)?;
+
+        if !self.0.scope.is_empty() {
+            f.write_str("\nscope:")?;
+            f.push_indent();
+            for entry in self.0.scope.iter() {
+                f.write_char('\n')?;
+                f.write_value(&entry.0)?;
+                f.write_str(" : ")?;
+                fmt_module_scope_value(entry.1, f)?;
             }
-            if let Some(value) = self.0.scope.get(name) {
-                f.write_str(" (")?;
-                fmt_module_scope_value(value, f)?;
-                f.write_char(')')?;
+            f.pop_indent();
+        }
+
+        if !self.0.exports.is_empty() {
+            f.write_str("\nexports:")?;
+            f.push_indent();
+            for (name, exported_name) in self.0.exports.iter() {
+                f.write_char('\n')?;
+                f.write_value(name)?;
+                if name != exported_name {
+                    f.write_str(" as ")?;
+                    f.write_value(exported_name)?;
+                }
+                if let Some(value) = self.0.scope.get(name) {
+                    f.write_str(" (")?;
+                    fmt_module_scope_value(value, f)?;
+                    f.write_char(')')?;
+                }
             }
+            f.pop_indent();
         }
-        f.pop_indent();
-        f.write_str("\nasssembly:")?;
-        f.push_indent();
-        for asm in self.0.assembly.iter().flat_map(|v| v.1.split('\n')) {
-            f.write_char('\n')?;
-            f.write_debug(&asm)?;
+
+        if !self.0.assembly.is_empty() {
+            f.write_str("\nasssembly:")?;
+            f.push_indent();
+            for asm in self.0.assembly.iter().flat_map(|v| v.1.split('\n')) {
+                f.write_char('\n')?;
+                f.write_debug(&asm)?;
+            }
+            f.pop_indent();
         }
+
         f.pop_indent();
         f.write_str("\n}")
     }

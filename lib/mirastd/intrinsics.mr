@@ -1,0 +1,32 @@
+@intrinsic("unreachable")
+pub fn unreachable() -> ! { while(true) {} }
+
+@intrinsic("trap")
+pub fn trap() -> ! { while(true) {} }
+
+@intrinsic("breakpoint")
+pub fn breakpoint(){}
+
+@intrinsic("return_address")
+pub fn return_address() -> usize = 0;
+
+@intrinsic("size_of")
+pub fn size_of<T>() -> usize = 0;
+
+@intrinsic("get_metadata")
+pub fn get_metadata<unsized T>(_: &T) -> usize = 0;
+
+@intrinsic("offset")
+fn offset<T>(ptr: &T, by: usize) -> &T = ptr;
+
+@intrinsic("with_metadata")
+fn with_metadata<T, unsized R>(ptr: &T, data: usize) -> &R {while(true){}}
+
+@intrinsic("volatile_read")
+fn volatile_read<T>(ptr: &T) -> T {while(true){}}
+
+@intrinsic("volatile_write")
+fn volatile_write<T>(ptr: &T, data: T){}
+
+@intrinsic("size_of_val")
+fn size_of_val<unsized T>(ptr: &T) -> usize = 0;

@@ -168,7 +168,19 @@ pub fn typecheck_function(
             contract.location.clone(),
         )
     } else {
-        let contract = &context.functions.read()[function_id].0;
+        let reader = context.functions.read();
+        let contract = &reader[function_id].0;
+        if contract
+            .annotations
+            .get_first_annotation::<IntrinsicAnnotation>()
+            .is_some()
+        {
+            let loc = contract.location.clone();
+            drop(reader);
+            context.functions.write()[function_id].1 =
+                Box::new([TypecheckedExpression::Unreachable(loc)]);
+            return Ok(Vec::new());
+        }
         (
             contract.return_type.clone(),
             contract.arguments.clone(),
@@ -860,6 +872,11 @@ fn typecheck_expression(
                         return Ok((typ.clone(), TypedLiteral::Dynamic(id)));
                     }
                 }
+                let mut generics = Vec::new();
+                for (_, generic_value) in path.entries.iter() {
+                    generics.extend_from_slice(generic_value);
+                }
+
                 let value = typed_resolve_import(
                     context,
                     module,
@@ -875,17 +892,57 @@ fn typecheck_expression(
                 match value {
                     ModuleScopeValue::Function(id) => {
                         let reader = &context.functions.read()[id];
-                        let function_typ = FunctionType {
+                        let mut function_typ = FunctionType {
                             return_type: reader.0.return_type.clone(),
                             arguments: reader.0.arguments.iter().map(|v| v.1.clone()).collect(),
                         };
-                        let literal = reader
+                        if reader.0.generics.len() != generics.len() {
+                            return Err(TypecheckingError::MismatchingGenericCount(
+                                location.clone(),
+                                reader.0.generics.len(),
+                                generics.len(),
+                            ));
+                        }
+                        // TODO: Bounds check
+                        let mut generic_types = Vec::with_capacity(generics.len());
+                        for (i, typ) in generics.iter().enumerate() {
+                            let ty = context.resolve_type(module, typ, &[])?;
+                            if reader.0.generics[i].sized && !ty.is_sized() {
+                                return Err(TypecheckingError::UnsizedForSizedGeneric(
+                                    location.clone(),
+                                    ty,
+                                ));
+                            }
+                            generic_types.push(ty);
+                        }
+                        for ty in function_typ
+                            .arguments
+                            .iter_mut()
+                            .chain(std::iter::once(&mut function_typ.return_type))
+                        {
+                            if let Type::Generic {
+                                generic_id,
+                                num_references,
+                                ..
+                            } = ty
+                            {
+                                let generic_typ_refcount =
+                                    generic_types[*generic_id as usize].refcount();
+                                *ty = generic_types[*generic_id as usize]
+                                    .clone()
+                                    .with_num_refs(*num_references + generic_typ_refcount);
+                            }
+                        }
+
+                        let literal = match reader
                             .0
                             .annotations
                             .get_first_annotation::<IntrinsicAnnotation>()
                             .map(IntrinsicAnnotation::get)
-                            .map(TypedLiteral::Intrinsic)
-                            .unwrap_or(TypedLiteral::Function(id));
+                        {
+                            Some(intrinsic) => TypedLiteral::Intrinsic(intrinsic, generic_types),
+                            None => TypedLiteral::Function(id, generic_types),
+                        };
                         Ok((Type::Function(Arc::new(function_typ), 0), literal))
                     }
                     ModuleScopeValue::ExternalFunction(id) => {
@@ -899,10 +956,17 @@ fn typecheck_expression(
                             TypedLiteral::ExternalFunction(id),
                         ))
                     }
-                    ModuleScopeValue::Static(id) => Ok((
-                        context.statics.read()[id].0.clone(),
-                        TypedLiteral::Static(id),
-                    )),
+                    ModuleScopeValue::Static(id) => {
+                        if !generics.is_empty() {
+                            return Err(TypecheckingError::UnexpectedGenerics {
+                                location: location.clone(),
+                            });
+                        }
+                        Ok((
+                            context.statics.read()[id].0.clone(),
+                            TypedLiteral::Static(id),
+                        ))
+                    }
                     _ => Err(TypecheckingError::CannotFindValue(
                         location.clone(),
                         path.clone(),
@@ -917,7 +981,7 @@ fn typecheck_expression(
                 };
                 Ok((
                     Type::Function(Arc::new(fn_typ), 0),
-                    TypedLiteral::Function(*fn_id),
+                    TypedLiteral::Function(*fn_id, vec![]),
                 ))
             }
             LiteralValue::AnonymousFunction(..) => unreachable!("unbaked function"),
@@ -1227,10 +1291,28 @@ fn typecheck_expression(
                 typed_arguments.push(expr);
             }
 
-            if let TypedLiteral::Intrinsic(intrinsic) = function_expr {
-                tc_res!(binary scope, exprs; IntrinsicCall(identifier.loc().clone(), intrinsic, typed_arguments, function_type.return_type.clone()))
-            } else if let TypedLiteral::Function(fn_id) = function_expr {
-                tc_res!(binary scope, exprs; DirectCall(identifier.loc().clone(), fn_id, typed_arguments, function_type.return_type.clone()))
+            if let TypedLiteral::Intrinsic(intrinsic, generics) = function_expr {
+                let typ = function_type.return_type.clone();
+                let id = scope.push(typ.clone());
+                exprs.push(TypecheckedExpression::IntrinsicCall(
+                    identifier.loc().clone(),
+                    id,
+                    intrinsic,
+                    typed_arguments,
+                    generics,
+                ));
+                Ok((typ, TypedLiteral::Dynamic(id)))
+            } else if let TypedLiteral::Function(fn_id, generics) = function_expr {
+                let typ = function_type.return_type.clone();
+                let id = scope.push(typ.clone());
+                exprs.push(TypecheckedExpression::DirectCall(
+                    identifier.loc().clone(),
+                    id,
+                    fn_id,
+                    typed_arguments,
+                    generics,
+                ));
+                Ok((typ, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::ExternalFunction(fn_id) = function_expr {
                 tc_res!(binary scope, exprs; DirectExternCall(identifier.loc().clone(), fn_id, typed_arguments, function_type.return_type.clone()))
             } else {
@@ -1696,11 +1778,11 @@ fn typecheck_membercall(
         | Type::Tuple { .. }
         | Type::Trait { .. }
         | Type::DynType { .. }
+        | Type::Generic { .. }
         | Type::Function(..)
-        | Type::PrimitiveVoid(_)
-        | Type::PrimitiveNever
-        | Type::PrimitiveSelf(_)
-        | Type::Generic(..) => None,
+        | Type::PrimitiveVoid(..)
+        | Type::PrimitiveSelf(..)
+        | Type::PrimitiveNever => None,
         Type::Struct { struct_id, .. } => Some(*struct_id),
         Type::PrimitiveI8(_) => langitem_reader.i8,
         Type::PrimitiveI16(_) => langitem_reader.i16,
@@ -1823,6 +1905,7 @@ fn typecheck_membercall(
         call_id,
         function_id,
         typed_arguments,
+        Vec::new(),
     ));
 
     Ok((

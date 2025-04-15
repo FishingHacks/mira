@@ -18,3 +18,6 @@ pub mod tokenizer;
 pub mod tokenstream;
 pub mod typechecking;
 pub use parser::module_resolution;
+pub mod progress_bar;
+pub mod slab;
+pub(crate) mod threadpool;

@@ -68,7 +68,7 @@ pub struct ParserQueueEntry {
 
 pub struct Parser {
     pub file: Arc<std::path::Path>,
-    root_directory: Arc<std::path::Path>,
+    pub root_directory: Arc<std::path::Path>,
 
     pub tokens: Vec<Token>,
     pub current: usize,

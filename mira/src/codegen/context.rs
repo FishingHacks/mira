@@ -40,6 +40,7 @@ use crate::{
     target::{Target, NATIVE_TARGET},
     typechecking::{
         expression::{TypecheckedExpression, TypedLiteral},
+        intrinsics::IntrinsicAnnotation,
         typechecking::ScopeTypeMetadata,
         Type, TypecheckingContext,
     },
@@ -323,6 +324,11 @@ impl<'a> CodegenContext<'a> {
             );
         }
 
+        // TODO: Replace this with something more reasonable to have functions that don't all have
+        // an id (or remove the ones with generics and move intrinsics to the back)
+        let dummy_func =
+            module.add_function("__dummy", context.void_type().fn_type(&[], false), None);
+
         // functions
         let function_reader = ctx.functions.read();
         let functions = function_reader
@@ -330,6 +336,14 @@ impl<'a> CodegenContext<'a> {
             .enumerate()
             .map(|(i, (c, b))| (i, c, b))
             .map(|(i, contract, _)| {
+                if !contract.generics.is_empty()
+                    || contract
+                        .annotations
+                        .get_first_annotation::<IntrinsicAnnotation>()
+                        .is_some()
+                {
+                    return dummy_func;
+                }
                 if !contract.return_type.is_sized()
                     || contract.arguments.iter().any(|(_, v)| !v.is_sized())
                 {
@@ -649,16 +663,33 @@ impl<'a> CodegenContext<'a> {
         is_external: bool,
     ) -> Result<(), BuilderError> {
         let ext_fn_reader = self.tc_ctx.external_functions.read();
+        let fn_reader = self.tc_ctx.functions.read();
+        // if there's no body to an external function, don't try to generate one.
         if is_external && ext_fn_reader[fn_id].1.is_none() {
             return Ok(());
+        } else if !is_external {
+            // don't do anything if the function is an intrinsic or has generics, because such
+            // functions should never be directly called (intrinsics get turned into custom llvm
+            // code and generic functions get monomorphised)
+            let contract = &fn_reader[fn_id].0;
+            if !contract.generics.is_empty()
+                || contract
+                    .annotations
+                    .get_first_annotation::<IntrinsicAnnotation>()
+                    .is_some()
+            {
+                return Ok(());
+            }
         }
         drop(ext_fn_reader);
+        drop(fn_reader);
 
         let func = if is_external {
             self.external_functions[fn_id]
         } else {
             self.functions[fn_id]
         };
+
         let body_basic_block = self
             .context
             .append_basic_block(func, &format!("entry_{}", fn_id));
@@ -800,10 +831,10 @@ fn collect_strings_for_expressions(
                     collect_strings_for_typed_literal(v, strings);
                 }
             }
-            TypecheckedExpression::DirectCall(.., args)
+            TypecheckedExpression::DirectCall(.., args, _)
             | TypecheckedExpression::DynCall(.., args, _)
             | TypecheckedExpression::DirectExternCall(.., args)
-            | TypecheckedExpression::IntrinsicCall(.., args) => {
+            | TypecheckedExpression::IntrinsicCall(.., args, _) => {
                 for v in args {
                     collect_strings_for_typed_literal(v, strings);
                 }

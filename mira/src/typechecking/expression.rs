@@ -22,7 +22,7 @@ use super::{
 pub enum TypedLiteral {
     Void,
     Dynamic(ScopeValueId),
-    Function(FunctionId),
+    Function(FunctionId, Vec<Type>),
     ExternalFunction(ExternalFunctionId),
     Static(StaticId),
     String(GlobalStr),
@@ -43,7 +43,7 @@ pub enum TypedLiteral {
     I64(i64),
     ISize(isize),
     Bool(bool),
-    Intrinsic(Intrinsic),
+    Intrinsic(Intrinsic, Vec<Type>),
 }
 
 impl TypedLiteral {
@@ -55,10 +55,10 @@ impl TypedLiteral {
         match self {
             TypedLiteral::Void => Cow::Owned(Type::PrimitiveVoid(0)),
             TypedLiteral::Dynamic(id) => Cow::Borrowed(&scope[*id].0),
-            TypedLiteral::Function(id) | TypedLiteral::ExternalFunction(id) => {
+            TypedLiteral::Function(id, _) | TypedLiteral::ExternalFunction(id) => {
                 let function_reader = ctx.functions.read();
                 let ext_function_reader = ctx.external_functions.read();
-                let contract = if matches!(self, TypedLiteral::Function(_)) {
+                let contract = if matches!(self, TypedLiteral::Function(..)) {
                     &function_reader[*id].0
                 } else {
                     &ext_function_reader[*id].0
@@ -106,7 +106,7 @@ impl TypedLiteral {
             TypedLiteral::I64(_) => Cow::Owned(Type::PrimitiveI64(0)),
             TypedLiteral::ISize(_) => Cow::Owned(Type::PrimitiveISize(0)),
             TypedLiteral::Bool(_) => Cow::Owned(Type::PrimitiveBool(0)),
-            TypedLiteral::Intrinsic(_) => panic!("intrinsic is no type"),
+            TypedLiteral::Intrinsic(..) => panic!("intrinsic is no type"),
         }
     }
 
@@ -143,9 +143,9 @@ impl TypedLiteral {
             | TypedLiteral::ArrayInit(..)
             | TypedLiteral::Struct(..)
             | TypedLiteral::Tuple(..)
-            | TypedLiteral::Function(_)
-            | TypedLiteral::Intrinsic(_)
-            | TypedLiteral::ExternalFunction(_) => None,
+            | TypedLiteral::Function(..)
+            | TypedLiteral::Intrinsic(..)
+            | TypedLiteral::ExternalFunction(..) => None,
         }
     }
 
@@ -158,12 +158,12 @@ impl TypedLiteral {
                 .map(TypedLiteral::is_entirely_literal)
                 .fold(true, std::ops::BitAnd::bitand),
             TypedLiteral::ArrayInit(_, elem, amount) => *amount == 0 || elem.is_entirely_literal(),
-            TypedLiteral::Static(_) | TypedLiteral::Dynamic(_) | TypedLiteral::Intrinsic(_) => {
+            TypedLiteral::Static(_) | TypedLiteral::Dynamic(_) | TypedLiteral::Intrinsic(..) => {
                 false
             }
             TypedLiteral::String(_)
-            | TypedLiteral::Function(_)
-            | TypedLiteral::ExternalFunction(_)
+            | TypedLiteral::Function(..)
+            | TypedLiteral::ExternalFunction(..)
             | TypedLiteral::Void
             | TypedLiteral::F64(_)
             | TypedLiteral::F32(_)
@@ -243,7 +243,13 @@ pub enum TypecheckedExpression {
     // _1 = _2(_3.1, _3.2, d, ...)
     Call(Location, ScopeValueId, TypedLiteral, Vec<TypedLiteral>),
     // _1 = func(_3.1, _3.2, d, ...)
-    DirectCall(Location, ScopeValueId, FunctionId, Vec<TypedLiteral>),
+    DirectCall(
+        Location,
+        ScopeValueId,
+        FunctionId,
+        Vec<TypedLiteral>,
+        Vec<Type>,
+    ),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectExternCall(
         Location,
@@ -252,7 +258,13 @@ pub enum TypecheckedExpression {
         Vec<TypedLiteral>,
     ),
     // _1 = intrinsic(_3.1, _3.2)
-    IntrinsicCall(Location, ScopeValueId, Intrinsic, Vec<TypedLiteral>),
+    IntrinsicCall(
+        Location,
+        ScopeValueId,
+        Intrinsic,
+        Vec<TypedLiteral>,
+        Vec<Type>,
+    ),
     // _1 = +_2
     Pos(Location, ScopeValueId, TypedLiteral),
     // _1 = -_2

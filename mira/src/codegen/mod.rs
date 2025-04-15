@@ -67,6 +67,7 @@ impl<'ctx, 'me> CodegenContext<'ctx> {
             module: &self.module,
             retaddr: self.retaddr,
             current_block: bb,
+            pointer_size: self.default_types.isize.get_bit_width() as u64 / 8,
         }
     }
 }
@@ -106,6 +107,7 @@ pub struct FunctionCodegenContext<'ctx, 'codegen> {
     retaddr: FunctionValue<'ctx>,
     module: &'codegen Module<'ctx>,
     current_block: BasicBlock<'ctx>,
+    pointer_size: u64,
 }
 
 impl<'ctx> FunctionCodegenContext<'ctx, '_> {
@@ -143,7 +145,7 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_> {
                 "",
             )
             .expect("failed to build alloca for a stack allocated value");
-        build_ptr_store(allocated_value, value, &self.tc_scope[id].0, self)
+        build_ptr_store(allocated_value, value, &self.tc_scope[id].0, self, false)
             .expect("failed to build store to store a basic value into a stack allocated value");
         self._scope.push(allocated_value.into());
     }
@@ -161,7 +163,7 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_> {
         }
         if self.tc_scope[id].1.stack_allocated {
             let ptr = self._scope[id].into_pointer_value();
-            build_deref(ptr, &self.tc_scope[id].0, self)
+            build_deref(ptr, &self.tc_scope[id].0, self, false)
                 .expect("failed to build a dereference for a stack allocated value")
         } else {
             self._scope[id]
@@ -199,7 +201,7 @@ impl<'ctx> Type {
         }
 
         match self {
-            Type::Generic(..) | Type::Trait { .. } => {
+            Type::Generic { .. } | Type::Trait { .. } => {
                 unreachable!("generics should be resolved by now")
             }
             Type::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
@@ -347,18 +349,21 @@ impl<'ctx> TypedLiteral {
         &self,
         scope_get_value: &dyn Fn(usize) -> BasicValueEnum<'ctx>,
         default_types: &DefaultTypes<'ctx>,
-        structs: &Vec<StructType<'ctx>>,
+        structs: &[StructType<'ctx>],
         builder: &Builder<'ctx>,
-        statics: &Vec<GlobalValue<'ctx>>,
-        functions: &Vec<FunctionValue<'ctx>>,
-        ext_functions: &Vec<FunctionValue<'ctx>>,
+        statics: &[GlobalValue<'ctx>],
+        functions: &[FunctionValue<'ctx>],
+        ext_functions: &[FunctionValue<'ctx>],
         string_map: &HashMap<GlobalStr, GlobalValue<'ctx>>,
         ctx: &'ctx Context,
     ) -> BasicValueEnum<'ctx> {
         match self {
             TypedLiteral::Void => default_types.empty_struct.const_zero().into(),
             TypedLiteral::Dynamic(id) => scope_get_value(*id),
-            TypedLiteral::Function(id) => {
+            TypedLiteral::Function(id, generics) => {
+                // cannot generate a call to a function with generics
+                // if a function has generics, it should've been monomorphized.
+                assert!(generics.is_empty());
                 functions[*id].as_global_value().as_pointer_value().into()
             }
             TypedLiteral::ExternalFunction(id) => ext_functions[*id]
@@ -556,7 +561,7 @@ impl<'ctx> TypedLiteral {
             TypedLiteral::I64(v) => default_types.i64.const_int(*v as u64, false).into(),
             TypedLiteral::ISize(v) => default_types.isize.const_int(*v as u64, false).into(),
             TypedLiteral::Bool(v) => default_types.bool.const_int(*v as u64, false).into(),
-            TypedLiteral::Intrinsic(_) => {
+            TypedLiteral::Intrinsic(..) => {
                 unreachable!("intrinsics can only be used as part of intrinsic call")
             }
         }
@@ -620,10 +625,19 @@ macro_rules! f_s_u {
     };
 }
 
+fn make_volatile(v: BasicValueEnum<'_>, volatile: bool) -> BasicValueEnum<'_> {
+    v.as_instruction_value()
+        .expect("there should be an instruction value here")
+        .set_volatile(volatile)
+        .expect("setting volatile should never fail");
+    v
+}
+
 fn build_deref<'a>(
     left_side: PointerValue<'a>,
     ty: &Type,
     ctx: &FunctionCodegenContext<'a, '_>,
+    volatile: bool,
 ) -> Result<BasicValueEnum<'a>, BuilderError> {
     if *ty == Type::PrimitiveVoid(0) || *ty == Type::PrimitiveNever {
         return Ok(TypedLiteral::Void.fn_ctx_to_basic_value(ctx));
@@ -631,17 +645,23 @@ fn build_deref<'a>(
 
     if ty.refcount() > 0 {
         if ty.is_thin_ptr() {
-            return ctx.builder.build_load(ctx.default_types.ptr, left_side, "");
+            return Ok(make_volatile(
+                ctx.builder
+                    .build_load(ctx.default_types.ptr, left_side, "")?,
+                volatile,
+            ));
         } else {
             let actual_ptr = ctx
                 .builder
                 .build_load(ctx.default_types.ptr, left_side, "")?;
+            make_volatile(actual_ptr, volatile);
             let offset_ptr =
                 ctx.builder
                     .build_struct_gep(ctx.default_types.fat_ptr, left_side, 1, "")?;
             let metadata = ctx
                 .builder
                 .build_load(ctx.default_types.isize, offset_ptr, "")?;
+            make_volatile(metadata, volatile);
             let ptr_only_struct = ctx.builder.build_insert_value(
                 ctx.default_types.fat_ptr.get_poison(),
                 actual_ptr,
@@ -656,7 +676,7 @@ fn build_deref<'a>(
     }
 
     match ty {
-        Type::Trait { .. } | Type::Generic(..) | Type::PrimitiveSelf(_) => {
+        Type::Trait { .. } | Type::Generic { .. } | Type::PrimitiveSelf(_) => {
             panic!("{ty:?} should be resolved by now")
         }
         Type::DynType { .. } | Type::UnsizedArray { .. } | Type::PrimitiveStr(_) => {
@@ -673,7 +693,7 @@ fn build_deref<'a>(
                 let offset_val =
                     ctx.builder
                         .build_struct_gep(llvm_structure, left_side, i as u32, "")?;
-                let element_val = build_deref(offset_val, &structure.elements[i].1, ctx)?;
+                let element_val = build_deref(offset_val, &structure.elements[i].1, ctx, volatile)?;
                 value = ctx
                     .builder
                     .build_insert_value(value, element_val, i as u32, "")?
@@ -690,7 +710,7 @@ fn build_deref<'a>(
                 let offset_val =
                     ctx.builder
                         .build_struct_gep(llvm_structure, left_side, i as u32, "")?;
-                let element_val = build_deref(offset_val, elem, ctx)?;
+                let element_val = build_deref(offset_val, elem, ctx, volatile)?;
                 value = ctx
                     .builder
                     .build_insert_value(value, element_val, i as u32, "")?
@@ -717,7 +737,7 @@ fn build_deref<'a>(
                         "",
                     )
                 }?;
-                let element_val = build_deref(offset_val, ty, ctx)?;
+                let element_val = build_deref(offset_val, ty, ctx, volatile)?;
                 value = ctx
                     .builder
                     .build_insert_value(value, element_val, i as u32, "")?
@@ -739,11 +759,14 @@ fn build_deref<'a>(
         | Type::PrimitiveUSize(_)
         | Type::PrimitiveF32(_)
         | Type::PrimitiveF64(_)
-        | Type::PrimitiveBool(_) => Ok(ctx.builder.build_load(
-            ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context),
-            left_side,
-            "",
-        )?),
+        | Type::PrimitiveBool(_) => Ok(make_volatile(
+            ctx.builder.build_load(
+                ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context),
+                left_side,
+                "",
+            )?,
+            volatile,
+        )),
     }
 }
 
@@ -752,10 +775,14 @@ fn build_ptr_store(
     right_side: BasicValueEnum,
     ty: &Type,
     ctx: &FunctionCodegenContext,
+    volatile: bool,
 ) -> Result<(), BuilderError> {
     if ty.refcount() > 0 {
         if ty.is_thin_ptr() {
-            ctx.builder.build_store(left_side, right_side)?;
+            ctx.builder
+                .build_store(left_side, right_side)?
+                .set_volatile(volatile)
+                .expect("setting volatile should never fail");
             return Ok(());
         } else {
             let actual_ptr =
@@ -770,13 +797,19 @@ fn build_ptr_store(
             let metadata_ptr =
                 ctx.builder
                     .build_struct_gep(ctx.default_types.fat_ptr, left_side, 1, "")?;
-            ctx.builder.build_store(actual_ptr_ptr, actual_ptr)?;
-            ctx.builder.build_store(metadata_ptr, metadata)?;
+            ctx.builder
+                .build_store(actual_ptr_ptr, actual_ptr)?
+                .set_volatile(volatile)
+                .expect("setting volatile should never fail");
+            ctx.builder
+                .build_store(metadata_ptr, metadata)?
+                .set_volatile(volatile)
+                .expect("setting volatile should never fail");
             return Ok(());
         }
     }
     match ty {
-        Type::Trait { .. } | Type::Generic(..) | Type::PrimitiveSelf(_) => {
+        Type::Trait { .. } | Type::Generic { .. } | Type::PrimitiveSelf(_) => {
             panic!("{ty:?} should be resolved by now")
         }
         Type::UnsizedArray { .. } | Type::DynType { .. } | Type::PrimitiveStr(_) => {
@@ -795,7 +828,7 @@ fn build_ptr_store(
                 let ptr = ctx
                     .builder
                     .build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
-                build_ptr_store(ptr, val, ty, ctx)?;
+                build_ptr_store(ptr, val, ty, ctx, volatile)?;
             }
         }
         Type::Tuple { elements, .. } => {
@@ -809,7 +842,7 @@ fn build_ptr_store(
                 let ptr = ctx
                     .builder
                     .build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
-                build_ptr_store(ptr, val, ty, ctx)?;
+                build_ptr_store(ptr, val, ty, ctx, volatile)?;
             }
         }
         Type::SizedArray {
@@ -830,7 +863,7 @@ fn build_ptr_store(
                         "",
                     )
                 }?;
-                build_ptr_store(ptr, val, typ, ctx)?;
+                build_ptr_store(ptr, val, typ, ctx, volatile)?;
             }
         }
         Type::Function(..)
@@ -847,7 +880,10 @@ fn build_ptr_store(
         | Type::PrimitiveF32(_)
         | Type::PrimitiveF64(_)
         | Type::PrimitiveBool(_) => {
-            ctx.builder.build_store(left_side, right_side)?;
+            ctx.builder
+                .build_store(left_side, right_side)?
+                .set_volatile(volatile)
+                .expect("setting volatile should never fail");
         }
     }
     Ok(())
@@ -945,7 +981,7 @@ impl TypecheckedExpression {
                         ctx.builder.build_return(None)?
                     }
                     TypedLiteral::Void => ctx.builder.build_return(None)?,
-                    TypedLiteral::Intrinsic(_) => unreachable!("intrinsic"),
+                    TypedLiteral::Intrinsic(..) => unreachable!("intrinsic"),
                     lit => ctx
                         .builder
                         .build_return(Some(&lit.fn_ctx_to_basic_value(ctx)))?,
@@ -1156,15 +1192,16 @@ impl TypecheckedExpression {
                     }
                     .as_ref(),
                     ctx,
+                    false,
                 )
             }
             TypecheckedExpression::Call(_, dst, fn_ptr, args) => {
                 let (fn_ty, fn_ptr) = match fn_ptr {
                     TypedLiteral::Dynamic(id) => (&ctx.tc_scope[*id].0, ctx.get_value(*id).into_pointer_value()),
                     TypedLiteral::Static(id) => (&ctx.tc_ctx.statics.read()[*id].0, ctx.statics[*id].as_pointer_value()),
-                    TypedLiteral::Function(_) => unreachable!("TypedLiteral::Function should have been turned into a DirectCall"),
+                    TypedLiteral::Function(..) => unreachable!("TypedLiteral::Function should have been turned into a DirectCall"),
                     TypedLiteral::ExternalFunction(_) => unreachable!("TypedLiteral::ExternalFunction should have been turned into a DirectExternCall"),
-                    TypedLiteral::Intrinsic(_) => unreachable!("TypedLiteral::Intrinsic should have been turned into a IntrinsicCall"),
+                    TypedLiteral::Intrinsic(..) => unreachable!("TypedLiteral::Intrinsic should have been turned into a IntrinsicCall"),
                     _ => unreachable!("{fn_ptr:?} is not callable"),
                 };
                 let llvm_fn_ty =
@@ -1193,8 +1230,9 @@ impl TypecheckedExpression {
                 );
                 Ok(())
             }
+            TypecheckedExpression::DirectCall(.., generics) if !generics.is_empty() => panic!("functions shouldn't have generics (they should've been taken care of during monomorphization)"),
             TypecheckedExpression::DirectExternCall(_, dst, func, args)
-            | TypecheckedExpression::DirectCall(_, dst, func, args) => {
+            | TypecheckedExpression::DirectCall(_, dst, func, args, _) => {
                 let func_value = if matches!(self, TypecheckedExpression::DirectCall(..)) {
                     ctx.functions[*func]
                 } else {
@@ -1224,7 +1262,9 @@ impl TypecheckedExpression {
                 );
                 Ok(())
             }
-            TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, _) => {
+            TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, args, generics) => {
+                _ = &generics;
+                _ = &args;
                 match intrinsic {
                     Intrinsic::Unreachable => {
                         ctx.builder.build_unreachable()?;
@@ -1256,22 +1296,76 @@ impl TypecheckedExpression {
                             ),
                         );
                     }
+                    Intrinsic::SizeOf => {
+                        let size = generics[0].size_and_alignment(ctx.pointer_size, &ctx.tc_ctx.structs.read()).0;
+                        ctx.push_value(*dst, ctx.default_types.isize.const_int(size, false).into());
+                    }
+                    Intrinsic::Offset => {
+                        let ptr = args[0].fn_ctx_to_basic_value(ctx).into_pointer_value();
+                        let offset = args[1].fn_ctx_to_basic_value(ctx).into_int_value();
+                        let val = unsafe { ctx.builder.build_in_bounds_gep(ctx.default_types.i8, ptr, &[offset], "")? };
+                        ctx.push_value(*dst, val.into());
+                    }
+                    Intrinsic::GetMetadata => {
+                        let ty = &generics[0];
+                        if ty.is_sized() {
+                            ctx.push_value(*dst, ctx.default_types.isize.const_int(0, false).into());
+                        } else {
+                            let ptr = args[0].fn_ctx_to_basic_value(ctx).into_struct_value();
+                            let metadata = ctx.builder.build_extract_value(ptr, 1, "")?;
+                            ctx.push_value(*dst, metadata);
+                        }
+                    }
+                    Intrinsic::WithMetadata => {
+                        assert!(generics[0].is_sized());
+                        assert!(!generics[1].is_sized());
+                        let ptr = args[0].fn_ctx_to_basic_value(ctx);
+                        let metadata = args[1].fn_ctx_to_basic_value(ctx);
+                        let fat_ptr = ctx.builder.build_insert_value(ctx.default_types.fat_ptr.get_poison(), ptr, 0, "")?;
+                        let fat_ptr = ctx.builder.build_insert_value(fat_ptr, metadata, 1, "")?;
+                        ctx.push_value(*dst, fat_ptr.as_basic_value_enum());
+                    }
+                    Intrinsic::VolatileRead => {
+                        assert!(generics[0].is_sized());
+                        let value = build_deref(args[0].fn_ctx_to_basic_value(ctx).into_pointer_value(), &generics[0], ctx, true)?;
+                        ctx.push_value(*dst, value);
+                    }
+                    Intrinsic::VolatileWrite => {
+                        assert!(generics[0].is_sized());
+                        build_ptr_store(args[0].fn_ctx_to_basic_value(ctx).into_pointer_value(), args[1].fn_ctx_to_basic_value(ctx), &generics[0], ctx, true)?;
+                    }
+                    Intrinsic::SizeOfVal => {
+                        if generics[0].is_sized() {
+                            let size = generics[0].size_and_alignment(ctx.pointer_size, &ctx.tc_ctx.structs.read()).0;
+                            ctx.push_value(*dst, ctx.default_types.isize.const_int(size, false).into());
+                        } else {
+                            match &generics[0] {
+                                Type::DynType { .. } => {
+                                    let fat_ptr = args[0].fn_ctx_to_basic_value(ctx).into_struct_value();
+                                    let vtable_ptr_int = ctx.builder.build_extract_value(fat_ptr, 1, "")?.into_int_value();
+                                    let vtable_ptr = ctx.builder.build_int_to_ptr(vtable_ptr_int, ctx.default_types.ptr, "")?;
+                                    let size = ctx.builder.build_load(ctx.default_types.isize, vtable_ptr, "")?;
+                                    ctx.push_value(*dst, size);
+                                }
+                                Type::UnsizedArray { typ, .. } => {
+                                    let fat_ptr = args[0].fn_ctx_to_basic_value(ctx).into_struct_value();
+                                    let len = ctx.builder.build_extract_value(fat_ptr, 1, "")?.into_int_value();
+                                    let size_single = typ.size_and_alignment(ctx.pointer_size, &ctx.tc_ctx.structs.read()).0;
+                                    let total_size = ctx.builder.build_int_nuw_mul(len, ctx.default_types.isize.const_int(size_single, false), "")?;
+                                    ctx.push_value(*dst, total_size.as_basic_value_enum());
+                                }
+                                Type::PrimitiveStr(_) => {
+                                    let fat_ptr = args[0].fn_ctx_to_basic_value(ctx).into_struct_value();
+                                    let size = ctx.builder.build_extract_value(fat_ptr, 1, "")?;
+                                    ctx.push_value(*dst, size);
+                                }
+                                Type::Generic { .. } | Type::Trait { .. } | Type::PrimitiveSelf(_) => unreachable!("These should've been resolved by now."),
+                                t => unreachable!("{t:?} should be sized"),
+                            }
+                        }
+                    }
 
-                    Intrinsic::Drop => todo!(),
-                    Intrinsic::DropInPlace => todo!(),
-                    Intrinsic::Forget => todo!(),
-                    Intrinsic::SizeOf => todo!(),
-                    Intrinsic::SizeOfVal => todo!(),
-                    Intrinsic::Location => {}
-                    Intrinsic::Offset => todo!(),
-                    Intrinsic::GetMetadata => todo!(),
-                    Intrinsic::WithMetadata => todo!(),
-                    Intrinsic::TypeName => todo!(),
-                    Intrinsic::Read => todo!(),
-                    Intrinsic::Write => todo!(),
                     Intrinsic::Select => todo!(),
-                    Intrinsic::VolatileRead => todo!(),
-                    Intrinsic::VolatileWrite => todo!(),
                     Intrinsic::ByteSwap => todo!(),
                     Intrinsic::BitReverse => todo!(),
                     Intrinsic::CountLeadingZeros => todo!(),
@@ -1292,6 +1386,18 @@ impl TypecheckedExpression {
                     Intrinsic::UncheckedMod => todo!(),
                     Intrinsic::UncheckedShl => todo!(),
                     Intrinsic::UncheckedShr => todo!(),
+
+                    // TODO: raii
+                    Intrinsic::Drop => todo!(),
+                    Intrinsic::DropInPlace => todo!(),
+                    Intrinsic::Forget => todo!(),
+                    // TODO: raii
+                    Intrinsic::Read => todo!(),
+                    Intrinsic::Write => todo!(),
+
+                    // TODO: replace these at compile time because they
+                    Intrinsic::Location => {}
+                    Intrinsic::TypeName => todo!(),
                 }
                 Ok(())
             }
@@ -1668,6 +1774,7 @@ impl TypecheckedExpression {
                     // value *after* dereferencing as any pointer in llvm is represented as the
                     // same type, &i32 == &&u64 (`ptr`)
                     ctx,
+                    false,
                 )?;
                 ctx.push_value(*dst, value);
                 Ok(())
@@ -1953,7 +2060,7 @@ impl TypecheckedExpression {
                         0,
                         "",
                     )?;
-                    build_deref(pointer_pointer, &ctx.tc_scope[*dst].0, ctx)?
+                    build_deref(pointer_pointer, &ctx.tc_scope[*dst].0, ctx, false)?
                 } else {
                     ctx.builder
                         .build_extract_value(value.into_struct_value(), 0, "")?

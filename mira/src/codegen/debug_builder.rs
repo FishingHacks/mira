@@ -9,7 +9,7 @@ use crate::{
     globals::GlobalStr,
     module::ModuleId,
     tokenizer::Location,
-    typechecking::{Type, TypecheckingContext, TypedStruct},
+    typechecking::{intrinsics::IntrinsicAnnotation, Type, TypecheckingContext, TypedStruct},
 };
 use inkwell::{
     basic_block::BasicBlock,
@@ -200,7 +200,39 @@ impl<'ctx> DebugContext<'ctx> {
             );
             me.modules.push((namespace, file));
         }
+        // TODO: replace this; see ./context.rs:327, above the context functions collection
+        let dummy_subprogram_type =
+            me.builder
+                .create_subroutine_type(me.root_file, None, &[], DIFlags::default());
+        let dummy_function = me.builder.create_function(
+            me.root_file.as_debug_info_scope(),
+            "__dummy",
+            None,
+            me.root_file,
+            0,
+            dummy_subprogram_type,
+            false,
+            true,
+            0,
+            DIFlags::default(),
+            true,
+        );
         for (id, func) in func_reader.iter().enumerate() {
+            // we don't ever generate functions with generics (monomorphise them!)
+            if !func.0.generics.is_empty() {
+                me.funcs.push(dummy_function);
+                continue;
+            }
+            // intrinsics also aren't generated
+            if func
+                .0
+                .annotations
+                .get_first_annotation::<IntrinsicAnnotation>()
+                .is_some()
+            {
+                me.funcs.push(dummy_function);
+                continue;
+            }
             let return_ty = (!matches!(
                 func.0.return_type,
                 Type::PrimitiveVoid(0) | Type::PrimitiveNever
@@ -387,7 +419,7 @@ impl<'ctx> DebugContext<'ctx> {
             // fat pointer
             } else if typ.refcount() > 0 {
                 let (metadata_type, pointer_type) = match typ {
-                    Type::Trait { .. } | Type::PrimitiveSelf(_) | Type::Generic(..) => {
+                    Type::Trait { .. } | Type::PrimitiveSelf(_) | Type::Generic { .. } => {
                         unreachable!("generics and self should be resolved by now")
                     }
                     Type::DynType { .. } => (
@@ -450,7 +482,7 @@ impl<'ctx> DebugContext<'ctx> {
             }
 
             match typ {
-                Type::Trait { .. } | Type::Generic(..) | Type::PrimitiveSelf(..) => {
+                Type::Trait { .. } | Type::Generic { .. } | Type::PrimitiveSelf(..) => {
                     unreachable!("generics and self should be resolved by now")
                 }
                 Type::PrimitiveStr(_) | Type::UnsizedArray { .. } | Type::DynType { .. } => {

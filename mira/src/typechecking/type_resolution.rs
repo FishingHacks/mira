@@ -11,7 +11,7 @@ use crate::{
 
 use super::{
     expression::TypedLiteral, resolve_import, types::Type, TypecheckedFunctionContract,
-    TypecheckingContext, TypecheckingError, TypedTrait, DUMMY_LOCATION,
+    TypecheckingContext, TypecheckingError, TypedGeneric, TypedTrait, DUMMY_LOCATION,
 };
 
 impl TypecheckingContext {
@@ -209,10 +209,7 @@ impl TypecheckingContext {
             let typed_trait = &trait_reader[trait_id];
             if typed_trait.functions.len() != implementation.len() {
                 for (name, func_id) in &implementation {
-                    if !typed_trait
-                        .functions
-                        .iter().any(|(v, ..)| v == name)
-                    {
+                    if !typed_trait.functions.iter().any(|(v, ..)| v == name) {
                         errors.push(TypecheckingError::IsNotTraitMember {
                             location: function_reader[*func_id].0.location.clone(),
                             name: name.clone(),
@@ -324,10 +321,37 @@ impl TypecheckingContext {
             &mut writer[function_id].0.return_type,
             TypeRef::Void(DUMMY_LOCATION.clone(), 0),
         );
-        let generics = std::mem::take(&mut writer[function_id].0.generics)
-            .into_iter()
-            .map(|generic| generic.name)
-            .collect::<Vec<_>>();
+        let untyped_generics = std::mem::take(&mut writer[function_id].0.generics);
+        let mut generics = Vec::with_capacity(untyped_generics.len());
+        let mut generic_names = Vec::with_capacity(untyped_generics.len());
+        for generic in untyped_generics {
+            let mut bounds = Vec::with_capacity(generic.bounds.len());
+            for mut bound in generic.bounds {
+                match resolve_import(
+                    context,
+                    module_id,
+                    bound.0.as_slice(),
+                    &bound.1,
+                    &mut Vec::new(),
+                ) {
+                    Ok(ModuleScopeValue::Trait(v)) => bounds.push(v),
+                    Ok(_) => errors.push(TypecheckingError::UnboundIdent {
+                        location: bound.1,
+                        name: bound
+                            .0
+                            .pop()
+                            .expect("a path has to have at least one element"),
+                    }),
+                    Err(e) => errors.push(e),
+                }
+            }
+            generic_names.push(generic.name.clone());
+            generics.push(TypedGeneric {
+                name: generic.name,
+                sized: generic.sized,
+                bounds,
+            });
+        }
         let mut resolved_function_contract = TypecheckedFunctionContract {
             module_id,
             name: writer[function_id].0.name.clone(),
@@ -335,11 +359,12 @@ impl TypecheckingContext {
             annotations: std::mem::take(&mut writer[function_id].0.annotations),
             arguments: Vec::new(),
             return_type: Type::PrimitiveNever,
+            generics,
         };
         drop(writer);
 
         let mut has_errors = false;
-        match self.resolve_type(module_id, &return_type, &generics) {
+        match self.resolve_type(module_id, &return_type, &generic_names) {
             Ok(v) => resolved_function_contract.return_type = v,
             Err(e) => {
                 has_errors = true;
@@ -348,7 +373,7 @@ impl TypecheckingContext {
         }
 
         for arg in arguments {
-            match self.resolve_type(module_id, &arg.typ, &generics) {
+            match self.resolve_type(module_id, &arg.typ, &generic_names) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
                 Err(e) => {
                     has_errors = true;
@@ -382,6 +407,7 @@ impl TypecheckingContext {
             annotations: std::mem::take(&mut writer[ext_function_id].0.annotations),
             arguments: Vec::new(),
             return_type: Type::PrimitiveNever,
+            generics: Vec::new(),
         };
         drop(writer);
 

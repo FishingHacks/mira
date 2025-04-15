@@ -21,6 +21,7 @@ pub struct FunctionType {
 
 #[derive(Clone, Debug, Eq)]
 pub enum Type {
+    // TODO: Move to Type::Generic
     Trait {
         trait_refs: Vec<TraitId>,
         num_references: u8,
@@ -72,7 +73,11 @@ pub enum Type {
     PrimitiveBool(u8),
     PrimitiveSelf(u8),
 
-    Generic(GlobalStr, u8),
+    Generic {
+        name: GlobalStr,
+        num_references: u8,
+        generic_id: u8,
+    },
 }
 
 impl Hash for Type {
@@ -131,7 +136,7 @@ impl Hash for Type {
             Type::PrimitiveStr(_) => "str".hash(state),
             Type::PrimitiveBool(_) => "bool".hash(state),
             Type::PrimitiveSelf(_) => "Self".hash(state),
-            Type::Generic(generic_name, _) => generic_name.hash(state),
+            Type::Generic { name, .. } => name.hash(state),
         }
     }
 }
@@ -241,7 +246,7 @@ impl Type {
 
         match self {
             Type::Trait { .. }
-            | Type::Generic(..)
+            | Type::Generic { .. }
             | Type::PrimitiveSelf(..)
             | Type::PrimitiveStr(..)
             | Type::DynType { .. }
@@ -285,7 +290,7 @@ impl Type {
 
         match self {
             Type::Trait { .. }
-            | Type::Generic(..)
+            | Type::Generic { .. }
             | Type::PrimitiveSelf(..)
             | Type::PrimitiveStr(..)
             | Type::DynType { .. }
@@ -343,6 +348,7 @@ impl Type {
             | Type::DynType { num_references, .. }
             | Type::Trait { num_references, .. }
             | Type::Tuple { num_references, .. }
+            | Type::Generic { num_references, .. }
             | Type::Function(_, num_references)
             | Type::PrimitiveSelf(num_references)
             | Type::PrimitiveVoid(num_references)
@@ -359,14 +365,16 @@ impl Type {
             | Type::PrimitiveF32(num_references)
             | Type::PrimitiveF64(num_references)
             | Type::PrimitiveStr(num_references)
-            | Type::PrimitiveBool(num_references)
-            | Type::Generic(_, num_references) => *num_references,
+            | Type::PrimitiveBool(num_references) => *num_references,
         }
     }
 
     pub fn is_sized(&self) -> bool {
+        if self.refcount() > 0 {
+            return true;
+        }
         match self {
-            Self::Trait { .. } | Type::Generic(..) => {
+            Self::Trait { .. } | Type::Generic { .. } => {
                 unreachable!("generics aren't supported yet and as such don't have size info")
             }
             Type::PrimitiveSelf(_) => unreachable!("Self should be resolved"),
@@ -384,7 +392,7 @@ impl Type {
             return true;
         }
         match self {
-            Type::Generic(..) | Type::Trait { .. } => {
+            Type::Generic { .. } | Type::Trait { .. } => {
                 unreachable!("generics don't yet have size info")
             }
             Type::PrimitiveNever => unreachable!("never can never be referenced"),
@@ -454,7 +462,7 @@ impl Type {
             | Type::PrimitiveStr(num_references)
             | Type::PrimitiveBool(num_references)
             | Type::PrimitiveSelf(num_references)
-            | Type::Generic(_, num_references) => *num_references += 1,
+            | Type::Generic { num_references, .. } => *num_references += 1,
             Type::PrimitiveNever => {}
         }
         self
@@ -485,7 +493,7 @@ impl Type {
             | Type::PrimitiveStr(num_references)
             | Type::PrimitiveBool(num_references)
             | Type::PrimitiveSelf(num_references)
-            | Type::Generic(_, num_references) => {
+            | Type::Generic { num_references, .. } => {
                 if *num_references == 0 {
                     Err(self)
                 } else {
@@ -522,7 +530,7 @@ impl Type {
             | Type::PrimitiveStr(num_references)
             | Type::PrimitiveBool(num_references)
             | Type::PrimitiveSelf(num_references)
-            | Type::Generic(_, num_references) => {
+            | Type::Generic { num_references, .. } => {
                 *num_references = 0;
                 self
             }
@@ -555,7 +563,7 @@ impl Type {
             | Type::PrimitiveStr(num_references)
             | Type::PrimitiveBool(num_references)
             | Type::PrimitiveSelf(num_references)
-            | Type::Generic(_, num_references) => {
+            | Type::Generic { num_references, .. } => {
                 *num_references = num_refs;
                 self
             }
@@ -655,9 +663,9 @@ impl Type {
             | Type::UnsizedArray { .. }
             | Type::SizedArray { .. }
             | Type::Tuple { .. }
+            | Type::Generic { .. }
             | Type::Function(..)
             | Type::PrimitiveSelf(_)
-            | Type::Generic(..)
             | Type::PrimitiveVoid(_)
             | Type::PrimitiveBool(_)
             | Type::PrimitiveStr(_)
@@ -754,7 +762,7 @@ impl Display for Type {
             Type::PrimitiveISize(_) => f.write_str("isize"),
             Type::PrimitiveUSize(_) => f.write_str("usize"),
             Type::PrimitiveNever => f.write_str("!"),
-            Type::Generic(global_str, _) => Display::fmt(global_str, f),
+            Type::Generic { name, .. } => Display::fmt(name, f),
         }
     }
 }
@@ -822,7 +830,13 @@ impl PartialEq for Type {
             (Type::PrimitiveStr(_), Type::PrimitiveStr(_)) => true,
             (Type::PrimitiveBool(_), Type::PrimitiveBool(_)) => true,
             (Type::PrimitiveSelf(_), Type::PrimitiveSelf(_)) => true,
-            (Type::Generic(name, _), Type::Generic(other_name, _)) => name == other_name,
+            (
+                Type::Generic { generic_id, .. },
+                Type::Generic {
+                    generic_id: other_id,
+                    ..
+                },
+            ) => generic_id == other_id,
             (Type::Function(id, _), Type::Function(other_id, _)) => id == other_id,
             (
                 Type::Tuple { elements, .. },
@@ -922,7 +936,7 @@ impl TypeSuggestion {
         match typ {
             Type::PrimitiveStr(_)
             | Type::PrimitiveSelf(_)
-            | Type::Generic(..)
+            | Type::Generic { .. }
             | Type::Function(..)
             | Type::PrimitiveVoid(_)
             | Type::PrimitiveNever

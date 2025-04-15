@@ -1,6 +1,9 @@
-use crate::typechecking::{expression::TypecheckedExpression, Type, TypecheckedFunctionContract};
+use crate::typechecking::{
+    expression::{TypecheckedExpression, TypedLiteral},
+    Type, TypecheckedFunctionContract,
+};
 
-use super::{expressions::ExpressionDisplay, formatter::Formatter};
+use super::{expressions::write_implicit_block, formatter::Formatter};
 
 pub struct FuncDisplay<'a>(
     pub &'a TypecheckedFunctionContract,
@@ -21,7 +24,7 @@ impl FuncDisplay<'_> {
         f.write_value(&id)?;
         if let Some(name) = &self.0.name {
             f.write_char(' ')?;
-            f.write_value(name)?;
+            f.write_debug(name)?;
         }
         f.write_char('(')?;
         for (idx, arg) in self.0.arguments.iter().enumerate() {
@@ -39,14 +42,16 @@ impl FuncDisplay<'_> {
             f.write_str(" -> ")?;
             f.write_value(&self.0.return_type)?;
         }
-        let Some(exprs) = self.1 else { return Ok(()) };
-        f.write_str(" {")?;
-        f.push_indent();
-        for expr in exprs {
-            f.write_char('\n')?;
-            ExpressionDisplay(expr).fmt(f)?;
+        let Some(mut exprs) = self.1 else {
+            return Ok(());
+        };
+        if exprs
+            .last()
+            .map(|v| matches!(v, TypecheckedExpression::Return(_, TypedLiteral::Void)))
+            .unwrap_or(false)
+        {
+            exprs = &exprs[0..exprs.len() - 1];
         }
-        f.pop_indent();
-        f.write_str("\n}")
+        write_implicit_block(f, exprs)
     }
 }

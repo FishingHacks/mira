@@ -61,7 +61,6 @@ impl Debug for ModuleContext {
 }
 
 pub struct Module {
-    pub context: Arc<ModuleContext>,
     pub scope: HashMap<GlobalStr, ModuleScopeValue>,
     pub imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
     pub exports: HashMap<GlobalStr, GlobalStr>,
@@ -82,13 +81,11 @@ impl Debug for Module {
 
 impl Module {
     pub fn new(
-        context: Arc<ModuleContext>,
         imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
         path: Arc<Path>,
         root: Arc<Path>,
     ) -> Self {
         Self {
-            context,
             imports,
             scope: HashMap::new(),
             exports: HashMap::new(),
@@ -103,9 +100,10 @@ impl Module {
         contract: FunctionContract,
         mut body: Statement,
         module: ModuleId,
+        context: &ModuleContext,
     ) -> FunctionId {
         let idx = {
-            let mut writer = self.context.functions.write();
+            let mut writer = context.functions.write();
             let loc = contract.location.clone();
             writer.push((
                 contract,
@@ -117,8 +115,8 @@ impl Module {
         // we have to bake the body *after* pushing the function to ensure the function is
         // typechecked before any of its child elements, such as closures, as we need to evaluate
         // the function body before the closure to fill in the closures types.
-        body.bake_functions(self, module);
-        self.context.functions.write()[idx].1 = body;
+        body.bake_functions(self, module, context);
+        context.functions.write()[idx].1 = body;
 
         idx
     }
@@ -127,10 +125,11 @@ impl Module {
         &mut self,
         statements: Vec<Statement>,
         module_id: ModuleId,
+        context: &ModuleContext,
     ) -> Result<(), Vec<ProgramFormingError>> {
         let errors = statements
             .into_iter()
-            .map(|statement| self.push_statement(statement, module_id))
+            .map(|statement| self.push_statement(statement, module_id, context))
             .filter_map(|el| el.err())
             .collect::<Vec<_>>();
 
@@ -145,6 +144,7 @@ impl Module {
         &mut self,
         statement: Statement,
         module_id: ModuleId,
+        context: &ModuleContext,
     ) -> Result<(), ProgramFormingError> {
         match statement {
             Statement::Function(contract, body) => {
@@ -161,7 +161,7 @@ impl Module {
                     ));
                 }
 
-                let fn_id = self.push_fn(contract, *body, module_id);
+                let fn_id = self.push_fn(contract, *body, module_id, context);
                 self.scope.insert(name, ModuleScopeValue::Function(fn_id));
             }
             Statement::Trait(mut r#trait) => {
@@ -175,7 +175,7 @@ impl Module {
                     ));
                 }
 
-                let mut writer = self.context.traits.write();
+                let mut writer = context.traits.write();
                 let name = r#trait.name.clone();
                 writer.push(r#trait);
                 self.scope
@@ -201,13 +201,14 @@ impl Module {
                 let mut baked_impls = Vec::new();
 
                 for (name, (contract, body)) in global_impl {
-                    baked_global_impl.insert(name, self.push_fn(contract, body, module_id));
+                    baked_global_impl
+                        .insert(name, self.push_fn(contract, body, module_id, context));
                 }
 
                 for (trait_name, implementation, loc) in impls {
                     let mut baked_impl = HashMap::new();
                     for (name, (contract, body)) in implementation {
-                        baked_impl.insert(name, self.push_fn(contract, body, module_id));
+                        baked_impl.insert(name, self.push_fn(contract, body, module_id, context));
                     }
                     baked_impls.push((trait_name, baked_impl, loc));
                 }
@@ -223,7 +224,7 @@ impl Module {
                     generics,
                 };
 
-                let mut writer = self.context.structs.write();
+                let mut writer = context.structs.write();
                 writer.push(baked_struct);
                 self.scope
                     .insert(name, ModuleScopeValue::Struct(writer.len() - 1));
@@ -244,7 +245,7 @@ impl Module {
                         expr.loc().clone(),
                     ));
                 };
-                let mut writer = self.context.statics.write();
+                let mut writer = context.statics.write();
                 writer.push((typ, value, module_id, location, annotations));
                 self.scope
                     .insert(name, ModuleScopeValue::Static(writer.len() - 1));
@@ -264,9 +265,9 @@ impl Module {
                 }
 
                 if let Some(ref mut body) = body {
-                    body.bake_functions(self, module_id);
+                    body.bake_functions(self, module_id, context);
                 }
-                let mut writer = self.context.external_functions.write();
+                let mut writer = context.external_functions.write();
                 writer.push((contract, body.map(|v| *v), module_id));
                 self.scope
                     .insert(name, ModuleScopeValue::ExternalFunction(writer.len() - 1));

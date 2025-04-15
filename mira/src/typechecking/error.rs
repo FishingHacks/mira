@@ -16,6 +16,8 @@ pub enum TypecheckingError {
     LangItemError(#[from] LangItemError),
     #[error("{0}")]
     LangItemAssignment(#[from] LangItemAssignmentError),
+    #[error("{0}: Expected a sized type, but got an unsized one")]
+    UnsizedForSizedGeneric(Location, Type),
     // NOTE: This is due to each ABI handling how to return values differently. LLVM doesn't handle
     // this for us, but, as far as i can tell, it's fine if we return structs from non-extern
     // functions as that should never produce incorrect behavior. IF how ever, it turns out to,

@@ -1185,10 +1185,7 @@ mod test {
             .zip(expected_tokens.iter().chain(std::iter::once(&eof_token)))
         {
             if tok.typ != expected.0 || tok.literal != expected.1 {
-                assert!(
-                    false,
-                    "mismatching tokens\n  left: {tokens:?}\n  right: {expected_tokens:?}\n\n{tok:?} - {expected:?}"
-                );
+                panic!("mismatching tokens\n  left: {tokens:?}\n  right: {expected_tokens:?}\n\n{tok:?} - {expected:?}");
             }
         }
     }

@@ -37,6 +37,13 @@ pub static DUMMY_LOCATION: LazyLock<Location> = LazyLock::new(|| Location {
 });
 
 #[derive(Debug)]
+pub struct TypedGeneric {
+    name: GlobalStr,
+    sized: bool,
+    bounds: Vec<TraitId>,
+}
+
+#[derive(Debug)]
 pub struct TypecheckedFunctionContract {
     pub name: Option<GlobalStr>,
     pub arguments: Vec<(GlobalStr, Type)>,
@@ -44,6 +51,7 @@ pub struct TypecheckedFunctionContract {
     pub annotations: Annotations,
     pub location: Location,
     pub module_id: ModuleId,
+    pub generics: Vec<TypedGeneric>,
 }
 
 impl Hash for TypecheckedFunctionContract {
@@ -190,6 +198,7 @@ impl TypecheckingContext {
                     return_type: Type::PrimitiveNever,
                     location: DUMMY_LOCATION.clone(),
                     module_id: 0,
+                    generics: Vec::new(),
                 },
                 vec![].into_boxed_slice(),
             ));
@@ -204,6 +213,7 @@ impl TypecheckingContext {
                     return_type: Type::PrimitiveNever,
                     location: DUMMY_LOCATION.clone(),
                     module_id: 0,
+                    generics: Vec::new(),
                 },
                 None,
             ))
@@ -339,10 +349,15 @@ impl TypecheckingContext {
                     && type_name.entries[0].1.is_empty()
                     && generics.contains(&type_name.entries[0].0)
                 {
-                    return Ok(Type::Generic(
-                        type_name.entries[0].0.clone(),
-                        *num_references,
-                    ));
+                    return Ok(Type::Generic {
+                        name: type_name.entries[0].0.clone(),
+                        generic_id: generics
+                            .iter()
+                            .position(|v| *v == type_name.entries[0].0)
+                            .expect("typename should be in generics because we just checked that")
+                            as u8,
+                        num_references: *num_references,
+                    });
                 }
 
                 let path = type_name
@@ -468,25 +483,13 @@ impl TypecheckingContext {
                     typed_struct
                         .generics
                         .iter()
-                        .any(|(v, ..)| *v == *generic_name)
+                        .position(|(v, ..)| *v == *generic_name)
+                        .map(|v| v as u8)
                 },
                 module_id,
                 context.clone(),
                 errors,
             ) {
-                let typ = match typ {
-                    Type::Generic(real_name, num_references) => {
-                        match typed_struct.generics.iter().find(|(v, ..)| *v == real_name) {
-                            Some(v) if !v.1.is_empty() => Type::Trait {
-                                trait_refs: v.1.clone(),
-                                num_references,
-                                real_name,
-                            },
-                            _ => Type::Generic(real_name, num_references),
-                        }
-                    }
-                    t => t,
-                };
                 typed_struct.elements.push((element.0, typ));
             }
         }
@@ -495,7 +498,7 @@ impl TypecheckingContext {
         false
     }
 
-    fn type_resolution_resolve_type<F: Fn(&GlobalStr) -> bool + Copy>(
+    fn type_resolution_resolve_type<F: Fn(&GlobalStr) -> Option<u8> + Copy>(
         &self,
         typ: &TypeRef,
         is_generic_name: F,
@@ -558,11 +561,14 @@ impl TypecheckingContext {
                 }
 
                 // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
-                if type_name.entries.len() == 1
-                    && type_name.entries[0].1.is_empty()
-                    && is_generic_name(&type_name.entries[0].0)
-                {
-                    return Some(Type::Generic(type_name.entries[0].0.clone(), 0));
+                if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
+                    if let Some(generic_id) = is_generic_name(&type_name.entries[0].0) {
+                        return Some(Type::Generic {
+                            name: type_name.entries[0].0.clone(),
+                            generic_id,
+                            num_references: 0,
+                        });
+                    }
                 }
 
                 let Ok(value) = resolve_import(&context, module, &path, loc, &mut Vec::new())

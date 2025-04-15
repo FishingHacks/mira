@@ -57,7 +57,7 @@ intrinsics! {
     // that was previously there
     ReturnAddress => return_address, // (level: i32) -> usize, returns the address a "return" would
     Select => select, // <T>(cond: bool, a: T, b: T) -> T, equivalent to cond ? a : b
-    VolatileRead => volatile_reade, // <T>(ptr: &T) -> T
+    VolatileRead => volatile_read, // <T>(ptr: &T) -> T
     VolatileWrite => volatile_write, // <T>(ptr: &T, val: T);
     // jump to
     // ### INTEGER INTRINSICS ###
@@ -187,9 +187,7 @@ impl Annotation for IntrinsicAnnotation {
 
     fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations) -> bool {
         thing == AnnotationReceiver::Function
-            && annotations
-                .get_annotations::<Self>().nth(1)
-                .is_none()
+            && annotations.get_annotations::<Self>().nth(1).is_none()
     }
 }
 

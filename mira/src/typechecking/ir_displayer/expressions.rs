@@ -34,7 +34,7 @@ impl ExpressionDisplay<'_> {
             TypecheckedExpression::Unreachable(_) => f.write_str("unreachable"),
             TypecheckedExpression::DeclareVariable(_, id, typ, name) => {
                 // let <name>: <ty> = _<id>
-                f.write_str("let ")?;
+                f.write_str("declare ")?;
                 f.write_value(name)?;
                 f.write_str(": ")?;
                 f.write_value(typ)?;
@@ -51,26 +51,34 @@ impl ExpressionDisplay<'_> {
             } => {
                 f.write_char('_')?;
                 f.write_value(dst)?;
-                f.write_str(" = asm ")?;
+                f.write_str(" = asm")?;
                 if *volatile {
-                    f.write_str("volatile ")?;
+                    f.write_str(" volatile")?;
                 }
                 f.write_char('(')?;
+                f.push_indent();
                 for line in asm.split('\n') {
-                    f.write_str(line)?;
                     f.write_char('\n')?;
+                    f.write_debug(&line)?;
                 }
-                f.write_str(": ")?;
-                f.write_debug(registers)?;
-                f.write_str(": (")?;
-                for (i, input) in inputs.iter().enumerate() {
-                    if i != 0 {
-                        f.write_str(", ")?
+                // if the registers are empty, inputs must also be empty
+                if !registers.is_empty() {
+                    f.write_str("\n: ")?;
+                    f.write_debug(registers)?;
+                }
+                if !inputs.is_empty() {
+                    f.write_str("\n: (")?;
+                    for (i, input) in inputs.iter().enumerate() {
+                        if i != 0 {
+                            f.write_str(", ")?
+                        }
+                        f.write_char('_')?;
+                        f.write_value(input)?;
                     }
-                    f.write_char('_')?;
-                    f.write_value(input)?;
+                    f.write_char(')')?;
                 }
-                f.write_str(")\n)")
+                f.pop_indent();
+                f.write_str("\n)")
             }
             TypecheckedExpression::Return(_, typed_literal) => {
                 f.write_str("return ")?;
@@ -89,10 +97,10 @@ impl ExpressionDisplay<'_> {
                 f.write_str("if ")?;
                 Tld(cond).fmt(f)?;
                 f.write_char(' ')?;
-                write_block(f, &if_block.0)?;
+                write_implicit_block(f, &if_block.0)?;
                 if let Some(else_block) = else_block {
                     f.write_str(" else ")?;
-                    write_block(f, &else_block.0)?;
+                    write_implicit_block(f, &else_block.0)?;
                 }
                 Ok(())
             }
@@ -103,11 +111,11 @@ impl ExpressionDisplay<'_> {
                 ..
             } => {
                 f.write_str("while_cond_block ")?;
-                write_block(f, cond_block)?;
+                write_implicit_block(f, cond_block)?;
                 f.write_str("\nwhile ")?;
                 Tld(cond).fmt(f)?;
                 f.write_char(' ')?;
-                write_block(f, &body.0)
+                write_implicit_block(f, &body.0)
             }
             TypecheckedExpression::Range {
                 lhs,
@@ -145,11 +153,11 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypecheckedExpression::DirectCall(_, dst, func, vec) => {
+            TypecheckedExpression::DirectCall(_, dst, func, vec, _) => {
                 f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
-                Tld(&TypedLiteral::Function(*func)).fmt(f)?;
+                Tld(&TypedLiteral::Function(*func, Vec::new())).fmt(f)?;
                 f.write_char('(')?;
                 for (idx, arg) in vec.iter().enumerate() {
                     if idx != 0 {
@@ -173,11 +181,11 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, vec) => {
+            TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, vec, _) => {
                 f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
-                Tld(&TypedLiteral::Intrinsic(*intrinsic)).fmt(f)?;
+                Tld(&TypedLiteral::Intrinsic(*intrinsic, Vec::new())).fmt(f)?;
                 f.write_char('(')?;
                 for (idx, arg) in vec.iter().enumerate() {
                     if idx != 0 {
@@ -261,7 +269,7 @@ impl ExpressionDisplay<'_> {
                 f.write_str(" as <unknown type T>")
             }
             TypecheckedExpression::Literal(_, lhs, rhs) => {
-                f.write_str("let _")?;
+                f.write_str("_")?;
                 f.write_value(lhs)?;
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)
@@ -290,7 +298,7 @@ impl ExpressionDisplay<'_> {
     }
 }
 
-fn write_block(f: &mut Formatter, exprs: &[TypecheckedExpression]) -> std::fmt::Result {
+pub fn write_block(f: &mut Formatter, exprs: &[TypecheckedExpression]) -> std::fmt::Result {
     f.write_char('{')?;
     f.push_indent();
     for expr in exprs {
@@ -299,4 +307,17 @@ fn write_block(f: &mut Formatter, exprs: &[TypecheckedExpression]) -> std::fmt::
     }
     f.pop_indent();
     f.write_str("\n}")
+}
+
+// writes a block to `f` unless the block is a single expression of type
+// `TypecheckedExpression::Block`, in which case it will print the block.
+pub fn write_implicit_block(
+    f: &mut Formatter,
+    exprs: &[TypecheckedExpression],
+) -> std::fmt::Result {
+    if exprs.len() == 1 && matches!(exprs[0], TypecheckedExpression::Block(..)) {
+        ExpressionDisplay(&exprs[0]).fmt(f)
+    } else {
+        write_block(f, exprs)
+    }
 }

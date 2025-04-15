@@ -7,7 +7,7 @@ use crate::{
     annotations::AnnotationReceiver,
     error::ParsingError,
     globals::GlobalStr,
-    module::{FunctionId, Module, ModuleId},
+    module::{FunctionId, Module, ModuleContext, ModuleId},
     tokenizer::{Literal, Location, NumberType, TokenType},
 };
 
@@ -554,7 +554,12 @@ impl Expression {
         }
     }
 
-    pub fn bake_functions(&mut self, module: &mut Module, module_id: ModuleId) {
+    pub fn bake_functions(
+        &mut self,
+        module: &mut Module,
+        module_id: ModuleId,
+        context: &ModuleContext,
+    ) {
         match self {
             Self::Asm { .. } => (),
             Self::Literal(val, ..) => {
@@ -573,6 +578,7 @@ impl Expression {
                             Statement::BakedTrait(0, contract.location.clone()),
                         ),
                         module_id,
+                        context,
                     );
                     *val = LiteralValue::BakedAnonymousFunction(id)
                 }
@@ -596,30 +602,30 @@ impl Expression {
                 right_side,
                 ..
             } => {
-                left_side.bake_functions(module, module_id);
-                right_side.bake_functions(module, module_id);
+                left_side.bake_functions(module, module_id, context);
+                right_side.bake_functions(module, module_id, context);
             }
             Self::FunctionCall {
                 identifier,
                 arguments,
             } => {
-                identifier.bake_functions(module, module_id);
+                identifier.bake_functions(module, module_id, context);
                 arguments
                     .iter_mut()
-                    .for_each(|el| el.bake_functions(module, module_id));
+                    .for_each(|el| el.bake_functions(module, module_id, context));
             }
             Self::MemberCall { lhs, arguments, .. } => {
-                lhs.bake_functions(module, module_id);
+                lhs.bake_functions(module, module_id, context);
                 arguments
                     .iter_mut()
-                    .for_each(|el| el.bake_functions(module, module_id));
+                    .for_each(|el| el.bake_functions(module, module_id, context));
             }
             Self::MemberAccess { left_side, .. }
             | Self::TypeCast { left_side, .. }
             | Self::Unary {
                 right_side: left_side,
                 ..
-            } => left_side.bake_functions(module, module_id),
+            } => left_side.bake_functions(module, module_id, context),
         }
     }
 }

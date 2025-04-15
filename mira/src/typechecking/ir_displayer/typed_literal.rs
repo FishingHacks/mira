@@ -1,6 +1,6 @@
 use crate::typechecking::expression::TypedLiteral;
 
-use super::formatter::{Formatter, INDENT_STR};
+use super::formatter::Formatter;
 
 // TypedLiteralDisplay
 #[repr(transparent)]
@@ -11,7 +11,7 @@ impl Tld<'_> {
         match self.0 {
             TypedLiteral::Void => f.write_str("void"),
             TypedLiteral::Dynamic(id) => f.write_fmt(format_args!("_{id}")),
-            TypedLiteral::Function(id) => {
+            TypedLiteral::Function(id, _) => {
                 if let Some(name) = &f.ctx.functions[*id].0.name {
                     f.write_str("@name(")?;
                     f.write_debug(name)?;
@@ -53,13 +53,19 @@ impl Tld<'_> {
                 f.write_debug(&f.ctx.structs[*id].name)?;
                 f.write_str(") struct_")?;
                 f.write_value(id)?;
-                f.write_str(" {\n")?;
-                for val in children.iter() {
-                    f.write_str(INDENT_STR)?;
+                f.write_str(" {")?;
+                f.push_indent();
+                for (idx, val) in children.iter().enumerate() {
+                    f.write_char('\n')?;
+                    if let Some(field_name) = f.ctx.structs.get(*id).map(|v| &v.elements[idx].0) {
+                        f.write_value(field_name)?;
+                        f.write_str(": ")?;
+                    }
                     Tld(val).fmt(f)?;
-                    f.write_str(",\n")?;
+                    f.write_char(',')?;
                 }
-                f.write_str("}")
+                f.pop_indent();
+                f.write_str("\n}")
             }
             TypedLiteral::Tuple(elements) => {
                 f.write_str(".[")?;
@@ -84,7 +90,7 @@ impl Tld<'_> {
             TypedLiteral::I64(v) => f.write_value(v),
             TypedLiteral::ISize(v) => f.write_value(v),
             TypedLiteral::Bool(v) => f.write_value(v),
-            TypedLiteral::Intrinsic(intrinsic) => {
+            TypedLiteral::Intrinsic(intrinsic, _) => {
                 f.write_str("Intrinsic::")?;
                 f.write_value(intrinsic)
             }

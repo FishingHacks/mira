@@ -4,21 +4,21 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus},
     sync::Arc,
-    time::Instant,
 };
 
 use inkwell::context::Context;
 use parking_lot::RwLock;
 use thiserror::Error;
 
+mod parsing;
+use parsing::parse_all;
+
 use crate::{
     codegen::{CodegenConfig, CodegenContext, CodegenError, Optimizations},
     error::MiraError,
-    module::{Module, ModuleContext},
     module_resolution::ModuleResolver,
-    parser::ParserQueueEntry,
+    progress_bar::{ProgressBar, ProgressBarStyle},
     target::{Abi, Arch, Os, Target},
-    tokenizer::{Literal, Location, Token, TokenType, Tokenizer},
     typechecking::{
         ir_displayer::{Formatter, IoWriteWrapper, ReadOnlyTypecheckingContext, TCContextDisplay},
         typechecking::{typecheck_function, typecheck_static},
@@ -265,9 +265,9 @@ pub struct FullCompilationOptions<'a> {
     /// A list of resolvers to use to resolve imports.
     pub resolvers: Arc<[Box<dyn ModuleResolver>]>,
     /// The resolvers will use this function to check if a path exists
-    pub path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
+    pub path_exists: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
     /// The resolvers will use this function to check if a path is an directory
-    pub path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+    pub path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
     /// Set to true if you need a shared object (.so / .dll)
     pub shared_object: bool,
     /// An Optional path to a linker script
@@ -323,8 +323,8 @@ impl<'a> FullCompilationOptions<'a> {
         file: Arc<Path>,
         root_directory: Arc<Path>,
         resolvers: Arc<[Box<dyn ModuleResolver>]>,
-        path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
-        path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+        path_exists: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
+        path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
     ) -> Self {
         let debug_file = file.clone();
         Self {
@@ -406,15 +406,6 @@ impl<'a> FullCompilationOptions<'a> {
 pub fn run_full_compilation_pipeline(
     mut opts: FullCompilationOptions,
 ) -> Result<Option<PathBuf>, Vec<MiraError>> {
-    macro_rules! vprintln {
-        (nn $($t:tt)*) => {
-            if opts.verbose { print!($($t)*); _ = std::io::stdout().flush(); }
-        };
-        ($($t:tt)*) => {
-            if opts.verbose { println!($($t)*); }
-        };
-    }
-
     if opts.add_extension_to_exe && opts.exec_path.is_some() {
         let mut path = opts.exec_path.unwrap().into_os_string();
         if opts.shared_object {
@@ -447,8 +438,6 @@ pub fn run_full_compilation_pipeline(
         println!("Relocation Mode: {:?}", opts.codegen_opts.reloc_mode);
         println!("Assuming cpu features: {}", opts.codegen_opts.cpu_features);
     }
-    let now = Instant::now();
-    vprintln!("Parsing...");
     let mut read = String::new();
     let source = opts
         .source
@@ -458,21 +447,28 @@ pub fn run_full_compilation_pipeline(
             Ok(&read)
         })
         .map_err(|inner| vec![inner])?;
+
+    let progress_bar = Arc::new(RwLock::new(ProgressBar::new(ProgressBarStyle::Normal)));
+    let parser_item = progress_bar.write().add_item("Parsing".into());
+
     let module_context = parse_all(
         opts.file,
         opts.root_directory,
         opts.debug_file.clone(),
         source,
-        opts.verbose,
         opts.always_include,
         opts.resolvers,
         opts.path_exists,
         opts.path_is_dir,
+        progress_bar.clone(),
+        parser_item,
     );
-    vprintln!("Parsing took {:?}", Instant::now().duration_since(now));
+    progress_bar.write().remove_item(parser_item);
+    let typechecking_item = progress_bar.write().add_item("Typechecking".into());
+    let type_resolution_item = progress_bar.write().add_item("Type Resolution".into());
+    print_progress_bar(&progress_bar);
+
     let module_context = module_context?;
-    let now = Instant::now();
-    vprintln!("Type Resolution...");
     let typechecking_context = TypecheckingContext::new(module_context.clone());
     let errs = typechecking_context.resolve_imports(module_context.clone());
     if !errs.is_empty() {
@@ -483,7 +479,7 @@ pub fn run_full_compilation_pipeline(
         return Err(errs.into_iter().map(Into::into).collect());
     }
 
-    vprintln!("Typechecking...");
+    progress_bar.write().remove_item(type_resolution_item);
 
     let num_functions = { typechecking_context.functions.read().len() };
     let num_ext_functions = { typechecking_context.external_functions.read().len() };
@@ -494,34 +490,49 @@ pub fn run_full_compilation_pipeline(
     let mut scopes_ext_fns = Vec::with_capacity(num_ext_functions);
 
     for i in 0..num_functions {
-        vprintln!(nn "\rTypechecking function #{i}");
+        let item = progress_bar.write().add_child_item(
+            typechecking_item,
+            format!("Typechecking function #{i}").into_boxed_str(),
+        );
+        print_progress_bar(&progress_bar);
+
         match typecheck_function(&typechecking_context, &module_context, i, false) {
             Ok(v) => scopes_fns.push(v),
             Err(e) => errs.extend(e),
         }
+
+        progress_bar.write().remove_item(item);
     }
-    vprintln!();
 
     for i in 0..num_ext_functions {
-        vprintln!(nn "\rTypechecking external function #{i}");
+        let item = progress_bar.write().add_child_item(
+            typechecking_item,
+            format!("Typechecking external function #{i}").into_boxed_str(),
+        );
+        print_progress_bar(&progress_bar);
+
         match typecheck_function(&typechecking_context, &module_context, i, true) {
             Ok(v) => scopes_ext_fns.push(v),
             Err(e) => errs.extend(e),
         }
+
+        progress_bar.write().remove_item(item);
     }
-    vprintln!();
 
     for i in 0..num_statics {
-        vprintln!(nn "\rTypechecking static #{i}");
+        let item = progress_bar.write().add_child_item(
+            typechecking_item,
+            format!("Typechecking static #{i}").into_boxed_str(),
+        );
+        print_progress_bar(&progress_bar);
+
         typecheck_static(&typechecking_context, &module_context, i, &mut errs);
+
+        progress_bar.write().remove_item(item);
     }
 
-    vprintln!(
-        "\nType Resolution and Typechecking took {:?}",
-        Instant::now().duration_since(now)
-    );
-
-    let now = Instant::now();
+    progress_bar.write().remove_item(typechecking_item);
+    print_progress_bar(&progress_bar);
 
     if !errs.is_empty() {
         return Err(errs.into_iter().map(Into::into).collect());
@@ -548,7 +559,6 @@ pub fn run_full_compilation_pipeline(
         }
     }
 
-    vprintln!("Codegen...");
     let num_fns = { typechecking_context.functions.read().len() };
     let num_ext_fns = { typechecking_context.external_functions.read().len() };
     let context = Context::create();
@@ -566,27 +576,51 @@ pub fn run_full_compilation_pipeline(
         opts.codegen_opts,
     )
     .expect("failed to create the llvm context");
+
+    drop(typechecking_context);
+    drop(module_context);
+    crate::globals::clean_slab();
+
+    let codegen_item = progress_bar.write().add_item("Codegen".into());
+    print_progress_bar(&progress_bar);
+
     for fn_id in 0..num_fns {
-        vprintln!(nn "\rCompiling function #{fn_id}");
+        let item = progress_bar.write().add_child_item(
+            codegen_item,
+            format!("Codegening function #{fn_id}").into_boxed_str(),
+        );
+        print_progress_bar(&progress_bar);
+
         if let Err(e) = codegen_context.compile_fn(fn_id, scopes_fns.remove(0), false) {
             errs.push(MiraError::Codegen { inner: e.into() });
         }
+        progress_bar.write().remove_item(item);
     }
-    vprintln!();
 
     for fn_id in 0..num_ext_fns {
-        vprintln!(nn "\rCompiling external function #{fn_id}");
+        let item = progress_bar.write().add_child_item(
+            codegen_item,
+            format!("Codegening external function #{fn_id}").into_boxed_str(),
+        );
+        print_progress_bar(&progress_bar);
+
         if let Err(e) = codegen_context.compile_fn(fn_id, scopes_ext_fns.remove(0), true) {
             errs.push(MiraError::Codegen { inner: e.into() });
         }
+        progress_bar.write().remove_item(item);
     }
-    vprintln!();
+
+    progress_bar
+        .write()
+        .add_child_item(codegen_item, "Optimizing".into());
+    print_progress_bar(&progress_bar);
 
     if let Err(e) = codegen_context.finish() {
         errs.push(CodegenError::LLVMNative(e).into());
     }
 
-    vprintln!("Codegen took {:?}", Instant::now().duration_since(now));
+    progress_bar.write().remove_item(codegen_item);
+    print_progress_bar(&progress_bar);
 
     // emit llvm ir even in the case there are errors. LLVM errors are often more-or-less cryptic, and
     // seeing what junk the compiler generated will probably help in diagnosing them.
@@ -614,9 +648,11 @@ pub fn run_full_compilation_pipeline(
     }
 
     let Some(obj_path) = opts.obj_path else {
+        drop(codegen_context);
+        crate::globals::clean_slab();
+
         return (errs.is_empty()).then_some(opts.exec_path).ok_or(errs);
     };
-    let now = Instant::now();
 
     let mut obj_file = match File::options()
         .write(true)
@@ -628,8 +664,6 @@ pub fn run_full_compilation_pipeline(
         Ok(v) => v,
         Err(()) => return Err(errs),
     };
-
-    vprintln!("Writing object");
 
     if let Err(e) = codegen_context.write_object(&mut obj_file) {
         errs.push(e.into());
@@ -644,15 +678,12 @@ pub fn run_full_compilation_pipeline(
         return Ok(opts.exec_path);
     };
 
-    vprintln!("Locating Linker");
-
     let Some((linker, linker_path)) =
         search_for_linker(opts.link_with_crt, opts.additional_linker_directories)
     else {
         return Err(vec![LinkerError::UnableToLocateLinker.into()]);
     };
 
-    vprintln!("Linking");
     linker
         .link(LinkOptions {
             linker_path,
@@ -671,10 +702,14 @@ pub fn run_full_compilation_pipeline(
             target: opts.codegen_opts.target,
         })
         .map_err(|v| vec![v.into()])?;
-    vprintln!("Linking took {:?}", Instant::now().duration_since(now));
+
+    drop(codegen_context);
+    crate::globals::clean_slab();
+
     Ok(Some(exec_path))
 }
 
+/*
 /// Parses a string of text into a module
 ///
 /// `file` - The file the source came from. Used to evaluate relative imports
@@ -687,24 +722,20 @@ pub fn parse_all(
     root_directory: Arc<Path>,
     debug_file: Arc<Path>,
     source: &str,
-    verbose: bool,
     always_include: Option<String>,
     resolvers: Arc<[Box<dyn ModuleResolver>]>,
     path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
     path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+    progress_bar: Arc<RwLock<ProgressBar>>,
+    parsing_item: ProgressItemRef,
 ) -> Result<Arc<ModuleContext>, Vec<MiraError>> {
     let mut errors = vec![];
-    macro_rules! vprintln {
-        ($($t:tt)*) => {
-            if verbose { println!($($t)*); }
-        };
-    }
 
-    if debug_file != file {
-        vprintln!("Tokenizing {file:?} as {debug_file:?}");
-    } else {
-        vprintln!("Tokenizing {file:?}");
-    }
+    let mut item = progress_bar.write().add_child_item(
+        parsing_item,
+        format!("Tokenizing {}", file.display()).into_boxed_str(),
+    );
+    print_progress_bar(&progress_bar);
     let mut tokenizer = Tokenizer::new(source, debug_file.clone());
     if let Some(path) = always_include {
         let loc = Location::new(debug_file.clone(), 0, 0);
@@ -747,7 +778,16 @@ pub fn parse_all(
     let module_context = Arc::new(ModuleContext::default());
 
     loop {
-        vprintln!("Parsing {:?}", current_parser.file);
+        {
+            let mut writer = progress_bar.write();
+            writer.remove_item(item);
+            item = writer.add_child_item(
+                parsing_item,
+                format!("Parsing {}", current_parser.file.display()).into_boxed_str(),
+            );
+        }
+        print_progress_bar(&progress_bar);
+
         let (statements, parsing_errors) = current_parser.parse_all();
         errors.extend(
             parsing_errors
@@ -758,8 +798,12 @@ pub fn parse_all(
             let module = &modules.read()[module_context.modules.read().len()];
             (module.file.clone(), module.root_dir.clone())
         };
-        let mut module = Module::new(module_context.clone(), current_parser.imports, path, root);
-        if let Err(errs) = module.push_all(statements, module_context.modules.read().len()) {
+        let mut module = Module::new(current_parser.imports, path, root);
+        if let Err(errs) = module.push_all(
+            statements,
+            module_context.modules.read().len(),
+            &module_context,
+        ) {
             errors.extend(
                 errs.into_iter()
                     .map(|inner| MiraError::ProgramForming { inner }),
@@ -781,7 +825,15 @@ pub fn parse_all(
                 }
             };
             let mut tokenizer = Tokenizer::new(&source, entry.file);
-            vprintln!("Tokenizing {:?}", tokenizer.file);
+            {
+                let mut writer = progress_bar.write();
+                writer.remove_item(item);
+                item = writer.add_child_item(
+                    parsing_item,
+                    format!("Tokenizing {}", tokenizer.file.display()).into_boxed_str(),
+                );
+            }
+            print_progress_bar(&progress_bar);
             if let Err(errs) = tokenizer.scan_tokens() {
                 errors.extend(
                     errs.into_iter()
@@ -796,6 +848,8 @@ pub fn parse_all(
                 path_is_dir.clone(),
             );
         } else {
+            progress_bar.write().remove_item(parsing_item);
+            print_progress_bar(&progress_bar);
             break;
         }
     }
@@ -805,4 +859,22 @@ pub fn parse_all(
     } else {
         Err(errors)
     }
+}
+*/
+
+struct ClosureDisplay<F: Fn(&mut std::fmt::Formatter) -> std::fmt::Result>(pub F);
+impl<F: Fn(&mut std::fmt::Formatter) -> std::fmt::Result> std::fmt::Display for ClosureDisplay<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (self.0)(f)
+    }
+}
+pub fn print_progress_bar(bar: &RwLock<ProgressBar>) {
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_fmt(format_args!(
+            "{}\n",
+            ClosureDisplay(|f| bar.write().display(f))
+        ))
+        .expect("failed to write to stdout");
+    _ = stdout.flush();
 }
