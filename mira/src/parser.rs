@@ -6,6 +6,8 @@ use crate::{
     annotations::Annotations,
     error::ParsingError,
     globals::GlobalStr,
+    module::Module,
+    store::{Store, StoreKey},
     tokenizer::{Location, Token, TokenType},
 };
 pub use expression::{
@@ -64,28 +66,28 @@ impl Display for Annotation {
 pub struct ParserQueueEntry {
     pub file: Arc<std::path::Path>,
     pub root_dir: Arc<std::path::Path>,
+    pub reserved_key: StoreKey<Module>,
 }
 
-pub struct Parser {
+pub struct Parser<'a> {
     pub file: Arc<std::path::Path>,
     pub root_directory: Arc<std::path::Path>,
 
     pub tokens: Vec<Token>,
     pub current: usize,
     current_annotations: Annotations,
-    /// The modules, the index is their id. The second boolean dictates if they already started
-    /// parsing. there's no reference to whether or not they finished. it is assumed they all
-    /// finished when typechecking.
-    pub modules: Arc<RwLock<Vec<ParserQueueEntry>>>,
+    pub parser_queue: Arc<RwLock<Vec<ParserQueueEntry>>>,
+    pub modules: &'a RwLock<Store<Module>>,
     /// a map of idents => imports. if the size of the vec is 0, the identifier refers to the
     /// module itself. otherwise, it refers to something in it.
-    pub imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
+    pub imports: HashMap<GlobalStr, (Location, StoreKey<Module>, Vec<GlobalStr>)>,
     resolvers: Arc<[Box<dyn ModuleResolver>]>,
     path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
     path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+    pub key: StoreKey<Module>,
 }
 
-impl std::fmt::Debug for Parser {
+impl std::fmt::Debug for Parser<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Parser")
             .field("file", &self.file)
@@ -93,33 +95,38 @@ impl std::fmt::Debug for Parser {
             .field("tokens", &self.tokens)
             .field("current", &self.current)
             .field("current_annotations", &self.current_annotations)
-            .field("modules", &self.modules)
+            .field("modules", &self.parser_queue)
             .field("imports", &self.imports)
             .finish()
     }
 }
 
-impl Parser {
+impl<'a> Parser<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tokens: Vec<Token>,
-        modules: Arc<RwLock<Vec<ParserQueueEntry>>>,
+        parser_queue: Arc<RwLock<Vec<ParserQueueEntry>>>,
+        modules: &'a RwLock<Store<Module>>,
         file: Arc<std::path::Path>,
         root_directory: Arc<std::path::Path>,
         resolvers: Arc<[Box<dyn ModuleResolver>]>,
         path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
         path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+        key: StoreKey<Module>,
     ) -> Self {
         Self {
             tokens,
             current: 0,
             current_annotations: Default::default(),
             imports: HashMap::new(),
+            parser_queue,
             modules,
             file,
             root_directory,
             resolvers,
             path_exists,
             path_is_dir,
+            key,
         }
     }
 

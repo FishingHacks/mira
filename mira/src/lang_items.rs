@@ -1,5 +1,7 @@
 use std::fmt::{Debug, Display, Write};
 
+use crate::store::StoreKey;
+use crate::typechecking::{TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct};
 use crate::{
     annotations::{Annotation, AnnotationReceiver, Annotations},
     error::{FunctionList, ParsingError},
@@ -8,10 +10,6 @@ use crate::{
     tokenizer::Location,
     tokenstream::TokenStream,
     typechecking::{Type, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
-};
-use crate::{
-    module::{ExternalFunctionId, FunctionId, StaticId, StructId, TraitId},
-    typechecking::TypedStruct,
 };
 use thiserror::Error;
 
@@ -61,8 +59,8 @@ struct LangItemTrait {
 struct LangItemStruct {
     funcs: Vec<(GlobalStr, LangItemFunction)>,
     fields: Vec<(GlobalStr, Type)>,
-    traits: Vec<TraitId>,
-    generics: Vec<Vec<TraitId>>,
+    traits: Vec<StoreKey<TypedTrait>>,
+    generics: Vec<Vec<StoreKey<TypedTrait>>>,
 }
 
 struct LangItemFunction {
@@ -87,7 +85,7 @@ macro_rules! lang_item_def {
             /// Pushes a struct as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_struct(&mut self, id: StructId, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_struct(&mut self, id: StoreKey<TypedStruct>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_struct $ty, self, $lang_item, id, loc),)*
@@ -99,7 +97,7 @@ macro_rules! lang_item_def {
             /// Pushes a trait as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_trait(&mut self, id: TraitId, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_trait(&mut self, id: StoreKey<TypedTrait>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_trait $ty, self, $lang_item, id, loc),)*
@@ -111,7 +109,7 @@ macro_rules! lang_item_def {
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_static(&mut self, id: StaticId, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_static(&mut self, id: StoreKey<TypedStatic>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_static $ty, self, $lang_item, id, loc),)*
@@ -132,23 +130,23 @@ macro_rules! lang_item_def {
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_external_function(&mut self, id: ExternalFunctionId, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_external_function(&mut self, id: StoreKey<TypedExternalFunction>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
                 self.internal_push_fn(FunctionLangItem::External(id), lang_item, loc)
             }
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_function(&mut self, id: FunctionId, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_function(&mut self, id: StoreKey<TypedFunction>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
                 self.internal_push_fn(FunctionLangItem::Internal(id), lang_item, loc)
             }
 
         }
     };
 
-    (underlying_typ Trait) => { TraitId };
-    (underlying_typ Struct) => { StructId };
+    (underlying_typ Trait) => { StoreKey<TypedTrait> };
+    (underlying_typ Struct) => { StoreKey<TypedStruct> };
     (underlying_typ Function) => { FunctionLangItem };
-    (underlying_typ Static) => { StaticId };
+    (underlying_typ Static) => { StoreKey<TypedStatic> };
 
     (expect_struct Struct, $self: ident, $key: ident, $id: ident, $loc: ident) => { $self.$key = Some($id) };
     (expect_struct $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Struct, expected: LangItemType::$expected_ty }) };
@@ -165,8 +163,8 @@ macro_rules! lang_item_def {
 
 #[derive(Debug, Clone, Copy)]
 pub enum FunctionLangItem {
-    External(ExternalFunctionId),
-    Internal(FunctionId),
+    External(StoreKey<TypedExternalFunction>),
+    Internal(StoreKey<TypedFunction>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -529,7 +527,7 @@ impl LangItems {
         }
     }
 
-    fn allocator<R, F: FnMut(&[TraitId]) -> R>(&self, mut func: F) -> R {
+    fn allocator<R, F: FnMut(&[StoreKey<TypedTrait>]) -> R>(&self, mut func: F) -> R {
         // let allocator: dyn Allocator;
         // even if there's no allocator trait, throw an error if lang item does not exist.
         if let Some(trait_id) = self.allocator_trait {
@@ -729,7 +727,7 @@ fn does_struct_match(
 }
 
 fn does_static_match(
-    traits: &[TraitId],
+    traits: &[StoreKey<TypedTrait>],
     typ: &Type,
     lang_item: &'static str,
     errors: &mut LangItemErrors,

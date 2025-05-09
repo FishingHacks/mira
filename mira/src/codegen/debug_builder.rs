@@ -7,9 +7,12 @@ use std::{
 use crate::{
     codegen::debug_constants::BasicTypeEncoding,
     globals::GlobalStr,
-    module::ModuleId,
+    store::{AssociatedStore, Store, StoreKey},
     tokenizer::Location,
-    typechecking::{intrinsics::IntrinsicAnnotation, Type, TypecheckingContext, TypedStruct},
+    typechecking::{
+        intrinsics::IntrinsicAnnotation, Type, TypecheckedModule, TypecheckingContext,
+        TypedExternalFunction, TypedFunction, TypedStruct,
+    },
 };
 use inkwell::{
     basic_block::BasicBlock,
@@ -33,12 +36,12 @@ pub struct DebugContext<'ctx> {
     pub(super) builder: DebugInfoBuilder<'ctx>,
     global_scope: DIScope<'ctx>,
     root_file: DIFile<'ctx>,
-    pub(super) modules: Vec<(DINamespace<'ctx>, DIFile<'ctx>)>,
+    pub(super) modules: AssociatedStore<(DINamespace<'ctx>, DIFile<'ctx>), TypecheckedModule>,
     default_types: DefaultTypes<'ctx>,
     type_store: HashMap<Type, DIType<'ctx>>,
     context: &'ctx Context,
-    pub(super) funcs: Vec<DISubprogram<'ctx>>,
-    pub(super) ext_funcs: Vec<DISubprogram<'ctx>>,
+    pub(super) funcs: AssociatedStore<DISubprogram<'ctx>, TypedFunction>,
+    pub(super) ext_funcs: AssociatedStore<DISubprogram<'ctx>, TypedExternalFunction>,
 }
 
 impl<'ctx> DebugContext<'ctx> {
@@ -56,8 +59,8 @@ impl<'ctx> DebugContext<'ctx> {
         typ: &Type,
         name: &GlobalStr,
         bb: BasicBlock<'ctx>,
-        module: ModuleId,
-        structs: &[TypedStruct],
+        module: StoreKey<TypecheckedModule>,
+        structs: &Store<TypedStruct>,
         arg: u32,
     ) {
         let ty = self.get_type(typ, structs);
@@ -86,8 +89,8 @@ impl<'ctx> DebugContext<'ctx> {
         typ: &Type,
         name: &GlobalStr,
         bb: BasicBlock<'ctx>,
-        module: ModuleId,
-        structs: &[TypedStruct],
+        module: StoreKey<TypecheckedModule>,
+        structs: &Store<TypedStruct>,
     ) {
         let alignment = typ.alignment(
             (self.default_types.isize.get_bit_width() / 8) as u64,
@@ -114,7 +117,7 @@ impl<'ctx> DebugContext<'ctx> {
         &self,
         parent_scope: DIScope<'ctx>,
         loc: &Location,
-        module: ModuleId,
+        module: StoreKey<TypecheckedModule>,
     ) -> DILexicalBlock<'ctx> {
         self.builder.create_lexical_block(
             parent_scope,
@@ -174,16 +177,16 @@ impl<'ctx> DebugContext<'ctx> {
         let root_file = builder.create_file(&root_filename, &root_directory);
         let mut me = Self {
             builder,
-            modules: Vec::with_capacity(module_reader.len()),
+            modules: AssociatedStore::with_capacity(module_reader.len()),
             default_types,
             global_scope: compile_unit.as_debug_info_scope(),
             type_store: HashMap::new(),
             context,
             root_file,
-            funcs: Vec::with_capacity(func_reader.len()),
-            ext_funcs: Vec::with_capacity(ext_func_reader.len()),
+            funcs: AssociatedStore::with_capacity(func_reader.len()),
+            ext_funcs: AssociatedStore::with_capacity(ext_func_reader.len()),
         };
-        for module in module_reader.iter() {
+        for (key, module) in module_reader.index_value_iter() {
             let file = if *module.path == *root_path {
                 root_file
             } else {
@@ -198,41 +201,17 @@ impl<'ctx> DebugContext<'ctx> {
                     .unwrap_or("".into()),
                 false,
             );
-            me.modules.push((namespace, file));
+            me.modules.insert(key, (namespace, file));
         }
-        // TODO: replace this; see ./context.rs:327, above the context functions collection
-        let dummy_subprogram_type =
-            me.builder
-                .create_subroutine_type(me.root_file, None, &[], DIFlags::default());
-        let dummy_function = me.builder.create_function(
-            me.root_file.as_debug_info_scope(),
-            "__dummy",
-            None,
-            me.root_file,
-            0,
-            dummy_subprogram_type,
-            false,
-            true,
-            0,
-            DIFlags::default(),
-            true,
-        );
-        for (id, func) in func_reader.iter().enumerate() {
-            // we don't ever generate functions with generics (monomorphise them!)
-            if !func.0.generics.is_empty() {
-                me.funcs.push(dummy_function);
-                continue;
-            }
+        for (key, func) in func_reader.index_value_iter() {
             // intrinsics also aren't generated
-            if func
-                .0
-                .annotations
-                .get_first_annotation::<IntrinsicAnnotation>()
-                .is_some()
-            {
-                me.funcs.push(dummy_function);
+            if func.0.annotations.has_annotation::<IntrinsicAnnotation>() {
                 continue;
             }
+            assert!(
+                func.0.generics.is_empty(),
+                "function should've been monomorphised by now"
+            );
             let return_ty = (!matches!(
                 func.0.return_type,
                 Type::PrimitiveVoid(0) | Type::PrimitiveNever
@@ -252,7 +231,7 @@ impl<'ctx> DebugContext<'ctx> {
                 .builder
                 .create_subroutine_type(module.1, return_ty, &args, flags);
 
-            let mangled_name = mangle_function(tc_ctx, id);
+            let mangled_name = mangle_function(tc_ctx, key);
             let subprogram = func
                 .0
                 .name
@@ -273,9 +252,9 @@ impl<'ctx> DebugContext<'ctx> {
                         optimizations,
                     )
                 });
-            me.funcs.push(subprogram);
+            me.funcs.insert(key, subprogram);
         }
-        for (id, func) in ext_func_reader.iter().enumerate() {
+        for (key, func) in ext_func_reader.index_value_iter() {
             let return_ty = (!matches!(
                 func.0.return_type,
                 Type::PrimitiveVoid(0) | Type::PrimitiveNever
@@ -295,7 +274,7 @@ impl<'ctx> DebugContext<'ctx> {
                 .builder
                 .create_subroutine_type(module.1, return_ty, &args, flags);
 
-            let mangled_name = mangle_external_function(tc_ctx, id);
+            let mangled_name = mangle_external_function(tc_ctx, key);
             let subprogram = func
                 .0
                 .name
@@ -316,12 +295,12 @@ impl<'ctx> DebugContext<'ctx> {
                         optimizations,
                     )
                 });
-            me.ext_funcs.push(subprogram);
+            me.ext_funcs.insert(key, subprogram);
         }
         me
     }
 
-    pub fn get_type(&mut self, typ: &Type, structs: &[TypedStruct]) -> DIType<'ctx> {
+    pub fn get_type(&mut self, typ: &Type, structs: &Store<TypedStruct>) -> DIType<'ctx> {
         if let Some(v) = self.type_store.get(typ) {
             return *v;
         }

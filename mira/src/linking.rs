@@ -20,8 +20,9 @@ use crate::{
     progress_bar::{ProgressBar, ProgressBarStyle},
     target::{Abi, Arch, Os, Target},
     typechecking::{
+        intrinsics::IntrinsicAnnotation,
         ir_displayer::{Formatter, IoWriteWrapper, ReadOnlyTypecheckingContext, TCContextDisplay},
-        typechecking::{typecheck_function, typecheck_static},
+        typechecking::{typecheck_external_function, typecheck_function, typecheck_static},
         TypecheckingContext,
     },
 };
@@ -481,22 +482,34 @@ pub fn run_full_compilation_pipeline(
 
     progress_bar.write().remove_item(type_resolution_item);
 
-    let num_functions = { typechecking_context.functions.read().len() };
-    let num_ext_functions = { typechecking_context.external_functions.read().len() };
-    let num_statics = { typechecking_context.statics.read().len() };
+    let function_keys = typechecking_context
+        .functions
+        .read()
+        .indices()
+        .collect::<Vec<_>>();
+    let ext_function_keys = typechecking_context
+        .external_functions
+        .read()
+        .indices()
+        .collect::<Vec<_>>();
+    let static_keys = typechecking_context
+        .statics
+        .read()
+        .indices()
+        .collect::<Vec<_>>();
 
     let mut errs = Vec::new();
-    let mut scopes_fns = Vec::with_capacity(num_functions);
-    let mut scopes_ext_fns = Vec::with_capacity(num_ext_functions);
+    let mut scopes_fns = Vec::new();
+    let mut scopes_ext_fns = Vec::new();
 
-    for i in 0..num_functions {
+    for key in function_keys {
         let item = progress_bar.write().add_child_item(
             typechecking_item,
-            format!("Typechecking function #{i}").into_boxed_str(),
+            format!("Typechecking function {key}").into_boxed_str(),
         );
         print_progress_bar(&progress_bar);
 
-        match typecheck_function(&typechecking_context, &module_context, i, false) {
+        match typecheck_function(&typechecking_context, &module_context, key) {
             Ok(v) => scopes_fns.push(v),
             Err(e) => errs.extend(e),
         }
@@ -504,14 +517,14 @@ pub fn run_full_compilation_pipeline(
         progress_bar.write().remove_item(item);
     }
 
-    for i in 0..num_ext_functions {
+    for key in ext_function_keys {
         let item = progress_bar.write().add_child_item(
             typechecking_item,
-            format!("Typechecking external function #{i}").into_boxed_str(),
+            format!("Typechecking external function {key}").into_boxed_str(),
         );
         print_progress_bar(&progress_bar);
 
-        match typecheck_function(&typechecking_context, &module_context, i, true) {
+        match typecheck_external_function(&typechecking_context, &module_context, key) {
             Ok(v) => scopes_ext_fns.push(v),
             Err(e) => errs.extend(e),
         }
@@ -519,14 +532,14 @@ pub fn run_full_compilation_pipeline(
         progress_bar.write().remove_item(item);
     }
 
-    for i in 0..num_statics {
+    for key in static_keys {
         let item = progress_bar.write().add_child_item(
             typechecking_item,
-            format!("Typechecking static #{i}").into_boxed_str(),
+            format!("Typechecking static {key}").into_boxed_str(),
         );
         print_progress_bar(&progress_bar);
 
-        typecheck_static(&typechecking_context, &module_context, i, &mut errs);
+        typecheck_static(&typechecking_context, &module_context, key, &mut errs);
 
         progress_bar.write().remove_item(item);
     }
@@ -559,8 +572,6 @@ pub fn run_full_compilation_pipeline(
         }
     }
 
-    let num_fns = { typechecking_context.functions.read().len() };
-    let num_ext_fns = { typechecking_context.external_functions.read().len() };
     let context = Context::create();
 
     let debug_filename = opts
@@ -577,34 +588,37 @@ pub fn run_full_compilation_pipeline(
     )
     .expect("failed to create the llvm context");
 
-    drop(typechecking_context);
     drop(module_context);
     crate::globals::clean_slab();
 
     let codegen_item = progress_bar.write().add_item("Codegen".into());
     print_progress_bar(&progress_bar);
 
-    for fn_id in 0..num_fns {
+    for (fn_id, (contract, _)) in typechecking_context.functions.read().index_value_iter() {
+        if contract.annotations.has_annotation::<IntrinsicAnnotation>() {
+            scopes_fns.remove(0);
+            continue;
+        }
         let item = progress_bar.write().add_child_item(
             codegen_item,
             format!("Codegening function #{fn_id}").into_boxed_str(),
         );
         print_progress_bar(&progress_bar);
 
-        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_fns.remove(0), false) {
+        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_fns.remove(0)) {
             errs.push(MiraError::Codegen { inner: e.into() });
         }
         progress_bar.write().remove_item(item);
     }
 
-    for fn_id in 0..num_ext_fns {
+    for fn_id in typechecking_context.external_functions.read().indices() {
         let item = progress_bar.write().add_child_item(
             codegen_item,
             format!("Codegening external function #{fn_id}").into_boxed_str(),
         );
         print_progress_bar(&progress_bar);
 
-        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_ext_fns.remove(0), true) {
+        if let Err(e) = codegen_context.compile_external_fn(fn_id, scopes_ext_fns.remove(0)) {
             errs.push(MiraError::Codegen { inner: e.into() });
         }
         progress_bar.write().remove_item(item);

@@ -2,11 +2,9 @@ use std::sync::Arc;
 
 use crate::{
     lang_items::{LangItemAnnotation, LangItemErrors},
-    module::{
-        ExternalFunctionId, FunctionId, ModuleContext, ModuleScopeValue, StaticId, StructId,
-        TraitId,
-    },
-    parser::TypeRef,
+    module::{BakedStruct, ExternalFunction, Function, ModuleContext, ModuleScopeValue, Static},
+    parser::{Trait, TypeRef},
+    store::StoreKey,
 };
 
 use super::{
@@ -29,28 +27,28 @@ impl TypecheckingContext {
         // +---------+
         // | Structs |
         // +---------+
-        let num_structs = context.structs.read().len();
-        for struct_id in 0..num_structs {
+        let struct_keys = context.structs.read().indices().collect::<Vec<_>>();
+        for key in struct_keys.iter().copied() {
             let struct_reader = context.structs.read();
-            let module_id = struct_reader[struct_id].module_id;
+            let module_id = struct_reader[key].module_id;
             drop(struct_reader);
             let err_count = errors.len();
             assert!(
-                !self.resolve_struct(context.clone(), struct_id, module_id, &mut errors),
+                !self.resolve_struct(context.clone(), key, module_id, &mut errors),
                 "this came from no field, so this shouldn't be recursive"
             );
             if err_count != errors.len() {
                 continue;
             }
             let struct_reader = self.structs.read();
-            for annotation in struct_reader[struct_id]
+            for annotation in struct_reader[key.cast()]
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_struct(
-                    struct_id,
+                    key.cast(),
                     annotation.get_langitem(),
-                    struct_reader[struct_id].location.clone(),
+                    struct_reader[key.cast()].location.clone(),
                 ) {
                     errors.push(e.into());
                 }
@@ -60,23 +58,23 @@ impl TypecheckingContext {
         // +-----------+
         // | Functions |
         // +-----------+
-        let num_functions = context.functions.read().len();
-        for function_id in 0..num_functions {
+        let function_keys = context.functions.read().indices().collect::<Vec<_>>();
+        for function_key in function_keys {
             let error_count = errors.len();
-            self.resolve_function(function_id, &context, &mut errors);
+            self.resolve_function(function_key, &context, &mut errors);
             if error_count != errors.len() {
                 continue;
             }
             let function_reader = self.functions.read();
-            for annotation in function_reader[function_id]
+            for annotation in function_reader[function_key.cast()]
                 .0
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_function(
-                    function_id,
+                    function_key.cast(),
                     annotation.get_langitem(),
-                    function_reader[function_id].0.location.clone(),
+                    function_reader[function_key.cast()].0.location.clone(),
                 ) {
                     errors.push(e.into());
                 }
@@ -86,23 +84,30 @@ impl TypecheckingContext {
         // +--------------------+
         // | External Functions |
         // +--------------------+
-        let num_functions = context.external_functions.read().len();
-        for ext_function_id in 0..num_functions {
+        let ext_function_keys = context
+            .external_functions
+            .read()
+            .indices()
+            .collect::<Vec<_>>();
+        for ext_function_key in ext_function_keys {
             let error_count = errors.len();
-            self.resolve_ext_function(ext_function_id, &context, &mut errors);
+            self.resolve_ext_function(ext_function_key, &context, &mut errors);
             if error_count != errors.len() {
                 continue;
             }
             let ext_function_reader = self.external_functions.read();
-            for annotation in ext_function_reader[ext_function_id]
+            for annotation in ext_function_reader[ext_function_key.cast()]
                 .0
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_external_function(
-                    ext_function_id,
+                    ext_function_key.cast(),
                     annotation.get_langitem(),
-                    ext_function_reader[ext_function_id].0.location.clone(),
+                    ext_function_reader[ext_function_key.cast()]
+                        .0
+                        .location
+                        .clone(),
                 ) {
                     errors.push(e.into());
                 }
@@ -112,22 +117,22 @@ impl TypecheckingContext {
         // +---------+
         // | Statics |
         // +---------+
-        let num_statics = context.statics.read().len();
-        for static_id in 0..num_statics {
+        let statics_keys = context.statics.read().indices().collect::<Vec<_>>();
+        for static_key in statics_keys {
             let error_count = errors.len();
-            self.resolve_static(static_id, &context, &mut errors);
+            self.resolve_static(static_key, &context, &mut errors);
             if error_count != errors.len() {
                 continue;
             }
             let static_reader = self.statics.read();
-            for annotation in static_reader[static_id]
+            for annotation in static_reader[static_key.cast()]
                 .4
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_static(
-                    static_id,
+                    static_key.cast(),
                     annotation.get_langitem(),
-                    static_reader[static_id].3.clone(),
+                    static_reader[static_key.cast()].3.clone(),
                 ) {
                     errors.push(e.into());
                 }
@@ -137,29 +142,29 @@ impl TypecheckingContext {
         // +--------+
         // | Traits |
         // +--------+
-        let num_traits = context.traits.read().len();
-        for trait_id in 0..num_traits {
+        let trait_keys = context.traits.read().indices().collect::<Vec<_>>();
+        for trait_key in trait_keys {
             let error_count = errors.len();
-            self.resolve_trait(trait_id, &context, &mut errors);
+            self.resolve_trait(trait_key, &context, &mut errors);
             if error_count != errors.len() {
                 continue;
             }
             let trait_reader = self.traits.read();
-            for annotation in trait_reader[trait_id]
+            for annotation in trait_reader[trait_key.cast()]
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_trait(
-                    trait_id,
+                    trait_key.cast(),
                     annotation.get_langitem(),
-                    trait_reader[trait_id].location.clone(),
+                    trait_reader[trait_key.cast()].location.clone(),
                 ) {
                     errors.push(e.into());
                 }
             }
         }
 
-        for struct_id in 0..num_structs {
+        for struct_id in struct_keys {
             self.resolve_struct_impls(struct_id, &context, &mut errors);
         }
 
@@ -174,12 +179,12 @@ impl TypecheckingContext {
 
     fn resolve_struct_impls(
         &self,
-        struct_id: StructId,
+        struct_key: StoreKey<BakedStruct>,
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
         let mut writer = context.structs.write();
-        let trait_impl = std::mem::take(&mut writer[struct_id].impls);
+        let trait_impl = std::mem::take(&mut writer[struct_key].impls);
         drop(writer);
 
         // it is *okay* to hold the lock here between resolve_type calls as all structs have
@@ -187,31 +192,36 @@ impl TypecheckingContext {
         let mut struct_writer = self.structs.write();
         let trait_reader = self.traits.read();
         let function_reader = self.functions.read();
-        let module = struct_writer[struct_id].module_id;
+        let module = struct_writer[struct_key.cast()].module_id;
 
         for (name, implementation, loc) in trait_impl {
-            let trait_id =
-                match resolve_import(context, module, &[name.clone()], &loc, &mut Vec::new()) {
-                    Err(e) => {
-                        errors.push(e);
-                        continue;
-                    }
-                    Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
-                    Ok(_) => {
-                        errors.push(TypecheckingError::UnboundIdent {
-                            location: loc,
-                            name,
-                        });
-                        continue;
-                    }
-                };
+            let trait_id = match resolve_import(
+                context,
+                module.cast(),
+                &[name.clone()],
+                &loc,
+                &mut Vec::new(),
+            ) {
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+                Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
+                Ok(_) => {
+                    errors.push(TypecheckingError::UnboundIdent {
+                        location: loc,
+                        name,
+                    });
+                    continue;
+                }
+            };
 
-            let typed_trait = &trait_reader[trait_id];
+            let typed_trait = &trait_reader[trait_id.cast()];
             if typed_trait.functions.len() != implementation.len() {
                 for (name, func_id) in &implementation {
                     if !typed_trait.functions.iter().any(|(v, ..)| v == name) {
                         errors.push(TypecheckingError::IsNotTraitMember {
-                            location: function_reader[*func_id].0.location.clone(),
+                            location: function_reader[func_id.cast()].0.location.clone(),
                             name: name.clone(),
                         })
                     }
@@ -230,7 +240,7 @@ impl TypecheckingContext {
 
                 let mut with_errs = false;
 
-                let function_contract = &function_reader[func_id].0;
+                let function_contract = &function_reader[func_id.cast()].0;
                 if !function_contract
                     .arguments
                     .iter()
@@ -260,15 +270,15 @@ impl TypecheckingContext {
                     with_errs = true
                 }
                 if !with_errs {
-                    trait_impl.push(func_id);
+                    trait_impl.push(func_id.cast());
                 }
             }
             if trait_impl.len() != typed_trait.functions.len() {
                 continue;
             }
-            struct_writer[struct_id]
+            struct_writer[struct_key.cast()]
                 .trait_impl
-                .insert(trait_id, trait_impl);
+                .insert(trait_id.cast(), trait_impl);
         }
         drop(struct_writer);
         drop(function_reader);
@@ -276,12 +286,12 @@ impl TypecheckingContext {
         let struct_reader = self.structs.read();
         let mut function_writer = self.functions.write();
 
-        for fn_id in struct_reader[struct_id]
+        for fn_id in struct_reader[struct_key.cast()]
             .global_impl
             .values()
             .copied()
             .chain(
-                struct_reader[struct_id]
+                struct_reader[struct_key.cast()]
                     .trait_impl
                     .values()
                     .flat_map(|v| v.iter())
@@ -291,16 +301,16 @@ impl TypecheckingContext {
             let contract = &mut function_writer[fn_id].0;
             if let Type::PrimitiveSelf(num_references) = contract.return_type {
                 contract.return_type = Type::Struct {
-                    struct_id,
-                    name: struct_reader[struct_id].name.clone(),
+                    struct_id: struct_key.cast(),
+                    name: struct_reader[struct_key.cast()].name.clone(),
                     num_references,
                 }
             }
             for t in contract.arguments.iter_mut() {
                 if let Type::PrimitiveSelf(num_references) = t.1 {
                     t.1 = Type::Struct {
-                        struct_id,
-                        name: struct_reader[struct_id].name.clone(),
+                        struct_id: struct_key.cast(),
+                        name: struct_reader[struct_key.cast()].name.clone(),
                         num_references,
                     }
                 }
@@ -310,7 +320,7 @@ impl TypecheckingContext {
 
     fn resolve_function(
         &self,
-        function_id: FunctionId,
+        function_id: StoreKey<Function>,
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
@@ -334,7 +344,7 @@ impl TypecheckingContext {
                     &bound.1,
                     &mut Vec::new(),
                 ) {
-                    Ok(ModuleScopeValue::Trait(v)) => bounds.push(v),
+                    Ok(ModuleScopeValue::Trait(v)) => bounds.push(v.cast()),
                     Ok(_) => errors.push(TypecheckingError::UnboundIdent {
                         location: bound.1,
                         name: bound
@@ -353,7 +363,7 @@ impl TypecheckingContext {
             });
         }
         let mut resolved_function_contract = TypecheckedFunctionContract {
-            module_id,
+            module_id: module_id.cast(),
             name: writer[function_id].0.name.clone(),
             location: writer[function_id].0.location.clone(),
             annotations: std::mem::take(&mut writer[function_id].0.annotations),
@@ -364,7 +374,7 @@ impl TypecheckingContext {
         drop(writer);
 
         let mut has_errors = false;
-        match self.resolve_type(module_id, &return_type, &generic_names) {
+        match self.resolve_type(module_id.cast(), &return_type, &generic_names) {
             Ok(v) => resolved_function_contract.return_type = v,
             Err(e) => {
                 has_errors = true;
@@ -373,7 +383,7 @@ impl TypecheckingContext {
         }
 
         for arg in arguments {
-            match self.resolve_type(module_id, &arg.typ, &generic_names) {
+            match self.resolve_type(module_id.cast(), &arg.typ, &generic_names) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
                 Err(e) => {
                     has_errors = true;
@@ -383,13 +393,13 @@ impl TypecheckingContext {
         }
 
         if !has_errors {
-            self.functions.write()[function_id].0 = resolved_function_contract;
+            self.functions.write()[function_id.cast()].0 = resolved_function_contract;
         }
     }
 
     fn resolve_ext_function(
         &self,
-        ext_function_id: ExternalFunctionId,
+        ext_function_id: StoreKey<ExternalFunction>,
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
@@ -401,7 +411,7 @@ impl TypecheckingContext {
             TypeRef::Void(DUMMY_LOCATION.clone(), 0),
         );
         let mut resolved_function_contract = TypecheckedFunctionContract {
-            module_id,
+            module_id: module_id.cast(),
             name: writer[ext_function_id].0.name.clone(),
             location: writer[ext_function_id].0.location.clone(),
             annotations: std::mem::take(&mut writer[ext_function_id].0.annotations),
@@ -412,7 +422,7 @@ impl TypecheckingContext {
         drop(writer);
 
         let mut has_errors = false;
-        match self.resolve_type(module_id, &return_type, &[]) {
+        match self.resolve_type(module_id.cast(), &return_type, &[]) {
             Ok(v) => resolved_function_contract.return_type = v,
             Err(e) => {
                 has_errors = true;
@@ -421,7 +431,7 @@ impl TypecheckingContext {
         }
 
         for arg in arguments {
-            match self.resolve_type(module_id, &arg.typ, &[]) {
+            match self.resolve_type(module_id.cast(), &arg.typ, &[]) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
                 Err(e) => {
                     has_errors = true;
@@ -431,13 +441,14 @@ impl TypecheckingContext {
         }
 
         if !has_errors {
-            self.external_functions.write()[ext_function_id] = (resolved_function_contract, None);
+            self.external_functions.write()[ext_function_id.cast()] =
+                (resolved_function_contract, None);
         }
     }
 
     fn resolve_static(
         &self,
-        static_id: StaticId,
+        static_id: StoreKey<Static>,
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
@@ -448,10 +459,15 @@ impl TypecheckingContext {
         let typ = std::mem::replace(&mut writer[static_id].0, dummy_type);
         let module_id = writer[static_id].2;
         drop(writer);
-        match self.resolve_type(module_id, &typ, &[]) {
+        match self.resolve_type(module_id.cast(), &typ, &[]) {
             Ok(v) => {
-                self.statics.write()[static_id] =
-                    (v, TypedLiteral::Void, module_id, location, annotations);
+                self.statics.write()[static_id.cast()] = (
+                    v,
+                    TypedLiteral::Void,
+                    module_id.cast(),
+                    location,
+                    annotations,
+                );
             }
             Err(e) => errors.push(e),
         }
@@ -459,7 +475,7 @@ impl TypecheckingContext {
 
     fn resolve_trait(
         &self,
-        trait_id: TraitId,
+        trait_id: StoreKey<Trait>,
         context: &ModuleContext,
         errors: &mut Vec<TypecheckingError>,
     ) {
@@ -468,14 +484,14 @@ impl TypecheckingContext {
         let name = writer[trait_id].name.clone();
         let annotations = std::mem::take(&mut writer[trait_id].annotations);
         let functions = std::mem::take(&mut writer[trait_id].functions);
-        let module_id = writer[trait_id].module_id;
+        let module_id = writer[trait_id].module;
         drop(writer);
 
         let mut typed_functions = Vec::new();
         let error_count = errors.len();
 
         for (name, arguments, return_type, annotations, location) in functions {
-            let typed_return_type = match self.resolve_type(module_id, &return_type, &[]) {
+            let typed_return_type = match self.resolve_type(module_id.cast(), &return_type, &[]) {
                 Ok(v) => v,
                 Err(e) => {
                     errors.push(e);
@@ -486,7 +502,7 @@ impl TypecheckingContext {
             let mut typed_arguments = Vec::new();
 
             for arg in arguments {
-                match self.resolve_type(module_id, &arg.typ, &[]) {
+                match self.resolve_type(module_id.cast(), &arg.typ, &[]) {
                     Ok(v) => typed_arguments.push((arg.name, v)),
                     Err(e) => errors.push(e),
                 }
@@ -502,11 +518,11 @@ impl TypecheckingContext {
         }
 
         if errors.len() == error_count {
-            self.traits.write()[trait_id] = TypedTrait {
+            self.traits.write()[trait_id.cast()] = TypedTrait {
                 name,
                 location,
-                id: trait_id,
-                module_id,
+                id: trait_id.cast(),
+                module_id: module_id.cast(),
                 annotations,
                 functions: typed_functions,
             };

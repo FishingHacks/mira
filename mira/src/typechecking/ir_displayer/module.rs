@@ -7,8 +7,6 @@ pub struct ModuleDisplay<'a>(pub &'a TypecheckedModule);
 
 impl ModuleDisplay<'_> {
     pub fn fmt(&self, f: &mut Formatter, id: usize) -> std::fmt::Result {
-        _ = f.ctx.modules[0].assembly;
-
         f.write_str("@root_path(")?;
         f.write_debug(&self.0.root)?;
         f.write_str(")\nmodule mod_")?;

@@ -7,8 +7,9 @@ use crate::{
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
     globals::GlobalStr,
-    module::{FunctionId, Module, ModuleContext, ModuleId, StaticId, StructId, TraitId},
+    module::{BakedStruct, ExternalFunction, Function, Module, ModuleContext, Static},
     parser::{module_resolution::resolve_module, ParserQueueEntry},
+    store::StoreKey,
     tokenizer::{Literal, Location, Token, TokenType},
 };
 
@@ -21,7 +22,7 @@ use super::{
 #[derive(Clone, Debug)]
 pub enum BakableFunction {
     Function(Box<(FunctionContract, Statement)>),
-    BakedFunction(FunctionId),
+    BakedFunction(StoreKey<Function>),
 }
 
 #[derive(Clone, Debug)]
@@ -30,7 +31,7 @@ pub struct Trait {
     pub functions: Vec<(GlobalStr, Vec<Argument>, TypeRef, Annotations, Location)>,
     pub location: Location,
     pub annotations: Annotations,
-    pub module_id: ModuleId,
+    pub module: StoreKey<Module>,
 }
 
 impl Display for Trait {
@@ -117,11 +118,11 @@ pub enum Statement {
     Export(GlobalStr, GlobalStr, Location),
     ModuleAsm(Location, String),
 
-    BakedFunction(FunctionId, Location),
-    BakedExternalFunction(FunctionId, Location),
-    BakedStruct(StructId, Location),
-    BakedStatic(StaticId, Location),
-    BakedTrait(TraitId, Location),
+    BakedFunction(StoreKey<Function>, Location),
+    BakedExternalFunction(StoreKey<ExternalFunction>, Location),
+    BakedStruct(StoreKey<BakedStruct>, Location),
+    BakedStatic(StoreKey<Static>, Location),
+    BakedTrait(StoreKey<Trait>, Location),
 }
 
 impl Statement {
@@ -151,7 +152,7 @@ impl Statement {
     pub fn bake_functions(
         &mut self,
         module: &mut Module,
-        module_id: ModuleId,
+        module_key: StoreKey<Module>,
         context: &ModuleContext,
     ) {
         match self {
@@ -171,20 +172,20 @@ impl Statement {
             Self::Function(..) => unreachable!("function in a non-top-level scope"),
             Self::Block(statements, ..) => statements
                 .iter_mut()
-                .for_each(|stmt| stmt.bake_functions(module, module_id, context)),
-            Self::Var(_, stmt, ..) => stmt.bake_functions(module, module_id, context),
-            Self::Expression(expr) => expr.bake_functions(module, module_id, context),
+                .for_each(|stmt| stmt.bake_functions(module, module_key, context)),
+            Self::Var(_, stmt, ..) => stmt.bake_functions(module, module_key, context),
+            Self::Expression(expr) => expr.bake_functions(module, module_key, context),
             Self::For {
                 iterator, child, ..
             } => {
-                iterator.bake_functions(module, module_id, context);
-                child.bake_functions(module, module_id, context);
+                iterator.bake_functions(module, module_key, context);
+                child.bake_functions(module, module_key, context);
             }
             Self::While {
                 condition, child, ..
             } => {
-                condition.bake_functions(module, module_id, context);
-                child.bake_functions(module, module_id, context);
+                condition.bake_functions(module, module_key, context);
+                child.bake_functions(module, module_key, context);
             }
             Self::If {
                 condition,
@@ -192,13 +193,13 @@ impl Statement {
                 else_stmt,
                 ..
             } => {
-                condition.bake_functions(module, module_id, context);
-                if_stmt.bake_functions(module, module_id, context);
+                condition.bake_functions(module, module_key, context);
+                if_stmt.bake_functions(module, module_key, context);
                 if let Some(stmt) = else_stmt {
-                    stmt.bake_functions(module, module_id, context);
+                    stmt.bake_functions(module, module_key, context);
                 }
             }
-            Self::Return(Some(val), ..) => val.bake_functions(module, module_id, context),
+            Self::Return(Some(val), ..) => val.bake_functions(module, module_key, context),
         }
     }
 }
@@ -206,13 +207,13 @@ impl Statement {
 impl Display for Statement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BakedFunction(id, _) => f.write_fmt(format_args!("(module-fn {id:08x})")),
+            Self::BakedFunction(id, _) => f.write_fmt(format_args!("(module-fn {id})")),
             Self::BakedExternalFunction(id, _) => {
-                f.write_fmt(format_args!("(module-external-fn {id:08x})"))
+                f.write_fmt(format_args!("(module-external-fn {id})"))
             }
-            Self::BakedStruct(id, _) => f.write_fmt(format_args!("(module-struct {id:08x})")),
-            Self::BakedStatic(id, _) => f.write_fmt(format_args!("(module-static {id:08x})")),
-            Self::BakedTrait(id, _) => f.write_fmt(format_args!("(module-trait {id:08x})")),
+            Self::BakedStruct(id, _) => f.write_fmt(format_args!("(module-struct {id})")),
+            Self::BakedStatic(id, _) => f.write_fmt(format_args!("(module-static {id})")),
+            Self::BakedTrait(id, _) => f.write_fmt(format_args!("(module-trait {id})")),
 
             Self::Trait(r#trait) => Display::fmt(&r#trait, f),
             Self::Var(left_hand, right_hand, None, ..) => {
@@ -403,7 +404,7 @@ pub fn display_contract(
     Ok(())
 }
 
-impl Parser {
+impl Parser<'_> {
     fn consume_semicolon(&mut self) -> Result<(), ParsingError> {
         self.expect_tok(TokenType::Semicolon)?;
         while self.match_tok(TokenType::Semicolon) {}
@@ -665,13 +666,22 @@ impl Parser {
                 name,
             })?;
 
-        let module_id = self.modules.read().iter().position(|v| v.file == file);
-        let module_id = match module_id {
+        let module_key = self
+            .modules
+            .read()
+            .index_value_iter()
+            .find(|v| v.1.path == file)
+            .map(|v| v.0);
+        let module_key = match module_key {
             Some(v) => v,
             None => {
-                let mut vec = self.modules.write();
-                vec.push(ParserQueueEntry { root_dir, file });
-                vec.len() - 1
+                let reserved_key = self.modules.write().reserve_key();
+                self.parser_queue.write().push(ParserQueueEntry {
+                    file,
+                    root_dir,
+                    reserved_key,
+                });
+                reserved_key
             }
         };
 
@@ -683,7 +693,7 @@ impl Parser {
 
         if self.match_tok(TokenType::As) {
             let name = self.expect_identifier()?;
-            self.imports.insert(name, (loc, module_id, Vec::new()));
+            self.imports.insert(name, (loc, module_key, Vec::new()));
             self.consume_semicolon()?;
             return Ok(());
         }
@@ -707,11 +717,11 @@ impl Parser {
                 if self.match_tok(TokenType::As) {
                     let alias_name = self.expect_identifier()?;
                     self.imports
-                        .insert(alias_name, (loc.clone(), module_id, import_name));
+                        .insert(alias_name, (loc.clone(), module_key, import_name));
                 } else {
                     self.imports.insert(
                         import_name[import_name.len() - 1].clone(),
-                        (loc.clone(), module_id, import_name),
+                        (loc.clone(), module_key, import_name),
                     );
                 }
             }
@@ -724,14 +734,14 @@ impl Parser {
         if self.match_tok(TokenType::As) {
             let alias_name = self.expect_identifier()?;
             self.imports
-                .insert(alias_name, (loc, module_id, import_name));
+                .insert(alias_name, (loc, module_key, import_name));
             self.consume_semicolon()?;
             return Ok(());
         }
 
         self.imports.insert(
             import_name[import_name.len() - 1].clone(),
-            (loc, module_id, import_name),
+            (loc, module_key, import_name),
         );
         self.consume_semicolon()?;
         Ok(())
@@ -811,7 +821,7 @@ impl Parser {
             functions,
             location,
             annotations,
-            module_id: 0,
+            module: self.key,
         }))
     }
 
@@ -1208,7 +1218,7 @@ arguments => list of argument seperated by comma, trailing comma allowed, the la
 => also arguments can have `copy` in front to indicate we'll copy them into a new variable before calling the function
 */
 
-impl Parser {
+impl Parser<'_> {
     pub fn parse_external(&mut self) -> Result<Statement, ParsingError> {
         let location = self.advance().location.clone();
         self.parse_any_callable(false, false, false)

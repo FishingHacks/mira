@@ -6,24 +6,18 @@ use crate::{
     error::ProgramFormingError,
     globals::GlobalStr,
     parser::{Expression, FunctionContract, Generic, LiteralValue, Statement, Trait, TypeRef},
+    store::{Store, StoreKey},
     tokenizer::Location,
 };
 
-pub type ModuleId = usize;
-pub type StructId = usize;
-pub type TraitId = usize;
-pub type FunctionId = usize;
-pub type StaticId = usize;
-pub type ExternalFunctionId = usize;
-
 #[derive(Debug, Copy, Clone)]
 pub enum ModuleScopeValue {
-    Function(FunctionId),
-    ExternalFunction(ExternalFunctionId),
-    Struct(StructId),
-    Static(StaticId),
-    Module(ModuleId),
-    Trait(TraitId),
+    Function(StoreKey<Function>),
+    ExternalFunction(StoreKey<ExternalFunction>),
+    Struct(StoreKey<BakedStruct>),
+    Static(StoreKey<Static>),
+    Module(StoreKey<Module>),
+    Trait(StoreKey<Trait>),
 }
 
 #[derive(Debug)]
@@ -31,22 +25,31 @@ pub struct BakedStruct {
     pub name: GlobalStr,
     pub elements: Vec<(GlobalStr, TypeRef)>,
     pub location: Location,
-    pub global_impl: HashMap<GlobalStr, FunctionId>,
-    pub impls: Vec<(GlobalStr, HashMap<GlobalStr, FunctionId>, Location)>,
+    pub global_impl: HashMap<GlobalStr, StoreKey<Function>>,
+    pub impls: Vec<(GlobalStr, HashMap<GlobalStr, StoreKey<Function>>, Location)>,
     pub annotations: Annotations,
-    pub module_id: ModuleId,
+    pub module_id: StoreKey<Module>,
     pub generics: Vec<Generic>,
 }
 
+pub type Function = (FunctionContract, Statement, StoreKey<Module>);
+pub type ExternalFunction = (FunctionContract, Option<Statement>, StoreKey<Module>);
+pub type Static = (
+    TypeRef,
+    LiteralValue,
+    StoreKey<Module>,
+    Location,
+    Annotations,
+);
+
 #[derive(Default)]
 pub struct ModuleContext {
-    pub modules: RwLock<Vec<Module>>,
-    pub functions: RwLock<Vec<(FunctionContract, Statement, ModuleId)>>,
-    pub external_functions: RwLock<Vec<(FunctionContract, Option<Statement>, ModuleId)>>,
-    #[allow(clippy::type_complexity)]
-    pub statics: RwLock<Vec<(TypeRef, LiteralValue, ModuleId, Location, Annotations)>>, // TODO: const-eval for statics
-    pub structs: RwLock<Vec<BakedStruct>>,
-    pub traits: RwLock<Vec<Trait>>,
+    pub modules: RwLock<Store<Module>>,
+    pub functions: RwLock<Store<Function>>,
+    pub external_functions: RwLock<Store<ExternalFunction>>,
+    pub statics: RwLock<Store<Static>>, // TODO: const-eval for statics
+    pub structs: RwLock<Store<BakedStruct>>,
+    pub traits: RwLock<Store<Trait>>,
 }
 
 impl Debug for ModuleContext {
@@ -62,7 +65,7 @@ impl Debug for ModuleContext {
 
 pub struct Module {
     pub scope: HashMap<GlobalStr, ModuleScopeValue>,
-    pub imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
+    pub imports: HashMap<GlobalStr, (Location, StoreKey<Module>, Vec<GlobalStr>)>,
     pub exports: HashMap<GlobalStr, GlobalStr>,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
@@ -81,7 +84,7 @@ impl Debug for Module {
 
 impl Module {
     pub fn new(
-        imports: HashMap<GlobalStr, (Location, usize, Vec<GlobalStr>)>,
+        imports: HashMap<GlobalStr, (Location, StoreKey<Module>, Vec<GlobalStr>)>,
         path: Arc<Path>,
         root: Arc<Path>,
     ) -> Self {
@@ -99,32 +102,31 @@ impl Module {
         &mut self,
         contract: FunctionContract,
         mut body: Statement,
-        module: ModuleId,
+        module: StoreKey<Module>,
         context: &ModuleContext,
-    ) -> FunctionId {
-        let idx = {
+    ) -> StoreKey<Function> {
+        let key = {
             let mut writer = context.functions.write();
             let loc = contract.location.clone();
-            writer.push((
+            writer.insert((
                 contract,
                 Statement::Return(None, loc), /* "zeroed" statement */
                 module,
-            ));
-            writer.len() - 1
+            ))
         };
         // we have to bake the body *after* pushing the function to ensure the function is
         // typechecked before any of its child elements, such as closures, as we need to evaluate
         // the function body before the closure to fill in the closures types.
         body.bake_functions(self, module, context);
-        context.functions.write()[idx].1 = body;
+        context.functions.write().get_mut(&key).unwrap().1 = body;
 
-        idx
+        key
     }
 
     pub fn push_all(
         &mut self,
         statements: Vec<Statement>,
-        module_id: ModuleId,
+        module_id: StoreKey<Module>,
         context: &ModuleContext,
     ) -> Result<(), Vec<ProgramFormingError>> {
         let errors = statements
@@ -143,7 +145,7 @@ impl Module {
     pub fn push_statement(
         &mut self,
         statement: Statement,
-        module_id: ModuleId,
+        module_id: StoreKey<Module>,
         context: &ModuleContext,
     ) -> Result<(), ProgramFormingError> {
         match statement {
@@ -165,7 +167,7 @@ impl Module {
                 self.scope.insert(name, ModuleScopeValue::Function(fn_id));
             }
             Statement::Trait(mut r#trait) => {
-                r#trait.module_id = module_id;
+                r#trait.module = module_id;
                 if self.scope.contains_key(&r#trait.name)
                     || self.imports.contains_key(&r#trait.name)
                 {
@@ -177,9 +179,8 @@ impl Module {
 
                 let mut writer = context.traits.write();
                 let name = r#trait.name.clone();
-                writer.push(r#trait);
-                self.scope
-                    .insert(name, ModuleScopeValue::Trait(writer.len() - 1));
+                let key = writer.insert(r#trait);
+                self.scope.insert(name, ModuleScopeValue::Trait(key));
             }
             Statement::Struct {
                 name,
@@ -225,9 +226,8 @@ impl Module {
                 };
 
                 let mut writer = context.structs.write();
-                writer.push(baked_struct);
-                self.scope
-                    .insert(name, ModuleScopeValue::Struct(writer.len() - 1));
+                let key = writer.insert(baked_struct);
+                self.scope.insert(name, ModuleScopeValue::Struct(key));
             }
             Statement::Var(_, _, None, location, _) => {
                 return Err(ProgramFormingError::GlobalValueNoType(location.clone()))
@@ -246,9 +246,8 @@ impl Module {
                     ));
                 };
                 let mut writer = context.statics.write();
-                writer.push((typ, value, module_id, location, annotations));
-                self.scope
-                    .insert(name, ModuleScopeValue::Static(writer.len() - 1));
+                let key = writer.insert((typ, value, module_id, location, annotations));
+                self.scope.insert(name, ModuleScopeValue::Static(key));
             }
             Statement::ExternalFunction(contract, mut body) => {
                 let Some(name) = contract.name.clone() else {
@@ -268,9 +267,9 @@ impl Module {
                     body.bake_functions(self, module_id, context);
                 }
                 let mut writer = context.external_functions.write();
-                writer.push((contract, body.map(|v| *v), module_id));
+                let key = writer.insert((contract, body.map(|v| *v), module_id));
                 self.scope
-                    .insert(name, ModuleScopeValue::ExternalFunction(writer.len() - 1));
+                    .insert(name, ModuleScopeValue::ExternalFunction(key));
             }
             Statement::Export(key, exported_key, loc) => {
                 if !self.scope.contains_key(&key) && !self.imports.contains_key(&key) {

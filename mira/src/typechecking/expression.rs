@@ -4,10 +4,7 @@ use std::{
 };
 
 use crate::{
-    annotations::Annotations,
-    globals::GlobalStr,
-    module::{ExternalFunctionId, FunctionId, StaticId, StructId, TraitId},
-    tokenizer::Location,
+    annotations::Annotations, globals::GlobalStr, store::StoreKey, tokenizer::Location,
     typechecking::types::FunctionType,
 };
 
@@ -15,20 +12,21 @@ use super::{
     intrinsics::Intrinsic,
     typechecking::{ScopeTypeMetadata, ScopeValueId},
     types::Type,
-    TypecheckingContext,
+    TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
+    TypedTrait,
 };
 
 #[derive(Debug, Clone)]
 pub enum TypedLiteral {
     Void,
     Dynamic(ScopeValueId),
-    Function(FunctionId, Vec<Type>),
-    ExternalFunction(ExternalFunctionId),
-    Static(StaticId),
+    Function(StoreKey<TypedFunction>, Vec<Type>),
+    ExternalFunction(StoreKey<TypedExternalFunction>),
+    Static(StoreKey<TypedStatic>),
     String(GlobalStr),
     Array(Type, Vec<TypedLiteral>),
     ArrayInit(Type, Box<TypedLiteral>, usize),
-    Struct(StructId, Vec<TypedLiteral>),
+    Struct(StoreKey<TypedStruct>, Vec<TypedLiteral>),
     Tuple(Vec<TypedLiteral>),
     F64(f64),
     F32(f32),
@@ -55,14 +53,16 @@ impl TypedLiteral {
         match self {
             TypedLiteral::Void => Cow::Owned(Type::PrimitiveVoid(0)),
             TypedLiteral::Dynamic(id) => Cow::Borrowed(&scope[*id].0),
-            TypedLiteral::Function(id, _) | TypedLiteral::ExternalFunction(id) => {
-                let function_reader = ctx.functions.read();
-                let ext_function_reader = ctx.external_functions.read();
-                let contract = if matches!(self, TypedLiteral::Function(..)) {
-                    &function_reader[*id].0
-                } else {
-                    &ext_function_reader[*id].0
+            TypedLiteral::Function(id, _) => {
+                let contract = &ctx.functions.read()[*id].0;
+                let fn_type = FunctionType {
+                    return_type: contract.return_type.clone(),
+                    arguments: contract.arguments.iter().map(|v| v.1.clone()).collect(),
                 };
+                Cow::Owned(Type::Function(fn_type.into(), 0))
+            }
+            TypedLiteral::ExternalFunction(id) => {
+                let contract = &ctx.external_functions.read()[*id].0;
                 let fn_type = FunctionType {
                     return_type: contract.return_type.clone(),
                     arguments: contract.arguments.iter().map(|v| v.1.clone()).collect(),
@@ -246,7 +246,7 @@ pub enum TypecheckedExpression {
     DirectCall(
         Location,
         ScopeValueId,
-        FunctionId,
+        StoreKey<TypedFunction>,
         Vec<TypedLiteral>,
         Vec<Type>,
     ),
@@ -254,7 +254,7 @@ pub enum TypecheckedExpression {
     DirectExternCall(
         Location,
         ScopeValueId,
-        ExternalFunctionId,
+        StoreKey<TypedExternalFunction>,
         Vec<TypedLiteral>,
     ),
     // _1 = intrinsic(_3.1, _3.2)
@@ -356,7 +356,12 @@ pub enum TypecheckedExpression {
     MakeUnsizedSlice(Location, ScopeValueId, TypedLiteral, usize),
     // _2: &<value>
     // let _1 = attach_vtable(_2, trait_1, trait_2)
-    AttachVtable(Location, ScopeValueId, TypedLiteral, (Type, Vec<TraitId>)),
+    AttachVtable(
+        Location,
+        ScopeValueId,
+        TypedLiteral,
+        (Type, Vec<StoreKey<TypedTrait>>),
+    ),
     None,
 }
 

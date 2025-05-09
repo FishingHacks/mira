@@ -9,6 +9,7 @@ use crate::{
     module_resolution::ModuleResolver,
     parser::ParserQueueEntry,
     progress_bar::{ProgressBar, ProgressItemRef},
+    store::StoreKey,
     threadpool::ThreadPool,
     tokenizer::{Literal, Location, Token, TokenType, Tokenizer},
 };
@@ -38,7 +39,7 @@ fn parse_single(
     path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
     path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
     module_context: Arc<ModuleContext>,
-    idx: usize,
+    key: StoreKey<Module>,
 ) {
     // +--------------+
     // | Tokenization |
@@ -91,10 +92,12 @@ fn parse_single(
     // +---------+
     let mut current_parser = tokenizer.to_parser(
         parsing_queue.clone(),
+        &module_context.modules,
         root_directory,
         resolvers,
         path_exists,
         path_is_dir,
+        key,
     );
     current_parser.file = file.clone();
 
@@ -121,12 +124,12 @@ fn parse_single(
         current_parser.file,
         current_parser.root_directory,
     );
-    if let Err(errs) = module.push_all(statements, idx, &module_context) {
+    if let Err(errs) = module.push_all(statements, key, &module_context) {
         errors
             .write()
             .extend(errs.into_iter().map(ParsingErrors::ProgramForming));
     }
-    module_context.modules.write()[idx] = module;
+    module_context.modules.write()[key] = module;
     progress_bar.write().remove_item(item);
     print_progress_bar(&progress_bar);
 
@@ -155,12 +158,9 @@ pub fn parse_all(
     let errors = Arc::new(RwLock::new(Vec::new()));
     let mut thread_pool = ThreadPool::new_auto();
     let module_context = Arc::new(ModuleContext::default());
-    let parsing_queue = Arc::new(RwLock::new(vec![ParserQueueEntry {
-        file: debug_file.clone(),
-        root_dir: root_directory.clone(),
-    }]));
+    let parsing_queue = Arc::new(RwLock::new(Vec::new()));
     let (finish_sender, finish_receiver) = bounded::<()>(1);
-    module_context.modules.write().push(Module::new(
+    let root_key = module_context.modules.write().insert(Module::new(
         HashMap::new(),
         file.clone(),
         root_directory.clone(),
@@ -181,25 +181,24 @@ pub fn parse_all(
         path_exists.clone(),
         path_is_dir.clone(),
         module_context.clone(),
-        0,
+        root_key,
     );
     finish_receiver.recv().expect("a sender still exists");
 
     let mut modules_left = 0;
     'outer_loop: loop {
-        let parsing_queue_reader = parsing_queue.read();
-        let mut module_writer = module_context.modules.write();
-        if parsing_queue_reader.len() <= module_writer.len() {
+        if parsing_queue.read().is_empty() {
             break;
         }
-        let idx = module_writer.len();
+        let entry = parsing_queue.write().remove(0);
+        let key = entry.reserved_key;
+        let file = entry.file;
+        let root = entry.root_dir;
+        module_context
+            .modules
+            .write()
+            .insert_reserved(key, Module::new(HashMap::new(), file.clone(), root.clone()));
 
-        let file = parsing_queue_reader[idx].file.clone();
-        let root = parsing_queue_reader[idx].root_dir.clone();
-        module_writer.push(Module::new(HashMap::new(), file.clone(), root.clone()));
-
-        drop(parsing_queue_reader);
-        drop(module_writer);
         let source = match std::fs::read_to_string(&file) {
             Ok(v) => v,
             Err(e) => {
@@ -233,18 +232,18 @@ pub fn parse_all(
                 path_exists,
                 path_is_dir,
                 _module_context,
-                idx,
+                key,
             );
         });
 
-        if parsing_queue.read().len() > module_context.modules.read().len() {
+        if !parsing_queue.read().is_empty() {
             continue 'outer_loop;
         }
 
         loop {
             _ = finish_receiver.recv();
             modules_left -= 1;
-            if parsing_queue.read().len() > module_context.modules.read().len() {
+            if !parsing_queue.read().is_empty() {
                 continue 'outer_loop;
             }
             if modules_left == 0 {

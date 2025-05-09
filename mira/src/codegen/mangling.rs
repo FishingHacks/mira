@@ -1,6 +1,9 @@
-use crate::module::{ExternalFunctionId, ModuleScopeValue, StaticId, StructId};
+use crate::module::ModuleScopeValue;
 use crate::std_annotations::alias::ExternAliasAnnotation;
-use crate::{module::FunctionId, typechecking::TypecheckingContext};
+use crate::store::StoreKey;
+use crate::typechecking::{
+    TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
+};
 use std::fmt::Write;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
@@ -49,11 +52,11 @@ fn mangle_path(path: &Path, mangled_string: &mut String) {
     }
 }
 
-pub fn mangle_function(ctx: &TypecheckingContext, id: FunctionId) -> String {
+pub fn mangle_function(ctx: &TypecheckingContext, id: StoreKey<TypedFunction>) -> String {
     let fn_reader = ctx.functions.read();
     let module_reader = ctx.modules.read();
     let module_id = fn_reader[id].0.module_id;
-    let v = &module_reader[module_id];
+    let v = &module_reader[module_id.cast()];
     let path = v
         .path
         .strip_prefix(v.root.parent().unwrap_or(&v.root))
@@ -79,7 +82,10 @@ pub fn mangle_function(ctx: &TypecheckingContext, id: FunctionId) -> String {
     mangled_name
 }
 
-pub fn mangle_external_function(ctx: &TypecheckingContext, id: ExternalFunctionId) -> String {
+pub fn mangle_external_function(
+    ctx: &TypecheckingContext,
+    id: StoreKey<TypedExternalFunction>,
+) -> String {
     let reader = &ctx.external_functions.read()[id].0;
     if let Some(v) = reader
         .annotations
@@ -94,11 +100,11 @@ pub fn mangle_external_function(ctx: &TypecheckingContext, id: ExternalFunctionI
         .to_string()
 }
 
-pub fn mangle_struct(ctx: &TypecheckingContext, id: StructId) -> String {
+pub fn mangle_struct(ctx: &TypecheckingContext, id: StoreKey<TypedStruct>) -> String {
     let module_reader = ctx.modules.read();
     let struct_reader = ctx.structs.read();
     let structure = &struct_reader[id];
-    let module = &module_reader[structure.module_id];
+    let module = &module_reader[structure.module_id.cast()];
     let path = module
         .path
         .strip_prefix(module.root.parent().unwrap_or(&module.root))
@@ -113,7 +119,7 @@ pub fn mangle_struct(ctx: &TypecheckingContext, id: StructId) -> String {
     name
 }
 
-pub fn mangle_static(ctx: &TypecheckingContext, id: StaticId) -> String {
+pub fn mangle_static(ctx: &TypecheckingContext, id: StoreKey<TypedStatic>) -> String {
     let static_reader = ctx.statics.read();
     let structure = &static_reader[id];
     let mut name = String::from("alloc_");
@@ -134,10 +140,10 @@ pub fn mangle_string(string: &str) -> String {
 
 pub fn mangle_name(ctx: &TypecheckingContext, item: ModuleScopeValue) -> String {
     match item {
-        ModuleScopeValue::Function(id) => mangle_function(ctx, id),
-        ModuleScopeValue::ExternalFunction(id) => mangle_external_function(ctx, id),
-        ModuleScopeValue::Struct(id) => mangle_struct(ctx, id),
-        ModuleScopeValue::Static(id) => mangle_static(ctx, id),
+        ModuleScopeValue::Function(id) => mangle_function(ctx, id.cast()),
+        ModuleScopeValue::ExternalFunction(id) => mangle_external_function(ctx, id.cast()),
+        ModuleScopeValue::Struct(id) => mangle_struct(ctx, id.cast()),
+        ModuleScopeValue::Static(id) => mangle_static(ctx, id.cast()),
         ModuleScopeValue::Module(_) | ModuleScopeValue::Trait(_) => {
             unreachable!("does not have to be mangled")
         }

@@ -7,7 +7,8 @@ use crate::{
     annotations::AnnotationReceiver,
     error::ParsingError,
     globals::GlobalStr,
-    module::{FunctionId, Module, ModuleContext, ModuleId},
+    module::{Function, Module, ModuleContext},
+    store::StoreKey,
     tokenizer::{Literal, Location, NumberType, TokenType},
 };
 
@@ -170,7 +171,7 @@ pub enum LiteralValue {
     Bool(bool),
     Dynamic(Path),
     AnonymousFunction(FunctionContract, Box<Statement>),
-    BakedAnonymousFunction(FunctionId),
+    BakedAnonymousFunction(StoreKey<Function>),
     Void,
 }
 
@@ -557,7 +558,7 @@ impl Expression {
     pub fn bake_functions(
         &mut self,
         module: &mut Module,
-        module_id: ModuleId,
+        module_key: StoreKey<Module>,
         context: &ModuleContext,
     ) {
         match self {
@@ -575,9 +576,9 @@ impl Expression {
                         },
                         std::mem::replace(
                             &mut **statements,
-                            Statement::BakedTrait(0, contract.location.clone()),
+                            Statement::BakedTrait(StoreKey::undefined(), contract.location.clone()),
                         ),
-                        module_id,
+                        module_key,
                         context,
                     );
                     *val = LiteralValue::BakedAnonymousFunction(id)
@@ -602,30 +603,30 @@ impl Expression {
                 right_side,
                 ..
             } => {
-                left_side.bake_functions(module, module_id, context);
-                right_side.bake_functions(module, module_id, context);
+                left_side.bake_functions(module, module_key, context);
+                right_side.bake_functions(module, module_key, context);
             }
             Self::FunctionCall {
                 identifier,
                 arguments,
             } => {
-                identifier.bake_functions(module, module_id, context);
+                identifier.bake_functions(module, module_key, context);
                 arguments
                     .iter_mut()
-                    .for_each(|el| el.bake_functions(module, module_id, context));
+                    .for_each(|el| el.bake_functions(module, module_key, context));
             }
             Self::MemberCall { lhs, arguments, .. } => {
-                lhs.bake_functions(module, module_id, context);
+                lhs.bake_functions(module, module_key, context);
                 arguments
                     .iter_mut()
-                    .for_each(|el| el.bake_functions(module, module_id, context));
+                    .for_each(|el| el.bake_functions(module, module_key, context));
             }
             Self::MemberAccess { left_side, .. }
             | Self::TypeCast { left_side, .. }
             | Self::Unary {
                 right_side: left_side,
                 ..
-            } => left_side.bake_functions(module, module_id, context),
+            } => left_side.bake_functions(module, module_key, context),
         }
     }
 }
@@ -642,7 +643,7 @@ macro_rules! assign_set {
 }
 
 // asm expression
-impl Parser {
+impl Parser<'_> {
     /// Parses [<.0>] "<.1>" (<.2>)
     fn parse_asm_binding(&mut self) -> Result<(GlobalStr, GlobalStr, GlobalStr), ParsingError> {
         self.expect_tok(TokenType::BracketLeft)?;
@@ -791,9 +792,7 @@ impl Parser {
             inputs,
         })
     }
-}
 
-impl Parser {
     pub fn parse_expression(&mut self) -> Result<Expression, ParsingError> {
         if self.peek().typ == TokenType::Asm {
             return self.parse_asm();

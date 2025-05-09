@@ -2,24 +2,26 @@ use std::fmt::{Arguments, Debug, Display, Write};
 
 use crate::{
     lang_items::LangItems,
+    module::Module,
+    store::{AssociatedStore, Store},
     typechecking::{
-        expression::TypecheckedExpression, Static, TypecheckedFunctionContract, TypecheckedModule,
-        TypedStruct, TypedTrait,
+        expression::TypecheckedExpression, TypecheckedFunctionContract, TypecheckedModule,
+        TypedStatic, TypedStruct, TypedTrait,
     },
 };
 
 pub const INDENT_STR: &str = "    ";
 
 pub struct ReadOnlyTypecheckingContext<'ctx> {
-    pub modules: &'ctx [TypecheckedModule],
-    pub functions: &'ctx [(TypecheckedFunctionContract, Box<[TypecheckedExpression]>)],
-    pub external_functions: &'ctx [(
+    pub modules: &'ctx AssociatedStore<TypecheckedModule, Module>,
+    pub functions: &'ctx Store<(TypecheckedFunctionContract, Box<[TypecheckedExpression]>)>,
+    pub external_functions: &'ctx Store<(
         TypecheckedFunctionContract,
         Option<Box<[TypecheckedExpression]>>,
-    )],
-    pub statics: &'ctx [Static],
-    pub structs: &'ctx [TypedStruct],
-    pub traits: &'ctx [TypedTrait],
+    )>,
+    pub statics: &'ctx Store<TypedStatic>,
+    pub structs: &'ctx Store<TypedStruct>,
+    pub traits: &'ctx Store<TypedTrait>,
     pub lang_items: &'ctx LangItems,
 }
 

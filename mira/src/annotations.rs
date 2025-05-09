@@ -172,6 +172,10 @@ impl Annotations {
             .filter_map(|v| v.0.as_any().downcast_ref::<T>())
     }
 
+    pub fn has_annotation<T: ClonableAnnotation + 'static>(&self) -> bool {
+        self.get_first_annotation::<T>().is_some()
+    }
+
     pub fn get_first_annotation<T: ClonableAnnotation + 'static>(&self) -> Option<&T> {
         self.0
             .iter()

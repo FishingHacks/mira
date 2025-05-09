@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    error::ParsingError, globals::GlobalStr, module::FunctionId, parser::Location,
+    error::ParsingError, globals::GlobalStr, module::Function, parser::Location, store::StoreKey,
     tokenizer::TokenType,
 };
 
@@ -413,7 +413,7 @@ impl PartialEq for TypeRef {
     }
 }
 
-pub type Implementation = HashMap<GlobalStr, FunctionId>;
+pub type Implementation = HashMap<GlobalStr, StoreKey<Function>>;
 
 #[derive(Debug)]
 pub struct Struct {

@@ -2,9 +2,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     globals::GlobalStr,
-    module::{ModuleContext, ModuleId, ModuleScopeValue, StaticId},
+    module::{ModuleContext, ModuleScopeValue},
     parser::{ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp},
     std_annotations::ext_vararg::ExternVarArg,
+    store::StoreKey,
     tokenizer::{Location, NumberType},
     typechecking::typed_resolve_import,
 };
@@ -13,7 +14,8 @@ use super::{
     expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
     intrinsics::IntrinsicAnnotation,
     types::{FunctionType, Type, TypeSuggestion},
-    TypecheckingContext, TypecheckingError,
+    TypecheckedModule, TypecheckingContext, TypecheckingError, TypedExternalFunction,
+    TypedFunction, TypedStatic, TypedTrait,
 };
 
 pub type ScopeValueId = usize;
@@ -93,14 +95,14 @@ impl Scopes {
 pub fn typecheck_static(
     context: &TypecheckingContext,
     module_context: &ModuleContext,
-    static_id: StaticId,
+    static_id: StoreKey<TypedStatic>,
     errs: &mut Vec<TypecheckingError>,
 ) -> bool {
     let tc_module_reader = context.statics.read();
     let typ = &tc_module_reader[static_id].0;
     let expr = {
         std::mem::replace(
-            &mut module_context.statics.write()[static_id].1,
+            &mut module_context.statics.write()[static_id.cast()].1,
             LiteralValue::Void,
         )
     };
@@ -138,30 +140,47 @@ pub fn typecheck_static(
     true
 }
 
+pub fn typecheck_external_function(
+    context: &TypecheckingContext,
+    module_context: &ModuleContext,
+    function_id: StoreKey<TypedExternalFunction>,
+) -> Result<Vec<(Type, ScopeTypeMetadata)>, Vec<TypecheckingError>> {
+    inner_typecheck_function(context, module_context, function_id.cast(), true)
+}
+
 pub fn typecheck_function(
     context: &TypecheckingContext,
     module_context: &ModuleContext,
-    function_id: usize,
+    function_id: StoreKey<TypedFunction>,
+) -> Result<Vec<(Type, ScopeTypeMetadata)>, Vec<TypecheckingError>> {
+    inner_typecheck_function(context, module_context, function_id, false)
+}
+
+// NOTE: function_id has to be StoreKey<TypedExternalFunction> if is_external is set to true.
+fn inner_typecheck_function(
+    context: &TypecheckingContext,
+    module_context: &ModuleContext,
+    function_id: StoreKey<TypedFunction>,
     is_external: bool,
 ) -> Result<Vec<(Type, ScopeTypeMetadata)>, Vec<TypecheckingError>> {
     let ext_fn_reader = module_context.external_functions.read();
     let fn_reader = module_context.functions.read();
     let (statement, module_id) = if is_external {
-        let (_, ref statement, module_id) = ext_fn_reader[function_id];
+        let (_, ref statement, module_id) = ext_fn_reader[function_id.cast()];
         if let Some(statement) = statement {
             (statement, module_id)
         } else {
             return Ok(Vec::new());
         }
     } else {
-        let (_, ref statement, module_id) = fn_reader[function_id];
+        let (_, ref statement, module_id) = fn_reader[function_id.cast()];
         (statement, module_id)
     };
 
     let mut scope = Scopes::default();
 
     let (return_type, args, loc) = if is_external {
-        let contract = &context.external_functions.read()[function_id].0;
+        let contract = &context.external_functions.read()[function_id.cast()].0;
         (
             contract.return_type.clone(),
             contract.arguments.clone(),
@@ -170,11 +189,7 @@ pub fn typecheck_function(
     } else {
         let reader = context.functions.read();
         let contract = &reader[function_id].0;
-        if contract
-            .annotations
-            .get_first_annotation::<IntrinsicAnnotation>()
-            .is_some()
-        {
+        if contract.annotations.has_annotation::<IntrinsicAnnotation>() {
             let loc = contract.location.clone();
             drop(reader);
             context.functions.write()[function_id].1 =
@@ -216,7 +231,7 @@ pub fn typecheck_function(
         context,
         &mut scope,
         statement,
-        module_id,
+        module_id.cast(),
         &return_type,
         &mut exprs,
     ) {
@@ -231,7 +246,7 @@ pub fn typecheck_function(
                     context,
                     &mut scope,
                     &Statement::Return(None, statement.loc().clone()),
-                    module_id,
+                    module_id.cast(),
                     &return_type,
                     &mut exprs,
                 )?;
@@ -240,7 +255,7 @@ pub fn typecheck_function(
                 let mut exprs = Some(exprs.into_boxed_slice());
                 std::mem::swap(
                     &mut exprs,
-                    &mut context.external_functions.write()[function_id].1,
+                    &mut context.external_functions.write()[function_id.cast()].1,
                 );
                 assert!(exprs.is_none());
             } else {
@@ -262,7 +277,7 @@ fn typecheck_statement(
     context: &TypecheckingContext,
     scope: &mut Scopes,
     statement: &Statement,
-    module: ModuleId,
+    module: StoreKey<TypecheckedModule>,
     return_type: &Type,
     exprs: &mut Vec<TypecheckedExpression>,
 ) -> Result<bool, Vec<TypecheckingError>> {
@@ -637,7 +652,7 @@ fn float_number_to_literal(
 
 fn typecheck_expression(
     context: &TypecheckingContext,
-    module: ModuleId,
+    module: StoreKey<TypecheckedModule>,
     scope: &mut Scopes,
     expression: &Expression,
     exprs: &mut Vec<TypecheckedExpression>,
@@ -809,7 +824,7 @@ fn typecheck_expression(
                         path.clone(),
                     ));
                 };
-                let structure = &context.structs.read()[struct_id];
+                let structure = &context.structs.read()[struct_id.cast()];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
@@ -847,11 +862,11 @@ fn typecheck_expression(
                 }
                 Ok((
                     Type::Struct {
-                        struct_id,
+                        struct_id: struct_id.cast(),
                         name: structure.name.clone(),
                         num_references: 0,
                     },
-                    TypedLiteral::Struct(struct_id, elements),
+                    TypedLiteral::Struct(struct_id.cast(), elements),
                 ))
             }
             LiteralValue::Float(v, number_type) => {
@@ -891,7 +906,7 @@ fn typecheck_expression(
                 .map_err(|_| TypecheckingError::CannotFindValue(location.clone(), path.clone()))?;
                 match value {
                     ModuleScopeValue::Function(id) => {
-                        let reader = &context.functions.read()[id];
+                        let reader = &context.functions.read()[id.cast()];
                         let mut function_typ = FunctionType {
                             return_type: reader.0.return_type.clone(),
                             arguments: reader.0.arguments.iter().map(|v| v.1.clone()).collect(),
@@ -941,19 +956,19 @@ fn typecheck_expression(
                             .map(IntrinsicAnnotation::get)
                         {
                             Some(intrinsic) => TypedLiteral::Intrinsic(intrinsic, generic_types),
-                            None => TypedLiteral::Function(id, generic_types),
+                            None => TypedLiteral::Function(id.cast(), generic_types),
                         };
                         Ok((Type::Function(Arc::new(function_typ), 0), literal))
                     }
                     ModuleScopeValue::ExternalFunction(id) => {
-                        let reader = &context.external_functions.read()[id];
+                        let reader = &context.external_functions.read()[id.cast()];
                         let function_typ = FunctionType {
                             return_type: reader.0.return_type.clone(),
                             arguments: reader.0.arguments.iter().map(|v| v.1.clone()).collect(),
                         };
                         Ok((
                             Type::Function(Arc::new(function_typ), 0),
-                            TypedLiteral::ExternalFunction(id),
+                            TypedLiteral::ExternalFunction(id.cast()),
                         ))
                     }
                     ModuleScopeValue::Static(id) => {
@@ -963,8 +978,8 @@ fn typecheck_expression(
                             });
                         }
                         Ok((
-                            context.statics.read()[id].0.clone(),
-                            TypedLiteral::Static(id),
+                            context.statics.read()[id.cast()].0.clone(),
+                            TypedLiteral::Static(id.cast()),
                         ))
                     }
                     _ => Err(TypecheckingError::CannotFindValue(
@@ -974,14 +989,14 @@ fn typecheck_expression(
                 }
             }
             LiteralValue::BakedAnonymousFunction(fn_id) => {
-                let func = &context.functions.read()[*fn_id].0;
+                let func = &context.functions.read()[fn_id.cast()].0;
                 let fn_typ = FunctionType {
                     return_type: func.return_type.clone(),
                     arguments: func.arguments.iter().map(|(_, v)| v.clone()).collect(),
                 };
                 Ok((
                     Type::Function(Arc::new(fn_typ), 0),
-                    TypedLiteral::Function(*fn_id, vec![]),
+                    TypedLiteral::Function(fn_id.cast(), vec![]),
                 ))
             }
             LiteralValue::AnonymousFunction(..) => unreachable!("unbaked function"),
@@ -1241,8 +1256,7 @@ fn typecheck_expression(
                 context.external_functions.read()[id]
                     .0
                     .annotations
-                    .get_first_annotation::<ExternVarArg>()
-                    .is_some()
+                    .has_annotation::<ExternVarArg>()
             } else {
                 false
             };
@@ -1623,13 +1637,13 @@ fn typecheck_cast(
 fn typecheck_dyn_membercall(
     context: &TypecheckingContext,
     scope: &mut Scopes,
-    module: ModuleId,
+    module: StoreKey<TypecheckedModule>,
     exprs: &mut Vec<TypecheckedExpression>,
     ident: &GlobalStr,
     args: &[Expression],
     lhs: TypedLiteral,
     lhs_loc: Location,
-    trait_refs: Vec<(usize, GlobalStr)>,
+    trait_refs: Vec<(StoreKey<TypedTrait>, GlobalStr)>,
     num_references: u8,
 ) -> Result<(Type, TypedLiteral), TypecheckingError> {
     let trait_reader = context.traits.read();
@@ -1738,7 +1752,7 @@ fn typecheck_dyn_membercall(
 
 fn typecheck_membercall(
     context: &TypecheckingContext,
-    module: ModuleId,
+    module: StoreKey<TypecheckedModule>,
     scope: &mut Scopes,
     exprs: &mut Vec<TypecheckedExpression>,
     lhs: &Expression,
@@ -1800,7 +1814,7 @@ fn typecheck_membercall(
         Type::PrimitiveBool(_) => langitem_reader.bool,
     };
     drop(langitem_reader);
-    let structure = struct_id.map(|v| &struct_reader[v]);
+    let structure = struct_id.map(|v| &struct_reader[v.cast()]);
     let function_id = structure
         .and_then(|v| v.global_impl.get(ident))
         .copied()
@@ -1829,7 +1843,7 @@ fn typecheck_membercall(
         ));
     };
 
-    let function = &function_reader[function_id];
+    let function: &(_, _) = &function_reader[function_id];
     if function
         .0
         .arguments
@@ -1916,7 +1930,7 @@ fn typecheck_membercall(
 
 fn typecheck_take_ref(
     context: &TypecheckingContext,
-    module: ModuleId,
+    module: StoreKey<TypecheckedModule>,
     scope: &mut Scopes,
     expression: &Expression,
     exprs: &mut Vec<TypecheckedExpression>,
@@ -1952,7 +1966,7 @@ fn typecheck_take_ref(
 // be added when pushing the type onto the scope (e.g. during auto deref)
 fn ref_resolve_indexing(
     context: &TypecheckingContext,
-    module: ModuleId,
+    module: StoreKey<TypecheckedModule>,
     scope: &mut Scopes,
     expression: &Expression,
     exprs: &mut Vec<TypecheckedExpression>,
@@ -2174,7 +2188,7 @@ fn ref_resolve_indexing(
 
 fn indexing_resolve_rhs(
     context: &TypecheckingContext,
-    module: ModuleId,
+    module: StoreKey<TypecheckedModule>,
     scope: &mut Scopes,
     expression: &Expression,
     exprs: &mut Vec<TypecheckedExpression>,
@@ -2232,7 +2246,7 @@ fn make_reference(
 
 fn copy_resolve_indexing(
     context: &TypecheckingContext,
-    module: ModuleId,
+    module: StoreKey<TypecheckedModule>,
     scope: &mut Scopes,
     expression: &Expression,
     exprs: &mut Vec<TypecheckedExpression>,

@@ -4,14 +4,10 @@ use std::{
     sync::Arc,
 };
 
-use crate::{
-    globals::GlobalStr,
-    module::{StructId, TraitId},
-    parser::TypeRef,
-    tokenizer::NumberType,
-};
+use crate::store::{Store, StoreKey};
+use crate::{globals::GlobalStr, parser::TypeRef, tokenizer::NumberType};
 
-use super::{TypecheckingContext, TypedStruct};
+use super::{TypecheckingContext, TypedStruct, TypedTrait};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionType {
@@ -23,16 +19,16 @@ pub struct FunctionType {
 pub enum Type {
     // TODO: Move to Type::Generic
     Trait {
-        trait_refs: Vec<TraitId>,
+        trait_refs: Vec<StoreKey<TypedTrait>>,
         num_references: u8,
         real_name: GlobalStr,
     },
     DynType {
-        trait_refs: Vec<(TraitId, GlobalStr)>,
+        trait_refs: Vec<(StoreKey<TypedTrait>, GlobalStr)>,
         num_references: u8,
     },
     Struct {
-        struct_id: StructId,
+        struct_id: StoreKey<TypedStruct>,
         name: GlobalStr,
         num_references: u8,
     },
@@ -183,7 +179,7 @@ fn align(value: u64, alignment: u32) -> u64 {
     }
 }
 
-fn values_match(left: &[TraitId], right: &[TraitId]) -> bool {
+fn values_match(left: &[StoreKey<TypedTrait>], right: &[StoreKey<TypedTrait>]) -> bool {
     for v in right {
         if !left.contains(v) {
             return false;
@@ -193,7 +189,11 @@ fn values_match(left: &[TraitId], right: &[TraitId]) -> bool {
 }
 
 impl Type {
-    pub fn implements(&self, traits: &[TraitId], tc_ctx: &TypecheckingContext) -> bool {
+    pub fn implements(
+        &self,
+        traits: &[StoreKey<TypedTrait>],
+        tc_ctx: &TypecheckingContext,
+    ) -> bool {
         match self {
             Type::Trait {
                 trait_refs,
@@ -220,7 +220,12 @@ impl Type {
         }
     }
 
-    pub fn struct_offset(&self, ptr_size: u64, structs: &[TypedStruct], element: usize) -> u64 {
+    pub fn struct_offset(
+        &self,
+        ptr_size: u64,
+        structs: &Store<TypedStruct>,
+        element: usize,
+    ) -> u64 {
         let struct_id = match self {
             Self::Struct { struct_id, .. } => *struct_id,
             _ => unreachable!(),
@@ -239,7 +244,7 @@ impl Type {
         offset
     }
 
-    pub fn alignment(&self, ptr_size: u64, structs: &[TypedStruct]) -> u32 {
+    pub fn alignment(&self, ptr_size: u64, structs: &Store<TypedStruct>) -> u32 {
         if self.refcount() > 0 {
             return ptr_size as u32;
         }
@@ -253,7 +258,7 @@ impl Type {
             | Type::UnsizedArray { .. } => {
                 unreachable!("generics, self and unsized types don't have an alignment")
             }
-            Type::Struct { struct_id, .. } => structs[*struct_id]
+            Type::Struct { struct_id, .. } => structs[struct_id]
                 .elements
                 .iter()
                 .map(|v| v.1.alignment(ptr_size, structs))
@@ -279,7 +284,7 @@ impl Type {
         }
     }
 
-    pub fn size_and_alignment(&self, ptr_size: u64, structs: &[TypedStruct]) -> (u64, u32) {
+    pub fn size_and_alignment(&self, ptr_size: u64, structs: &Store<TypedStruct>) -> (u64, u32) {
         if self.refcount() > 0 {
             return if self.is_thin_ptr() {
                 (ptr_size, ptr_size as u32)
@@ -300,7 +305,7 @@ impl Type {
             Type::Struct { struct_id, .. } => {
                 let mut size = 0;
                 let mut alignment = 1;
-                for (_, element) in structs[*struct_id].elements.iter() {
+                for (_, element) in structs[struct_id].elements.iter() {
                     let (typ_size, typ_alignment) = element.size_and_alignment(ptr_size, structs);
                     alignment = alignment.max(typ_alignment);
                     size = align(size, typ_alignment) + typ_size;
@@ -852,7 +857,7 @@ impl PartialEq for Type {
 
 #[derive(Clone, Debug, Default)]
 pub enum TypeSuggestion {
-    Struct(StructId),
+    Struct(StoreKey<TypedStruct>),
     Array(Box<TypeSuggestion>),
     UnsizedArray(Box<TypeSuggestion>),
     Number(NumberType),
@@ -865,7 +870,7 @@ pub enum TypeSuggestion {
 impl Display for TypeSuggestion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TypeSuggestion::Struct(id) => f.write_fmt(format_args!("<struct {id:#x}>")),
+            TypeSuggestion::Struct(id) => f.write_fmt(format_args!("<struct {id}>")),
             TypeSuggestion::Array(v) | TypeSuggestion::UnsizedArray(v) => {
                 f.write_fmt(format_args!("[{v}]"))
             }

@@ -1,9 +1,9 @@
-use crate::typechecking::Static;
+use crate::typechecking::TypedStatic;
 
 use super::typed_literal::Tld;
 use super::Formatter;
 
-pub struct StaticDisplay<'a>(pub &'a Static);
+pub struct StaticDisplay<'a>(pub &'a TypedStatic);
 
 impl StaticDisplay<'_> {
     pub fn fmt(&self, f: &mut Formatter, id: usize) -> std::fmt::Result {

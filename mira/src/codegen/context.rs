@@ -32,17 +32,18 @@ use inkwell::{
 
 use crate::{
     globals::GlobalStr,
-    module::{FunctionId, TraitId},
     std_annotations::{
         alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
         noinline::Noinline, section::SectionAnnotation,
     },
+    store::{AssociatedStore, StoreKey},
     target::{Target, NATIVE_TARGET},
     typechecking::{
         expression::{TypecheckedExpression, TypedLiteral},
         intrinsics::IntrinsicAnnotation,
         typechecking::ScopeTypeMetadata,
-        Type, TypecheckingContext,
+        Type, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
+        TypedTrait,
     },
 };
 
@@ -63,6 +64,11 @@ pub(super) struct DefaultTypes<'ctx> {
     pub empty_struct: StructType<'ctx>,
 }
 
+pub type FunctionsStore<'ctx> = AssociatedStore<FunctionValue<'ctx>, TypedFunction>;
+pub type ExternalFunctionsStore<'ctx> = AssociatedStore<FunctionValue<'ctx>, TypedExternalFunction>;
+pub type StructsStore<'ctx> = AssociatedStore<StructType<'ctx>, TypedStruct>;
+pub type StaticsStore<'ctx> = AssociatedStore<GlobalValue<'ctx>, TypedStatic>;
+
 pub struct CodegenContext<'ctx> {
     pub(super) tc_ctx: Arc<TypecheckingContext>,
     pub(super) builder: Builder<'ctx>,
@@ -72,14 +78,14 @@ pub struct CodegenContext<'ctx> {
     pub module: Module<'ctx>,
     pub machine: TargetMachine,
     pub triple: TargetTriple,
-    pub(super) functions: Vec<FunctionValue<'ctx>>,
-    pub(super) external_functions: Vec<FunctionValue<'ctx>>,
-    pub(super) structs: Vec<StructType<'ctx>>,
-    pub(super) statics: Vec<GlobalValue<'ctx>>,
+    pub(super) functions: FunctionsStore<'ctx>,
+    pub(super) external_functions: ExternalFunctionsStore<'ctx>,
+    pub(super) structs: StructsStore<'ctx>,
+    pub(super) statics: StaticsStore<'ctx>,
     pub(super) string_map: HashMap<GlobalStr, GlobalValue<'ctx>>,
     pub(super) debug_ctx: DebugContext<'ctx>,
     pub(super) intrinsics: LLVMIntrinsics,
-    pub(super) vtables: HashMap<(Type, Vec<TraitId>), GlobalValue<'ctx>>,
+    pub(super) vtables: HashMap<(Type, Vec<StoreKey<TypedTrait>>), GlobalValue<'ctx>>,
     pub(super) config: CodegenConfig<'ctx>,
 }
 
@@ -301,17 +307,15 @@ impl<'a> CodegenContext<'a> {
         drop(strings);
 
         let struct_reader = ctx.structs.read();
-        let structs = struct_reader
-            .iter()
-            .enumerate()
-            .map(|(i, _)| context.opaque_struct_type(&mangle_struct(&ctx, i)))
-            .collect::<Vec<_>>();
-        for i in 0..struct_reader.len() {
-            let fields = struct_reader[i]
+        let mut structs = AssociatedStore::new();
+        for k in struct_reader.indices() {
+            structs.insert(k, context.opaque_struct_type(&mangle_struct(&ctx, k)));
+        }
+        for (key, structure) in struct_reader.index_value_iter() {
+            let fields = structure
                 .elements
                 .iter()
-                .map(|(_, t)| t)
-                .map(|t| match t {
+                .map(|(_, t)| match t {
                     Type::PrimitiveVoid(0) | Type::PrimitiveNever => {
                         default_types.i8.array_type(0).into()
                     }
@@ -319,244 +323,182 @@ impl<'a> CodegenContext<'a> {
                 })
                 .collect::<Vec<_>>();
             assert!(
-                structs[i].set_body(&fields, false),
+                structs[key].set_body(&fields, false),
                 "struct should not yet be initialized"
             );
         }
 
-        // TODO: Replace this with something more reasonable to have functions that don't all have
-        // an id (or remove the ones with generics and move intrinsics to the back)
-        let dummy_func =
-            module.add_function("__dummy", context.void_type().fn_type(&[], false), None);
+        // attributes:
+        let inline =
+            context.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
+        let naked = context.create_enum_attribute(Attribute::get_named_enum_kind_id("naked"), 0);
+        let noinline =
+            context.create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
 
         // functions
         let function_reader = ctx.functions.read();
-        let functions = function_reader
-            .iter()
-            .enumerate()
-            .map(|(i, (c, b))| (i, c, b))
-            .map(|(i, contract, _)| {
-                if !contract.generics.is_empty()
-                    || contract
-                        .annotations
-                        .get_first_annotation::<IntrinsicAnnotation>()
-                        .is_some()
-                {
-                    return dummy_func;
-                }
-                if !contract.return_type.is_sized()
-                    || contract.arguments.iter().any(|(_, v)| !v.is_sized())
-                {
-                    unreachable!("typechecking should've validated the return type and arguments.");
-                }
+        let mut functions = AssociatedStore::new();
+        for (key, (contract, _)) in function_reader.index_value_iter() {
+            if contract.annotations.has_annotation::<IntrinsicAnnotation>() {
+                continue;
+            }
+            assert!(
+                contract.generics.is_empty(),
+                "function should've been monomorphised by now"
+            );
 
-                let param_types = contract
-                    .arguments
-                    .iter()
-                    .filter_map(|(_, t)| match t {
-                        Type::PrimitiveVoid(0) | Type::PrimitiveNever => None,
-                        t => Some(
-                            t.to_llvm_basic_type(&default_types, &structs, context)
-                                .into(),
-                        ),
-                    })
-                    .collect::<Vec<_>>();
+            let param_types = contract
+                .arguments
+                .iter()
+                .filter_map(|(_, t)| match t {
+                    Type::PrimitiveVoid(0) | Type::PrimitiveNever => None,
+                    t => Some(
+                        t.to_llvm_basic_type(&default_types, &structs, context)
+                            .into(),
+                    ),
+                })
+                .collect::<Vec<_>>();
 
-                let fn_typ =
-                    if let Type::PrimitiveNever | Type::PrimitiveVoid(0) = contract.return_type {
-                        context.void_type().fn_type(&param_types, false)
-                    } else {
-                        contract
-                            .return_type
-                            .to_llvm_basic_type(&default_types, &structs, context)
-                            .fn_type(&param_types, false)
-                    };
-                let name = mangle_function(&ctx, i);
-                let func = module.add_function(name.as_str(), fn_typ, Some(Linkage::Internal));
-                if let Some(callconv) = contract
-                    .annotations
-                    .get_first_annotation::<CallConvAnnotation>()
-                {
-                    match callconv {
-                        CallConvAnnotation::C => {
-                            func.set_call_conventions(LLVMCallConv::LLVMCCallConv as u32)
-                        }
-                        CallConvAnnotation::Fast => {
-                            func.set_call_conventions(LLVMCallConv::LLVMFastCallConv as u32)
-                        }
-                        CallConvAnnotation::Cold => {
-                            func.set_call_conventions(LLVMCallConv::LLVMColdCallConv as u32)
-                        }
-                        CallConvAnnotation::Inline => func.add_attribute(
-                            AttributeLoc::Function,
-                            context.create_enum_attribute(
-                                Attribute::get_named_enum_kind_id("alwaysinline"),
-                                0,
-                            ),
-                        ),
-                        CallConvAnnotation::Naked => func.add_attribute(
-                            AttributeLoc::Function,
-                            context.create_enum_attribute(
-                                Attribute::get_named_enum_kind_id("naked"),
-                                0,
-                            ),
-                        ),
+            let fn_typ = if matches!(
+                contract.return_type,
+                Type::PrimitiveNever | Type::PrimitiveVoid(0)
+            ) {
+                context.void_type().fn_type(&param_types, false)
+            } else {
+                contract
+                    .return_type
+                    .to_llvm_basic_type(&default_types, &structs, context)
+                    .fn_type(&param_types, false)
+            };
+            let name = mangle_function(&ctx, key);
+            let func = module.add_function(name.as_str(), fn_typ, Some(Linkage::Internal));
+            if let Some(callconv) = contract
+                .annotations
+                .get_first_annotation::<CallConvAnnotation>()
+            {
+                match callconv {
+                    CallConvAnnotation::C => {
+                        func.set_call_conventions(LLVMCallConv::LLVMCCallConv as u32)
                     }
+                    CallConvAnnotation::Fast => {
+                        func.set_call_conventions(LLVMCallConv::LLVMFastCallConv as u32)
+                    }
+                    CallConvAnnotation::Cold => {
+                        func.set_call_conventions(LLVMCallConv::LLVMColdCallConv as u32)
+                    }
+                    CallConvAnnotation::Inline => {
+                        func.add_attribute(AttributeLoc::Function, inline)
+                    }
+                    CallConvAnnotation::Naked => func.add_attribute(AttributeLoc::Function, naked),
                 }
-                if contract
-                    .annotations
-                    .get_first_annotation::<Noinline>()
-                    .is_some()
-                {
-                    func.add_attribute(
-                        AttributeLoc::Function,
-                        context.create_enum_attribute(
-                            Attribute::get_named_enum_kind_id("noinline"),
-                            0,
-                        ),
-                    );
-                }
-                func.set_subprogram(debug_ctx.funcs[i]);
-                func
-            })
-            .collect::<Vec<_>>();
+            }
+            if contract.annotations.has_annotation::<Noinline>() {
+                func.add_attribute(AttributeLoc::Function, noinline);
+            }
+            func.set_subprogram(debug_ctx.funcs[key]);
+            functions.insert(key, func);
+        }
         drop(function_reader);
 
         // external functions
         let ext_function_reader = ctx.external_functions.read();
-        let external_functions = ext_function_reader
-            .iter()
-            .enumerate()
-            .map(|(i, (c, b))| (i, c, b))
-            .map(|(i, contract, body)| {
-                let param_types = contract
-                    .arguments
-                    .iter()
-                    .filter_map(|(_, t)| match t {
-                        Type::PrimitiveVoid(0) | Type::PrimitiveNever => None,
-                        t => Some(
-                            t.to_llvm_basic_type(&default_types, &structs, context)
-                                .into(),
-                        ),
-                    })
-                    .collect::<Vec<_>>();
-                if !contract.return_type.is_primitive()
-                    || (contract.return_type.refcount() > 0 && !contract.return_type.is_thin_ptr())
-                    || !contract.return_type.is_sized()
-                    || contract.arguments.iter().any(|(_, v)| !v.is_sized())
-                {
-                    unreachable!("typechecking should've validated the return type and arguments.");
-                }
+        let mut external_functions = AssociatedStore::new();
+        for (key, (contract, body)) in ext_function_reader.index_value_iter() {
+            let param_types = contract
+                .arguments
+                .iter()
+                .filter_map(|(_, t)| match t {
+                    Type::PrimitiveVoid(0) | Type::PrimitiveNever => None,
+                    t => Some(
+                        t.to_llvm_basic_type(&default_types, &structs, context)
+                            .into(),
+                    ),
+                })
+                .collect::<Vec<_>>();
+            if !contract.return_type.is_primitive()
+                || (contract.return_type.refcount() > 0 && !contract.return_type.is_thin_ptr())
+                || !contract.return_type.is_sized()
+                || contract.arguments.iter().any(|(_, v)| !v.is_sized())
+            {
+                unreachable!("typechecking should've validated the return type and arguments.");
+            }
+            let has_var_args = contract.annotations.has_annotation::<ExternVarArg>();
 
-                let fn_typ =
-                    if let Type::PrimitiveNever | Type::PrimitiveVoid(0) = contract.return_type {
-                        context.void_type().fn_type(
-                            &param_types,
-                            contract
-                                .annotations
-                                .get_first_annotation::<ExternVarArg>()
-                                .is_some(),
-                        )
-                    } else {
-                        contract
-                            .return_type
-                            .to_llvm_basic_type(&default_types, &structs, context)
-                            .fn_type(
-                                &param_types,
-                                contract
-                                    .annotations
-                                    .get_first_annotation::<ExternVarArg>()
-                                    .is_some(),
-                            )
-                    };
-                let name = if let Some(name) = contract
-                    .annotations
-                    .get_first_annotation::<ExternAliasAnnotation>()
-                    .map(|v| &v.0)
-                {
-                    name
-                } else {
-                    contract
-                        .name
-                        .as_ref()
-                        .expect("external functions should always have a name")
-                };
+            let fn_typ = if matches!(
+                contract.return_type,
+                Type::PrimitiveNever | Type::PrimitiveVoid(0)
+            ) {
+                context.void_type().fn_type(&param_types, has_var_args)
+            } else {
+                contract
+                    .return_type
+                    .to_llvm_basic_type(&default_types, &structs, context)
+                    .fn_type(&param_types, has_var_args)
+            };
+            let name = if let Some(name) = contract
+                .annotations
+                .get_first_annotation::<ExternAliasAnnotation>()
+                .map(|v| &v.0)
+            {
+                name
+            } else {
+                contract
+                    .name
+                    .as_ref()
+                    .expect("external functions should always have a name")
+            };
 
-                let func = name.with(|name| module.add_function(name, fn_typ, None));
-                if let Some(callconv) = contract
-                    .annotations
-                    .get_first_annotation::<CallConvAnnotation>()
-                {
-                    match callconv {
-                        CallConvAnnotation::C => {
-                            func.set_call_conventions(LLVMCallConv::LLVMCCallConv as u32)
-                        }
-                        CallConvAnnotation::Fast => {
-                            func.set_call_conventions(LLVMCallConv::LLVMFastCallConv as u32)
-                        }
-                        CallConvAnnotation::Cold => {
-                            func.set_call_conventions(LLVMCallConv::LLVMColdCallConv as u32)
-                        }
-                        CallConvAnnotation::Inline => func.add_attribute(
-                            AttributeLoc::Function,
-                            context.create_enum_attribute(
-                                Attribute::get_named_enum_kind_id("alwaysinline"),
-                                0,
-                            ),
-                        ),
-                        CallConvAnnotation::Naked => func.add_attribute(
-                            AttributeLoc::Function,
-                            context.create_enum_attribute(
-                                Attribute::get_named_enum_kind_id("naked"),
-                                0,
-                            ),
-                        ),
+            let func = name.with(|name| module.add_function(name, fn_typ, None));
+            if let Some(callconv) = contract
+                .annotations
+                .get_first_annotation::<CallConvAnnotation>()
+            {
+                match callconv {
+                    CallConvAnnotation::C => {
+                        func.set_call_conventions(LLVMCallConv::LLVMCCallConv as u32)
                     }
+                    CallConvAnnotation::Fast => {
+                        func.set_call_conventions(LLVMCallConv::LLVMFastCallConv as u32)
+                    }
+                    CallConvAnnotation::Cold => {
+                        func.set_call_conventions(LLVMCallConv::LLVMColdCallConv as u32)
+                    }
+                    CallConvAnnotation::Inline => {
+                        func.add_attribute(AttributeLoc::Function, inline)
+                    }
+                    CallConvAnnotation::Naked => func.add_attribute(AttributeLoc::Function, naked),
                 }
-                if contract
-                    .annotations
-                    .get_first_annotation::<Noinline>()
-                    .is_some()
-                {
-                    func.add_attribute(
-                        AttributeLoc::Function,
-                        context.create_enum_attribute(
-                            Attribute::get_named_enum_kind_id("noinline"),
-                            0,
-                        ),
-                    );
-                }
-                func.set_subprogram(debug_ctx.ext_funcs[i]);
-                if let Some(section) = contract
-                    .annotations
-                    .get_first_annotation::<SectionAnnotation>()
-                {
-                    section.0.with(|name| func.set_section(Some(name)));
-                }
-                match body {
-                    Some(_) => func.set_linkage(Linkage::DLLExport),
-                    None => func.set_linkage(Linkage::DLLImport),
-                }
-                func
-            })
-            .collect::<Vec<_>>();
+            }
+            if contract.annotations.has_annotation::<Noinline>() {
+                func.add_attribute(AttributeLoc::Function, noinline);
+            }
+            func.set_subprogram(debug_ctx.ext_funcs[key]);
+            if let Some(section) = contract
+                .annotations
+                .get_first_annotation::<SectionAnnotation>()
+            {
+                section.0.with(|name| func.set_section(Some(name)));
+            }
+            match body {
+                Some(_) => func.set_linkage(Linkage::DLLExport),
+                None => func.set_linkage(Linkage::DLLImport),
+            }
+            external_functions.insert(key, func);
+        }
         drop(ext_function_reader);
 
         let static_reader = ctx.statics.read();
-        let statics = static_reader
-            .iter()
-            .enumerate()
-            .map(|(i, v)| {
-                module.add_global(
-                    v.0.to_llvm_basic_type(&default_types, &structs, context),
-                    None,
-                    &mangle_static(&ctx, i),
-                )
-            })
-            .collect::<Vec<_>>();
-        for (i, v) in static_reader.iter().enumerate() {
-            statics[i].set_linkage(Linkage::Internal);
-            statics[i].set_initializer(&v.1.to_basic_value(
+        let mut statics = AssociatedStore::new();
+        for (key, static_element) in static_reader.index_value_iter() {
+            let global = module.add_global(
+                static_element
+                    .0
+                    .to_llvm_basic_type(&default_types, &structs, context),
+                None,
+                &mangle_static(&ctx, key),
+            );
+            global.set_linkage(Linkage::Internal);
+            global.set_initializer(&static_element.1.to_basic_value(
                 &|i| panic!("index out of bounds: the length is 0, but the index is {i}"),
                 &default_types,
                 &structs,
@@ -567,6 +509,7 @@ impl<'a> CodegenContext<'a> {
                 &string_map,
                 context,
             ));
+            statics.insert(key, global);
         }
         drop(static_reader);
 
@@ -656,16 +599,30 @@ impl<'a> CodegenContext<'a> {
         })
     }
 
+    pub fn compile_external_fn(
+        &mut self,
+        fn_id: StoreKey<TypedExternalFunction>,
+        tc_scope: Vec<(Type, ScopeTypeMetadata)>,
+    ) -> Result<(), BuilderError> {
+        self.internal_compile_fn(fn_id.cast(), tc_scope, true)
+    }
     pub fn compile_fn(
         &mut self,
-        fn_id: FunctionId,
+        fn_id: StoreKey<TypedFunction>,
+        tc_scope: Vec<(Type, ScopeTypeMetadata)>,
+    ) -> Result<(), BuilderError> {
+        self.internal_compile_fn(fn_id, tc_scope, false)
+    }
+    fn internal_compile_fn(
+        &mut self,
+        fn_id: StoreKey<TypedFunction>,
         tc_scope: Vec<(Type, ScopeTypeMetadata)>,
         is_external: bool,
     ) -> Result<(), BuilderError> {
         let ext_fn_reader = self.tc_ctx.external_functions.read();
         let fn_reader = self.tc_ctx.functions.read();
         // if there's no body to an external function, don't try to generate one.
-        if is_external && ext_fn_reader[fn_id].1.is_none() {
+        if is_external && ext_fn_reader[fn_id.cast()].1.is_none() {
             return Ok(());
         } else if !is_external {
             // don't do anything if the function is an intrinsic or has generics, because such
@@ -673,10 +630,7 @@ impl<'a> CodegenContext<'a> {
             // code and generic functions get monomorphised)
             let contract = &fn_reader[fn_id].0;
             if !contract.generics.is_empty()
-                || contract
-                    .annotations
-                    .get_first_annotation::<IntrinsicAnnotation>()
-                    .is_some()
+                || contract.annotations.has_annotation::<IntrinsicAnnotation>()
             {
                 return Ok(());
             }
@@ -685,7 +639,7 @@ impl<'a> CodegenContext<'a> {
         drop(fn_reader);
 
         let func = if is_external {
-            self.external_functions[fn_id]
+            self.external_functions[fn_id.cast()]
         } else {
             self.functions[fn_id]
         };
@@ -697,7 +651,7 @@ impl<'a> CodegenContext<'a> {
 
         self.builder.position_at_end(body_basic_block);
         let scope = if is_external {
-            self.debug_ctx.ext_funcs[fn_id].as_debug_info_scope()
+            self.debug_ctx.ext_funcs[fn_id.cast()].as_debug_info_scope()
         } else {
             self.debug_ctx.funcs[fn_id].as_debug_info_scope()
         };
@@ -708,12 +662,12 @@ impl<'a> CodegenContext<'a> {
         let ext_function_reader = function_ctx.tc_ctx.external_functions.read();
         let structs_reader = function_ctx.tc_ctx.structs.read();
         let contract = if is_external {
-            &ext_function_reader[fn_id].0
+            &ext_function_reader[fn_id.cast()].0
         } else {
             &function_reader[fn_id].0
         };
         let body = if is_external {
-            let Some(v) = &ext_function_reader[fn_id].1 else {
+            let Some(v) = &ext_function_reader[fn_id.cast()].1 else {
                 unreachable!()
             };
             &**v
@@ -771,7 +725,13 @@ impl<'a> CodegenContext<'a> {
     }
 }
 
-fn collect_data(ctx: &TypecheckingContext) -> (HashSet<GlobalStr>, HashSet<(Type, Vec<TraitId>)>) {
+#[allow(clippy::type_complexity)]
+fn collect_data(
+    ctx: &TypecheckingContext,
+) -> (
+    HashSet<GlobalStr>,
+    HashSet<(Type, Vec<StoreKey<TypedTrait>>)>,
+) {
     let function_reader = ctx.functions.read();
     let ext_function_reader = ctx.external_functions.read();
     let statics_reader = ctx.statics.read();
@@ -796,7 +756,7 @@ fn collect_data(ctx: &TypecheckingContext) -> (HashSet<GlobalStr>, HashSet<(Type
 fn collect_strings_for_expressions(
     exprs: &[TypecheckedExpression],
     strings: &mut HashSet<GlobalStr>,
-    vtables: &mut HashSet<(Type, Vec<TraitId>)>,
+    vtables: &mut HashSet<(Type, Vec<StoreKey<TypedTrait>>)>,
 ) {
     for expr in exprs {
         match expr {

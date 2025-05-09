@@ -57,7 +57,7 @@ impl Tld<'_> {
                 f.push_indent();
                 for (idx, val) in children.iter().enumerate() {
                     f.write_char('\n')?;
-                    if let Some(field_name) = f.ctx.structs.get(*id).map(|v| &v.elements[idx].0) {
+                    if let Some(field_name) = f.ctx.structs.get(id).map(|v| &v.elements[idx].0) {
                         f.write_value(field_name)?;
                         f.write_str(": ")?;
                     }

@@ -9,8 +9,10 @@ use std::{
 use crate::{
     error::{ParsingError, TokenizationError},
     globals::GlobalStr,
+    module::Module,
     module_resolution::ModuleResolver,
     parser::{LiteralValue, Parser, ParserQueueEntry},
+    store::{Store, StoreKey},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1120,22 +1122,27 @@ impl Tokenizer {
         &self.tokens
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn to_parser(
         self,
-        modules: Arc<RwLock<Vec<ParserQueueEntry>>>,
+        parser_queue: Arc<RwLock<Vec<ParserQueueEntry>>>,
+        modules: &RwLock<Store<Module>>,
         root: Arc<Path>,
         resolvers: Arc<[Box<dyn ModuleResolver>]>,
         path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
         path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
-    ) -> Parser {
+        key: StoreKey<Module>,
+    ) -> Parser<'_> {
         Parser::new(
             self.tokens,
+            parser_queue,
             modules,
             self.file,
             root,
             resolvers,
             path_exists,
             path_is_dir,
+            key,
         )
     }
 }

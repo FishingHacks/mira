@@ -44,7 +44,7 @@ impl StructDisplay<'_> {
         for (trait_id, funcs) in self.0.trait_impl.iter() {
             f.write_str("\nimpl trait_")?;
             f.write_value(trait_id)?;
-            if let Some(name) = f.ctx.traits.get(*trait_id).map(|v| &v.name) {
+            if let Some(name) = f.ctx.traits.get(trait_id).map(|v| &v.name) {
                 f.write_char(' ')?;
                 f.write_debug(name)?;
             }
@@ -53,12 +53,7 @@ impl StructDisplay<'_> {
             for func_id in funcs {
                 f.write_str("\nfn_")?;
                 f.write_value(func_id)?;
-                if let Some(name) = f
-                    .ctx
-                    .functions
-                    .get(*func_id)
-                    .and_then(|v| v.0.name.as_ref())
-                {
+                if let Some(name) = f.ctx.functions.get(func_id).and_then(|v| v.0.name.as_ref()) {
                     f.write_char(' ')?;
                     f.write_debug(name)?;
                 }
