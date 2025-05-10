@@ -1,6 +1,9 @@
-use crate::typechecking::{
-    expression::{TypecheckedExpression, TypedLiteral},
-    Type, TypecheckedFunctionContract,
+use crate::{
+    store::StoreKey,
+    typechecking::{
+        expression::{TypecheckedExpression, TypedLiteral},
+        Type, TypecheckedFunctionContract, TypedFunction,
+    },
 };
 
 use super::{expressions::write_implicit_block, formatter::Formatter};
@@ -11,7 +14,12 @@ pub struct FuncDisplay<'a>(
 );
 
 impl FuncDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter, is_external: bool, id: usize) -> std::fmt::Result {
+    pub fn fmt(
+        &self,
+        f: &mut Formatter,
+        is_external: bool,
+        id: StoreKey<TypedFunction>,
+    ) -> std::fmt::Result {
         for annotation in self.0.annotations.iter() {
             f.write_value(&annotation)?;
             f.write_char('\n')?;

@@ -8,24 +8,21 @@ pub struct TCContextDisplay;
 
 impl TCContextDisplay {
     pub fn fmt(self, f: &mut Formatter) -> std::fmt::Result {
-        for (id, module) in f.ctx.modules.iter().enumerate() {
-            if id != 0 {
-                f.write_str("\n\n")?;
-            }
+        for (id, module) in f.ctx.modules.index_value_iter() {
             ModuleDisplay(module).fmt(f, id)?;
         }
 
-        for (id, func) in f.ctx.functions.iter().enumerate() {
+        for (id, func) in f.ctx.functions.index_value_iter() {
             f.write_str("\n\n")?;
             FuncDisplay(&func.0, Some(&func.1)).fmt(f, false, id)?;
         }
 
-        for (id, func) in f.ctx.external_functions.iter().enumerate() {
+        for (id, func) in f.ctx.external_functions.index_value_iter() {
             f.write_str("\n\n")?;
-            FuncDisplay(&func.0, func.1.as_deref()).fmt(f, true, id)?;
+            FuncDisplay(&func.0, func.1.as_deref()).fmt(f, true, id.cast())?;
         }
 
-        for (id, static_value) in f.ctx.statics.iter().enumerate() {
+        for (id, static_value) in f.ctx.statics.index_value_iter() {
             f.write_str("\n\n")?;
             StaticDisplay(static_value).fmt(f, id)?;
         }

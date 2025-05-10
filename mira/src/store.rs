@@ -1,12 +1,12 @@
 use std::{
     collections::HashMap,
-    fmt::Display,
+    fmt::{Debug, Display},
     hash::Hash,
     marker::PhantomData,
     ops::{Index, IndexMut},
 };
 
-#[derive(PartialOrd, Ord, Debug)]
+#[derive(PartialOrd, Ord)]
 pub struct StoreKey<T: ?Sized>(usize, PhantomData<T>);
 
 impl<T: ?Sized> Copy for StoreKey<T> {}
@@ -37,18 +37,19 @@ impl<T: ?Sized> StoreKey<T> {
     pub fn undefined() -> Self {
         Self(usize::MAX, PhantomData)
     }
-
-    pub fn from_usize(value: usize) -> Self {
-        Self(value, PhantomData)
-    }
 }
 
-impl<T: ?Sized> Display for StoreKey<T> {
+impl<T: ?Sized> Debug for StoreKey<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("StoreKey#")?;
         Display::fmt(&self.0, f)?;
         f.write_str(" @ ")?;
         f.write_str(std::any::type_name::<T>())
+    }
+}
+impl<T: ?Sized> Display for StoreKey<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
     }
 }
 
@@ -132,6 +133,13 @@ impl<T> Store<T> {
 
     pub fn indices(&self) -> impl Iterator<Item = StoreKey<T>> + use<'_, T> {
         self.values.keys().copied()
+    }
+
+    pub fn retain<F>(&mut self, pred: F)
+    where
+        F: FnMut(&StoreKey<T>, &mut T) -> bool,
+    {
+        self.values.retain(pred);
     }
 }
 

@@ -17,7 +17,9 @@ use crate::{
     codegen::{CodegenConfig, CodegenContext, CodegenError, Optimizations},
     error::MiraError,
     module_resolution::ModuleResolver,
+    optimizations,
     progress_bar::{ProgressBar, ProgressBarStyle},
+    store::AssociatedStore,
     target::{Abi, Arch, Os, Target},
     typechecking::{
         intrinsics::IntrinsicAnnotation,
@@ -499,8 +501,8 @@ pub fn run_full_compilation_pipeline(
         .collect::<Vec<_>>();
 
     let mut errs = Vec::new();
-    let mut scopes_fns = Vec::new();
-    let mut scopes_ext_fns = Vec::new();
+    let mut scopes_fns = AssociatedStore::new();
+    let mut scopes_ext_fns = AssociatedStore::new();
 
     for key in function_keys {
         let item = progress_bar.write().add_child_item(
@@ -510,7 +512,7 @@ pub fn run_full_compilation_pipeline(
         print_progress_bar(&progress_bar);
 
         match typecheck_function(&typechecking_context, &module_context, key) {
-            Ok(v) => scopes_fns.push(v),
+            Ok(v) => _ = scopes_fns.insert(key, v),
             Err(e) => errs.extend(e),
         }
 
@@ -525,7 +527,7 @@ pub fn run_full_compilation_pipeline(
         print_progress_bar(&progress_bar);
 
         match typecheck_external_function(&typechecking_context, &module_context, key) {
-            Ok(v) => scopes_ext_fns.push(v),
+            Ok(v) => _ = scopes_ext_fns.insert(key, v),
             Err(e) => errs.extend(e),
         }
 
@@ -545,6 +547,14 @@ pub fn run_full_compilation_pipeline(
     }
 
     progress_bar.write().remove_item(typechecking_item);
+    let dce_item = progress_bar
+        .write()
+        .add_item("Dead code elimination".into());
+    print_progress_bar(&progress_bar);
+
+    optimizations::dead_code_elimination::run_dce(&typechecking_context, &[], &[]);
+
+    progress_bar.write().remove_item(dce_item);
     print_progress_bar(&progress_bar);
 
     if !errs.is_empty() {
@@ -596,7 +606,6 @@ pub fn run_full_compilation_pipeline(
 
     for (fn_id, (contract, _)) in typechecking_context.functions.read().index_value_iter() {
         if contract.annotations.has_annotation::<IntrinsicAnnotation>() {
-            scopes_fns.remove(0);
             continue;
         }
         let item = progress_bar.write().add_child_item(
@@ -605,7 +614,10 @@ pub fn run_full_compilation_pipeline(
         );
         print_progress_bar(&progress_bar);
 
-        if let Err(e) = codegen_context.compile_fn(fn_id, scopes_fns.remove(0)) {
+        if let Err(e) = codegen_context.compile_fn(
+            fn_id,
+            scopes_fns.remove(&fn_id).expect("scope should be there"),
+        ) {
             errs.push(MiraError::Codegen { inner: e.into() });
         }
         progress_bar.write().remove_item(item);
@@ -618,11 +630,19 @@ pub fn run_full_compilation_pipeline(
         );
         print_progress_bar(&progress_bar);
 
-        if let Err(e) = codegen_context.compile_external_fn(fn_id, scopes_ext_fns.remove(0)) {
+        if let Err(e) = codegen_context.compile_external_fn(
+            fn_id,
+            scopes_ext_fns
+                .remove(&fn_id)
+                .expect("scope should be there"),
+        ) {
             errs.push(MiraError::Codegen { inner: e.into() });
         }
         progress_bar.write().remove_item(item);
     }
+
+    drop(scopes_fns);
+    drop(scopes_ext_fns);
 
     progress_bar
         .write()

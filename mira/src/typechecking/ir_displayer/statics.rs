@@ -1,3 +1,4 @@
+use crate::store::StoreKey;
 use crate::typechecking::TypedStatic;
 
 use super::typed_literal::Tld;
@@ -6,7 +7,7 @@ use super::Formatter;
 pub struct StaticDisplay<'a>(pub &'a TypedStatic);
 
 impl StaticDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter, id: usize) -> std::fmt::Result {
+    pub fn fmt(&self, f: &mut Formatter, id: StoreKey<TypedStatic>) -> std::fmt::Result {
         f.write_value(&self.0 .4)?;
         f.write_str("static static_")?;
         f.write_value(&id)?;

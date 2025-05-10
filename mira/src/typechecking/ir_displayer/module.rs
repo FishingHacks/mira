@@ -1,4 +1,4 @@
-use crate::{module::ModuleScopeValue, typechecking::TypecheckedModule};
+use crate::{module::ModuleScopeValue, store::StoreKey, typechecking::TypecheckedModule};
 
 use super::formatter::Formatter;
 
@@ -6,7 +6,7 @@ use super::formatter::Formatter;
 pub struct ModuleDisplay<'a>(pub &'a TypecheckedModule);
 
 impl ModuleDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter, id: usize) -> std::fmt::Result {
+    pub fn fmt(&self, f: &mut Formatter, id: StoreKey<TypecheckedModule>) -> std::fmt::Result {
         f.write_str("@root_path(")?;
         f.write_debug(&self.0.root)?;
         f.write_str(")\nmodule mod_")?;
