@@ -60,7 +60,7 @@ struct LangItemStruct {
     funcs: Vec<(GlobalStr, LangItemFunction)>,
     fields: Vec<(GlobalStr, Type)>,
     traits: Vec<StoreKey<TypedTrait>>,
-    generics: Vec<Vec<StoreKey<TypedTrait>>>,
+    generics: Vec<(bool, Vec<StoreKey<TypedTrait>>)>,
 }
 
 struct LangItemFunction {
@@ -231,6 +231,7 @@ error_list_wrapper!(
     add_struct_mismatch_args => StructMismatchingArguments(expected: Vec<Type>, found: Vec<Type>, function: GlobalStr, lang_item: &'static str);
     add_struct_mismatch_returnty => StructMismatchingReturnType(expected: Type, found: Type, function: GlobalStr, lang_item: &'static str);
     add_struct_generic_mismatch => StructGenericMismatch(lang_item: &'static str, generic: GlobalStr, expected: Vec<GlobalStr>, found: Vec<GlobalStr>);
+    add_struct_sizing_incompatability => StructGenericSizingIncompatability(lang_item: &'static str, generic: GlobalStr);
     add_mismatching_args => MismatchingArguments(expected: Vec<Type>, found: Vec<Type>, lang_item: &'static str);
     add_mismatching_returnty => MismatchingReturnType(expected: Type, found: Type, lang_item: &'static str);
 );
@@ -311,6 +312,13 @@ pub enum LangItemError {
         found: Type,
         function: GlobalStr,
         lang_item: &'static str,
+    },
+    #[error(
+        "Struct lang-item `{lang_item}`s generic `{generic}` requires that it allow unsized types"
+    )]
+    StructGenericSizingIncompatability {
+        lang_item: &'static str,
+        generic: GlobalStr,
     },
     #[error("Struct lang-item `{lang_item}`s generic `{generic}` doesn't match, expected {}, but found {}", GenericList(.expected), GenericList(.found))]
     StructGenericMismatch {
@@ -619,32 +627,44 @@ fn does_struct_match(
 
     for (i, bounds) in structure_a.generics.iter().enumerate() {
         match structure_b.generics.get(i) {
-            Some((name, other_bounds)) => {
-                if *bounds != *other_bounds {
+            Some(generic) => {
+                if bounds.1 != generic.bounds {
                     let expected = bounds
+                        .1
                         .iter()
                         .map(|v| trait_reader[*v].name.clone())
                         .collect();
-                    let found = other_bounds
+                    let found = generic
+                        .bounds
                         .iter()
                         .map(|v| trait_reader[*v].name.clone())
                         .collect();
-                    errors.add_struct_generic_mismatch(lang_item, name.clone(), expected, found);
+                    errors.add_struct_generic_mismatch(
+                        lang_item,
+                        generic.name.clone(),
+                        expected,
+                        found,
+                    );
+                }
+                if !bounds.0 && generic.sized {
+                    errors.add_struct_sizing_incompatability(lang_item, generic.name.clone());
                 }
             }
             None => errors.push(LangItemError::StructMissesGeneric {
                 lang_item,
                 generic: bounds
+                    .1
                     .iter()
                     .map(|v| trait_reader[*v].name.clone())
                     .collect(),
             }),
         }
     }
-    for (generic, ..) in structure_b
+    for generic in structure_b
         .generics
         .iter()
         .skip(structure_a.generics.len())
+        .map(|v| &v.name)
         .cloned()
     {
         errors.push(LangItemError::StructUnexpectedGeneric { lang_item, generic })

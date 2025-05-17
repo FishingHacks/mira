@@ -17,12 +17,6 @@ pub struct FunctionType {
 
 #[derive(Clone, Debug, Eq)]
 pub enum Type {
-    // TODO: Move to Type::Generic
-    Trait {
-        trait_refs: Vec<StoreKey<TypedTrait>>,
-        num_references: u8,
-        real_name: GlobalStr,
-    },
     DynType {
         trait_refs: Vec<(StoreKey<TypedTrait>, GlobalStr)>,
         num_references: u8,
@@ -73,6 +67,8 @@ pub enum Type {
         name: GlobalStr,
         num_references: u8,
         generic_id: u8,
+        bounds: Vec<StoreKey<TypedTrait>>,
+        sized: bool,
     },
 }
 
@@ -80,14 +76,6 @@ impl Hash for Type {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.refcount().hash(state);
         match self {
-            Type::Trait {
-                trait_refs,
-                real_name,
-                ..
-            } => {
-                real_name.hash(state);
-                trait_refs.hash(state);
-            }
             Type::DynType { trait_refs, .. } => {
                 "dyn".hash(state);
                 trait_refs.hash(state);
@@ -195,11 +183,6 @@ impl Type {
         tc_ctx: &TypecheckingContext,
     ) -> bool {
         match self {
-            Type::Trait {
-                trait_refs,
-                num_references: 0,
-                ..
-            } => values_match(trait_refs, traits),
             Type::DynType {
                 trait_refs,
                 num_references: 1,
@@ -216,6 +199,7 @@ impl Type {
                     .collect::<Vec<_>>(),
                 traits,
             ),
+            Self::Generic { bounds, .. } => values_match(bounds, traits),
             _ => false,
         }
     }
@@ -250,8 +234,7 @@ impl Type {
         }
 
         match self {
-            Type::Trait { .. }
-            | Type::Generic { .. }
+            Type::Generic { .. }
             | Type::PrimitiveSelf(..)
             | Type::PrimitiveStr(..)
             | Type::DynType { .. }
@@ -294,8 +277,7 @@ impl Type {
         }
 
         match self {
-            Type::Trait { .. }
-            | Type::Generic { .. }
+            Type::Generic { .. }
             | Type::PrimitiveSelf(..)
             | Type::PrimitiveStr(..)
             | Type::DynType { .. }
@@ -351,7 +333,6 @@ impl Type {
             | Type::UnsizedArray { num_references, .. }
             | Type::SizedArray { num_references, .. }
             | Type::DynType { num_references, .. }
-            | Type::Trait { num_references, .. }
             | Type::Tuple { num_references, .. }
             | Type::Generic { num_references, .. }
             | Type::Function(_, num_references)
@@ -379,9 +360,7 @@ impl Type {
             return true;
         }
         match self {
-            Self::Trait { .. } | Type::Generic { .. } => {
-                unreachable!("generics aren't supported yet and as such don't have size info")
-            }
+            Type::Generic { sized, .. } => *sized,
             Type::PrimitiveSelf(_) => unreachable!("Self should be resolved"),
             Type::PrimitiveStr(num_references)
             | Type::UnsizedArray { num_references, .. }
@@ -397,9 +376,7 @@ impl Type {
             return true;
         }
         match self {
-            Type::Generic { .. } | Type::Trait { .. } => {
-                unreachable!("generics don't yet have size info")
-            }
+            Type::Generic { sized, .. } => *sized,
             Type::PrimitiveNever => unreachable!("never can never be referenced"),
             Type::PrimitiveSelf(_) => unreachable!("Self should be resolved by now"),
             Type::DynType { .. } | Type::UnsizedArray { .. } | Type::PrimitiveStr(_) => false,
@@ -444,8 +421,7 @@ impl Type {
 
     pub fn take_ref(mut self) -> Self {
         match &mut self {
-            Type::Trait { num_references, .. }
-            | Type::DynType { num_references, .. }
+            Type::DynType { num_references, .. }
             | Type::Struct { num_references, .. }
             | Type::UnsizedArray { num_references, .. }
             | Type::SizedArray { num_references, .. }
@@ -475,8 +451,7 @@ impl Type {
 
     pub fn deref(mut self) -> Result<Self, Self> {
         match &mut self {
-            Type::Trait { num_references, .. }
-            | Type::DynType { num_references, .. }
+            Type::DynType { num_references, .. }
             | Type::Struct { num_references, .. }
             | Type::UnsizedArray { num_references, .. }
             | Type::SizedArray { num_references, .. }
@@ -512,8 +487,7 @@ impl Type {
 
     pub fn without_ref(mut self) -> Self {
         match &mut self {
-            Type::Trait { num_references, .. }
-            | Type::DynType { num_references, .. }
+            Type::DynType { num_references, .. }
             | Type::Struct { num_references, .. }
             | Type::UnsizedArray { num_references, .. }
             | Type::SizedArray { num_references, .. }
@@ -545,8 +519,7 @@ impl Type {
 
     pub fn with_num_refs(mut self, num_refs: u8) -> Self {
         match &mut self {
-            Type::Trait { num_references, .. }
-            | Type::DynType { num_references, .. }
+            Type::DynType { num_references, .. }
             | Type::Struct { num_references, .. }
             | Type::UnsizedArray { num_references, .. }
             | Type::SizedArray { num_references, .. }
@@ -662,8 +635,7 @@ impl Type {
 
     pub fn get_bitwidth(&self, isize_bitwidth: u32) -> u32 {
         match self {
-            Type::Trait { .. }
-            | Type::DynType { .. }
+            Type::DynType { .. }
             | Type::Struct { .. }
             | Type::UnsizedArray { .. }
             | Type::SizedArray { .. }
@@ -696,7 +668,6 @@ impl Display for Type {
 
         match self {
             Type::Struct { name, .. } => Display::fmt(name, f),
-            Type::Trait { real_name, .. } => Display::fmt(real_name, f),
             Type::DynType { trait_refs, .. } => {
                 f.write_str("dyn ")?;
                 for (i, (_, trait_ref)) in trait_refs.iter().enumerate() {
@@ -767,7 +738,30 @@ impl Display for Type {
             Type::PrimitiveISize(_) => f.write_str("isize"),
             Type::PrimitiveUSize(_) => f.write_str("usize"),
             Type::PrimitiveNever => f.write_str("!"),
-            Type::Generic { name, .. } => Display::fmt(name, f),
+            Type::Generic {
+                name,
+                sized,
+                bounds: traits,
+                generic_id,
+                ..
+            } => {
+                if !*sized {
+                    f.write_str("unsized ")?;
+                }
+                Display::fmt(name, f)?;
+                if !traits.is_empty() {
+                    f.write_str(": ")?;
+                    for (i, trait_ref) in traits.iter().enumerate() {
+                        if i != 0 {
+                            f.write_str(" + ")?;
+                        }
+                        Display::fmt(trait_ref, f)?;
+                    }
+                }
+                f.write_str(" (#")?;
+                Display::fmt(generic_id, f)?;
+                f.write_char(')')
+            }
         }
     }
 }
@@ -945,7 +939,6 @@ impl TypeSuggestion {
             | Type::Function(..)
             | Type::PrimitiveVoid(_)
             | Type::PrimitiveNever
-            | Type::Trait { .. }
             | Type::DynType { .. } => Self::Unknown,
             Type::Struct { struct_id, .. } => Self::Struct(*struct_id),
             Type::SizedArray { typ, .. } => Self::Array(Box::new(Self::from_type(typ))),

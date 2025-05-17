@@ -398,7 +398,7 @@ impl<'ctx> DebugContext<'ctx> {
             // fat pointer
             } else if typ.refcount() > 0 {
                 let (metadata_type, pointer_type) = match typ {
-                    Type::Trait { .. } | Type::PrimitiveSelf(_) | Type::Generic { .. } => {
+                    Type::PrimitiveSelf(_) | Type::Generic { .. } => {
                         unreachable!("generics and self should be resolved by now")
                     }
                     Type::DynType { .. } => (
@@ -461,7 +461,7 @@ impl<'ctx> DebugContext<'ctx> {
             }
 
             match typ {
-                Type::Trait { .. } | Type::Generic { .. } | Type::PrimitiveSelf(..) => {
+                Type::Generic { .. } | Type::PrimitiveSelf(..) => {
                     unreachable!("generics and self should be resolved by now")
                 }
                 Type::PrimitiveStr(_) | Type::UnsizedArray { .. } | Type::DynType { .. } => {

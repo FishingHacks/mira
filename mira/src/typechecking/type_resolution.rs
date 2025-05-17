@@ -333,7 +333,6 @@ impl TypecheckingContext {
         );
         let untyped_generics = std::mem::take(&mut writer[function_id].0.generics);
         let mut generics = Vec::with_capacity(untyped_generics.len());
-        let mut generic_names = Vec::with_capacity(untyped_generics.len());
         for generic in untyped_generics {
             let mut bounds = Vec::with_capacity(generic.bounds.len());
             for mut bound in generic.bounds {
@@ -355,7 +354,6 @@ impl TypecheckingContext {
                     Err(e) => errors.push(e),
                 }
             }
-            generic_names.push(generic.name.clone());
             generics.push(TypedGeneric {
                 name: generic.name,
                 sized: generic.sized,
@@ -374,7 +372,11 @@ impl TypecheckingContext {
         drop(writer);
 
         let mut has_errors = false;
-        match self.resolve_type(module_id.cast(), &return_type, &generic_names) {
+        match self.resolve_type(
+            module_id.cast(),
+            &return_type,
+            &resolved_function_contract.generics,
+        ) {
             Ok(v) => resolved_function_contract.return_type = v,
             Err(e) => {
                 has_errors = true;
@@ -383,7 +385,11 @@ impl TypecheckingContext {
         }
 
         for arg in arguments {
-            match self.resolve_type(module_id.cast(), &arg.typ, &generic_names) {
+            match self.resolve_type(
+                module_id.cast(),
+                &arg.typ,
+                &resolved_function_contract.generics,
+            ) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
                 Err(e) => {
                     has_errors = true;

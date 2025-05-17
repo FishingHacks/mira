@@ -39,11 +39,11 @@ pub static DUMMY_LOCATION: LazyLock<Location> = LazyLock::new(|| Location {
     file: PathBuf::from("").into(), // a file should never be a folder :3
 });
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedGeneric {
-    name: GlobalStr,
-    sized: bool,
-    bounds: Vec<StoreKey<TypedTrait>>,
+    pub name: GlobalStr,
+    pub sized: bool,
+    pub bounds: Vec<StoreKey<TypedTrait>>,
 }
 
 #[derive(Debug)]
@@ -96,7 +96,7 @@ pub struct TypedStruct {
     pub annotations: Annotations,
     pub module_id: StoreKey<TypecheckedModule>,
     pub id: StoreKey<TypedStruct>,
-    pub generics: Vec<(GlobalStr, Vec<StoreKey<TypedTrait>>)>,
+    pub generics: Vec<TypedGeneric>,
 }
 
 impl Hash for TypedStruct {
@@ -312,7 +312,7 @@ impl TypecheckingContext {
         &self,
         module_id: StoreKey<TypecheckedModule>,
         typ: &TypeRef,
-        generics: &[GlobalStr],
+        generics: &[TypedGeneric],
     ) -> Result<Type, TypecheckingError> {
         if let Some(primitive) = resolve_primitive_type(typ) {
             return Ok(primitive);
@@ -368,19 +368,20 @@ impl TypecheckingContext {
                 type_name,
                 loc,
             } => {
-                if type_name.entries.len() == 1
-                    && type_name.entries[0].1.is_empty()
-                    && generics.contains(&type_name.entries[0].0)
-                {
-                    return Ok(Type::Generic {
-                        name: type_name.entries[0].0.clone(),
-                        generic_id: generics
-                            .iter()
-                            .position(|v| *v == type_name.entries[0].0)
-                            .expect("typename should be in generics because we just checked that")
-                            as u8,
-                        num_references: *num_references,
-                    });
+                if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
+                    if let Some((id, generic)) = generics
+                        .iter()
+                        .enumerate()
+                        .find(|(_, v)| v.name == type_name.entries[0].0)
+                    {
+                        return Ok(Type::Generic {
+                            name: type_name.entries[0].0.clone(),
+                            generic_id: id as u8,
+                            num_references: *num_references,
+                            sized: generic.sized,
+                            bounds: generic.bounds.clone(),
+                        });
+                    }
                 }
 
                 let path = type_name
@@ -487,7 +488,11 @@ impl TypecheckingContext {
                 }
             }
 
-            generics.push((generic.name.clone(), bounds));
+            generics.push(TypedGeneric {
+                name: generic.name.clone(),
+                sized: generic.sized,
+                bounds,
+            });
         }
 
         let mut typed_struct = TypedStruct {
@@ -506,13 +511,7 @@ impl TypecheckingContext {
         for element in elements {
             if let Some(typ) = self.type_resolution_resolve_type(
                 &element.1,
-                |generic_name| {
-                    typed_struct
-                        .generics
-                        .iter()
-                        .position(|(v, ..)| *v == *generic_name)
-                        .map(|v| v as u8)
-                },
+                &typed_struct.generics,
                 module_id.cast(),
                 context.clone(),
                 errors,
@@ -525,10 +524,10 @@ impl TypecheckingContext {
         false
     }
 
-    fn type_resolution_resolve_type<F: Fn(&GlobalStr) -> Option<u8> + Copy>(
+    fn type_resolution_resolve_type(
         &self,
         typ: &TypeRef,
-        is_generic_name: F,
+        generics: &[TypedGeneric],
         module: StoreKey<TypecheckedModule>,
         context: Arc<ModuleContext>,
         errors: &mut Vec<TypecheckingError>,
@@ -546,7 +545,7 @@ impl TypecheckingContext {
             } => {
                 let return_type = self.type_resolution_resolve_type(
                     return_ty,
-                    is_generic_name,
+                    generics,
                     module,
                     context.clone(),
                     errors,
@@ -555,7 +554,7 @@ impl TypecheckingContext {
                 for arg in args {
                     arguments.push(self.type_resolution_resolve_type(
                         arg,
-                        is_generic_name,
+                        generics,
                         module,
                         context.clone(),
                         errors,
@@ -589,11 +588,16 @@ impl TypecheckingContext {
 
                 // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
                 if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
-                    if let Some(generic_id) = is_generic_name(&type_name.entries[0].0) {
+                    let name = &type_name.entries[0].0;
+                    if let Some((generic_id, generic)) =
+                        generics.iter().enumerate().find(|(_, v)| v.name == *name)
+                    {
                         return Some(Type::Generic {
-                            name: type_name.entries[0].0.clone(),
-                            generic_id,
+                            name: generic.name.clone(),
+                            generic_id: generic_id as u8,
                             num_references: 0,
+                            sized: generic.sized,
+                            bounds: generic.bounds.clone(),
                         });
                     }
                 }
@@ -652,13 +656,9 @@ impl TypecheckingContext {
                 child,
                 loc: _,
             } => Some(Type::UnsizedArray {
-                typ: Box::new(self.type_resolution_resolve_type(
-                    child,
-                    is_generic_name,
-                    module,
-                    context,
-                    errors,
-                )?),
+                typ: Box::new(
+                    self.type_resolution_resolve_type(child, generics, module, context, errors)?,
+                ),
                 num_references: *num_references,
             }),
             TypeRef::SizedArray {
@@ -667,13 +667,9 @@ impl TypecheckingContext {
                 number_elements,
                 loc: _,
             } => Some(Type::SizedArray {
-                typ: Box::new(self.type_resolution_resolve_type(
-                    child,
-                    is_generic_name,
-                    module,
-                    context,
-                    errors,
-                )?),
+                typ: Box::new(
+                    self.type_resolution_resolve_type(child, generics, module, context, errors)?,
+                ),
                 num_references: *num_references,
                 number_elements: *number_elements,
             }),
@@ -686,7 +682,7 @@ impl TypecheckingContext {
                 for elem in elements.iter() {
                     typed_elements.push(self.type_resolution_resolve_type(
                         elem,
-                        is_generic_name,
+                        generics,
                         module,
                         context.clone(),
                         errors,

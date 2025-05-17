@@ -1790,7 +1790,6 @@ fn typecheck_membercall(
         Type::UnsizedArray { .. }
         | Type::SizedArray { .. }
         | Type::Tuple { .. }
-        | Type::Trait { .. }
         | Type::DynType { .. }
         | Type::Generic { .. }
         | Type::Function(..)

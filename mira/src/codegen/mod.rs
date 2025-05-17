@@ -202,9 +202,7 @@ impl<'ctx> Type {
         }
 
         match self {
-            Type::Generic { .. } | Type::Trait { .. } => {
-                unreachable!("generics should be resolved by now")
-            }
+            Type::Generic { .. } => unreachable!("generics should be resolved by now"),
             Type::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
             Type::PrimitiveStr(_) => panic!("llvm types must be sized, `str` is not"),
             Type::PrimitiveSelf(_) => unreachable!("Self must be resolved at this point"),
@@ -677,7 +675,7 @@ fn build_deref<'a>(
     }
 
     match ty {
-        Type::Trait { .. } | Type::Generic { .. } | Type::PrimitiveSelf(_) => {
+        Type::Generic { .. } | Type::PrimitiveSelf(_) => {
             panic!("{ty:?} should be resolved by now")
         }
         Type::DynType { .. } | Type::UnsizedArray { .. } | Type::PrimitiveStr(_) => {
@@ -810,7 +808,7 @@ fn build_ptr_store(
         }
     }
     match ty {
-        Type::Trait { .. } | Type::Generic { .. } | Type::PrimitiveSelf(_) => {
+        Type::Generic { .. } | Type::PrimitiveSelf(_) => {
             panic!("{ty:?} should be resolved by now")
         }
         Type::UnsizedArray { .. } | Type::DynType { .. } | Type::PrimitiveStr(_) => {
@@ -2205,7 +2203,7 @@ impl TypecheckedExpression {
                             let size = ctx.builder.build_extract_value(fat_ptr, 1, "")?;
                             ctx.push_value(dst, size);
                         }
-                        Type::Generic { .. } | Type::Trait { .. } | Type::PrimitiveSelf(_) => {
+                        Type::Generic { .. } | Type::PrimitiveSelf(_) => {
                             unreachable!("These should've been resolved by now.")
                         }
                         t => unreachable!("{t:?} should be sized"),
