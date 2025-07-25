@@ -4,10 +4,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     annotations::Annotations,
+    context::SharedContext,
     error::ParsingError,
-    globals::GlobalStr,
     module::Module,
     store::{Store, StoreKey},
+    string_interner::InternedStr,
     tokenizer::{Location, Token, TokenType},
 };
 pub use expression::{
@@ -63,31 +64,35 @@ impl Display for Annotation {
 */
 
 #[derive(Clone, Debug)]
-pub struct ParserQueueEntry {
+pub struct ParserQueueEntry<'arena> {
     pub file: Arc<std::path::Path>,
     pub root_dir: Arc<std::path::Path>,
-    pub reserved_key: StoreKey<Module>,
+    pub reserved_key: StoreKey<Module<'arena>>,
 }
 
-pub struct Parser<'a> {
+pub struct Parser<'a, 'arena> {
     pub file: Arc<std::path::Path>,
     pub root_directory: Arc<std::path::Path>,
+    pub ctx: SharedContext<'arena>,
 
-    pub tokens: Vec<Token>,
+    pub tokens: Vec<Token<'arena>>,
     pub current: usize,
     current_annotations: Annotations,
-    pub parser_queue: Arc<RwLock<Vec<ParserQueueEntry>>>,
-    pub modules: &'a RwLock<Store<Module>>,
+    pub parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
+    pub modules: &'a RwLock<Store<Module<'arena>>>,
     /// a map of idents => imports. if the size of the vec is 0, the identifier refers to the
     /// module itself. otherwise, it refers to something in it.
-    pub imports: HashMap<GlobalStr, (Location, StoreKey<Module>, Vec<GlobalStr>)>,
+    pub imports: HashMap<
+        InternedStr<'arena>,
+        (Location, StoreKey<Module<'arena>>, Vec<InternedStr<'arena>>),
+    >,
     resolvers: Arc<[Box<dyn ModuleResolver>]>,
     path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
     path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
-    pub key: StoreKey<Module>,
+    pub key: StoreKey<Module<'arena>>,
 }
 
-impl std::fmt::Debug for Parser<'_> {
+impl std::fmt::Debug for Parser<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Parser")
             .field("file", &self.file)
@@ -101,20 +106,22 @@ impl std::fmt::Debug for Parser<'_> {
     }
 }
 
-impl<'a> Parser<'a> {
+impl<'a, 'arena> Parser<'a, 'arena> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        tokens: Vec<Token>,
-        parser_queue: Arc<RwLock<Vec<ParserQueueEntry>>>,
-        modules: &'a RwLock<Store<Module>>,
+        ctx: SharedContext<'arena>,
+        tokens: Vec<Token<'arena>>,
+        parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
+        modules: &'a RwLock<Store<Module<'arena>>>,
         file: Arc<std::path::Path>,
         root_directory: Arc<std::path::Path>,
         resolvers: Arc<[Box<dyn ModuleResolver>]>,
         path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
         path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
-        key: StoreKey<Module>,
+        key: StoreKey<Module<'arena>>,
     ) -> Self {
         Self {
+            ctx,
             tokens,
             current: 0,
             current_annotations: Default::default(),
@@ -130,7 +137,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn add_tokens<I: IntoIterator<Item = Token>>(&mut self, tokens: I) {
+    pub fn add_tokens<I: IntoIterator<Item = Token<'arena>>>(&mut self, tokens: I) {
         self.tokens.extend(tokens);
     }
 
@@ -146,7 +153,7 @@ impl<'a> Parser<'a> {
         false
     }
 
-    fn peek(&self) -> &Token {
+    fn peek(&self) -> &Token<'arena> {
         if self.is_at_end() {
             return &self.tokens[self.tokens.len() - 1]; // eof
         }
@@ -154,7 +161,7 @@ impl<'a> Parser<'a> {
         &self.tokens[self.current]
     }
 
-    fn peekpeek(&self) -> &Token {
+    fn peekpeek(&self) -> &Token<'arena> {
         self.tokens
             .get(self.current + 1)
             .unwrap_or(&self.tokens[self.tokens.len() - 1])
@@ -168,14 +175,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn advance(&mut self) -> &Token {
+    fn advance(&mut self) -> &Token<'arena> {
         if !self.is_at_end() {
             self.current += 1;
         }
         &self.tokens[self.current - 1]
     }
 
-    fn current(&self) -> &Token {
+    fn current(&self) -> &Token<'arena> {
         if self.current < 1 {
             &self.tokens[0]
         } else {
@@ -196,7 +203,10 @@ impl<'a> Parser<'a> {
         false
     }
 
-    fn expect_tok(&mut self, token_type: TokenType) -> Result<&Token, ParsingError> {
+    fn expect_tok(
+        &mut self,
+        token_type: TokenType,
+    ) -> Result<&Token<'arena>, ParsingError<'arena>> {
         if self.check(token_type) {
             Ok(self.advance())
         } else {

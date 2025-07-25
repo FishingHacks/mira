@@ -12,13 +12,14 @@ use types::{resolve_primitive_type, FunctionType};
 
 use crate::{
     annotations::Annotations,
-    globals::GlobalStr,
+    context::SharedContext,
     lang_items::LangItems,
     module::{
         BakedStruct, ExternalFunction, Function, Module, ModuleContext, ModuleScopeValue, Static,
     },
     parser::{Trait, TypeRef},
     store::{AssociatedStore, Store, StoreKey},
+    string_interner::InternedStr,
     tokenizer::Location,
 };
 
@@ -40,24 +41,24 @@ pub static DUMMY_LOCATION: LazyLock<Location> = LazyLock::new(|| Location {
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypedGeneric {
-    pub name: GlobalStr,
+pub struct TypedGeneric<'arena> {
+    pub name: InternedStr<'arena>,
     pub sized: bool,
-    pub bounds: Vec<StoreKey<TypedTrait>>,
+    pub bounds: Vec<StoreKey<TypedTrait<'arena>>>,
 }
 
 #[derive(Debug)]
-pub struct TypecheckedFunctionContract {
-    pub name: Option<GlobalStr>,
-    pub arguments: Vec<(GlobalStr, Type)>,
-    pub return_type: Type,
+pub struct TypecheckedFunctionContract<'arena> {
+    pub name: Option<InternedStr<'arena>>,
+    pub arguments: Vec<(InternedStr<'arena>, Type<'arena>)>,
+    pub return_type: Type<'arena>,
     pub annotations: Annotations,
     pub location: Location,
-    pub module_id: StoreKey<TypecheckedModule>,
-    pub generics: Vec<TypedGeneric>,
+    pub module_id: StoreKey<TypecheckedModule<'arena>>,
+    pub generics: Vec<TypedGeneric<'arena>>,
 }
 
-impl Hash for TypecheckedFunctionContract {
+impl Hash for TypecheckedFunctionContract<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match &self.name {
             None => "{{anon_fn}}".hash(state),
@@ -71,35 +72,35 @@ impl Hash for TypecheckedFunctionContract {
 
 #[derive(Debug)]
 #[allow(clippy::type_complexity)]
-pub struct TypedTrait {
-    pub name: GlobalStr,
+pub struct TypedTrait<'arena> {
+    pub name: InternedStr<'arena>,
     pub functions: Vec<(
-        GlobalStr,
-        Vec<(GlobalStr, Type)>,
-        Type,
+        InternedStr<'arena>,
+        Vec<(InternedStr<'arena>, Type<'arena>)>,
+        Type<'arena>,
         Annotations,
         Location,
     )>,
     pub location: Location,
-    pub module_id: StoreKey<TypecheckedModule>,
-    pub id: StoreKey<TypedTrait>,
+    pub module_id: StoreKey<TypecheckedModule<'arena>>,
+    pub id: StoreKey<TypedTrait<'arena>>,
     pub annotations: Annotations,
 }
 
 #[derive(Debug)]
-pub struct TypedStruct {
-    pub name: GlobalStr,
-    pub elements: Vec<(GlobalStr, Type)>,
+pub struct TypedStruct<'arena> {
+    pub name: InternedStr<'arena>,
+    pub elements: Vec<(InternedStr<'arena>, Type<'arena>)>,
     pub location: Location,
-    pub global_impl: HashMap<GlobalStr, StoreKey<TypedFunction>>,
-    pub trait_impl: HashMap<StoreKey<TypedTrait>, Vec<StoreKey<TypedFunction>>>,
+    pub global_impl: HashMap<InternedStr<'arena>, StoreKey<TypedFunction<'arena>>>,
+    pub trait_impl: HashMap<StoreKey<TypedTrait<'arena>>, Vec<StoreKey<TypedFunction<'arena>>>>,
     pub annotations: Annotations,
-    pub module_id: StoreKey<TypecheckedModule>,
-    pub id: StoreKey<TypedStruct>,
-    pub generics: Vec<TypedGeneric>,
+    pub module_id: StoreKey<TypecheckedModule<'arena>>,
+    pub id: StoreKey<TypedStruct<'arena>>,
+    pub generics: Vec<TypedGeneric<'arena>>,
 }
 
-impl Hash for TypedStruct {
+impl Hash for TypedStruct<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
         self.elements.hash(state);
@@ -107,40 +108,64 @@ impl Hash for TypedStruct {
     }
 }
 
-pub type TypedStatic = (
-    Type,
-    TypedLiteral, /* guaranteed to not be `Dynamic`, `Intrinsic` or `Static` */
-    StoreKey<TypecheckedModule>,
-    Location,
-    Annotations,
+#[derive(Debug, Clone)]
+pub struct TypedStatic<'arena> {
+    pub type_: Type<'arena>,
+    /// guaranteed to not be `Dynamic`, `Intrinsic` or `Static`
+    pub value: TypedLiteral<'arena>,
+    pub module: StoreKey<TypecheckedModule<'arena>>,
+    pub loc: Location,
+    pub annotations: Annotations,
+}
+
+impl<'arena> TypedStatic<'arena> {
+    pub fn new(
+        type_: Type<'arena>,
+        literal: TypedLiteral<'arena>,
+        module: StoreKey<TypecheckedModule<'arena>>,
+        loc: Location,
+        annotations: Annotations,
+    ) -> Self {
+        Self {
+            type_,
+            value: literal,
+            module,
+            loc,
+            annotations,
+        }
+    }
+}
+
+pub type TypedFunction<'arena> = (
+    TypecheckedFunctionContract<'arena>,
+    Box<[TypecheckedExpression<'arena>]>,
 );
-pub type TypedFunction = (TypecheckedFunctionContract, Box<[TypecheckedExpression]>);
-pub type TypedExternalFunction = (
-    TypecheckedFunctionContract,
-    Option<Box<[TypecheckedExpression]>>,
+pub type TypedExternalFunction<'arena> = (
+    TypecheckedFunctionContract<'arena>,
+    Option<Box<[TypecheckedExpression<'arena>]>>,
 );
 
 #[derive(Debug)]
 #[allow(clippy::type_complexity)]
-pub struct TypecheckingContext {
-    pub modules: RwLock<AssociatedStore<TypecheckedModule, Module>>,
-    pub functions: RwLock<Store<TypedFunction>>,
-    pub external_functions: RwLock<Store<TypedExternalFunction>>,
-    pub statics: RwLock<Store<TypedStatic>>,
-    pub structs: RwLock<Store<TypedStruct>>,
-    pub traits: RwLock<Store<TypedTrait>>,
-    pub lang_items: RwLock<LangItems>,
+pub struct TypecheckingContext<'arena> {
+    pub modules: RwLock<AssociatedStore<TypecheckedModule<'arena>, Module<'arena>>>,
+    pub functions: RwLock<Store<TypedFunction<'arena>>>,
+    pub external_functions: RwLock<Store<TypedExternalFunction<'arena>>>,
+    pub statics: RwLock<Store<TypedStatic<'arena>>>,
+    pub structs: RwLock<Store<TypedStruct<'arena>>>,
+    pub traits: RwLock<Store<TypedTrait<'arena>>>,
+    pub lang_items: RwLock<LangItems<'arena>>,
 }
 
-pub struct TypecheckedModule {
-    scope: HashMap<GlobalStr, ModuleScopeValue>,
-    exports: HashMap<GlobalStr, GlobalStr>,
+pub struct TypecheckedModule<'arena> {
+    scope: HashMap<InternedStr<'arena>, ModuleScopeValue<'arena>>,
+    exports: HashMap<InternedStr<'arena>, InternedStr<'arena>>,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
     pub assembly: Vec<(Location, String)>,
 }
 
-impl Debug for TypecheckedModule {
+impl Debug for TypecheckedModule<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TypecheckedModule")
             .field("scope", &self.scope)
@@ -148,13 +173,16 @@ impl Debug for TypecheckedModule {
     }
 }
 
-impl TypecheckingContext {
-    pub fn new(context: Arc<ModuleContext>) -> Arc<Self> {
-        let traits_reader = context.traits.read();
-        let structs_reader = context.structs.read();
-        let statics_reader = context.statics.read();
-        let functions_reader = context.functions.read();
-        let external_functions_reader = context.external_functions.read();
+impl<'arena> TypecheckingContext<'arena> {
+    pub fn new(
+        ctx: SharedContext<'arena>,
+        module_context: Arc<ModuleContext<'arena>>,
+    ) -> Arc<Self> {
+        let traits_reader = module_context.traits.read();
+        let structs_reader = module_context.structs.read();
+        let statics_reader = module_context.statics.read();
+        let functions_reader = module_context.functions.read();
+        let external_functions_reader = module_context.external_functions.read();
 
         let mut traits = AssociatedStore::<TypedTrait, Trait>::with_capacity(traits_reader.len());
         let mut structs =
@@ -172,7 +200,7 @@ impl TypecheckingContext {
             structs.insert(
                 key,
                 TypedStruct {
-                    name: GlobalStr::ZERO,
+                    name: InternedStr::EMPTY,
                     elements: Vec::new(),
                     location: DUMMY_LOCATION.clone(),
                     global_impl: HashMap::new(),
@@ -188,7 +216,7 @@ impl TypecheckingContext {
         for key in statics_reader.indices() {
             statics.insert(
                 key,
-                (
+                TypedStatic::new(
                     Type::PrimitiveNever,
                     TypedLiteral::Void,
                     StoreKey::undefined(),
@@ -238,7 +266,7 @@ impl TypecheckingContext {
             traits.insert(
                 key,
                 TypedTrait {
-                    name: GlobalStr::ZERO,
+                    name: InternedStr::EMPTY,
                     functions: Vec::new(),
                     location: DUMMY_LOCATION.clone(),
                     module_id: StoreKey::undefined(),
@@ -255,11 +283,11 @@ impl TypecheckingContext {
             traits: RwLock::new(traits.into()),
             external_functions: RwLock::new(external_functions.into()),
             modules: Default::default(),
-            lang_items: RwLock::new(LangItems::default()),
+            lang_items: RwLock::new(LangItems::new(ctx)),
         });
 
         let mut typechecked_module_writer = me.modules.write();
-        let module_reader = context.modules.read();
+        let module_reader = module_context.modules.read();
 
         for key in module_reader.indices() {
             let scope = module_reader[key].scope.clone();
@@ -282,7 +310,10 @@ impl TypecheckingContext {
         me
     }
 
-    pub fn resolve_imports(&self, context: Arc<ModuleContext>) -> Vec<TypecheckingError> {
+    pub fn resolve_imports(
+        &self,
+        context: Arc<ModuleContext<'arena>>,
+    ) -> Vec<TypecheckingError<'arena>> {
         let mut errors = vec![];
         let mut typechecked_module_writer = self.modules.write();
         let module_reader = context.modules.read();
@@ -293,13 +324,11 @@ impl TypecheckingContext {
                     *module_id,
                     path,
                     location,
-                    &mut vec![(key, GlobalStr::ZERO)],
+                    &mut vec![(key, InternedStr::EMPTY)],
                 ) {
                     Err(e) => errors.push(e),
                     Ok(k) => {
-                        typechecked_module_writer[key.cast()]
-                            .scope
-                            .insert(name.clone(), k);
+                        typechecked_module_writer[key.cast()].scope.insert(*name, k);
                     }
                 }
             }
@@ -308,12 +337,13 @@ impl TypecheckingContext {
         errors
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn resolve_type(
         &self,
-        module_id: StoreKey<TypecheckedModule>,
-        typ: &TypeRef,
-        generics: &[TypedGeneric],
-    ) -> Result<Type, TypecheckingError> {
+        module_id: StoreKey<TypecheckedModule<'arena>>,
+        typ: &TypeRef<'arena>,
+        generics: &[TypedGeneric<'arena>],
+    ) -> Result<Type<'arena>, TypecheckingError<'arena>> {
         if let Some(primitive) = resolve_primitive_type(typ) {
             return Ok(primitive);
         }
@@ -339,7 +369,7 @@ impl TypecheckingContext {
                             trait_name.clone(),
                         ));
                     };
-                    trait_refs.push((id.cast(), trait_name.as_slice().last().unwrap().clone()));
+                    trait_refs.push((id.cast(), *trait_name.as_slice().last().unwrap()));
                 }
                 Ok(Type::DynType {
                     trait_refs,
@@ -375,7 +405,7 @@ impl TypecheckingContext {
                         .find(|(_, v)| v.name == type_name.entries[0].0)
                     {
                         return Ok(Type::Generic {
-                            name: type_name.entries[0].0.clone(),
+                            name: type_name.entries[0].0,
                             generic_id: id as u8,
                             num_references: *num_references,
                             sized: generic.sized,
@@ -384,11 +414,7 @@ impl TypecheckingContext {
                     }
                 }
 
-                let path = type_name
-                    .entries
-                    .iter()
-                    .map(|v| v.0.clone())
-                    .collect::<Vec<_>>();
+                let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();
                 // NOTE: this should only have a generic at the end as this is a type
                 // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
                 for (_, generics) in type_name.entries.iter() {
@@ -402,7 +428,7 @@ impl TypecheckingContext {
                 match typed_resolve_import(self, module_id, &path, loc, &mut Vec::new())? {
                     ModuleScopeValue::Struct(id) => Ok(Type::Struct {
                         struct_id: id.cast(),
-                        name: self.structs.read()[id.cast()].name.clone(),
+                        name: self.structs.read()[id.cast()].name,
                         num_references: *num_references,
                     }),
                     v => Err(TypecheckingError::MismatchingScopeType {
@@ -451,10 +477,10 @@ impl TypecheckingContext {
     /// returns if a recursive field was detected
     fn resolve_struct(
         &self,
-        context: Arc<ModuleContext>,
-        id: StoreKey<BakedStruct>,
-        module_id: StoreKey<Module>,
-        errors: &mut Vec<TypecheckingError>,
+        context: Arc<ModuleContext<'arena>>,
+        id: StoreKey<BakedStruct<'arena>>,
+        module_id: StoreKey<Module<'arena>>,
+        errors: &mut Vec<TypecheckingError<'arena>>,
     ) -> bool {
         if DUMMY_LOCATION.ne(&self.structs.read()[id.cast()].location) {
             return false;
@@ -483,20 +509,20 @@ impl TypecheckingContext {
                     Ok(ModuleScopeValue::Trait(trait_id)) => bounds.push(trait_id.cast()),
                     Ok(_) => errors.push(TypecheckingError::UnboundIdent {
                         location: loc.clone(),
-                        name: bound.entries[bound.entries.len() - 1].clone(),
+                        name: bound.entries[bound.entries.len() - 1],
                     }),
                 }
             }
 
             generics.push(TypedGeneric {
-                name: generic.name.clone(),
+                name: generic.name,
                 sized: generic.sized,
                 bounds,
             });
         }
 
         let mut typed_struct = TypedStruct {
-            name: writer[id].name.clone(),
+            name: writer[id].name,
             location: std::mem::replace(&mut writer[id].location, DUMMY_LOCATION.clone()),
             elements: Vec::new(),
             global_impl,
@@ -526,12 +552,12 @@ impl TypecheckingContext {
 
     fn type_resolution_resolve_type(
         &self,
-        typ: &TypeRef,
-        generics: &[TypedGeneric],
-        module: StoreKey<TypecheckedModule>,
-        context: Arc<ModuleContext>,
-        errors: &mut Vec<TypecheckingError>,
-    ) -> Option<Type> {
+        typ: &TypeRef<'arena>,
+        generics: &[TypedGeneric<'arena>],
+        module: StoreKey<TypecheckedModule<'arena>>,
+        context: Arc<ModuleContext<'arena>>,
+        errors: &mut Vec<TypecheckingError<'arena>>,
+    ) -> Option<Type<'arena>> {
         if let Some(typ) = resolve_primitive_type(typ) {
             return Some(typ);
         }
@@ -573,11 +599,7 @@ impl TypecheckingContext {
                 type_name,
                 loc,
             } => {
-                let path = type_name
-                    .entries
-                    .iter()
-                    .map(|v| v.0.clone())
-                    .collect::<Vec<_>>();
+                let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();
                 // NOTE: this should only have a generic at the end as this is a type
                 // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
                 for (_, generics) in type_name.entries.iter() {
@@ -593,7 +615,7 @@ impl TypecheckingContext {
                         generics.iter().enumerate().find(|(_, v)| v.name == *name)
                     {
                         return Some(Type::Generic {
-                            name: generic.name.clone(),
+                            name: generic.name,
                             generic_id: generic_id as u8,
                             num_references: 0,
                             sized: generic.sized,
@@ -607,7 +629,7 @@ impl TypecheckingContext {
                 else {
                     errors.push(TypecheckingError::UnboundIdent {
                         location: loc.clone(),
-                        name: path[path.len() - 1].clone(),
+                        name: path[path.len() - 1],
                     });
                     return None;
                 };
@@ -626,7 +648,7 @@ impl TypecheckingContext {
                     if typechecked_struct.location != *DUMMY_LOCATION {
                         return Some(Type::Struct {
                             struct_id: typechecked_struct.id,
-                            name: typechecked_struct.name.clone(),
+                            name: typechecked_struct.name,
                             num_references: *num_references,
                         });
                     }
@@ -644,7 +666,7 @@ impl TypecheckingContext {
                     return Some(Type::Struct {
                         struct_id: typechecked_struct.id,
                         num_references: *num_references,
-                        name: typechecked_struct.name.clone(),
+                        name: typechecked_struct.name,
                     });
                 }
                 unreachable!("struct should be resolved by here")
@@ -697,13 +719,14 @@ impl TypecheckingContext {
     }
 }
 
-fn typed_resolve_import(
-    context: &TypecheckingContext,
-    module: StoreKey<TypecheckedModule>,
-    import: &[GlobalStr],
+#[allow(clippy::result_large_err)]
+fn typed_resolve_import<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module: StoreKey<TypecheckedModule<'arena>>,
+    import: &[InternedStr<'arena>],
     location: &Location,
-    already_included: &mut Vec<(StoreKey<TypecheckedModule>, GlobalStr)>,
-) -> Result<ModuleScopeValue, TypecheckingError> {
+    already_included: &mut Vec<(StoreKey<TypecheckedModule<'arena>>, InternedStr<'arena>)>,
+) -> Result<ModuleScopeValue<'arena>, TypecheckingError<'arena>> {
     if import.is_empty() {
         return Ok(ModuleScopeValue::Module(module.cast()));
     }
@@ -715,7 +738,7 @@ fn typed_resolve_import(
             location: location.clone(),
         });
     }
-    already_included.push((module, import[0].clone()));
+    already_included.push((module, import[0]));
 
     let reader = context.modules.read();
     let ident = match reader[module.cast()].exports.get(&import[0]) {
@@ -723,7 +746,7 @@ fn typed_resolve_import(
         None if already_included.len() < 2 /* this is the module it was imported from */ => &import[0],
         None => return Err(TypecheckingError::ExportNotFound {
             location: location.clone(),
-            name: import[0].clone(),
+            name: import[0],
         }),
     };
 
@@ -740,12 +763,12 @@ fn typed_resolve_import(
                     }
                     return Err(TypecheckingError::ExportNotFound {
                         location: location.clone(),
-                        name: import[2].clone(),
+                        name: import[2],
                     });
                 } else {
                     return Err(TypecheckingError::ExportNotFound {
                         location: reader[id.cast()].location.clone(),
-                        name: import[1].clone(),
+                        name: import[1],
                     });
                 }
             }
@@ -756,24 +779,25 @@ fn typed_resolve_import(
             | ModuleScopeValue::Static(_) => {
                 return Err(TypecheckingError::ExportNotFound {
                     location: location.clone(),
-                    name: import[1].clone(),
+                    name: import[1],
                 })
             }
         }
     }
     Err(TypecheckingError::ExportNotFound {
         location: location.clone(),
-        name: import[0].clone(),
+        name: import[0],
     })
 }
 
-fn resolve_import(
-    context: &ModuleContext,
-    module: StoreKey<Module>,
-    import: &[GlobalStr],
+#[allow(clippy::result_large_err)]
+fn resolve_import<'arena>(
+    context: &ModuleContext<'arena>,
+    module: StoreKey<Module<'arena>>,
+    import: &[InternedStr<'arena>],
     location: &Location,
-    already_included: &mut Vec<(StoreKey<Module>, GlobalStr)>,
-) -> Result<ModuleScopeValue, TypecheckingError> {
+    already_included: &mut Vec<(StoreKey<Module<'arena>>, InternedStr<'arena>)>,
+) -> Result<ModuleScopeValue<'arena>, TypecheckingError<'arena>> {
     if import.is_empty() {
         return Ok(ModuleScopeValue::Module(module));
     }
@@ -785,7 +809,7 @@ fn resolve_import(
             location: location.clone(),
         });
     }
-    already_included.push((module, import[0].clone()));
+    already_included.push((module, import[0]));
 
     let reader = context.modules.read();
     let ident = match reader[module].exports.get(&import[0]) {
@@ -793,7 +817,7 @@ fn resolve_import(
         None if already_included.len() < 2 /* this is the module it was imported from */ => &import[0],
         None => return Err(TypecheckingError::ExportNotFound {
             location: location.clone(),
-            name: import[0].clone(),
+            name: import[0],
         }),
     };
 
@@ -815,12 +839,12 @@ fn resolve_import(
                     }
                     return Err(TypecheckingError::ExportNotFound {
                         location: context.functions.read()[function_id].0.location.clone(),
-                        name: import[2].clone(),
+                        name: import[2],
                     });
                 } else {
                     return Err(TypecheckingError::ExportNotFound {
                         location: reader[id].location.clone(),
-                        name: import[1].clone(),
+                        name: import[1],
                     });
                 }
             }
@@ -830,7 +854,7 @@ fn resolve_import(
             | ModuleScopeValue::Static(_) => {
                 return Err(TypecheckingError::ExportNotFound {
                     location: location.clone(),
-                    name: import[1].clone(),
+                    name: import[1],
                 })
             }
         }
@@ -848,12 +872,12 @@ fn resolve_import(
                     }
                     return Err(TypecheckingError::ExportNotFound {
                         location: location.clone(),
-                        name: import[2].clone(),
+                        name: import[2],
                     });
                 } else {
                     return Err(TypecheckingError::ExportNotFound {
                         location: reader[id].location.clone(),
-                        name: import[1].clone(),
+                        name: import[1],
                     });
                 }
             }
@@ -864,18 +888,18 @@ fn resolve_import(
             | ModuleScopeValue::Static(_) => {
                 return Err(TypecheckingError::ExportNotFound {
                     location: location.clone(),
-                    name: import[1].clone(),
+                    name: import[1],
                 })
             }
         }
     }
     Err(TypecheckingError::ExportNotFound {
         location: location.clone(),
-        name: import[0].clone(),
+        name: import[0],
     })
 }
 
-impl From<ModuleScopeValue> for ScopeKind {
+impl From<ModuleScopeValue<'_>> for ScopeKind {
     fn from(value: ModuleScopeValue) -> Self {
         match value {
             ModuleScopeValue::Trait(_) => Self::Trait,

@@ -96,7 +96,12 @@ impl Intrinsic {
         }
     }
 
-    pub fn is_valid_for(&self, loc: Location, generics: &[Type]) -> Result<(), TypecheckingError> {
+    #[allow(clippy::result_large_err)]
+    pub fn is_valid_for<'arena>(
+        &self,
+        loc: Location,
+        generics: &[Type<'arena>],
+    ) -> Result<(), TypecheckingError<'arena>> {
         let required_generics = self.generic_count();
         if generics.len() != required_generics {
             return Err(TypecheckingError::MismatchingGenericCount(
@@ -192,12 +197,13 @@ impl Annotation for IntrinsicAnnotation {
 }
 
 impl IntrinsicAnnotation {
-    pub fn parse(mut tokens: TokenStream) -> Result<Self, ParsingError> {
+    pub fn parse<'arena>(mut tokens: TokenStream<'arena>) -> Result<Self, ParsingError<'arena>> {
         let (name, loc) = tokens.expect_remove_string()?;
-        tokens.finish()?;
-        name.with(Intrinsic::from_str)
+        let v = Intrinsic::from_str(&name)
             .map(Self)
-            .map_err(|_| ParsingError::InvalidIntrinsic { loc, name })
+            .map_err(|_| ParsingError::InvalidIntrinsic { loc, name })?;
+        tokens.finish()?;
+        Ok(v)
     }
 
     pub fn get(&self) -> Intrinsic {

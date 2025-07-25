@@ -31,12 +31,12 @@ use inkwell::{
 };
 
 use crate::{
-    globals::GlobalStr,
     std_annotations::{
         alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
         noinline::Noinline, section::SectionAnnotation,
     },
     store::{AssociatedStore, StoreKey},
+    string_interner::InternedStr,
     target::{Target, NATIVE_TARGET},
     typechecking::{
         expression::{TypecheckedExpression, TypedLiteral},
@@ -64,13 +64,14 @@ pub(super) struct DefaultTypes<'ctx> {
     pub empty_struct: StructType<'ctx>,
 }
 
-pub type FunctionsStore<'ctx> = AssociatedStore<FunctionValue<'ctx>, TypedFunction>;
-pub type ExternalFunctionsStore<'ctx> = AssociatedStore<FunctionValue<'ctx>, TypedExternalFunction>;
-pub type StructsStore<'ctx> = AssociatedStore<StructType<'ctx>, TypedStruct>;
-pub type StaticsStore<'ctx> = AssociatedStore<GlobalValue<'ctx>, TypedStatic>;
+pub type FunctionsStore<'ctx, 'arena> = AssociatedStore<FunctionValue<'ctx>, TypedFunction<'arena>>;
+pub type ExternalFunctionsStore<'ctx, 'arena> =
+    AssociatedStore<FunctionValue<'ctx>, TypedExternalFunction<'arena>>;
+pub type StructsStore<'ctx, 'arena> = AssociatedStore<StructType<'ctx>, TypedStruct<'arena>>;
+pub type StaticsStore<'ctx, 'arena> = AssociatedStore<GlobalValue<'ctx>, TypedStatic<'arena>>;
 
-pub struct CodegenContext<'ctx> {
-    pub(super) tc_ctx: Arc<TypecheckingContext>,
+pub struct CodegenContext<'ctx, 'arena> {
+    pub(super) tc_ctx: Arc<TypecheckingContext<'arena>>,
     pub(super) builder: Builder<'ctx>,
     pub(super) context: &'ctx Context,
     pub(super) default_types: DefaultTypes<'ctx>,
@@ -78,14 +79,15 @@ pub struct CodegenContext<'ctx> {
     pub module: Module<'ctx>,
     pub machine: TargetMachine,
     pub triple: TargetTriple,
-    pub(super) functions: FunctionsStore<'ctx>,
-    pub(super) external_functions: ExternalFunctionsStore<'ctx>,
-    pub(super) structs: StructsStore<'ctx>,
-    pub(super) statics: StaticsStore<'ctx>,
-    pub(super) string_map: HashMap<GlobalStr, GlobalValue<'ctx>>,
-    pub(super) debug_ctx: DebugContext<'ctx>,
+    pub(super) functions: FunctionsStore<'ctx, 'arena>,
+    pub(super) external_functions: ExternalFunctionsStore<'ctx, 'arena>,
+    pub(super) structs: StructsStore<'ctx, 'arena>,
+    pub(super) statics: StaticsStore<'ctx, 'arena>,
+    pub(super) string_map: HashMap<InternedStr<'arena>, GlobalValue<'ctx>>,
+    pub(super) debug_ctx: DebugContext<'ctx, 'arena>,
     pub(super) intrinsics: LLVMIntrinsics,
-    pub(super) vtables: HashMap<(Type, Vec<StoreKey<TypedTrait>>), GlobalValue<'ctx>>,
+    pub(super) vtables:
+        HashMap<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
     pub(super) config: CodegenConfig<'ctx>,
 }
 
@@ -171,7 +173,7 @@ impl<'a> CodegenConfig<'a> {
     setter!(cpu_features: &'a str, reloc_mode: RelocMode, runtime_safety: bool, optimizations: Optimizations, target: Target);
 }
 
-impl<'a> CodegenContext<'a> {
+impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     pub fn finish(&self) -> Result<(), LLVMString> {
         self.finalize_debug_info();
         self.check()?;
@@ -234,12 +236,12 @@ impl<'a> CodegenContext<'a> {
     }
 
     pub fn new(
-        context: &'a Context,
-        ctx: Arc<TypecheckingContext>,
+        context: &'ctx Context,
+        ctx: Arc<TypecheckingContext<'arena>>,
         module: &str,
         path: Arc<Path>,
-        config: CodegenConfig<'a>,
-    ) -> Result<CodegenContext<'a>, CodegenError> {
+        config: CodegenConfig<'ctx>,
+    ) -> Result<Self, CodegenError> {
         LLVMTarget::initialize_all(&InitializationConfig::default());
         let (triple, _) = config.target.to_llvm_triple();
         let llvm_target = LLVMTarget::from_triple(&triple)?;
@@ -288,15 +290,12 @@ impl<'a> CodegenContext<'a> {
         let (mut strings, mut vtables) = collect_data(&ctx);
         let mut string_map = HashMap::new();
         for strn in strings.drain() {
-            let (constant, length, mangled_name) = strn.with(|v| {
-                (
-                    context.const_string(v.as_bytes(), false),
-                    v.len(),
-                    mangle_string(v),
-                )
-            });
+            let constant = context.const_string(strn.as_bytes(), false);
+            let mangled_name = mangle_string(&strn);
+            assert!(strn.len() <= u32::MAX as usize);
+
             let global = module.add_global(
-                default_types.i8.array_type(length as u32),
+                default_types.i8.array_type(strn.len() as u32),
                 None,
                 &mangled_name,
             );
@@ -440,15 +439,16 @@ impl<'a> CodegenContext<'a> {
                 .get_first_annotation::<ExternAliasAnnotation>()
                 .map(|v| &v.0)
             {
-                name
+                name.as_str()
             } else {
                 contract
                     .name
                     .as_ref()
                     .expect("external functions should always have a name")
+                    .to_str()
             };
 
-            let func = name.with(|name| module.add_function(name, fn_typ, None));
+            let func = module.add_function(name, fn_typ, None);
             if let Some(callconv) = contract
                 .annotations
                 .get_first_annotation::<CallConvAnnotation>()
@@ -477,7 +477,7 @@ impl<'a> CodegenContext<'a> {
                 .annotations
                 .get_first_annotation::<SectionAnnotation>()
             {
-                section.0.with(|name| func.set_section(Some(name)));
+                func.set_section(Some(&section.0));
             }
             match body {
                 Some(_) => func.set_linkage(Linkage::DLLExport),
@@ -492,13 +492,13 @@ impl<'a> CodegenContext<'a> {
         for (key, static_element) in static_reader.index_value_iter() {
             let global = module.add_global(
                 static_element
-                    .0
+                    .type_
                     .to_llvm_basic_type(&default_types, &structs, context),
                 None,
                 &mangle_static(&ctx, key),
             );
             global.set_linkage(Linkage::Internal);
-            global.set_initializer(&static_element.1.to_basic_value(
+            global.set_initializer(&static_element.value.to_basic_value(
                 &|i| panic!("index out of bounds: the length is 0, but the index is {i}"),
                 &default_types,
                 &structs,
@@ -551,7 +551,7 @@ impl<'a> CodegenContext<'a> {
             for trait_id in traits.iter() {
                 match &ty {
                     Type::Struct { struct_id, .. } => {
-                        for fn_id in struct_reader[*struct_id].trait_impl[trait_id]
+                        for fn_id in struct_reader[struct_id].trait_impl[trait_id]
                             .iter()
                             .copied()
                         {
@@ -578,7 +578,7 @@ impl<'a> CodegenContext<'a> {
                 .fn_type(&[default_types.i32.into()], false),
             None,
         );
-        Ok(CodegenContext {
+        Ok(Self {
             context,
             module,
             builder,
@@ -601,22 +601,22 @@ impl<'a> CodegenContext<'a> {
 
     pub fn compile_external_fn(
         &mut self,
-        fn_id: StoreKey<TypedExternalFunction>,
-        tc_scope: Vec<(Type, ScopeTypeMetadata)>,
+        fn_id: StoreKey<TypedExternalFunction<'arena>>,
+        tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
     ) -> Result<(), BuilderError> {
         self.internal_compile_fn(fn_id.cast(), tc_scope, true)
     }
     pub fn compile_fn(
         &mut self,
-        fn_id: StoreKey<TypedFunction>,
-        tc_scope: Vec<(Type, ScopeTypeMetadata)>,
+        fn_id: StoreKey<TypedFunction<'arena>>,
+        tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
     ) -> Result<(), BuilderError> {
         self.internal_compile_fn(fn_id, tc_scope, false)
     }
     fn internal_compile_fn(
         &mut self,
-        fn_id: StoreKey<TypedFunction>,
-        tc_scope: Vec<(Type, ScopeTypeMetadata)>,
+        fn_id: StoreKey<TypedFunction<'arena>>,
+        tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
         is_external: bool,
     ) -> Result<(), BuilderError> {
         let ext_fn_reader = self.tc_ctx.external_functions.read();
@@ -646,7 +646,7 @@ impl<'a> CodegenContext<'a> {
 
         let body_basic_block = self
             .context
-            .append_basic_block(func, &format!("entry_{}", fn_id));
+            .append_basic_block(func, &format!("entry_{fn_id}"));
         let void_arg = self.default_types.empty_struct.const_zero().into();
 
         self.builder.position_at_end(body_basic_block);
@@ -693,7 +693,7 @@ impl<'a> CodegenContext<'a> {
                 scope,
                 &contract.location,
                 arg,
-                name,
+                *name,
                 function_ctx.current_block,
                 contract.module_id,
                 &structs_reader,
@@ -726,11 +726,11 @@ impl<'a> CodegenContext<'a> {
 }
 
 #[allow(clippy::type_complexity)]
-fn collect_data(
-    ctx: &TypecheckingContext,
+fn collect_data<'arena>(
+    ctx: &TypecheckingContext<'arena>,
 ) -> (
-    HashSet<GlobalStr>,
-    HashSet<(Type, Vec<StoreKey<TypedTrait>>)>,
+    HashSet<InternedStr<'arena>>,
+    HashSet<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
 ) {
     let function_reader = ctx.functions.read();
     let ext_function_reader = ctx.external_functions.read();
@@ -747,16 +747,16 @@ fn collect_data(
         }
     }
     for static_value in statics_reader.iter() {
-        collect_strings_for_typed_literal(&static_value.1, &mut strings);
+        collect_strings_for_typed_literal(&static_value.value, &mut strings);
     }
 
     (strings, vtables)
 }
 
-fn collect_strings_for_expressions(
-    exprs: &[TypecheckedExpression],
-    strings: &mut HashSet<GlobalStr>,
-    vtables: &mut HashSet<(Type, Vec<StoreKey<TypedTrait>>)>,
+fn collect_strings_for_expressions<'arena>(
+    exprs: &[TypecheckedExpression<'arena>],
+    strings: &mut HashSet<InternedStr<'arena>>,
+    vtables: &mut HashSet<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
 ) {
     for expr in exprs {
         match expr {
@@ -853,9 +853,12 @@ fn collect_strings_for_expressions(
         }
     }
 }
-fn collect_strings_for_typed_literal(lit: &TypedLiteral, strings: &mut HashSet<GlobalStr>) {
+fn collect_strings_for_typed_literal<'arena>(
+    lit: &TypedLiteral<'arena>,
+    strings: &mut HashSet<InternedStr<'arena>>,
+) {
     match lit {
-        TypedLiteral::String(global_str) => _ = strings.insert(global_str.clone()),
+        TypedLiteral::String(global_str) => _ = strings.insert(*global_str),
         TypedLiteral::Array(_, vec) | TypedLiteral::Tuple(vec) | TypedLiteral::Struct(_, vec) => {
             vec.iter()
                 .for_each(|v| collect_strings_for_typed_literal(v, strings))

@@ -8,17 +8,17 @@ use crate::{
     },
 };
 
-struct DceContext<'tc> {
-    used_functions: HashSet<StoreKey<TypedFunction>>,
-    used_statics: HashSet<StoreKey<TypedStatic>>,
-    funcs_left: HashSet<StoreKey<TypedFunction>>,
-    tc_ctx: &'tc TypecheckingContext,
+struct DceContext<'tc, 'arena> {
+    used_functions: HashSet<StoreKey<TypedFunction<'arena>>>,
+    used_statics: HashSet<StoreKey<TypedStatic<'arena>>>,
+    funcs_left: HashSet<StoreKey<TypedFunction<'arena>>>,
+    tc_ctx: &'tc TypecheckingContext<'arena>,
 }
 
-pub fn run_dce(
-    tc_ctx: &TypecheckingContext,
-    used_funcs: &[StoreKey<TypedFunction>],
-    used_statics: &[StoreKey<TypedStatic>],
+pub fn run_dce<'arena>(
+    tc_ctx: &TypecheckingContext<'arena>,
+    used_funcs: &[StoreKey<TypedFunction<'arena>>],
+    used_statics: &[StoreKey<TypedStatic<'arena>>],
 ) {
     let mut ctx = DceContext {
         used_functions: HashSet::new(),
@@ -54,7 +54,7 @@ pub fn run_dce(
         .retain(|k, _| ctx.used_statics.contains(k));
 }
 
-fn run_fn(func: StoreKey<TypedFunction>, ctx: &mut DceContext) {
+fn run_fn<'arena>(func: StoreKey<TypedFunction<'arena>>, ctx: &mut DceContext<'_, 'arena>) {
     ctx.funcs_left.remove(&func);
     ctx.used_functions.insert(func);
     let func_reader = ctx.tc_ctx.functions.read();
@@ -64,7 +64,7 @@ fn run_fn(func: StoreKey<TypedFunction>, ctx: &mut DceContext) {
     run_block(func_body, ctx);
 }
 
-fn run_block(block: &[TypecheckedExpression], ctx: &mut DceContext) {
+fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceContext<'_, 'arena>) {
     for expr in block {
         match expr {
             // === Blocks ===
@@ -175,7 +175,7 @@ fn run_block(block: &[TypecheckedExpression], ctx: &mut DceContext) {
     }
 }
 
-fn run_literal(literal: &TypedLiteral, ctx: &mut DceContext) {
+fn run_literal<'arena>(literal: &TypedLiteral<'arena>, ctx: &mut DceContext<'_, 'arena>) {
     match literal {
         TypedLiteral::Function(func, _) => {
             if !ctx.used_functions.contains(func) {

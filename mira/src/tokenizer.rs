@@ -7,12 +7,13 @@ use std::{
 };
 
 use crate::{
+    context::SharedContext,
     error::{ParsingError, TokenizationError},
-    globals::GlobalStr,
     module::Module,
     module_resolution::ModuleResolver,
     parser::{LiteralValue, Parser, ParserQueueEntry},
     store::{Store, StoreKey},
+    string_interner::InternedStr,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,12 +142,12 @@ impl FromStr for NumberType {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Literal {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Literal<'arena> {
     Float(f64, NumberType),
     SInt(i64, NumberType),
     UInt(u64, NumberType),
-    String(GlobalStr),
+    String(InternedStr<'arena>),
     Bool(bool),
 }
 
@@ -185,13 +186,13 @@ macro_rules! loc {
 pub(crate) use loc;
 
 #[derive(Clone, Debug)]
-pub struct Token {
+pub struct Token<'arena> {
     pub typ: TokenType,
-    pub literal: Option<Literal>,
+    pub literal: Option<Literal<'arena>>,
     pub location: Location,
 }
 
-impl Display for Token {
+impl Display for Token<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.typ {
             TokenType::As => f.write_str("as"),
@@ -281,10 +282,10 @@ impl Display for Token {
     }
 }
 
-impl Token {
+impl<'arena> Token<'arena> {
     pub fn new(
         typ: TokenType,
-        literal: Option<Literal>,
+        literal: Option<Literal<'arena>>,
         line_number: u32,
         column: u32,
         file: Arc<Path>,
@@ -296,7 +297,7 @@ impl Token {
         }
     }
 
-    pub fn to_literal_value(&self) -> Option<LiteralValue> {
+    pub fn to_literal_value(&self) -> Option<LiteralValue<'arena>> {
         match self.typ {
             TokenType::StringLiteral
             | TokenType::BooleanLiteral
@@ -307,12 +308,12 @@ impl Token {
                 Literal::Float(float, typ) => LiteralValue::Float(*float, *typ),
                 Literal::SInt(int, typ) => LiteralValue::SInt(*int, *typ),
                 Literal::UInt(uint, typ) => LiteralValue::UInt(*uint, *typ),
-                Literal::String(string) => LiteralValue::String(string.clone()),
+                Literal::String(string) => LiteralValue::String(*string),
             }),
             TokenType::VoidLiteral => Some(LiteralValue::Void),
             TokenType::IdentifierLiteral => match self.literal {
                 Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(
-                    crate::parser::Path::new(v.clone(), Vec::new()),
+                    crate::parser::Path::new(*v, Vec::new()),
                 )),
                 _ => None,
             },
@@ -320,7 +321,7 @@ impl Token {
         }
     }
 
-    pub fn void_literal(&self) -> Result<(), ParsingError> {
+    pub fn void_literal(&self) -> Result<(), ParsingError<'arena>> {
         match &self.literal {
             None => Ok(()),
             _ => Err(ParsingError::InvalidTokenization {
@@ -329,16 +330,16 @@ impl Token {
         }
     }
 
-    pub fn string_literal(&self) -> Result<&GlobalStr, ParsingError> {
+    pub fn string_literal(&self) -> Result<InternedStr<'arena>, ParsingError<'arena>> {
         match &self.literal {
-            Some(Literal::String(v)) => Ok(v),
+            Some(Literal::String(v)) => Ok(*v),
             _ => Err(ParsingError::InvalidTokenization {
                 loc: self.location.clone(),
             }),
         }
     }
 
-    pub fn bool_literal(&self) -> Result<bool, ParsingError> {
+    pub fn bool_literal(&self) -> Result<bool, ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::Bool(v)) => Ok(*v),
             _ => Err(ParsingError::InvalidTokenization {
@@ -347,7 +348,7 @@ impl Token {
         }
     }
 
-    pub fn float_literal(&self) -> Result<(f64, NumberType), ParsingError> {
+    pub fn float_literal(&self) -> Result<(f64, NumberType), ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::Float(v, numty)) => Ok((*v, *numty)),
             _ => Err(ParsingError::InvalidTokenization {
@@ -356,7 +357,7 @@ impl Token {
         }
     }
 
-    pub fn sint_literal(&self) -> Result<(i64, NumberType), ParsingError> {
+    pub fn sint_literal(&self) -> Result<(i64, NumberType), ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::SInt(v, numty)) => Ok((*v, *numty)),
             _ => Err(ParsingError::InvalidTokenization {
@@ -365,7 +366,7 @@ impl Token {
         }
     }
 
-    pub fn uint_literal(&self) -> Result<(u64, NumberType), ParsingError> {
+    pub fn uint_literal(&self) -> Result<(u64, NumberType), ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::UInt(v, numty)) => Ok((*v, *numty)),
             _ => Err(ParsingError::InvalidTokenization {
@@ -375,18 +376,19 @@ impl Token {
     }
 }
 
-pub struct Tokenizer {
+pub struct Tokenizer<'arena> {
     source: Vec<char>,
     pub file: Arc<Path>,
-    tokens: Vec<Token>,
+    tokens: Vec<Token<'arena>>,
     start: usize,
     current: usize,
     line: u32,
     column: u32,
+    ctx: SharedContext<'arena>,
 }
 
-impl Tokenizer {
-    pub fn new(source: &str, file: Arc<Path>) -> Self {
+impl<'arena> Tokenizer<'arena> {
+    pub fn new(ctx: SharedContext<'arena>, source: &str, file: Arc<Path>) -> Self {
         Self {
             source: source.chars().collect(),
             file,
@@ -395,6 +397,7 @@ impl Tokenizer {
             tokens: vec![],
             line: 1,
             column: 0,
+            ctx,
         }
     }
 
@@ -454,7 +457,7 @@ impl Tokenizer {
         true
     }
 
-    pub fn push_token(&mut self, tok: Token) {
+    pub fn push_token(&mut self, tok: Token<'arena>) {
         self.tokens.push(tok);
     }
 
@@ -476,7 +479,7 @@ impl Tokenizer {
         Ok(())
     }
 
-    fn int_scan_token(&mut self) -> Result<Option<Token>, TokenizationError> {
+    fn int_scan_token(&mut self) -> Result<Option<Token<'arena>>, TokenizationError> {
         let c = self.advance();
 
         macro_rules! token {
@@ -565,7 +568,7 @@ impl Tokenizer {
     }
 
     #[inline(always)]
-    fn get_token(&self, token: TokenType) -> Token {
+    fn get_token(&self, token: TokenType) -> Token<'arena> {
         Token::new(token, None, self.line, self.column, self.file.clone())
     }
 
@@ -595,7 +598,7 @@ impl Tokenizer {
         value: u64,
         is_negative: bool,
         allow_float: bool,
-    ) -> Result<Token, TokenizationError> {
+    ) -> Result<Token<'arena>, TokenizationError> {
         let mut typ = String::from(first_char);
 
         loop {
@@ -650,7 +653,7 @@ impl Tokenizer {
         &mut self,
         location: Location,
         is_negative: bool,
-    ) -> Result<Token, TokenizationError> {
+    ) -> Result<Token<'arena>, TokenizationError> {
         let mut value: u64 = 0;
 
         loop {
@@ -702,7 +705,7 @@ impl Tokenizer {
         &mut self,
         location: Location,
         is_negative: bool,
-    ) -> Result<Token, TokenizationError> {
+    ) -> Result<Token<'arena>, TokenizationError> {
         let mut value: u64 = 0;
 
         loop {
@@ -752,7 +755,7 @@ impl Tokenizer {
         &mut self,
         location: Location,
         is_negative: bool,
-    ) -> Result<Token, TokenizationError> {
+    ) -> Result<Token<'arena>, TokenizationError> {
         let mut value: u64 = 0;
 
         loop {
@@ -814,7 +817,7 @@ impl Tokenizer {
         value
     }
 
-    fn parse_number(&mut self, mut first_char: char) -> Result<Token, TokenizationError> {
+    fn parse_number(&mut self, mut first_char: char) -> Result<Token<'arena>, TokenizationError> {
         let loc = loc!(self.file;self.line;self.column);
         let is_negative = first_char == '-';
         let mut is_float = false;
@@ -935,9 +938,9 @@ impl Tokenizer {
         Ok(self.get_token_lit_loc(tok, lit, loc))
     }
 
-    fn parse_string(&mut self, string_char: char) -> Result<Token, TokenizationError> {
+    fn parse_string(&mut self, string_char: char) -> Result<Token<'arena>, TokenizationError> {
         let mut is_backslash = false;
-        let mut str = String::new();
+        let mut s = String::new();
         let loc = loc!(self.file;self.line;self.column);
 
         while !self.is_at_end() {
@@ -945,13 +948,13 @@ impl Tokenizer {
 
             if is_backslash {
                 is_backslash = false;
-                str.push(Self::escape_char_to_real_char(c));
+                s.push(Self::escape_char_to_real_char(c));
             } else if c == '\\' {
                 is_backslash = true;
             } else if c == string_char || c == '\n' {
                 break;
             } else {
-                str.push(c);
+                s.push(c);
             }
         }
         if self.cur_char() != string_char || self.source[self.current - 2] == '\\' {
@@ -962,7 +965,7 @@ impl Tokenizer {
 
         Ok(self.get_token_lit_loc(
             TokenType::StringLiteral,
-            Literal::String(GlobalStr::new_boxed(str.into_boxed_str())),
+            Literal::String(self.ctx.intern_str(&s)),
             loc,
         ))
     }
@@ -977,7 +980,10 @@ impl Tokenizer {
         }
     }
 
-    fn parse_identifier(&mut self, starting_char: char) -> Result<Token, TokenizationError> {
+    fn parse_identifier(
+        &mut self,
+        starting_char: char,
+    ) -> Result<Token<'arena>, TokenizationError> {
         let mut identifier = String::new();
         identifier.push(starting_char);
         let loc = loc!(self.file;self.line;self.column);
@@ -1011,7 +1017,7 @@ impl Tokenizer {
             .unwrap_or_else(|| {
                 self.get_token_lit_loc(
                     TokenType::IdentifierLiteral,
-                    Literal::String(GlobalStr::new_boxed(identifier.into_boxed_str())),
+                    Literal::String(self.ctx.intern_str(&identifier)),
                     loc,
                 )
             }))
@@ -1020,8 +1026,8 @@ impl Tokenizer {
     fn do_macro(
         &mut self,
         loc: &Location,
-        name: &GlobalStr,
-    ) -> Result<Vec<Token>, TokenizationError> {
+        name: &InternedStr<'arena>,
+    ) -> Result<Vec<Token<'arena>>, TokenizationError> {
         let closing_bracket_type = match self.peek() {
             '[' => ']',
             '(' => ')',
@@ -1064,13 +1070,12 @@ impl Tokenizer {
                 tokens.push(tok);
             }
         }
-        let tokens =
-            if let Some(macro_fn) = name.with(|v| crate::builtin_macros::get_builtin_macro(v)) {
-                macro_fn(loc, &tokens)
-            } else {
-                // TODO: implement macros
-                unimplemented!("custom macros");
-            };
+        let tokens = if let Some(macro_fn) = crate::builtin_macros::get_builtin_macro(name) {
+            macro_fn(self.ctx.clone(), loc, &tokens)
+        } else {
+            // TODO: implement macros
+            unimplemented!("custom macros");
+        };
         Ok(tokens)
     }
 
@@ -1099,7 +1104,12 @@ impl Tokenizer {
         }
     }
 
-    fn get_token_lit_loc(&self, token: TokenType, literal: Literal, location: Location) -> Token {
+    fn get_token_lit_loc(
+        &self,
+        token: TokenType,
+        literal: Literal<'arena>,
+        location: Location,
+    ) -> Token<'arena> {
         Token::new(
             token,
             Some(literal),
@@ -1118,22 +1128,23 @@ impl Tokenizer {
         )
     }
 
-    pub fn get_tokens(&self) -> &[Token] {
+    pub fn get_tokens(&self) -> &[Token<'arena>] {
         &self.tokens
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn to_parser(
+    pub fn to_parser<'a>(
         self,
-        parser_queue: Arc<RwLock<Vec<ParserQueueEntry>>>,
-        modules: &RwLock<Store<Module>>,
+        parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
+        modules: &'a RwLock<Store<Module<'arena>>>,
         root: Arc<Path>,
         resolvers: Arc<[Box<dyn ModuleResolver>]>,
         path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
         path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
-        key: StoreKey<Module>,
-    ) -> Parser<'_> {
+        key: StoreKey<Module<'arena>>,
+    ) -> Parser<'a, 'arena> {
         Parser::new(
+            self.ctx,
             self.tokens,
             parser_queue,
             modules,
@@ -1149,6 +1160,8 @@ impl Tokenizer {
 
 #[cfg(test)]
 mod test {
+    use crate::{arena::Arena, context::GlobalContext};
+
     use super::*;
 
     fn check_tokens(tokens: &[Token]) {
@@ -1175,16 +1188,20 @@ mod test {
         }
     }
 
-    fn get_tokens(str: &str) -> (Vec<Token>, Vec<TokenizationError>) {
-        let mut tokenizer = Tokenizer::new(str, Path::new("test").into());
+    fn get_tokens<'arena>(
+        ctx: SharedContext<'arena>,
+        src: &str,
+    ) -> (Vec<Token<'arena>>, Vec<TokenizationError>) {
+        let mut tokenizer = Tokenizer::new(ctx, src, Path::new("test").into());
         let errs = tokenizer.scan_tokens().err().unwrap_or_default();
         check_tokens(tokenizer.get_tokens());
         (tokenizer.tokens, errs)
     }
 
-    fn assert_token_eq(str: &str, expected_tokens: &[(TokenType, Option<Literal>)]) {
+    fn assert_token_eq(src: &str, expected_tokens: &[(TokenType, Option<Literal>)]) {
+        let arena = Arena::new();
         let eof_token = (TokenType::Eof, None);
-        let (tokens, errs) = get_tokens(str);
+        let (tokens, errs) = get_tokens(GlobalContext::new(&arena).share(), src);
         assert_eq!(errs.len(), 0, "unexpected errors: {errs:?}");
         assert_eq!(tokens.len(), expected_tokens.len() + 1 /* eof token */);
         for (tok, expected) in tokens
@@ -1200,7 +1217,7 @@ mod test {
     macro_rules! match_errs {
         ($str: expr; $($pat:pat),* $(,)?) => {
             let mut i = 0;
-            let (_, errs) = get_tokens($str);
+            let (_, errs) = get_tokens(GlobalContext::new(&Arena::new()).share(), $str);
             $(
                 if i >= errs.len() {
                     panic!("Expected error matching {:?} ({i})", stringify!($pat));
@@ -1220,14 +1237,19 @@ mod test {
         (IdentifierLiteral, $lit:ident) => {
             (
                 TokenType::IdentifierLiteral,
-                Some(Literal::String(stringify!($lit).into())),
+                Some(Literal::String(
+                    InternedStr::shady_new(stringify!($lit)).into(),
+                )),
             )
         };
         ($ty:ident) => {
             (TokenType::$ty, None)
         };
         ($ty: ident, $lit:ident($val:expr)) => {
-            (TokenType::$ty, Some(Literal::$lit($val.into())))
+            (
+                TokenType::$ty,
+                Some(Literal::$lit(InternedStr::shady_new($val))),
+            )
         };
         ($ty: ident, $lit:ident($val:expr, _)) => {
             (TokenType::$ty, Some(Literal::$lit($val, NumberType::None)))

@@ -11,6 +11,7 @@ use std::{
 
 use crate::{libfinder, VER};
 use clap::{Args, ValueEnum};
+use mira::arena::Arena;
 use mira::module_resolution::SingleModuleResolver;
 use mira::{
     codegen::CodegenConfig,
@@ -76,12 +77,12 @@ pub fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
                         v.len()
                     }
                     Err(e) if e.kind() == ErrorKind::NotFound => {
-                        println!("Could not find file `{}`", rest);
+                        println!("Could not find file `{rest}`");
                         return;
                     }
                     Err(e) => return println!("Failed to read file: {e:?}"),
                 };
-                println!("read {} b", read);
+                println!("read {read} b");
             }),
             ("write", |rest, r| {
                 let rest = rest.trim();
@@ -109,7 +110,7 @@ pub fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
                     println!("{target}");
                 }
                 println!("------------------------------------------");
-                println!("Native Target: {}", NATIVE_TARGET);
+                println!("Native Target: {NATIVE_TARGET}");
             }),
         ],
         |_, r| {
@@ -439,7 +440,7 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         .codegen_opts
         .optimizations_of(CodegenConfig::new_release_safe());
 
-    if let Err(e) = run_full_compilation_pipeline(compilation_opts) {
+    if let Err(e) = run_full_compilation_pipeline(&Arena::new(), compilation_opts) {
         println!("Failed to compile:");
         for e in e.iter() {
             println!("{e}");
@@ -462,7 +463,7 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     }
     match cmd.spawn().and_then(|mut v| v.wait()) {
         Err(e) => println!("-> failed to run the program: {e:?}"),
-        Ok(v) if !v.success() => println!("\n\n  process exited with error: {:?}", v),
+        Ok(v) if !v.success() => println!("\n\n  process exited with error: {v:?}"),
         Ok(_) => println!("\n"),
     }
 }

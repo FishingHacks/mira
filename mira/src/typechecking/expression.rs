@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    annotations::Annotations, globals::GlobalStr, store::StoreKey, tokenizer::Location,
+    annotations::Annotations, store::StoreKey, string_interner::InternedStr, tokenizer::Location,
     typechecking::types::FunctionType,
 };
 
@@ -17,17 +17,17 @@ use super::{
 };
 
 #[derive(Debug, Clone)]
-pub enum TypedLiteral {
+pub enum TypedLiteral<'arena> {
     Void,
     Dynamic(ScopeValueId),
-    Function(StoreKey<TypedFunction>, Vec<Type>),
-    ExternalFunction(StoreKey<TypedExternalFunction>),
-    Static(StoreKey<TypedStatic>),
-    String(GlobalStr),
-    Array(Type, Vec<TypedLiteral>),
-    ArrayInit(Type, Box<TypedLiteral>, usize),
-    Struct(StoreKey<TypedStruct>, Vec<TypedLiteral>),
-    Tuple(Vec<TypedLiteral>),
+    Function(StoreKey<TypedFunction<'arena>>, Vec<Type<'arena>>),
+    ExternalFunction(StoreKey<TypedExternalFunction<'arena>>),
+    Static(StoreKey<TypedStatic<'arena>>),
+    String(InternedStr<'arena>),
+    Array(Type<'arena>, Vec<TypedLiteral<'arena>>),
+    ArrayInit(Type<'arena>, Box<TypedLiteral<'arena>>, usize),
+    Struct(StoreKey<TypedStruct<'arena>>, Vec<TypedLiteral<'arena>>),
+    Tuple(Vec<TypedLiteral<'arena>>),
     F64(f64),
     F32(f32),
     U8(u8),
@@ -41,15 +41,15 @@ pub enum TypedLiteral {
     I64(i64),
     ISize(isize),
     Bool(bool),
-    Intrinsic(Intrinsic, Vec<Type>),
+    Intrinsic(Intrinsic, Vec<Type<'arena>>),
 }
 
-impl TypedLiteral {
+impl<'arena> TypedLiteral<'arena> {
     pub fn to_type<'a>(
         &self,
-        scope: &'a [(Type, ScopeTypeMetadata)],
-        ctx: &TypecheckingContext,
-    ) -> Cow<'a, Type> {
+        scope: &'a [(Type<'arena>, ScopeTypeMetadata)],
+        ctx: &TypecheckingContext<'arena>,
+    ) -> Cow<'a, Type<'arena>> {
         match self {
             TypedLiteral::Void => Cow::Owned(Type::PrimitiveVoid(0)),
             TypedLiteral::Dynamic(id) => Cow::Borrowed(&scope[*id].0),
@@ -69,7 +69,7 @@ impl TypedLiteral {
                 };
                 Cow::Owned(Type::Function(fn_type.into(), 0))
             }
-            TypedLiteral::Static(id) => Cow::Owned(ctx.statics.read()[*id].0.clone()),
+            TypedLiteral::Static(id) => Cow::Owned(ctx.statics.read()[*id].type_.clone()),
             TypedLiteral::String(_) => Cow::Owned(Type::PrimitiveStr(1)),
             TypedLiteral::Array(ty, elems) => Cow::Owned(Type::SizedArray {
                 typ: ty.clone().into(),
@@ -83,7 +83,7 @@ impl TypedLiteral {
             }),
             TypedLiteral::Struct(struct_id, _) => Cow::Owned(Type::Struct {
                 struct_id: *struct_id,
-                name: ctx.structs.read()[*struct_id].name.clone(),
+                name: ctx.structs.read()[*struct_id].name,
                 num_references: 0,
             }),
             TypedLiteral::Tuple(elems) => Cow::Owned(Type::Tuple {
@@ -112,9 +112,9 @@ impl TypedLiteral {
 
     pub fn to_primitive_type(
         &self,
-        scope: &[(Type, ScopeTypeMetadata)],
-        ctx: &TypecheckingContext,
-    ) -> Option<Type> {
+        scope: &[(Type<'arena>, ScopeTypeMetadata)],
+        ctx: &TypecheckingContext<'arena>,
+    ) -> Option<Type<'arena>> {
         match self {
             TypedLiteral::Void => Some(Type::PrimitiveVoid(0)),
             TypedLiteral::String(_) => Some(Type::PrimitiveStr(1)),
@@ -136,7 +136,7 @@ impl TypedLiteral {
                 ty.is_primitive().then(|| ty.clone())
             }
             TypedLiteral::Static(id) => {
-                let ty = &ctx.statics.read()[*id].0;
+                let ty = &ctx.statics.read()[*id].type_;
                 ty.is_primitive().then(|| ty.clone())
             }
             TypedLiteral::Array(..)
@@ -202,30 +202,30 @@ impl Display for OffsetValue {
 }
 
 #[derive(Debug)]
-pub enum TypecheckedExpression {
-    Return(Location, TypedLiteral),
-    Block(Location, Box<[TypecheckedExpression]>, Annotations),
+pub enum TypecheckedExpression<'arena> {
+    Return(Location, TypedLiteral<'arena>),
+    Block(Location, Box<[TypecheckedExpression<'arena>]>, Annotations),
     If {
         loc: Location,
-        cond: TypedLiteral,
-        if_block: (Box<[TypecheckedExpression]>, Location),
-        else_block: Option<(Box<[TypecheckedExpression]>, Location)>,
+        cond: TypedLiteral<'arena>,
+        if_block: (Box<[TypecheckedExpression<'arena>]>, Location),
+        else_block: Option<(Box<[TypecheckedExpression<'arena>]>, Location)>,
         annotations: Annotations,
     },
     While {
         loc: Location,
-        cond_block: Box<[TypecheckedExpression]>,
-        cond: TypedLiteral,
-        body: (Box<[TypecheckedExpression]>, Location),
+        cond_block: Box<[TypecheckedExpression<'arena>]>,
+        cond: TypedLiteral<'arena>,
+        body: (Box<[TypecheckedExpression<'arena>]>, Location),
     },
 
     // _dst = _lhs..=_rhs
     // _dst = _lhs.._rhs
     Range {
         location: Location,
-        typ: Type,
-        lhs: TypedLiteral,
-        rhs: TypedLiteral,
+        typ: Type<'arena>,
+        lhs: TypedLiteral<'arena>,
+        rhs: TypedLiteral<'arena>,
         inclusive: bool,
         dst: ScopeValueId,
     },
@@ -239,96 +239,191 @@ pub enum TypecheckedExpression {
         asm: String,
     },
     // *_1 = _2
-    StoreAssignment(Location, TypedLiteral, TypedLiteral),
+    StoreAssignment(Location, TypedLiteral<'arena>, TypedLiteral<'arena>),
     // _1 = _2(_3.1, _3.2, d, ...)
-    Call(Location, ScopeValueId, TypedLiteral, Vec<TypedLiteral>),
+    Call(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        Vec<TypedLiteral<'arena>>,
+    ),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectCall(
         Location,
         ScopeValueId,
-        StoreKey<TypedFunction>,
-        Vec<TypedLiteral>,
-        Vec<Type>,
+        StoreKey<TypedFunction<'arena>>,
+        Vec<TypedLiteral<'arena>>,
+        Vec<Type<'arena>>,
     ),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectExternCall(
         Location,
         ScopeValueId,
-        StoreKey<TypedExternalFunction>,
-        Vec<TypedLiteral>,
+        StoreKey<TypedExternalFunction<'arena>>,
+        Vec<TypedLiteral<'arena>>,
     ),
     // _1 = intrinsic(_3.1, _3.2)
     IntrinsicCall(
         Location,
         ScopeValueId,
         Intrinsic,
-        Vec<TypedLiteral>,
-        Vec<Type>,
+        Vec<TypedLiteral<'arena>>,
+        Vec<Type<'arena>>,
     ),
     // _1 = +_2
-    Pos(Location, ScopeValueId, TypedLiteral),
+    Pos(Location, ScopeValueId, TypedLiteral<'arena>),
     // _1 = -_2
-    Neg(Location, ScopeValueId, TypedLiteral),
+    Neg(Location, ScopeValueId, TypedLiteral<'arena>),
     // _1 = !_2
-    LNot(Location, ScopeValueId, TypedLiteral),
+    LNot(Location, ScopeValueId, TypedLiteral<'arena>),
     // _1 = ~_2
-    BNot(Location, ScopeValueId, TypedLiteral),
+    BNot(Location, ScopeValueId, TypedLiteral<'arena>),
     // _1 = _2 + _3
-    Add(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    Add(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _2 - _3
-    Sub(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    Sub(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _2 * _3
-    Mul(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    Mul(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _2 / _3
-    Div(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    Div(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _2 % _3
-    Mod(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    Mod(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _2 & _3
-    BAnd(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    BAnd(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _2 | _3
-    BOr(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    BOr(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _2 ^ _3
-    BXor(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    BXor(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 > _2
-    GreaterThan(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    GreaterThan(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 > _2
-    LessThan(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    LessThan(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 && _2
-    LAnd(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    LAnd(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 || _2
-    LOr(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    LOr(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 >= _2
-    GreaterThanEq(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    GreaterThanEq(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 <= _2
-    LessThanEq(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    LessThanEq(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 == _2
-    Eq(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    Eq(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 != _2
-    Neq(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    Neq(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 << _2
-    LShift(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    LShift(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = _1 >> _2
-    RShift(Location, ScopeValueId, TypedLiteral, TypedLiteral),
+    RShift(
+        Location,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        TypedLiteral<'arena>,
+    ),
     // _1 = &_1
     //                                v- guaranteed to either be `Dynamic`, `Static` or `Void`
-    Reference(Location, ScopeValueId, TypedLiteral),
+    Reference(Location, ScopeValueId, TypedLiteral<'arena>),
     // _1 = *_1
-    Dereference(Location, ScopeValueId, TypedLiteral),
+    Dereference(Location, ScopeValueId, TypedLiteral<'arena>),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = &(*_2).a[3].c.d; This is required, because we will offset the _2 pointer by the required
     // offsets
-    Offset(Location, ScopeValueId, TypedLiteral, OffsetValue),
+    Offset(Location, ScopeValueId, TypedLiteral<'arena>, OffsetValue),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = _2.a.b.c.d
-    OffsetNonPointer(Location, ScopeValueId, TypedLiteral, usize),
+    OffsetNonPointer(Location, ScopeValueId, TypedLiteral<'arena>, usize),
     // Eq::val(&dyn Eq, ...)
     // The last value is the offset into the function pointer part of the vtable.
-    DynCall(Location, ScopeValueId, Vec<TypedLiteral>, u32),
+    DynCall(Location, ScopeValueId, Vec<TypedLiteral<'arena>>, u32),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
-    Literal(Location, ScopeValueId, TypedLiteral),
-    DeclareVariable(Location, ScopeValueId, Type, GlobalStr),
+    Literal(Location, ScopeValueId, TypedLiteral<'arena>),
+    DeclareVariable(Location, ScopeValueId, Type<'arena>, InternedStr<'arena>),
     Empty(Location),
     Unreachable(Location),
     // ### CASTS ###
@@ -340,32 +435,32 @@ pub enum TypecheckedExpression {
     // &[T] to (&T, usize)
     // &T to &[T; 1]
     // &A to &B
-    Alias(Location, ScopeValueId, TypedLiteral),
+    Alias(Location, ScopeValueId, TypedLiteral<'arena>),
     // casting u_ to i_ (for integers of the same size)
-    Bitcast(Location, ScopeValueId, TypedLiteral),
+    Bitcast(Location, ScopeValueId, TypedLiteral<'arena>),
     // i_ or u_ or f_ or bool to i_ or u_ or f_ or bool
-    IntCast(Location, ScopeValueId, TypedLiteral),
+    IntCast(Location, ScopeValueId, TypedLiteral<'arena>),
     // casts &void to usize (only valid for thin pointers)
-    PtrToInt(Location, ScopeValueId, TypedLiteral),
+    PtrToInt(Location, ScopeValueId, TypedLiteral<'arena>),
     // casts usize to &void (only valid for thin pointers)
-    IntToPtr(Location, ScopeValueId, TypedLiteral),
+    IntToPtr(Location, ScopeValueId, TypedLiteral<'arena>),
     // Strips the metadata from a fat pointer, &[T] to &T
-    StripMetadata(Location, ScopeValueId, TypedLiteral),
+    StripMetadata(Location, ScopeValueId, TypedLiteral<'arena>),
     // _2: &[_; _3]
     // let _1 = attach_metadata(_2, _3)
-    MakeUnsizedSlice(Location, ScopeValueId, TypedLiteral, usize),
+    MakeUnsizedSlice(Location, ScopeValueId, TypedLiteral<'arena>, usize),
     // _2: &<value>
     // let _1 = attach_vtable(_2, trait_1, trait_2)
     AttachVtable(
         Location,
         ScopeValueId,
-        TypedLiteral,
-        (Type, Vec<StoreKey<TypedTrait>>),
+        TypedLiteral<'arena>,
+        (Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>),
     ),
     None,
 }
 
-impl TypecheckedExpression {
+impl TypecheckedExpression<'_> {
     pub fn location(&self) -> &Location {
         match self {
             TypecheckedExpression::Range { location, .. }

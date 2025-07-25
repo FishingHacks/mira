@@ -1,11 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    globals::GlobalStr,
     module::{ModuleContext, ModuleScopeValue},
     parser::{ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp},
     std_annotations::ext_vararg::ExternVarArg,
     store::StoreKey,
+    string_interner::InternedStr,
     tokenizer::{Location, NumberType},
     typechecking::typed_resolve_import,
 };
@@ -25,16 +25,19 @@ pub struct ScopeTypeMetadata {
 }
 
 #[derive(Default)]
-pub struct Scopes {
-    entries: Vec<HashMap<GlobalStr, ScopeValueId>>,
-    values: Vec<(Type, ScopeTypeMetadata)>,
+pub struct Scopes<'arena> {
+    entries: Vec<HashMap<InternedStr<'arena>, ScopeValueId>>,
+    values: Vec<(Type<'arena>, ScopeTypeMetadata)>,
 }
 
-impl Scopes {
-    pub fn get(&self, key: &GlobalStr) -> Option<(&(Type, ScopeTypeMetadata), ScopeValueId)> {
+impl<'arena> Scopes<'arena> {
+    pub fn get(
+        &self,
+        key: InternedStr<'arena>,
+    ) -> Option<(&(Type<'arena>, ScopeTypeMetadata), ScopeValueId)> {
         let len = self.entries.len();
         for i in 1..=len {
-            if let Some(v) = self.entries[len - i].get(key) {
+            if let Some(v) = self.entries[len - i].get(&key) {
                 return Some((&self.values[*v], *v));
             }
         }
@@ -47,14 +50,18 @@ impl Scopes {
 
     pub fn insert_value(
         &mut self,
-        key: GlobalStr,
-        value: Type,
+        key: InternedStr<'arena>,
+        value: Type<'arena>,
     ) -> (ScopeValueId, Option<ScopeValueId>) {
         let id = self.push(value);
         (id, self.insert(key, id))
     }
 
-    pub fn insert(&mut self, key: GlobalStr, value: ScopeValueId) -> Option<ScopeValueId> {
+    pub fn insert(
+        &mut self,
+        key: InternedStr<'arena>,
+        value: ScopeValueId,
+    ) -> Option<ScopeValueId> {
         if self.entries.is_empty() {
             self.push_scope();
         }
@@ -62,7 +69,7 @@ impl Scopes {
         self.entries[idx].insert(key, value)
     }
 
-    pub fn push(&mut self, value: Type) -> ScopeValueId {
+    pub fn push(&mut self, value: Type<'arena>) -> ScopeValueId {
         if !value.is_sized() {
             panic!("unsized type: {value:?}");
         }
@@ -92,14 +99,14 @@ impl Scopes {
     }
 }
 
-pub fn typecheck_static(
-    context: &TypecheckingContext,
-    module_context: &ModuleContext,
-    static_id: StoreKey<TypedStatic>,
-    errs: &mut Vec<TypecheckingError>,
+pub fn typecheck_static<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module_context: &ModuleContext<'arena>,
+    static_id: StoreKey<TypedStatic<'arena>>,
+    errs: &mut Vec<TypecheckingError<'arena>>,
 ) -> bool {
     let tc_module_reader = context.statics.read();
-    let typ = &tc_module_reader[static_id].0;
+    let typ = &tc_module_reader[static_id].type_;
     let expr = {
         std::mem::replace(
             &mut module_context.statics.write()[static_id.cast()].1,
@@ -109,9 +116,9 @@ pub fn typecheck_static(
 
     match typecheck_expression(
         context,
-        tc_module_reader[static_id].2,
+        tc_module_reader[static_id].module,
         &mut Scopes::default(),
-        &Expression::Literal(expr, tc_module_reader[static_id].3.clone()),
+        &Expression::Literal(expr, tc_module_reader[static_id].loc.clone()),
         &mut Vec::new(),
         TypeSuggestion::from_type(typ),
     ) {
@@ -124,45 +131,45 @@ pub fn typecheck_static(
                 errs.push(TypecheckingError::MismatchingType {
                     expected: typ.clone(),
                     found: expr_typ,
-                    location: tc_module_reader[static_id].3.clone(),
+                    location: tc_module_reader[static_id].loc.clone(),
                 });
                 return false;
             }
             if !expr.is_entirely_literal() {
                 errs.push(TypecheckingError::StaticsNeedToBeLiteral(
-                    tc_module_reader[static_id].3.clone(),
+                    tc_module_reader[static_id].loc.clone(),
                 ));
             }
             drop(tc_module_reader);
-            context.statics.write()[static_id].1 = expr;
+            context.statics.write()[static_id].value = expr;
         }
     }
     true
 }
 
-pub fn typecheck_external_function(
-    context: &TypecheckingContext,
-    module_context: &ModuleContext,
-    function_id: StoreKey<TypedExternalFunction>,
-) -> Result<Vec<(Type, ScopeTypeMetadata)>, Vec<TypecheckingError>> {
+pub fn typecheck_external_function<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module_context: &ModuleContext<'arena>,
+    function_id: StoreKey<TypedExternalFunction<'arena>>,
+) -> Result<Vec<(Type<'arena>, ScopeTypeMetadata)>, Vec<TypecheckingError<'arena>>> {
     inner_typecheck_function(context, module_context, function_id.cast(), true)
 }
 
-pub fn typecheck_function(
-    context: &TypecheckingContext,
-    module_context: &ModuleContext,
-    function_id: StoreKey<TypedFunction>,
-) -> Result<Vec<(Type, ScopeTypeMetadata)>, Vec<TypecheckingError>> {
+pub fn typecheck_function<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module_context: &ModuleContext<'arena>,
+    function_id: StoreKey<TypedFunction<'arena>>,
+) -> Result<Vec<(Type<'arena>, ScopeTypeMetadata)>, Vec<TypecheckingError<'arena>>> {
     inner_typecheck_function(context, module_context, function_id, false)
 }
 
 // NOTE: function_id has to be StoreKey<TypedExternalFunction> if is_external is set to true.
-fn inner_typecheck_function(
-    context: &TypecheckingContext,
-    module_context: &ModuleContext,
-    function_id: StoreKey<TypedFunction>,
+fn inner_typecheck_function<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module_context: &ModuleContext<'arena>,
+    function_id: StoreKey<TypedFunction<'arena>>,
     is_external: bool,
-) -> Result<Vec<(Type, ScopeTypeMetadata)>, Vec<TypecheckingError>> {
+) -> Result<Vec<(Type<'arena>, ScopeTypeMetadata)>, Vec<TypecheckingError<'arena>>> {
     let ext_fn_reader = module_context.external_functions.read();
     let fn_reader = module_context.functions.read();
     let (statement, module_id) = if is_external {
@@ -273,14 +280,14 @@ fn inner_typecheck_function(
 }
 
 /// Returns if the statement and if it always returns
-fn typecheck_statement(
-    context: &TypecheckingContext,
-    scope: &mut Scopes,
-    statement: &Statement,
-    module: StoreKey<TypecheckedModule>,
-    return_type: &Type,
-    exprs: &mut Vec<TypecheckedExpression>,
-) -> Result<bool, Vec<TypecheckingError>> {
+fn typecheck_statement<'arena>(
+    context: &TypecheckingContext<'arena>,
+    scope: &mut Scopes<'arena>,
+    statement: &Statement<'arena>,
+    module: StoreKey<TypecheckedModule<'arena>>,
+    return_type: &Type<'arena>,
+    exprs: &mut Vec<TypecheckedExpression<'arena>>,
+) -> Result<bool, Vec<TypecheckingError<'arena>>> {
     match statement {
         Statement::If {
             condition,
@@ -521,12 +528,12 @@ fn typecheck_statement(
                     id
                 }
             };
-            scope.insert(name.clone(), id);
+            scope.insert(*name, id);
             exprs.push(TypecheckedExpression::DeclareVariable(
                 location.clone(),
                 id,
                 typ,
-                name.clone(),
+                *name,
             ));
             scope.make_stack_allocated(id);
             Ok(false)
@@ -578,11 +585,11 @@ macro_rules! tc_res {
     }};
 }
 
-fn signed_number_to_literal(
+fn signed_number_to_literal<'arena>(
     v: i64,
     number_type: NumberType,
-    expected: TypeSuggestion,
-) -> (Type, TypedLiteral) {
+    expected: TypeSuggestion<'arena>,
+) -> (Type<'arena>, TypedLiteral<'arena>) {
     match number_type {
         NumberType::I8 => (Type::PrimitiveI8(0), TypedLiteral::I8(v as i8)),
         NumberType::I16 => (Type::PrimitiveI16(0), TypedLiteral::I16(v as i16)),
@@ -603,11 +610,11 @@ fn signed_number_to_literal(
     }
 }
 
-fn unsigned_number_to_literal(
+fn unsigned_number_to_literal<'arena>(
     v: u64,
     number_type: NumberType,
-    expected: TypeSuggestion,
-) -> (Type, TypedLiteral) {
+    expected: TypeSuggestion<'arena>,
+) -> (Type<'arena>, TypedLiteral<'arena>) {
     match number_type {
         NumberType::U8 => (Type::PrimitiveU8(0), TypedLiteral::U8(v as u8)),
         NumberType::U16 => (Type::PrimitiveU16(0), TypedLiteral::U16(v as u16)),
@@ -632,11 +639,11 @@ fn unsigned_number_to_literal(
     }
 }
 
-fn float_number_to_literal(
+fn float_number_to_literal<'arena>(
     v: f64,
     number_type: NumberType,
-    expected: TypeSuggestion,
-) -> (Type, TypedLiteral) {
+    expected: TypeSuggestion<'arena>,
+) -> (Type<'arena>, TypedLiteral<'arena>) {
     match number_type {
         NumberType::F32 => (Type::PrimitiveF32(0), TypedLiteral::F32(v as f32)),
         NumberType::F64 => (Type::PrimitiveF64(0), TypedLiteral::F64(v)),
@@ -650,20 +657,20 @@ fn float_number_to_literal(
     }
 }
 
-fn typecheck_expression(
-    context: &TypecheckingContext,
-    module: StoreKey<TypecheckedModule>,
-    scope: &mut Scopes,
-    expression: &Expression,
-    exprs: &mut Vec<TypecheckedExpression>,
-    type_suggestion: TypeSuggestion,
-) -> Result<(Type, TypedLiteral), TypecheckingError> {
+#[allow(clippy::result_large_err)]
+fn typecheck_expression<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module: StoreKey<TypecheckedModule<'arena>>,
+    scope: &mut Scopes<'arena>,
+    expression: &Expression<'arena>,
+    exprs: &mut Vec<TypecheckedExpression<'arena>>,
+    type_suggestion: TypeSuggestion<'arena>,
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
     match expression {
         Expression::Literal(literal_value, location) => match literal_value {
-            LiteralValue::String(global_str) => Ok((
-                Type::PrimitiveStr(1),
-                TypedLiteral::String(global_str.clone()),
-            )),
+            LiteralValue::String(global_str) => {
+                Ok((Type::PrimitiveStr(1), TypedLiteral::String(*global_str)))
+            }
             LiteralValue::Array(ArrayLiteral::Values(vec)) if vec.is_empty() => {
                 let typ = match type_suggestion {
                     TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
@@ -766,7 +773,7 @@ fn typecheck_expression(
                     if !structure.elements.iter().any(|v| v.0 == *k) {
                         return Err(TypecheckingError::NoSuchFieldFound {
                             location: values[k].0.clone(),
-                            name: k.clone(),
+                            name: *k,
                         });
                     }
                 }
@@ -776,7 +783,7 @@ fn typecheck_expression(
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
                             location: location.clone(),
-                            name: key.clone(),
+                            name: *key,
                         });
                     };
                     let (expr_typ, expr_lit) = typecheck_expression(
@@ -799,7 +806,7 @@ fn typecheck_expression(
                 Ok((
                     Type::Struct {
                         struct_id,
-                        name: structure.name.clone(),
+                        name: structure.name,
                         num_references: 0,
                     },
                     TypedLiteral::Struct(struct_id, elements),
@@ -809,11 +816,7 @@ fn typecheck_expression(
                 let value = typed_resolve_import(
                     context,
                     module,
-                    &path
-                        .entries
-                        .iter()
-                        .map(|(v, _)| v.clone())
-                        .collect::<Vec<_>>(),
+                    &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
                     location,
                     &mut Vec::new(),
                 )
@@ -830,7 +833,7 @@ fn typecheck_expression(
                     if !structure.elements.iter().any(|v| v.0 == *k) {
                         return Err(TypecheckingError::NoSuchFieldFound {
                             location: values[k].0.clone(),
-                            name: k.clone(),
+                            name: *k,
                         });
                     }
                 }
@@ -840,7 +843,7 @@ fn typecheck_expression(
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
                             location: location.clone(),
-                            name: key.clone(),
+                            name: *key,
                         });
                     };
                     let (expr_typ, expr_lit) = typecheck_expression(
@@ -863,7 +866,7 @@ fn typecheck_expression(
                 Ok((
                     Type::Struct {
                         struct_id: struct_id.cast(),
-                        name: structure.name.clone(),
+                        name: structure.name,
                         num_references: 0,
                     },
                     TypedLiteral::Struct(struct_id.cast(), elements),
@@ -883,7 +886,7 @@ fn typecheck_expression(
             LiteralValue::Bool(v) => Ok((Type::PrimitiveBool(0), TypedLiteral::Bool(*v))),
             LiteralValue::Dynamic(path) => {
                 if path.entries.len() == 1 && path.entries[0].1.is_empty() {
-                    if let Some(((typ, _), id)) = scope.get(&path.entries[0].0) {
+                    if let Some(((typ, _), id)) = scope.get(path.entries[0].0) {
                         return Ok((typ.clone(), TypedLiteral::Dynamic(id)));
                     }
                 }
@@ -895,11 +898,7 @@ fn typecheck_expression(
                 let value = typed_resolve_import(
                     context,
                     module,
-                    &path
-                        .entries
-                        .iter()
-                        .map(|(v, _)| v.clone())
-                        .collect::<Vec<_>>(),
+                    &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
                     location,
                     &mut Vec::new(),
                 )
@@ -978,7 +977,7 @@ fn typecheck_expression(
                             });
                         }
                         Ok((
-                            context.statics.read()[id.cast()].0.clone(),
+                            context.statics.read()[id.cast()].type_.clone(),
                             TypedLiteral::Static(id.cast()),
                         ))
                     }
@@ -1011,9 +1010,7 @@ fn typecheck_expression(
             inputs,
         } => {
             let name = match output {
-                crate::parser::TypeRef::Reference { type_name, .. } => {
-                    Some(type_name.entries[0].0.clone())
-                }
+                crate::parser::TypeRef::Reference { type_name, .. } => Some(type_name.entries[0].0),
                 _ => None,
             };
             // this should never fail unless this is an incompatible type (non-primitive)
@@ -1037,10 +1034,10 @@ fn typecheck_expression(
                 })?;
             let mut typed_inputs = Vec::with_capacity(inputs.len());
             for (loc, name) in inputs {
-                let Some(((entry_ty, _), id)) = scope.get(name) else {
+                let Some(((entry_ty, _), id)) = scope.get(*name) else {
                     return Err(TypecheckingError::CannotFindValue(
                         loc.clone(),
-                        Path::new(name.clone(), Vec::new()),
+                        Path::new(*name, Vec::new()),
                     ));
                 };
                 if !entry_ty.is_asm_primitive() {
@@ -1446,15 +1443,16 @@ fn typecheck_expression(
     }
 }
 
-fn typecheck_cast(
-    scope: &mut Scopes,
-    exprs: &mut Vec<TypecheckedExpression>,
-    typ: Type,
-    new_typ: Type,
-    lhs: TypedLiteral,
+#[allow(clippy::result_large_err)]
+fn typecheck_cast<'arena>(
+    scope: &mut Scopes<'arena>,
+    exprs: &mut Vec<TypecheckedExpression<'arena>>,
+    typ: Type<'arena>,
+    new_typ: Type<'arena>,
+    lhs: TypedLiteral<'arena>,
     loc: Location,
-    context: &TypecheckingContext,
-) -> Result<(Type, TypedLiteral), TypecheckingError> {
+    context: &TypecheckingContext<'arena>,
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
     if typ == new_typ {
         return Ok((new_typ, lhs));
     }
@@ -1509,10 +1507,7 @@ fn typecheck_cast(
                 return Err(TypecheckingError::MismatchingTraits(
                     loc,
                     typ,
-                    traits
-                        .iter()
-                        .map(|v| trait_reader[*v].name.clone())
-                        .collect(),
+                    traits.iter().map(|v| trait_reader[*v].name).collect(),
                 ));
             }
             let id = scope.push(new_typ.clone());
@@ -1633,30 +1628,26 @@ fn typecheck_cast(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn typecheck_dyn_membercall(
-    context: &TypecheckingContext,
-    scope: &mut Scopes,
-    module: StoreKey<TypecheckedModule>,
-    exprs: &mut Vec<TypecheckedExpression>,
-    ident: &GlobalStr,
-    args: &[Expression],
-    lhs: TypedLiteral,
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
+fn typecheck_dyn_membercall<'arena>(
+    context: &TypecheckingContext<'arena>,
+    scope: &mut Scopes<'arena>,
+    module: StoreKey<TypecheckedModule<'arena>>,
+    exprs: &mut Vec<TypecheckedExpression<'arena>>,
+    ident: &InternedStr<'arena>,
+    args: &[Expression<'arena>],
+    lhs: TypedLiteral<'arena>,
     lhs_loc: Location,
-    trait_refs: Vec<(StoreKey<TypedTrait>, GlobalStr)>,
+    trait_refs: Vec<(StoreKey<TypedTrait<'arena>>, InternedStr<'arena>)>,
     num_references: u8,
-) -> Result<(Type, TypedLiteral), TypecheckingError> {
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
     let trait_reader = context.traits.read();
     let mut offset = 0;
     let (mut arg_typs, return_ty, trait_name) = 'out: {
         for trait_id in trait_refs.iter().map(|v| v.0) {
             for func in trait_reader[trait_id].functions.iter() {
                 if func.0 == *ident {
-                    break 'out (
-                        func.1.clone(),
-                        func.2.clone(),
-                        trait_reader[trait_id].name.clone(),
-                    );
+                    break 'out (func.1.clone(), func.2.clone(), trait_reader[trait_id].name);
                 }
                 offset += 1;
             }
@@ -1664,7 +1655,7 @@ fn typecheck_dyn_membercall(
 
         return Err(TypecheckingError::CannotFindFunctionOnType(
             lhs_loc,
-            ident.clone(),
+            *ident,
             Type::DynType {
                 trait_refs,
                 num_references,
@@ -1677,9 +1668,7 @@ fn typecheck_dyn_membercall(
         Type::PrimitiveSelf(_) => {}
         _ => {
             return Err(TypecheckingError::InvalidDynTypeFunc(
-                lhs_loc,
-                ident.clone(),
-                trait_name,
+                lhs_loc, *ident, trait_name,
             ))
         }
     }
@@ -1690,9 +1679,7 @@ fn typecheck_dyn_membercall(
             .any(|v| matches!(v.1, Type::PrimitiveSelf(_)))
     {
         return Err(TypecheckingError::InvalidDynTypeFunc(
-            lhs_loc,
-            ident.clone(),
-            trait_name,
+            lhs_loc, *ident, trait_name,
         ));
     }
 
@@ -1750,15 +1737,16 @@ fn typecheck_dyn_membercall(
     Ok((return_ty, TypedLiteral::Dynamic(id)))
 }
 
-fn typecheck_membercall(
-    context: &TypecheckingContext,
-    module: StoreKey<TypecheckedModule>,
-    scope: &mut Scopes,
-    exprs: &mut Vec<TypecheckedExpression>,
-    lhs: &Expression,
-    ident: &GlobalStr,
-    args: &[Expression],
-) -> Result<(Type, TypedLiteral), TypecheckingError> {
+#[allow(clippy::result_large_err)]
+fn typecheck_membercall<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module: StoreKey<TypecheckedModule<'arena>>,
+    scope: &mut Scopes<'arena>,
+    exprs: &mut Vec<TypecheckedExpression<'arena>>,
+    lhs: &Expression<'arena>,
+    ident: &InternedStr<'arena>,
+    args: &[Expression<'arena>],
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
     let (mut typ_lhs, mut typed_literal_lhs) =
         typecheck_take_ref(context, module, scope, lhs, exprs, TypeSuggestion::Unknown)?;
     match typ_lhs {
@@ -1837,7 +1825,7 @@ fn typecheck_membercall(
     let Some(function_id) = function_id else {
         return Err(TypecheckingError::CannotFindFunctionOnType(
             lhs.loc().clone(),
-            ident.clone(),
+            *ident,
             typ_lhs,
         ));
     };
@@ -1852,7 +1840,7 @@ fn typecheck_membercall(
     {
         return Err(TypecheckingError::NonMemberFunction(
             function.0.location.clone(),
-            ident.clone(),
+            *ident,
             typ_lhs,
         ));
     }
@@ -1927,14 +1915,15 @@ fn typecheck_membercall(
     ))
 }
 
-fn typecheck_take_ref(
-    context: &TypecheckingContext,
-    module: StoreKey<TypecheckedModule>,
-    scope: &mut Scopes,
-    expression: &Expression,
-    exprs: &mut Vec<TypecheckedExpression>,
-    type_suggestion: TypeSuggestion,
-) -> Result<(Type, TypedLiteral), TypecheckingError> {
+#[allow(clippy::result_large_err)]
+fn typecheck_take_ref<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module: StoreKey<TypecheckedModule<'arena>>,
+    scope: &mut Scopes<'arena>,
+    expression: &Expression<'arena>,
+    exprs: &mut Vec<TypecheckedExpression<'arena>>,
+    type_suggestion: TypeSuggestion<'arena>,
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
     match expression {
         //&*_1 => _1
         Expression::Unary {
@@ -1963,15 +1952,16 @@ fn typecheck_take_ref(
 // NOTE: the actual type of the value is a reference on top of the returned type, but we don't do
 // that as that would require additional computations. The reference is as such implicit but has to
 // be added when pushing the type onto the scope (e.g. during auto deref)
-fn ref_resolve_indexing(
-    context: &TypecheckingContext,
-    module: StoreKey<TypecheckedModule>,
-    scope: &mut Scopes,
-    expression: &Expression,
-    exprs: &mut Vec<TypecheckedExpression>,
-    type_suggestion: TypeSuggestion,
+#[allow(clippy::result_large_err)]
+fn ref_resolve_indexing<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module: StoreKey<TypecheckedModule<'arena>>,
+    scope: &mut Scopes<'arena>,
+    expression: &Expression<'arena>,
+    exprs: &mut Vec<TypecheckedExpression<'arena>>,
+    type_suggestion: TypeSuggestion<'arena>,
     increase_ref: bool,
-) -> Result<(Type, TypedLiteral), TypecheckingError> {
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
     match expression {
         Expression::MemberAccess {
             left_side,
@@ -2026,7 +2016,7 @@ fn ref_resolve_indexing(
                                 return Err(TypecheckingError::FieldNotFound(
                                     expression.loc().clone(),
                                     typ_lhs,
-                                    element_name.clone(),
+                                    *element_name,
                                 ))
                             }
                         }
@@ -2185,13 +2175,14 @@ fn ref_resolve_indexing(
     }
 }
 
-fn indexing_resolve_rhs(
-    context: &TypecheckingContext,
-    module: StoreKey<TypecheckedModule>,
-    scope: &mut Scopes,
-    expression: &Expression,
-    exprs: &mut Vec<TypecheckedExpression>,
-) -> Result<OffsetValue, TypecheckingError> {
+#[allow(clippy::result_large_err)]
+fn indexing_resolve_rhs<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module: StoreKey<TypecheckedModule<'arena>>,
+    scope: &mut Scopes<'arena>,
+    expression: &Expression<'arena>,
+    exprs: &mut Vec<TypecheckedExpression<'arena>>,
+) -> Result<OffsetValue, TypecheckingError<'arena>> {
     let (typ, rhs) = typecheck_expression(
         context,
         module,
@@ -2216,13 +2207,13 @@ fn indexing_resolve_rhs(
 
 /// typ - the type before the reference (as in, typ is the type of the typed_literal, the type of
 /// the returned type literal is typ.take_ref())
-fn make_reference(
-    scope: &mut Scopes,
-    expressions: &mut Vec<TypecheckedExpression>,
-    typ: Type,
-    mut typed_literal: TypedLiteral,
+fn make_reference<'arena>(
+    scope: &mut Scopes<'arena>,
+    expressions: &mut Vec<TypecheckedExpression<'arena>>,
+    typ: Type<'arena>,
+    mut typed_literal: TypedLiteral<'arena>,
     loc: Location,
-) -> TypedLiteral {
+) -> TypedLiteral<'arena> {
     match typed_literal {
         TypedLiteral::Void | TypedLiteral::Static(_) => {}
         TypedLiteral::Dynamic(v) => scope.make_stack_allocated(v),
@@ -2243,14 +2234,15 @@ fn make_reference(
     TypedLiteral::Dynamic(new_id)
 }
 
-fn copy_resolve_indexing(
-    context: &TypecheckingContext,
-    module: StoreKey<TypecheckedModule>,
-    scope: &mut Scopes,
-    expression: &Expression,
-    exprs: &mut Vec<TypecheckedExpression>,
-    type_suggestion: TypeSuggestion,
-) -> Result<(Type, TypedLiteral), TypecheckingError> {
+#[allow(clippy::result_large_err)]
+fn copy_resolve_indexing<'arena>(
+    context: &TypecheckingContext<'arena>,
+    module: StoreKey<TypecheckedModule<'arena>>,
+    scope: &mut Scopes<'arena>,
+    expression: &Expression<'arena>,
+    exprs: &mut Vec<TypecheckedExpression<'arena>>,
+    type_suggestion: TypeSuggestion<'arena>,
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
     match expression {
         Expression::Indexing {
             left_side,
@@ -2405,7 +2397,7 @@ fn copy_resolve_indexing(
                                 return Err(TypecheckingError::FieldNotFound(
                                     expression.loc().clone(),
                                     typ_lhs.without_ref(),
-                                    element_name.clone(),
+                                    *element_name,
                                 ))
                             }
                         }

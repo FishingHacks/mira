@@ -1,6 +1,6 @@
 use crate::{
     error::ParsingError,
-    string_interner::GlobalStr,
+    string_interner::InternedStr,
     tokenizer::{Literal, Location, NumberType, Token, TokenType},
 };
 
@@ -15,11 +15,11 @@ enum LiteralType {
 // this is represented by a vector of tokens. So it's not really a "stream", but i dont know any
 // better name so this will do for now.
 // TODO: Change name to something more sensical
-pub struct TokenStream(Vec<Token>, Location);
+pub struct TokenStream<'arena>(Vec<Token<'arena>>, Location);
 
-impl TokenStream {
+impl<'arena> TokenStream<'arena> {
     /// pushes the token to the end of the tokenstream, unless the last token is `TokenType::Eof`
-    pub fn push_token(&mut self, tok: Token) {
+    pub fn push_token(&mut self, tok: Token<'arena>) {
         self.0.push(tok);
         let len = self.0.len();
         if len > 1 && self.0[len - 2].typ == TokenType::Eof {
@@ -27,7 +27,7 @@ impl TokenStream {
         }
     }
 
-    pub fn new(tokens: Vec<Token>, loc: Location) -> Self {
+    pub fn new(tokens: Vec<Token<'arena>>, loc: Location) -> Self {
         Self(tokens, loc)
     }
 
@@ -35,7 +35,7 @@ impl TokenStream {
         &self.1
     }
 
-    pub fn to_inner(self) -> (Vec<Token>, Location) {
+    pub fn to_inner(self) -> (Vec<Token<'arena>>, Location) {
         (self.0, self.1)
     }
 
@@ -44,7 +44,10 @@ impl TokenStream {
         self.0.is_empty() || (self.0.len() == 1 && self.0[0].typ == TokenType::Eof)
     }
 
-    pub fn expect_token(&self, expected: TokenType) -> Result<&Token, ParsingError> {
+    pub fn expect_token(
+        &self,
+        expected: TokenType,
+    ) -> Result<&Token<'arena>, ParsingError<'arena>> {
         self.0
             .first()
             .filter(|v| v.typ == expected)
@@ -57,7 +60,10 @@ impl TokenStream {
     }
 
     /// Expects and removes a token. Only removes if the token matches the expected token.
-    pub fn expect_remove_token(&mut self, expected: TokenType) -> Result<Token, ParsingError> {
+    pub fn expect_remove_token(
+        &mut self,
+        expected: TokenType,
+    ) -> Result<Token<'arena>, ParsingError<'arena>> {
         self.expect_token(expected)?;
         Ok(self.0.remove(0))
     }
@@ -71,7 +77,7 @@ impl TokenStream {
         &mut self,
         expected_type: TokenType,
         expected_literal_type: LiteralType,
-    ) -> Result<&Token, ParsingError> {
+    ) -> Result<&Token<'arena>, ParsingError<'arena>> {
         let tok = self.expect_token(expected_type)?;
         match expected_literal_type {
             LiteralType::String => _ = tok.string_literal()?,
@@ -87,21 +93,25 @@ impl TokenStream {
         &mut self,
         expected_type: TokenType,
         expected_literal_type: LiteralType,
-    ) -> Result<Token, ParsingError> {
+    ) -> Result<Token<'arena>, ParsingError<'arena>> {
         self.expect_literal(expected_type, expected_literal_type)?;
         Ok(self.0.remove(0))
     }
 
-    pub fn expect_identifier(&mut self) -> Result<(GlobalStr, Location), ParsingError> {
+    pub fn expect_identifier(
+        &mut self,
+    ) -> Result<(InternedStr<'arena>, Location), ParsingError<'arena>> {
         self.expect_literal(TokenType::IdentifierLiteral, LiteralType::String)
             .map(|v| match &v.literal {
-                Some(Literal::String(lit)) => (lit.clone(), v.location.clone()),
+                Some(Literal::String(lit)) => (*lit, v.location.clone()),
                 _ => unreachable!(),
             })
     }
 
     /// Expects and removes a token. Only removes if the token matches the expected token.
-    pub fn expect_remove_identifier(&mut self) -> Result<(GlobalStr, Location), ParsingError> {
+    pub fn expect_remove_identifier(
+        &mut self,
+    ) -> Result<(InternedStr<'arena>, Location), ParsingError<'arena>> {
         self.expect_remove_literal(TokenType::IdentifierLiteral, LiteralType::String)
             .map(|v| match v.literal {
                 Some(Literal::String(lit)) => (lit, v.location),
@@ -109,16 +119,20 @@ impl TokenStream {
             })
     }
 
-    pub fn expect_string(&mut self) -> Result<(GlobalStr, Location), ParsingError> {
+    pub fn expect_string(
+        &mut self,
+    ) -> Result<(InternedStr<'arena>, Location), ParsingError<'arena>> {
         self.expect_literal(TokenType::StringLiteral, LiteralType::String)
             .map(|v| match &v.literal {
-                Some(Literal::String(lit)) => (lit.clone(), v.location.clone()),
+                Some(Literal::String(lit)) => (*lit, v.location.clone()),
                 _ => unreachable!(),
             })
     }
 
     /// Expects and removes a token. Only removes if the token matches the expected token.
-    pub fn expect_remove_string(&mut self) -> Result<(GlobalStr, Location), ParsingError> {
+    pub fn expect_remove_string(
+        &mut self,
+    ) -> Result<(InternedStr<'arena>, Location), ParsingError<'arena>> {
         self.expect_remove_literal(TokenType::StringLiteral, LiteralType::String)
             .map(|v| match v.literal {
                 Some(Literal::String(lit)) => (lit, v.location),
@@ -126,7 +140,7 @@ impl TokenStream {
             })
     }
 
-    pub fn expect_float(&mut self) -> Result<(f64, NumberType, Location), ParsingError> {
+    pub fn expect_float(&mut self) -> Result<(f64, NumberType, Location), ParsingError<'arena>> {
         self.expect_literal(TokenType::FloatLiteral, LiteralType::Float)
             .map(|v| match &v.literal {
                 Some(Literal::Float(lit, typ)) => (*lit, *typ, v.location.clone()),
@@ -135,13 +149,15 @@ impl TokenStream {
     }
 
     /// Expects and removes a token. Only removes if the token matches the expected token.
-    pub fn expect_remove_float(&mut self) -> Result<(f64, NumberType, Location), ParsingError> {
+    pub fn expect_remove_float(
+        &mut self,
+    ) -> Result<(f64, NumberType, Location), ParsingError<'arena>> {
         let v = self.expect_float()?;
         self.0.remove(0);
         Ok(v)
     }
 
-    pub fn expect_uint(&mut self) -> Result<(u64, NumberType, Location), ParsingError> {
+    pub fn expect_uint(&mut self) -> Result<(u64, NumberType, Location), ParsingError<'arena>> {
         self.expect_literal(TokenType::UIntLiteral, LiteralType::UInt)
             .map(|v| match &v.literal {
                 Some(Literal::UInt(lit, typ)) => (*lit, *typ, v.location.clone()),
@@ -150,13 +166,15 @@ impl TokenStream {
     }
 
     /// Expects and removes a token. Only removes if the token matches the expected token.
-    pub fn expect_remove_uint(&mut self) -> Result<(u64, NumberType, Location), ParsingError> {
+    pub fn expect_remove_uint(
+        &mut self,
+    ) -> Result<(u64, NumberType, Location), ParsingError<'arena>> {
         let v = self.expect_uint()?;
         self.0.remove(0);
         Ok(v)
     }
 
-    pub fn expect_sint(&mut self) -> Result<(i64, NumberType, Location), ParsingError> {
+    pub fn expect_sint(&mut self) -> Result<(i64, NumberType, Location), ParsingError<'arena>> {
         self.expect_literal(TokenType::SIntLiteral, LiteralType::SInt)
             .map(|v| match &v.literal {
                 Some(Literal::SInt(lit, typ)) => (*lit, *typ, v.location.clone()),
@@ -165,13 +183,15 @@ impl TokenStream {
     }
 
     /// Expects and removes a token. Only removes if the token matches the expected token.
-    pub fn expect_remove_sint(&mut self) -> Result<(i64, NumberType, Location), ParsingError> {
+    pub fn expect_remove_sint(
+        &mut self,
+    ) -> Result<(i64, NumberType, Location), ParsingError<'arena>> {
         let v = self.expect_sint()?;
         self.0.remove(0);
         Ok(v)
     }
 
-    pub fn expect_bool(&mut self) -> Result<(bool, Location), ParsingError> {
+    pub fn expect_bool(&mut self) -> Result<(bool, Location), ParsingError<'arena>> {
         self.expect_literal(TokenType::BooleanLiteral, LiteralType::Bool)
             .map(|v| match &v.literal {
                 Some(Literal::Bool(lit)) => (*lit, v.location.clone()),
@@ -180,7 +200,7 @@ impl TokenStream {
     }
 
     /// Expects and removes a token. Only removes if the token matches the expected token.
-    pub fn expect_remove_bool(&mut self) -> Result<(bool, Location), ParsingError> {
+    pub fn expect_remove_bool(&mut self) -> Result<(bool, Location), ParsingError<'arena>> {
         let v = self.expect_bool()?;
         self.0.remove(0);
         Ok(v)
@@ -188,7 +208,7 @@ impl TokenStream {
 
     /// Finishes parsing. Will error if there are any tokens remaining, unless there's only a
     /// single `Eof` token.
-    pub fn finish(&mut self) -> Result<(), ParsingError> {
+    pub fn finish(&mut self) -> Result<(), ParsingError<'arena>> {
         if (self.0.len() == 1 && self.0[0].typ == TokenType::Eof) || self.0.is_empty() {
             Ok(())
         } else {

@@ -1,6 +1,5 @@
-use parking_lot::lock_api::RawMutex as _;
-use parking_lot::RawMutex;
-use std::{alloc::Layout, cell::UnsafeCell, mem::MaybeUninit};
+use parking_lot::Mutex;
+use std::{alloc::Layout, mem::MaybeUninit};
 
 const MAX_ALIGNMENT: usize = std::mem::align_of::<u64>();
 const PAGE: usize = 1024;
@@ -8,7 +7,7 @@ const HUGE_PAGE: usize = 2 * PAGE * PAGE;
 
 struct Chunk {
     data: Box<[MaybeUninit<u8>]>,
-    start: UnsafeCell<usize>,
+    start: usize,
 }
 
 #[allow(dead_code)]
@@ -18,10 +17,7 @@ impl Chunk {
     fn new_with_capacity(capacity: usize) -> Self {
         let data = Box::new_uninit_slice(capacity);
         let start = align_up(data.as_ptr().addr(), MAX_ALIGNMENT) - data.as_ptr().addr();
-        Self {
-            data,
-            start: UnsafeCell::new(start),
-        }
+        Self { data, start }
     }
 
     fn capacity(&self) -> usize {
@@ -34,15 +30,15 @@ impl Chunk {
 
     /// You have to guarantee that this does not get called by any other thread while the function
     /// is executing on the current thread.
-    fn try_alloc(&self, size: usize, align: usize) -> Option<*mut u8> {
+    fn try_alloc(&mut self, size: usize, align: usize) -> Option<*mut u8> {
         assert!(align <= MAX_ALIGNMENT);
         let size = align_up(size, MAX_ALIGNMENT);
         // SAFETY: Only one thread at the time will execute this.
-        let start = unsafe { *self.start.get() };
+        let start = self.start;
         if start + size > self.data.len() {
             return None;
         }
-        unsafe { *self.start.get() += size };
+        self.start += size;
         Some(&self.data[start..start + size] as *const _ as *mut _)
     }
 }
@@ -53,41 +49,39 @@ fn align_up(val: usize, align: usize) -> usize {
     (val + align - 1) & !(align - 1)
 }
 
-pub struct Arena {
-    chunk: UnsafeCell<Chunk>,
-    used_chunks: UnsafeCell<Vec<UsedChunk>>,
-    lock: RawMutex,
+struct ArenaInner {
+    chunk: Chunk,
+    used_chunks: Vec<UsedChunk>,
 }
+
+pub struct Arena(Mutex<ArenaInner>);
 
 impl Arena {
     pub fn new() -> Self {
-        Self {
-            chunk: UnsafeCell::new(Chunk::new_with_capacity(PAGE)),
-            lock: RawMutex::INIT,
-            used_chunks: UnsafeCell::new(Vec::new()),
-        }
+        let inner = ArenaInner {
+            chunk: Chunk::new_with_capacity(PAGE),
+            used_chunks: Vec::new(),
+        };
+        Self(Mutex::new(inner))
     }
 
     fn alloc_raw(&self, layout: Layout) -> *mut u8 {
         if layout.size() == 0 {
             return std::ptr::without_provenance_mut(layout.align().max(1));
         }
-        self.lock.lock();
-        let chunk = unsafe { &mut *self.chunk.get() };
-        if let Some(ptr) = chunk.try_alloc(layout.size(), layout.align()) {
-            unsafe { self.lock.unlock() };
+        let mut inner = self.0.lock();
+        if let Some(ptr) = inner.chunk.try_alloc(layout.size(), layout.align()) {
             return ptr;
         }
-        let new_size = (chunk.capacity() * 2)
+        let new_size = (inner.chunk.capacity() * 2)
             .clamp(PAGE, HUGE_PAGE)
             .min(align_up(layout.size(), layout.align()) + MAX_ALIGNMENT - 1);
         let mut new_chunk = Chunk::new_with_capacity(new_size);
         let ptr = new_chunk
             .try_alloc(layout.size(), layout.align())
             .expect("this can't fail because the new chunk has to have enough space");
-        std::mem::swap(chunk, &mut new_chunk);
-        unsafe { &mut *self.used_chunks.get() }.push(new_chunk.into_used());
-        unsafe { self.lock.unlock() };
+        std::mem::swap(&mut inner.chunk, &mut new_chunk);
+        inner.used_chunks.push(new_chunk.into_used());
         ptr
     }
 
@@ -252,6 +246,8 @@ mod test {
             addr(arena.alloc_slice::<usize>(&[])),
             std::mem::align_of::<usize>()
         );
+        let v = arena.alloc(());
+        *v = ();
     }
 
     #[test]

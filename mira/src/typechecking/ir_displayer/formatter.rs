@@ -12,17 +12,20 @@ use crate::{
 
 pub const INDENT_STR: &str = "    ";
 
-pub struct ReadOnlyTypecheckingContext<'ctx> {
-    pub modules: &'ctx AssociatedStore<TypecheckedModule, Module>,
-    pub functions: &'ctx Store<(TypecheckedFunctionContract, Box<[TypecheckedExpression]>)>,
-    pub external_functions: &'ctx Store<(
-        TypecheckedFunctionContract,
-        Option<Box<[TypecheckedExpression]>>,
+pub struct ReadOnlyTypecheckingContext<'a, 'arena> {
+    pub modules: &'a AssociatedStore<TypecheckedModule<'arena>, Module<'arena>>,
+    pub functions: &'a Store<(
+        TypecheckedFunctionContract<'arena>,
+        Box<[TypecheckedExpression<'arena>]>,
     )>,
-    pub statics: &'ctx Store<TypedStatic>,
-    pub structs: &'ctx Store<TypedStruct>,
-    pub traits: &'ctx Store<TypedTrait>,
-    pub lang_items: &'ctx LangItems,
+    pub external_functions: &'a Store<(
+        TypecheckedFunctionContract<'arena>,
+        Option<Box<[TypecheckedExpression<'arena>]>>,
+    )>,
+    pub statics: &'a Store<TypedStatic<'arena>>,
+    pub structs: &'a Store<TypedStruct<'arena>>,
+    pub traits: &'a Store<TypedTrait<'arena>>,
+    pub lang_items: &'a LangItems<'arena>,
 }
 
 pub struct IoWriteWrapper<'a>(pub &'a mut (dyn std::io::Write + 'a));
@@ -33,13 +36,13 @@ impl Write for IoWriteWrapper<'_> {
     }
 }
 
-pub struct Formatter<'a, 'ctx> {
+pub struct Formatter<'a, 'ctx, 'arena> {
     inner: &'a mut (dyn Write + 'a),
     indent: u8,
-    pub ctx: ReadOnlyTypecheckingContext<'ctx>,
+    pub ctx: ReadOnlyTypecheckingContext<'ctx, 'arena>,
 }
 
-impl Formatter<'_, '_> {
+impl Formatter<'_, '_, '_> {
     pub fn write_indent(&mut self) -> std::fmt::Result {
         for _ in 0..self.indent {
             self.inner.write_str(INDENT_STR)?;
@@ -78,7 +81,7 @@ impl Formatter<'_, '_> {
     }
 }
 
-impl std::fmt::Write for Formatter<'_, '_> {
+impl std::fmt::Write for Formatter<'_, '_, '_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         for (idx, split) in s.split('\n').enumerate() {
             if idx != 0 {
@@ -99,8 +102,11 @@ impl std::fmt::Write for Formatter<'_, '_> {
     }
 }
 
-impl<'a, 'ctx> Formatter<'a, 'ctx> {
-    pub fn new(inner: &'a mut (dyn Write + 'a), ctx: ReadOnlyTypecheckingContext<'ctx>) -> Self {
+impl<'a, 'ctx, 'arena> Formatter<'a, 'ctx, 'arena> {
+    pub fn new(
+        inner: &'a mut (dyn Write + 'a),
+        ctx: ReadOnlyTypecheckingContext<'ctx, 'arena>,
+    ) -> Self {
         Self {
             inner,
             indent: 0,

@@ -1,7 +1,10 @@
-use crate::tokenizer::{Literal, Location, NumberType, Token, TokenType};
+use crate::{
+    context::SharedContext,
+    tokenizer::{Literal, Location, NumberType, Token, TokenType},
+};
 use std::fmt::Write;
 
-type MacroFn = fn(&Location, &[Token]) -> Vec<Token>;
+type MacroFn<'arena> = fn(SharedContext<'arena>, &Location, &[Token<'arena>]) -> Vec<Token<'arena>>;
 
 pub fn get_builtin_macro(name: &str) -> Option<MacroFn> {
     match name {
@@ -16,7 +19,11 @@ pub fn get_builtin_macro(name: &str) -> Option<MacroFn> {
     }
 }
 
-fn macro_concat(loc: &Location, args: &[Token]) -> Vec<Token> {
+fn macro_concat<'arena>(
+    ctx: SharedContext<'arena>,
+    loc: &Location,
+    args: &[Token<'arena>],
+) -> Vec<Token<'arena>> {
     let mut concat_str = String::new();
     for arg in args {
         match arg.typ {
@@ -42,17 +49,21 @@ fn macro_concat(loc: &Location, args: &[Token]) -> Vec<Token> {
             }
             Some(Literal::Bool(v)) if v => concat_str.push_str("true"),
             Some(Literal::Bool(_)) => concat_str.push_str("false"),
-            Some(Literal::String(ref v)) => v.with(|v| concat_str.push_str(v)),
+            Some(Literal::String(ref v)) => concat_str.push_str(v),
         }
     }
     vec![Token {
         typ: TokenType::StringLiteral,
-        literal: Some(Literal::String(concat_str.into())),
+        literal: Some(Literal::String(ctx.intern_str(&concat_str))),
         location: loc.clone(),
     }]
 }
 
-fn macro_concat_idents(loc: &Location, args: &[Token]) -> Vec<Token> {
+fn macro_concat_idents<'arena>(
+    ctx: SharedContext<'arena>,
+    loc: &Location,
+    args: &[Token<'arena>],
+) -> Vec<Token<'arena>> {
     let mut concat_str = String::new();
     for arg in args {
         match arg.typ {
@@ -61,7 +72,7 @@ fn macro_concat_idents(loc: &Location, args: &[Token]) -> Vec<Token> {
         }
         match arg.literal {
             None => (),
-            Some(Literal::String(ref v)) => v.with(|v| concat_str.push_str(v)),
+            Some(Literal::String(ref v)) => concat_str.push_str(v),
             _ => unreachable!(
                 "identifier literals should never have any literal value other than string"
             ),
@@ -69,12 +80,16 @@ fn macro_concat_idents(loc: &Location, args: &[Token]) -> Vec<Token> {
     }
     vec![Token {
         typ: TokenType::IdentifierLiteral,
-        literal: Some(Literal::String(concat_str.into())),
+        literal: Some(Literal::String(ctx.intern_str(&concat_str))),
         location: loc.clone(),
     }]
 }
 
-fn macro_line(loc: &Location, args: &[Token]) -> Vec<Token> {
+fn macro_line<'arena>(
+    _: SharedContext<'arena>,
+    loc: &Location,
+    args: &[Token<'arena>],
+) -> Vec<Token<'arena>> {
     if !args.is_empty() {
         panic!("{loc}: did not expect any arguments")
     }
@@ -85,7 +100,11 @@ fn macro_line(loc: &Location, args: &[Token]) -> Vec<Token> {
     }]
 }
 
-fn macro_column(loc: &Location, args: &[Token]) -> Vec<Token> {
+fn macro_column<'arena>(
+    _: SharedContext<'arena>,
+    loc: &Location,
+    args: &[Token<'arena>],
+) -> Vec<Token<'arena>> {
     if !args.is_empty() {
         panic!("{loc}: did not expect any arguments")
     }
@@ -96,18 +115,28 @@ fn macro_column(loc: &Location, args: &[Token]) -> Vec<Token> {
     }]
 }
 
-fn macro_file(loc: &Location, args: &[Token]) -> Vec<Token> {
+fn macro_file<'arena>(
+    ctx: SharedContext<'arena>,
+    loc: &Location,
+    args: &[Token<'arena>],
+) -> Vec<Token<'arena>> {
     if !args.is_empty() {
         panic!("{loc}: did not expect any arguments")
     }
     vec![Token {
         location: loc.clone(),
-        literal: Some(Literal::String(loc.file.display().to_string().into())),
+        literal: Some(Literal::String(
+            ctx.intern_str(&loc.file.display().to_string()),
+        )),
         typ: TokenType::StringLiteral,
     }]
 }
 
-fn macro_compile_error(loc: &Location, args: &[Token]) -> Vec<Token> {
+fn macro_compile_error<'arena>(
+    _: SharedContext<'arena>,
+    loc: &Location,
+    args: &[Token<'arena>],
+) -> Vec<Token<'arena>> {
     if let Some(lit) = args.first().as_ref().and_then(|v| v.literal.as_ref()) {
         match lit {
             Literal::Float(v, _) => panic!("{loc}: error: {v}"),
@@ -121,14 +150,18 @@ fn macro_compile_error(loc: &Location, args: &[Token]) -> Vec<Token> {
     }
 }
 
-fn macro_stringify(loc: &Location, args: &[Token]) -> Vec<Token> {
+fn macro_stringify<'arena>(
+    ctx: SharedContext<'arena>,
+    loc: &Location,
+    args: &[Token<'arena>],
+) -> Vec<Token<'arena>> {
     let mut strn = String::new();
     for arg in args {
         write!(strn, "{arg}").expect("writing to a string should never fail");
     }
     vec![Token {
         location: loc.clone(),
-        literal: Some(Literal::String(strn.into())),
+        literal: Some(Literal::String(ctx.intern_str(&strn))),
         typ: TokenType::StringLiteral,
     }]
 }

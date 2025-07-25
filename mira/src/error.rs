@@ -5,76 +5,77 @@ use thiserror::Error;
 use crate::{
     annotations::AnnotationReceiver,
     codegen::CodegenError,
-    globals::GlobalStr,
     linking::LinkerError,
+    string_interner::InternedStr,
     tokenizer::{Location, TokenType},
     typechecking::{Type, TypecheckingError},
 };
 
 #[macro_export]
 macro_rules! error_list_wrapper {
-    ($(#[$meta:tt])* $vis:vis struct $name:ident($errorty:ident);
+    ($(#[$meta:tt])* $vis:vis struct $name:ident$(< $($lifetime:tt),* $(,)? >)?($errorty:ident);
     $(
         $add_fn:ident => $error_field:ident($( $field_name:ident : $field_ty:ty ),* $(,)?)
     );* $(;)?
     ) => {
         $(#[$meta])*
         #[derive(Default)]
-        $vis struct $name(pub Vec<$errorty>);
+        $vis struct $name $(<$($lifetime),*>)? (pub Vec<$errorty $(<$($lifetime),*>)?>);
 
-        impl $name {
+        impl $(<$($lifetime),*>)? $name $(<$($lifetime),*>)? {
             $(
                 pub fn $add_fn(&mut self$(, $field_name : $field_ty)*) {
                     self.0.push($errorty::$error_field { $($field_name),* });
                 }
             )*
 
-            pub fn into_inner(self) -> Vec<$errorty> { self.0 }
+            pub fn into_inner(self) -> Vec<$errorty $(<$($lifetime),*>)?> { self.0 }
             pub fn get_inner(&self) -> &[$errorty] { &self.0 }
             pub fn len(&self) -> usize { self.0.len() }
             pub fn is_empty(&self) -> bool { self.0.is_empty() }
-            pub fn push(&mut self, v: $errorty) { self.0.push(v) }
+            pub fn push(&mut self, v: $errorty $(<$($lifetime),*>)?) { self.0.push(v) }
         }
     };
 }
 error_list_wrapper!(
-    pub struct MiraErrors(MiraError);
-    add_parsing => Parsing(inner: ParsingError);
+    pub struct MiraErrors<'arena>(MiraError);
+    add_parsing => Parsing(inner: ParsingError<'arena>);
     add_tokenization => Tokenization(inner: TokenizationError);
-    add_programforming => ProgramForming(inner: ProgramFormingError);
-    add_typechecking => Typechecking(inner: TypecheckingError);
+    add_programforming => ProgramForming(inner: ProgramFormingError<'arena>);
+    add_typechecking => Typechecking(inner: TypecheckingError<'arena>);
     add_codegen => Codegen(inner: CodegenError);
     add_generic => Generic(inner: &'static str);
     add_io => IO(inner: std::io::Error);
 );
 
+macro_rules! from {
+    ($name:ident ($ty:ty) $func:ident) => {
+        impl<'arena> MiraError<'arena> {
+            pub fn $func(value: $ty) -> Self {
+                Self::$name { inner: value }
+            }
+        }
+    };
+}
+
+from!(Parsing(ParsingError<'arena>) parsing);
+from!(ProgramForming(ProgramFormingError<'arena>) program_forming);
+from!(Typechecking(TypecheckingError<'arena>) typechecking);
+from!(Tokenization(TokenizationError) tokenization);
+from!(Codegen(CodegenError) codegen);
+
 #[derive(Error, Debug)]
-pub enum MiraError {
+pub enum MiraError<'arena> {
     #[error("{inner}")]
-    Parsing {
-        #[from]
-        inner: ParsingError,
-    },
+    Parsing { inner: ParsingError<'arena> },
     #[error("{inner}")]
-    Tokenization {
-        #[from]
-        inner: TokenizationError,
-    },
+    Tokenization { inner: TokenizationError },
     #[error("{inner}")]
-    ProgramForming {
-        #[from]
-        inner: ProgramFormingError,
-    },
+    ProgramForming { inner: ProgramFormingError<'arena> },
     #[error("{inner}")]
-    Typechecking {
-        #[from]
-        inner: TypecheckingError,
-    },
+    Typechecking { inner: TypecheckingError<'arena> },
     #[error("{inner}")]
-    Codegen {
-        #[from]
-        inner: CodegenError,
-    },
+    Codegen { inner: CodegenError },
     #[error("{inner}")]
     Generic { inner: &'static str },
     #[error("{inner}")]
@@ -90,23 +91,44 @@ pub enum MiraError {
 }
 
 #[derive(Clone, Debug, Error)]
-pub enum ParsingError {
+pub enum ParsingError<'arena> {
     #[error("{loc}: Cannot resolved import {name:?}")]
-    CannotResolveModule { loc: Location, name: GlobalStr },
+    CannotResolveModule {
+        loc: Location,
+        name: InternedStr<'arena>,
+    },
     #[error("{loc}: Expected let, fn, extern, struct, use or trait, but found {typ:?}")]
     ExpectedElementForPub { loc: Location, typ: TokenType },
     #[error("{loc}: Output constraint must start with `=`")]
-    OutputNotStartingWithEqual { loc: Location, output: GlobalStr },
+    OutputNotStartingWithEqual {
+        loc: Location,
+        output: InternedStr<'arena>,
+    },
     #[error("{loc}: Input constraint cannot start with `=` or `~`")]
-    InputStartingWithInvalidChar { loc: Location, input: GlobalStr },
+    InputStartingWithInvalidChar {
+        loc: Location,
+        input: InternedStr<'arena>,
+    },
     #[error("{loc}: Duplicate Replacer `{replacer}`")]
-    DuplicateAsmReplacer { loc: Location, replacer: GlobalStr },
+    DuplicateAsmReplacer {
+        loc: Location,
+        replacer: InternedStr<'arena>,
+    },
     #[error("{loc}: {name} is an invalid function attribute")]
-    InvalidFunctionAttribute { loc: Location, name: GlobalStr },
+    InvalidFunctionAttribute {
+        loc: Location,
+        name: InternedStr<'arena>,
+    },
     #[error("{loc}: {name} is an invalid intrinsic")]
-    InvalidIntrinsic { loc: Location, name: GlobalStr },
+    InvalidIntrinsic {
+        loc: Location,
+        name: InternedStr<'arena>,
+    },
     #[error("{loc}: {name} is an invalid calling convention")]
-    InvalidCallConv { loc: Location, name: GlobalStr },
+    InvalidCallConv {
+        loc: Location,
+        name: InternedStr<'arena>,
+    },
     #[error("{loc}: Expected a type, but found {found:?}")]
     ExpectedType { loc: Location, found: TokenType },
     #[error("{loc}: Expected a function call")]
@@ -143,7 +165,7 @@ pub enum ParsingError {
     )]
     FunctionAlreadyDefined {
         loc: Location,
-        name: GlobalStr,
+        name: InternedStr<'arena>,
         first_func_loc: Location,
     },
     #[error("{loc}: Expected {}fn or `}}`, but found {found:?}", if *.is_trait_impl { "impl, " } else { "" })]
@@ -168,7 +190,7 @@ pub enum ParsingError {
     UnknownAnnotation { loc: Location, name: String },
 }
 
-impl ParsingError {
+impl ParsingError<'_> {
     pub fn get_loc(&self) -> &Location {
         match self {
             Self::InvalidIntrinsic { loc, .. }
@@ -242,7 +264,7 @@ impl TokenizationError {
 }
 
 #[derive(Clone, Debug, Error)]
-pub enum ProgramFormingError {
+pub enum ProgramFormingError<'arena> {
     #[error("{0}: Code outside of a function boundary")]
     NoCodeOutsideOfFunctions(Location),
     #[error("{0}: There are no anonymous functions at global level allowed")]
@@ -252,12 +274,12 @@ pub enum ProgramFormingError {
     #[error("{0}: global-level const expects you to pass a type")]
     GlobalValueNoType(Location),
     #[error("{0}: could not find `{1}` in the current module")]
-    IdentNotDefined(Location, GlobalStr),
+    IdentNotDefined(Location, InternedStr<'arena>),
     #[error("{0}: `{1}` is already defined in the current module")]
-    IdentAlreadyDefined(Location, GlobalStr),
+    IdentAlreadyDefined(Location, InternedStr<'arena>),
 }
 
-pub struct FunctionList<'a>(pub &'a [Type]);
+pub struct FunctionList<'a>(pub &'a [Type<'a>]);
 
 impl Display for FunctionList<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

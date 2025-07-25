@@ -4,55 +4,67 @@ use std::{collections::HashMap, fmt::Debug, path::Path, sync::Arc};
 use crate::{
     annotations::Annotations,
     error::ProgramFormingError,
-    globals::GlobalStr,
     parser::{Expression, FunctionContract, Generic, LiteralValue, Statement, Trait, TypeRef},
     store::{Store, StoreKey},
+    string_interner::InternedStr,
     tokenizer::Location,
 };
 
 #[derive(Debug, Copy, Clone)]
-pub enum ModuleScopeValue {
-    Function(StoreKey<Function>),
-    ExternalFunction(StoreKey<ExternalFunction>),
-    Struct(StoreKey<BakedStruct>),
-    Static(StoreKey<Static>),
-    Module(StoreKey<Module>),
-    Trait(StoreKey<Trait>),
+pub enum ModuleScopeValue<'arena> {
+    Function(StoreKey<Function<'arena>>),
+    ExternalFunction(StoreKey<ExternalFunction<'arena>>),
+    Struct(StoreKey<BakedStruct<'arena>>),
+    Static(StoreKey<Static<'arena>>),
+    Module(StoreKey<Module<'arena>>),
+    Trait(StoreKey<Trait<'arena>>),
 }
 
 #[derive(Debug)]
-pub struct BakedStruct {
-    pub name: GlobalStr,
-    pub elements: Vec<(GlobalStr, TypeRef)>,
+pub struct BakedStruct<'arena> {
+    pub name: InternedStr<'arena>,
+    pub elements: Vec<(InternedStr<'arena>, TypeRef<'arena>)>,
     pub location: Location,
-    pub global_impl: HashMap<GlobalStr, StoreKey<Function>>,
-    pub impls: Vec<(GlobalStr, HashMap<GlobalStr, StoreKey<Function>>, Location)>,
+    pub global_impl: HashMap<InternedStr<'arena>, StoreKey<Function<'arena>>>,
+    pub impls: Vec<(
+        InternedStr<'arena>,
+        HashMap<InternedStr<'arena>, StoreKey<Function<'arena>>>,
+        Location,
+    )>,
     pub annotations: Annotations,
-    pub module_id: StoreKey<Module>,
-    pub generics: Vec<Generic>,
+    pub module_id: StoreKey<Module<'arena>>,
+    pub generics: Vec<Generic<'arena>>,
 }
 
-pub type Function = (FunctionContract, Statement, StoreKey<Module>);
-pub type ExternalFunction = (FunctionContract, Option<Statement>, StoreKey<Module>);
-pub type Static = (
-    TypeRef,
-    LiteralValue,
-    StoreKey<Module>,
+pub type Function<'arena> = (
+    FunctionContract<'arena>,
+    Statement<'arena>,
+    StoreKey<Module<'arena>>,
+);
+pub type ExternalFunction<'arena> = (
+    FunctionContract<'arena>,
+    Option<Statement<'arena>>,
+    StoreKey<Module<'arena>>,
+);
+pub type Static<'arena> = (
+    TypeRef<'arena>,
+    LiteralValue<'arena>,
+    StoreKey<Module<'arena>>,
     Location,
     Annotations,
 );
 
 #[derive(Default)]
-pub struct ModuleContext {
-    pub modules: RwLock<Store<Module>>,
-    pub functions: RwLock<Store<Function>>,
-    pub external_functions: RwLock<Store<ExternalFunction>>,
-    pub statics: RwLock<Store<Static>>, // TODO: const-eval for statics
-    pub structs: RwLock<Store<BakedStruct>>,
-    pub traits: RwLock<Store<Trait>>,
+pub struct ModuleContext<'arena> {
+    pub modules: RwLock<Store<Module<'arena>>>,
+    pub functions: RwLock<Store<Function<'arena>>>,
+    pub external_functions: RwLock<Store<ExternalFunction<'arena>>>,
+    pub statics: RwLock<Store<Static<'arena>>>, // TODO: const-eval for statics
+    pub structs: RwLock<Store<BakedStruct<'arena>>>,
+    pub traits: RwLock<Store<Trait<'arena>>>,
 }
 
-impl Debug for ModuleContext {
+impl Debug for ModuleContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModuleContext")
             .field("functions", &self.functions.read())
@@ -63,16 +75,19 @@ impl Debug for ModuleContext {
     }
 }
 
-pub struct Module {
-    pub scope: HashMap<GlobalStr, ModuleScopeValue>,
-    pub imports: HashMap<GlobalStr, (Location, StoreKey<Module>, Vec<GlobalStr>)>,
-    pub exports: HashMap<GlobalStr, GlobalStr>,
+pub struct Module<'arena> {
+    pub scope: HashMap<InternedStr<'arena>, ModuleScopeValue<'arena>>,
+    pub imports: HashMap<
+        InternedStr<'arena>,
+        (Location, StoreKey<Module<'arena>>, Vec<InternedStr<'arena>>),
+    >,
+    pub exports: HashMap<InternedStr<'arena>, InternedStr<'arena>>,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
     pub assembly: Vec<(Location, String)>,
 }
 
-impl Debug for Module {
+impl Debug for Module<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Module")
             .field("scope", &self.scope)
@@ -82,9 +97,12 @@ impl Debug for Module {
     }
 }
 
-impl Module {
+impl<'arena> Module<'arena> {
     pub fn new(
-        imports: HashMap<GlobalStr, (Location, StoreKey<Module>, Vec<GlobalStr>)>,
+        imports: HashMap<
+            InternedStr<'arena>,
+            (Location, StoreKey<Module<'arena>>, Vec<InternedStr<'arena>>),
+        >,
         path: Arc<Path>,
         root: Arc<Path>,
     ) -> Self {
@@ -100,11 +118,11 @@ impl Module {
 
     pub fn push_fn(
         &mut self,
-        contract: FunctionContract,
-        mut body: Statement,
-        module: StoreKey<Module>,
-        context: &ModuleContext,
-    ) -> StoreKey<Function> {
+        contract: FunctionContract<'arena>,
+        mut body: Statement<'arena>,
+        module: StoreKey<Module<'arena>>,
+        context: &ModuleContext<'arena>,
+    ) -> StoreKey<Function<'arena>> {
         let key = {
             let mut writer = context.functions.write();
             let loc = contract.location.clone();
@@ -125,10 +143,10 @@ impl Module {
 
     pub fn push_all(
         &mut self,
-        statements: Vec<Statement>,
-        module_id: StoreKey<Module>,
-        context: &ModuleContext,
-    ) -> Result<(), Vec<ProgramFormingError>> {
+        statements: Vec<Statement<'arena>>,
+        module_id: StoreKey<Module<'arena>>,
+        context: &ModuleContext<'arena>,
+    ) -> Result<(), Vec<ProgramFormingError<'arena>>> {
         let errors = statements
             .into_iter()
             .map(|statement| self.push_statement(statement, module_id, context))
@@ -144,13 +162,13 @@ impl Module {
 
     pub fn push_statement(
         &mut self,
-        statement: Statement,
-        module_id: StoreKey<Module>,
-        context: &ModuleContext,
-    ) -> Result<(), ProgramFormingError> {
+        statement: Statement<'arena>,
+        module_id: StoreKey<Module<'arena>>,
+        context: &ModuleContext<'arena>,
+    ) -> Result<(), ProgramFormingError<'arena>> {
         match statement {
             Statement::Function(contract, body) => {
-                let Some(name) = contract.name.clone() else {
+                let Some(name) = contract.name else {
                     return Err(ProgramFormingError::AnonymousFunctionAtGlobalLevel(
                         contract.location.clone(),
                     ));
@@ -173,12 +191,12 @@ impl Module {
                 {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         r#trait.location.clone(),
-                        r#trait.name.clone(),
+                        r#trait.name,
                     ));
                 }
 
                 let mut writer = context.traits.write();
-                let name = r#trait.name.clone();
+                let name = r#trait.name;
                 let key = writer.insert(r#trait);
                 self.scope.insert(name, ModuleScopeValue::Trait(key));
             }
@@ -215,7 +233,7 @@ impl Module {
                 }
 
                 let baked_struct = BakedStruct {
-                    name: name.clone(),
+                    name,
                     elements,
                     annotations,
                     location,
@@ -250,7 +268,7 @@ impl Module {
                 self.scope.insert(name, ModuleScopeValue::Static(key));
             }
             Statement::ExternalFunction(contract, mut body) => {
-                let Some(name) = contract.name.clone() else {
+                let Some(name) = contract.name else {
                     return Err(ProgramFormingError::AnonymousFunctionAtGlobalLevel(
                         contract.location.clone(),
                     ));

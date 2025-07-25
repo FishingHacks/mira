@@ -2,7 +2,7 @@ use crate::typechecking::{Type, TypedTrait};
 
 use super::Formatter;
 
-pub struct TraitDisplay<'a>(pub &'a TypedTrait);
+pub struct TraitDisplay<'a>(pub &'a TypedTrait<'a>);
 
 impl TraitDisplay<'_> {
     pub fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {

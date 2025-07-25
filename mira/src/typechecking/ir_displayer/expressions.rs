@@ -3,7 +3,7 @@ use crate::typechecking::expression::{TypecheckedExpression, TypedLiteral};
 use super::{formatter::Formatter, typed_literal::Tld};
 
 #[repr(transparent)]
-pub struct ExpressionDisplay<'a>(pub &'a TypecheckedExpression);
+pub struct ExpressionDisplay<'a>(pub &'a TypecheckedExpression<'a>);
 
 macro_rules! expr {
     (binary $f:ident, $dst:expr, $lhs:expr, $rhs:expr, $operator:literal) => {{

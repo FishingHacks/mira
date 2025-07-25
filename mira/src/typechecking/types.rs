@@ -5,41 +5,41 @@ use std::{
 };
 
 use crate::store::{Store, StoreKey};
-use crate::{globals::GlobalStr, parser::TypeRef, tokenizer::NumberType};
+use crate::{parser::TypeRef, string_interner::InternedStr, tokenizer::NumberType};
 
 use super::{TypecheckingContext, TypedStruct, TypedTrait};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FunctionType {
-    pub arguments: Vec<Type>,
-    pub return_type: Type,
+pub struct FunctionType<'arena> {
+    pub arguments: Vec<Type<'arena>>,
+    pub return_type: Type<'arena>,
 }
 
 #[derive(Clone, Debug, Eq)]
-pub enum Type {
+pub enum Type<'arena> {
     DynType {
-        trait_refs: Vec<(StoreKey<TypedTrait>, GlobalStr)>,
+        trait_refs: Vec<(StoreKey<TypedTrait<'arena>>, InternedStr<'arena>)>,
         num_references: u8,
     },
     Struct {
-        struct_id: StoreKey<TypedStruct>,
-        name: GlobalStr,
+        struct_id: StoreKey<TypedStruct<'arena>>,
+        name: InternedStr<'arena>,
         num_references: u8,
     },
     UnsizedArray {
-        typ: Box<Type>,
+        typ: Box<Type<'arena>>,
         num_references: u8,
     },
     SizedArray {
-        typ: Box<Type>,
+        typ: Box<Type<'arena>>,
         num_references: u8,
         number_elements: usize,
     },
     Tuple {
-        elements: Vec<Type>,
+        elements: Vec<Type<'arena>>,
         num_references: u8,
     },
-    Function(Arc<FunctionType>, u8),
+    Function(Arc<FunctionType<'arena>>, u8),
 
     PrimitiveVoid(u8),
     PrimitiveNever,
@@ -64,15 +64,15 @@ pub enum Type {
     PrimitiveSelf(u8),
 
     Generic {
-        name: GlobalStr,
+        name: InternedStr<'arena>,
         num_references: u8,
         generic_id: u8,
-        bounds: Vec<StoreKey<TypedTrait>>,
+        bounds: Vec<StoreKey<TypedTrait<'arena>>>,
         sized: bool,
     },
 }
 
-impl Hash for Type {
+impl Hash for Type<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.refcount().hash(state);
         match self {
@@ -125,7 +125,7 @@ impl Hash for Type {
     }
 }
 
-pub fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
+pub fn resolve_primitive_type<'arena>(typ: &TypeRef<'arena>) -> Option<Type<'arena>> {
     match typ {
         TypeRef::Never(_) => Some(Type::PrimitiveNever),
         TypeRef::Void(_, refcount) => Some(Type::PrimitiveVoid(*refcount)),
@@ -134,7 +134,7 @@ pub fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
             type_name,
             loc: _,
         } if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() => {
-            type_name.entries[0].0.with(|type_name| match type_name {
+            match type_name.entries[0].0.to_str() {
                 "!" => Some(Type::PrimitiveNever),
                 "void" => Some(Type::PrimitiveVoid(*num_references)),
                 "i8" => Some(Type::PrimitiveI8(*num_references)),
@@ -153,7 +153,7 @@ pub fn resolve_primitive_type(typ: &TypeRef) -> Option<Type> {
                 "usize" => Some(Type::PrimitiveUSize(*num_references)),
                 "Self" => Some(Type::PrimitiveSelf(*num_references)),
                 _ => None,
-            })
+            }
         }
         _ => None,
     }
@@ -176,7 +176,7 @@ fn values_match(left: &[StoreKey<TypedTrait>], right: &[StoreKey<TypedTrait>]) -
     true
 }
 
-impl Type {
+impl<'arena> Type<'arena> {
     pub fn implements(
         &self,
         traits: &[StoreKey<TypedTrait>],
@@ -660,7 +660,7 @@ impl Type {
     }
 }
 
-impl Display for Type {
+impl Display for Type<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for _ in 0..self.refcount() {
             f.write_char('&')?;
@@ -766,7 +766,7 @@ impl Display for Type {
     }
 }
 
-impl PartialEq for Type {
+impl PartialEq for Type<'_> {
     fn eq(&self, other: &Self) -> bool {
         if self.refcount() != other.refcount() {
             return false;
@@ -850,18 +850,18 @@ impl PartialEq for Type {
 }
 
 #[derive(Clone, Debug, Default)]
-pub enum TypeSuggestion {
-    Struct(StoreKey<TypedStruct>),
-    Array(Box<TypeSuggestion>),
-    UnsizedArray(Box<TypeSuggestion>),
+pub enum TypeSuggestion<'arena> {
+    Struct(StoreKey<TypedStruct<'arena>>),
+    Array(Box<TypeSuggestion<'arena>>),
+    UnsizedArray(Box<TypeSuggestion<'arena>>),
     Number(NumberType),
-    Tuple(Vec<TypeSuggestion>),
+    Tuple(Vec<TypeSuggestion<'arena>>),
     Bool,
     #[default]
     Unknown,
 }
 
-impl Display for TypeSuggestion {
+impl Display for TypeSuggestion<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TypeSuggestion::Struct(id) => f.write_fmt(format_args!("<struct {id}>")),
@@ -885,12 +885,12 @@ impl Display for TypeSuggestion {
     }
 }
 
-impl TypeSuggestion {
-    pub fn to_type(&self, ctx: &TypecheckingContext) -> Option<Type> {
+impl<'arena> TypeSuggestion<'arena> {
+    pub fn to_type(&self, ctx: &TypecheckingContext<'arena>) -> Option<Type<'arena>> {
         match self {
             TypeSuggestion::Struct(id) => Some(Type::Struct {
                 struct_id: *id,
-                name: ctx.structs.read()[*id].name.clone(),
+                name: ctx.structs.read()[*id].name,
                 num_references: 0,
             }),
             TypeSuggestion::Array(type_suggestion)
@@ -931,7 +931,7 @@ impl TypeSuggestion {
         }
     }
 
-    pub fn from_type(typ: &Type) -> Self {
+    pub fn from_type(typ: &Type<'arena>) -> Self {
         match typ {
             Type::PrimitiveStr(_)
             | Type::PrimitiveSelf(_)

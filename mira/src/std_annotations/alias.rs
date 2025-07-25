@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone)]
-pub struct ExternAliasAnnotation(pub GlobalStr);
+pub struct ExternAliasAnnotation(pub String);
 impl Annotation for ExternAliasAnnotation {
     fn get_name(&self) -> &'static str {
         "alias"
@@ -23,5 +23,5 @@ impl Display for ExternAliasAnnotation {
 pub fn parse(mut tokens: TokenStream) -> Result<ExternAliasAnnotation, ParsingError> {
     let (name, _) = tokens.expect_remove_string()?;
     tokens.finish()?;
-    Ok(ExternAliasAnnotation(name))
+    Ok(ExternAliasAnnotation(name.to_string()))
 }

@@ -9,6 +9,7 @@ use std::{
 
 use clap::{Args, ValueEnum};
 use mira::{
+    arena::Arena,
     codegen::CodegenConfig,
     linking::{run_full_compilation_pipeline, FullCompilationOptions},
     module_resolution::{
@@ -240,7 +241,7 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
         })
     });
 
-    let exec_path = match run_full_compilation_pipeline(opts) {
+    let exec_path = match run_full_compilation_pipeline(&Arena::new(), opts) {
         Err(e) => {
             println!("Failed to compile:");
             for e in e.iter() {
@@ -267,7 +268,7 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
     }
     match cmd.spawn().and_then(|mut v| v.wait()) {
         Err(e) => println!("-> failed to run the program: {e:?}"),
-        Ok(v) if !v.success() => println!("\n\n  process exited with error: {:?}", v),
+        Ok(v) if !v.success() => println!("\n\n  process exited with error: {v:?}"),
         Ok(_) => println!("\n"),
     }
 

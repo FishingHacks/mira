@@ -4,7 +4,7 @@ use super::formatter::Formatter;
 
 // TypedLiteralDisplay
 #[repr(transparent)]
-pub struct Tld<'a>(pub &'a TypedLiteral);
+pub struct Tld<'a>(pub &'a TypedLiteral<'a>);
 
 impl Tld<'_> {
     pub fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {

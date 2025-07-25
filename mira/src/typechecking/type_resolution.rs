@@ -9,17 +9,20 @@ use crate::{
 
 use super::{
     expression::TypedLiteral, resolve_import, types::Type, TypecheckedFunctionContract,
-    TypecheckingContext, TypecheckingError, TypedGeneric, TypedTrait, DUMMY_LOCATION,
+    TypecheckingContext, TypecheckingError, TypedGeneric, TypedStatic, TypedTrait, DUMMY_LOCATION,
 };
 
-impl TypecheckingContext {
+impl<'arena> TypecheckingContext<'arena> {
     /// Resolves the types; This should be ran *after* [Self::resolve_imports]
     ///
     /// NOTE: this could potentially deadlock as i write-lock the rwlocks in the context a bunch
     /// and don't free them until fully resolving a value. This module is designed in a way that
     /// such a deadlock should never happen but.. uhh... :3c :3
     /// meow
-    pub fn resolve_types(&self, context: Arc<ModuleContext>) -> Vec<TypecheckingError> {
+    pub fn resolve_types(
+        &self,
+        context: Arc<ModuleContext<'arena>>,
+    ) -> Vec<TypecheckingError<'arena>> {
         let mut errors = Vec::new();
 
         let mut lang_items_writer = self.lang_items.write();
@@ -126,13 +129,13 @@ impl TypecheckingContext {
             }
             let static_reader = self.statics.read();
             for annotation in static_reader[static_key.cast()]
-                .4
+                .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_static(
                     static_key.cast(),
                     annotation.get_langitem(),
-                    static_reader[static_key.cast()].3.clone(),
+                    static_reader[static_key.cast()].loc.clone(),
                 ) {
                     errors.push(e.into());
                 }
@@ -179,9 +182,9 @@ impl TypecheckingContext {
 
     fn resolve_struct_impls(
         &self,
-        struct_key: StoreKey<BakedStruct>,
-        context: &ModuleContext,
-        errors: &mut Vec<TypecheckingError>,
+        struct_key: StoreKey<BakedStruct<'arena>>,
+        context: &ModuleContext<'arena>,
+        errors: &mut Vec<TypecheckingError<'arena>>,
     ) {
         let mut writer = context.structs.write();
         let trait_impl = std::mem::take(&mut writer[struct_key].impls);
@@ -195,26 +198,21 @@ impl TypecheckingContext {
         let module = struct_writer[struct_key.cast()].module_id;
 
         for (name, implementation, loc) in trait_impl {
-            let trait_id = match resolve_import(
-                context,
-                module.cast(),
-                &[name.clone()],
-                &loc,
-                &mut Vec::new(),
-            ) {
-                Err(e) => {
-                    errors.push(e);
-                    continue;
-                }
-                Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
-                Ok(_) => {
-                    errors.push(TypecheckingError::UnboundIdent {
-                        location: loc,
-                        name,
-                    });
-                    continue;
-                }
-            };
+            let trait_id =
+                match resolve_import(context, module.cast(), &[name], &loc, &mut Vec::new()) {
+                    Err(e) => {
+                        errors.push(e);
+                        continue;
+                    }
+                    Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
+                    Ok(_) => {
+                        errors.push(TypecheckingError::UnboundIdent {
+                            location: loc,
+                            name,
+                        });
+                        continue;
+                    }
+                };
 
             let typed_trait = &trait_reader[trait_id.cast()];
             if typed_trait.functions.len() != implementation.len() {
@@ -222,7 +220,7 @@ impl TypecheckingContext {
                     if !typed_trait.functions.iter().any(|(v, ..)| v == name) {
                         errors.push(TypecheckingError::IsNotTraitMember {
                             location: function_reader[func_id.cast()].0.location.clone(),
-                            name: name.clone(),
+                            name: *name,
                         })
                     }
                 }
@@ -233,7 +231,7 @@ impl TypecheckingContext {
                 let Some(&func_id) = implementation.get(name) else {
                     errors.push(TypecheckingError::MissingTraitItem {
                         location: loc.clone(),
-                        name: name.clone(),
+                        name: *name,
                     });
                     continue;
                 };
@@ -302,7 +300,7 @@ impl TypecheckingContext {
             if let Type::PrimitiveSelf(num_references) = contract.return_type {
                 contract.return_type = Type::Struct {
                     struct_id: struct_key.cast(),
-                    name: struct_reader[struct_key.cast()].name.clone(),
+                    name: struct_reader[struct_key.cast()].name,
                     num_references,
                 }
             }
@@ -310,7 +308,7 @@ impl TypecheckingContext {
                 if let Type::PrimitiveSelf(num_references) = t.1 {
                     t.1 = Type::Struct {
                         struct_id: struct_key.cast(),
-                        name: struct_reader[struct_key.cast()].name.clone(),
+                        name: struct_reader[struct_key.cast()].name,
                         num_references,
                     }
                 }
@@ -320,9 +318,9 @@ impl TypecheckingContext {
 
     fn resolve_function(
         &self,
-        function_id: StoreKey<Function>,
-        context: &ModuleContext,
-        errors: &mut Vec<TypecheckingError>,
+        function_id: StoreKey<Function<'arena>>,
+        context: &ModuleContext<'arena>,
+        errors: &mut Vec<TypecheckingError<'arena>>,
     ) {
         let mut writer = context.functions.write();
         let module_id = writer[function_id].2;
@@ -362,7 +360,7 @@ impl TypecheckingContext {
         }
         let mut resolved_function_contract = TypecheckedFunctionContract {
             module_id: module_id.cast(),
-            name: writer[function_id].0.name.clone(),
+            name: writer[function_id].0.name,
             location: writer[function_id].0.location.clone(),
             annotations: std::mem::take(&mut writer[function_id].0.annotations),
             arguments: Vec::new(),
@@ -405,9 +403,9 @@ impl TypecheckingContext {
 
     fn resolve_ext_function(
         &self,
-        ext_function_id: StoreKey<ExternalFunction>,
-        context: &ModuleContext,
-        errors: &mut Vec<TypecheckingError>,
+        ext_function_id: StoreKey<ExternalFunction<'arena>>,
+        context: &ModuleContext<'arena>,
+        errors: &mut Vec<TypecheckingError<'arena>>,
     ) {
         let mut writer = context.external_functions.write();
         let module_id = writer[ext_function_id].2;
@@ -418,7 +416,7 @@ impl TypecheckingContext {
         );
         let mut resolved_function_contract = TypecheckedFunctionContract {
             module_id: module_id.cast(),
-            name: writer[ext_function_id].0.name.clone(),
+            name: writer[ext_function_id].0.name,
             location: writer[ext_function_id].0.location.clone(),
             annotations: std::mem::take(&mut writer[ext_function_id].0.annotations),
             arguments: Vec::new(),
@@ -454,9 +452,9 @@ impl TypecheckingContext {
 
     fn resolve_static(
         &self,
-        static_id: StoreKey<Static>,
-        context: &ModuleContext,
-        errors: &mut Vec<TypecheckingError>,
+        static_id: StoreKey<Static<'arena>>,
+        context: &ModuleContext<'arena>,
+        errors: &mut Vec<TypecheckingError<'arena>>,
     ) {
         let mut writer = context.statics.write();
         let location = std::mem::replace(&mut writer[static_id].3, DUMMY_LOCATION.clone());
@@ -467,7 +465,7 @@ impl TypecheckingContext {
         drop(writer);
         match self.resolve_type(module_id.cast(), &typ, &[]) {
             Ok(v) => {
-                self.statics.write()[static_id.cast()] = (
+                self.statics.write()[static_id.cast()] = TypedStatic::new(
                     v,
                     TypedLiteral::Void,
                     module_id.cast(),
@@ -481,13 +479,13 @@ impl TypecheckingContext {
 
     fn resolve_trait(
         &self,
-        trait_id: StoreKey<Trait>,
-        context: &ModuleContext,
-        errors: &mut Vec<TypecheckingError>,
+        trait_id: StoreKey<Trait<'arena>>,
+        context: &ModuleContext<'arena>,
+        errors: &mut Vec<TypecheckingError<'arena>>,
     ) {
         let mut writer = context.traits.write();
         let location = std::mem::replace(&mut writer[trait_id].location, DUMMY_LOCATION.clone());
-        let name = writer[trait_id].name.clone();
+        let name = writer[trait_id].name;
         let annotations = std::mem::take(&mut writer[trait_id].annotations);
         let functions = std::mem::take(&mut writer[trait_id].functions);
         let module_id = writer[trait_id].module;

@@ -5,8 +5,8 @@ use intrinsics::LLVMIntrinsics;
 use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
-    globals::GlobalStr,
     store::StoreKey,
+    string_interner::InternedStr,
     typechecking::{
         expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
         intrinsics::Intrinsic,
@@ -40,13 +40,13 @@ mod debug_constants;
 mod error;
 mod intrinsics;
 
-impl<'ctx, 'me> CodegenContext<'ctx> {
-    pub fn make_function_codegen_context(
+impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
+    pub fn make_function_codegen_context<'me>(
         &'me mut self,
-        tc_scope: Vec<(Type, ScopeTypeMetadata)>,
+        tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
         current_fn: FunctionValue<'ctx>,
         bb: BasicBlock<'ctx>,
-    ) -> FunctionCodegenContext<'ctx, 'me> {
+    ) -> FunctionCodegenContext<'ctx, 'arena, 'me> {
         FunctionCodegenContext {
             tc_scope,
             tc_ctx: &self.tc_ctx,
@@ -72,7 +72,7 @@ impl<'ctx, 'me> CodegenContext<'ctx> {
     }
 }
 
-impl<'ctx> FunctionCodegenContext<'ctx, '_> {
+impl<'ctx> FunctionCodegenContext<'ctx, '_, '_> {
     pub fn goto(&mut self, bb: BasicBlock<'ctx>) {
         self.builder.position_at_end(bb);
         self.current_block = bb;
@@ -88,21 +88,21 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_> {
 }
 
 /// 'cg: codegen
-pub struct FunctionCodegenContext<'ctx, 'cg> {
-    tc_scope: Vec<(Type, ScopeTypeMetadata)>,
-    tc_ctx: &'cg TypecheckingContext,
+pub struct FunctionCodegenContext<'ctx, 'arena, 'cg> {
+    tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
+    tc_ctx: &'cg TypecheckingContext<'arena>,
     _scope: Vec<BasicValueEnum<'ctx>>,
     builder: &'cg Builder<'ctx>,
     context: &'ctx Context,
     default_types: DefaultTypes<'ctx>,
     current_fn: FunctionValue<'ctx>,
-    functions: &'cg FunctionsStore<'ctx>,
-    external_functions: &'cg ExternalFunctionsStore<'ctx>,
-    structs: &'cg StructsStore<'ctx>,
-    statics: &'cg StaticsStore<'ctx>,
-    string_map: &'cg HashMap<GlobalStr, GlobalValue<'ctx>>,
-    vtables: &'cg HashMap<(Type, Vec<StoreKey<TypedTrait>>), GlobalValue<'ctx>>,
-    debug_ctx: &'cg mut DebugContext<'ctx>,
+    functions: &'cg FunctionsStore<'ctx, 'arena>,
+    external_functions: &'cg ExternalFunctionsStore<'ctx, 'arena>,
+    structs: &'cg StructsStore<'ctx, 'arena>,
+    statics: &'cg StaticsStore<'ctx, 'arena>,
+    string_map: &'cg HashMap<InternedStr<'arena>, GlobalValue<'ctx>>,
+    vtables: &'cg HashMap<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
+    debug_ctx: &'cg mut DebugContext<'ctx, 'arena>,
     machine: &'cg TargetMachine,
     intrinsics: &'cg LLVMIntrinsics,
     retaddr: FunctionValue<'ctx>,
@@ -111,7 +111,7 @@ pub struct FunctionCodegenContext<'ctx, 'cg> {
     pointer_size: u64,
 }
 
-impl<'ctx> FunctionCodegenContext<'ctx, '_> {
+impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
     /// In case you already made an alloca for the value, as push_value does an alloca and store if
     /// the value is stack allocated.
     pub fn push_value_raw(&mut self, id: usize, value: BasicValueEnum<'ctx>) {
@@ -186,11 +186,11 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_> {
     }
 }
 
-impl<'ctx> Type {
+impl<'ctx, 'arena> Type<'arena> {
     fn to_llvm_basic_type(
         &self,
         default_types: &DefaultTypes<'ctx>,
-        structs: &StructsStore<'ctx>,
+        structs: &StructsStore<'ctx, 'arena>,
         ctx: &'ctx Context,
     ) -> BasicTypeEnum<'ctx> {
         if self.refcount() > 0 {
@@ -244,7 +244,7 @@ impl<'ctx> Type {
     fn to_llvm_fn_type(
         &self,
         default_types: &DefaultTypes<'ctx>,
-        structs: &StructsStore<'ctx>,
+        structs: &StructsStore<'ctx, 'arena>,
         ctx: &'ctx Context,
     ) -> FunctionType<'ctx> {
         let Type::Function(v, _) = self else {
@@ -326,10 +326,10 @@ fn get_alignment(ty: BasicTypeEnum) -> u32 {
     }
 }
 
-impl<'ctx> TypedLiteral {
+impl<'ctx, 'arena> TypedLiteral<'arena> {
     fn fn_ctx_to_basic_value(
         &self,
-        ctx: &FunctionCodegenContext<'ctx, '_>,
+        ctx: &FunctionCodegenContext<'ctx, 'arena, '_>,
     ) -> BasicValueEnum<'ctx> {
         self.to_basic_value(
             &|id| ctx.get_value(id),
@@ -348,12 +348,12 @@ impl<'ctx> TypedLiteral {
         &self,
         scope_get_value: &dyn Fn(usize) -> BasicValueEnum<'ctx>,
         default_types: &DefaultTypes<'ctx>,
-        structs: &StructsStore<'ctx>,
+        structs: &StructsStore<'ctx, 'arena>,
         builder: &Builder<'ctx>,
-        statics: &StaticsStore<'ctx>,
-        functions: &FunctionsStore<'ctx>,
-        ext_functions: &ExternalFunctionsStore<'ctx>,
-        string_map: &HashMap<GlobalStr, GlobalValue<'ctx>>,
+        statics: &StaticsStore<'ctx, 'arena>,
+        functions: &FunctionsStore<'ctx, 'arena>,
+        ext_functions: &ExternalFunctionsStore<'ctx, 'arena>,
+        string_map: &HashMap<InternedStr, GlobalValue<'ctx>>,
         ctx: &'ctx Context,
     ) -> BasicValueEnum<'ctx> {
         match self {
@@ -381,7 +381,7 @@ impl<'ctx> TypedLiteral {
             }
             TypedLiteral::String(global_str) => {
                 let ptr = string_map[global_str].as_pointer_value().into();
-                let size = global_str.with(|v| v.len());
+                let size = global_str.len();
                 let len_const = default_types.isize.const_int(size as u64, false).into();
                 default_types
                     .fat_ptr
@@ -632,12 +632,12 @@ fn make_volatile(v: BasicValueEnum<'_>, volatile: bool) -> BasicValueEnum<'_> {
     v
 }
 
-fn build_deref<'a>(
-    left_side: PointerValue<'a>,
+fn build_deref<'ctx, 'arena>(
+    left_side: PointerValue<'ctx>,
     ty: &Type,
-    ctx: &FunctionCodegenContext<'a, '_>,
+    ctx: &FunctionCodegenContext<'ctx, 'arena, '_>,
     volatile: bool,
-) -> Result<BasicValueEnum<'a>, BuilderError> {
+) -> Result<BasicValueEnum<'ctx>, BuilderError> {
     if *ty == Type::PrimitiveVoid(0) || *ty == Type::PrimitiveNever {
         return Ok(TypedLiteral::Void.fn_ctx_to_basic_value(ctx));
     }
@@ -769,11 +769,11 @@ fn build_deref<'a>(
     }
 }
 
-fn build_ptr_store(
-    left_side: PointerValue,
-    right_side: BasicValueEnum,
-    ty: &Type,
-    ctx: &FunctionCodegenContext,
+fn build_ptr_store<'ctx, 'arena>(
+    left_side: PointerValue<'ctx>,
+    right_side: BasicValueEnum<'ctx>,
+    ty: &Type<'arena>,
+    ctx: &FunctionCodegenContext<'ctx, 'arena, '_>,
     volatile: bool,
 ) -> Result<(), BuilderError> {
     if ty.refcount() > 0 {
@@ -918,12 +918,12 @@ fn make_fat_ptr<'ctx>(
     Ok(fat_ptr.into())
 }
 
-impl TypecheckedExpression {
+impl<'arena> TypecheckedExpression<'arena> {
     fn codegen<'ctx>(
         &self,
-        ctx: &mut FunctionCodegenContext<'ctx, '_>,
+        ctx: &mut FunctionCodegenContext<'ctx, 'arena, '_>,
         scope: DIScope<'ctx>,
-        module_id: StoreKey<TypecheckedModule>,
+        module_id: StoreKey<TypecheckedModule<'arena>>,
     ) -> Result<(), BuilderError> {
         ctx.builder
             .set_current_debug_location(ctx.debug_ctx.location(scope, self.location()));
@@ -949,7 +949,7 @@ impl TypecheckedExpression {
                     scope,
                     loc,
                     typ,
-                    name,
+                    *name,
                     ctx.current_block,
                     module_id,
                     &ctx.tc_ctx.structs.read(),
@@ -975,7 +975,7 @@ impl TypecheckedExpression {
                         ctx.builder.build_return(None)?
                     }
                     TypedLiteral::Static(id)
-                        if ctx.tc_ctx.statics.read()[*id].0 == Type::PrimitiveVoid(0) =>
+                        if ctx.tc_ctx.statics.read()[*id].type_ == Type::PrimitiveVoid(0) =>
                     {
                         ctx.builder.build_return(None)?
                     }
@@ -1166,9 +1166,7 @@ impl TypecheckedExpression {
                         return Ok(());
                     }
                     TypedLiteral::Static(id) => {
-                        let ty = &ctx.tc_ctx.statics.read()[*id].0;
-                        let llvm_ty =
-                            ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
+                        let llvm_ty = ctx.tc_ctx.statics.read()[*id].type_.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
                         let alignment = get_alignment(llvm_ty);
                         ctx.builder.build_memmove(
                             dst.fn_ctx_to_basic_value(ctx).into_pointer_value(),
@@ -1197,7 +1195,7 @@ impl TypecheckedExpression {
             TypecheckedExpression::Call(_, dst, fn_ptr, args) => {
                 let (fn_ty, fn_ptr) = match fn_ptr {
                     TypedLiteral::Dynamic(id) => (&ctx.tc_scope[*id].0, ctx.get_value(*id).into_pointer_value()),
-                    TypedLiteral::Static(id) => (&ctx.tc_ctx.statics.read()[*id].0, ctx.statics[*id].as_pointer_value()),
+                    TypedLiteral::Static(id) => (&ctx.tc_ctx.statics.read()[*id].type_, ctx.statics[*id].as_pointer_value()),
                     TypedLiteral::Function(..) => unreachable!("TypedLiteral::Function should have been turned into a DirectCall"),
                     TypedLiteral::ExternalFunction(_) => unreachable!("TypedLiteral::ExternalFunction should have been turned into a DirectExternCall"),
                     TypedLiteral::Intrinsic(..) => unreachable!("TypedLiteral::Intrinsic should have been turned into a IntrinsicCall"),
@@ -2032,8 +2030,8 @@ impl TypecheckedExpression {
     fn codegen_directcall<'ctx>(
         function: FunctionValue<'ctx>,
         dst: usize,
-        args: &[TypedLiteral],
-        ctx: &mut FunctionCodegenContext<'ctx, '_>,
+        args: &[TypedLiteral<'arena>],
+        ctx: &mut FunctionCodegenContext<'ctx, 'arena, '_>,
     ) -> Result<(), BuilderError> {
         let val = ctx.builder.build_direct_call(
             function,
@@ -2063,9 +2061,9 @@ impl TypecheckedExpression {
     fn codegen_intrinsic(
         dst: usize,
         intrinsic: Intrinsic,
-        args: &[TypedLiteral],
-        generics: &[Type],
-        ctx: &mut FunctionCodegenContext<'_, '_>,
+        args: &[TypedLiteral<'arena>],
+        generics: &[Type<'arena>],
+        ctx: &mut FunctionCodegenContext<'_, 'arena, '_>,
     ) -> Result<(), BuilderError> {
         _ = &generics;
         _ = &args;

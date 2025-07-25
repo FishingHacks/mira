@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone)]
-pub struct SectionAnnotation(pub GlobalStr);
+pub struct SectionAnnotation(pub String);
 impl Annotation for SectionAnnotation {
     fn get_name(&self) -> &'static str {
         "section"
@@ -23,5 +23,5 @@ impl Display for SectionAnnotation {
 pub fn parse(mut tokens: TokenStream) -> Result<SectionAnnotation, ParsingError> {
     let (name, _) = tokens.expect_remove_string()?;
     tokens.finish()?;
-    Ok(SectionAnnotation(name))
+    Ok(SectionAnnotation(name.to_string()))
 }

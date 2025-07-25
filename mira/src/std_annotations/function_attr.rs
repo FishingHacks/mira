@@ -42,12 +42,11 @@ pub fn parse(mut tokens: TokenStream) -> Result<FunctionAttr, ParsingError> {
         }
         let (name, loc) = tokens.expect_remove_identifier()?;
         #[allow(clippy::unit_arg)]
-        name.with(|v| match v {
-            "hot" => Some(function_attr.hotness = Some(true)),
-            "cold" => Some(function_attr.hotness = Some(false)),
-            _ => None,
-        })
-        .ok_or_else(|| ParsingError::InvalidFunctionAttribute { loc, name })?;
+        match name.to_str() {
+            "hot" => function_attr.hotness = Some(true),
+            "cold" => function_attr.hotness = Some(false),
+            _ => return Err(ParsingError::InvalidFunctionAttribute { loc, name }),
+        }
     }
     Ok(function_attr)
 }

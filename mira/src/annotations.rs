@@ -95,11 +95,11 @@ static ANNOTATIONS_REGISTRY: LazyLock<HashMap<&'static str, AnnotationParser>> =
         hashmap
     });
 
-pub fn parse_annotation(
+pub fn parse_annotation<'arena>(
     name: &str,
-    tokens: Vec<Token>,
+    tokens: Vec<Token<'arena>>,
     loc: Location,
-) -> Result<Box<dyn ClonableAnnotation>, ParsingError> {
+) -> Result<Box<dyn ClonableAnnotation>, ParsingError<'arena>> {
     if let Some(parser) = ANNOTATIONS_REGISTRY.get(name) {
         parser(TokenStream::new(tokens, loc))
     } else {
@@ -135,18 +135,21 @@ impl Annotations {
         self.0.is_empty()
     }
 
-    pub fn push_annotation(
+    pub fn push_annotation<'arena>(
         &mut self,
         name: &str,
-        tokens: Vec<Token>,
+        tokens: Vec<Token<'arena>>,
         loc: Location,
-    ) -> Result<(), ParsingError> {
+    ) -> Result<(), ParsingError<'arena>> {
         self.0
             .push((parse_annotation(name, tokens, loc.clone())?, loc));
         Ok(())
     }
 
-    pub fn are_annotations_valid_for(&self, typ: AnnotationReceiver) -> Result<(), ParsingError> {
+    pub fn are_annotations_valid_for<'arena>(
+        &self,
+        typ: AnnotationReceiver,
+    ) -> Result<(), ParsingError<'arena>> {
         for (annotation, loc) in &self.0 {
             if !annotation.is_valid_for(typ, self) {
                 return Err(ParsingError::AnnotationDoesNotGoOn {

@@ -312,7 +312,7 @@ impl<Data> Repl<Data> {
                             if with_line_numbers {
                                 write!(output, "{idx: <4} ")?;
                             }
-                            writeln!(output, "{}", line)?;
+                            writeln!(output, "{line}")?;
                         }
                     }
                     "exit" => break Ok(()),

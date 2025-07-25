@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     codegen::debug_constants::BasicTypeEncoding,
-    globals::GlobalStr,
     store::{AssociatedStore, Store, StoreKey},
+    string_interner::InternedStr,
     tokenizer::Location,
     typechecking::{
         intrinsics::IntrinsicAnnotation, Type, TypecheckedModule, TypecheckingContext,
@@ -32,19 +32,20 @@ use super::{
     mangling::{mangle_external_function, mangle_function, ANON_FN_NAME},
 };
 
-pub struct DebugContext<'ctx> {
+pub struct DebugContext<'ctx, 'arena> {
     pub(super) builder: DebugInfoBuilder<'ctx>,
     global_scope: DIScope<'ctx>,
     root_file: DIFile<'ctx>,
-    pub(super) modules: AssociatedStore<(DINamespace<'ctx>, DIFile<'ctx>), TypecheckedModule>,
+    pub(super) modules:
+        AssociatedStore<(DINamespace<'ctx>, DIFile<'ctx>), TypecheckedModule<'arena>>,
     default_types: DefaultTypes<'ctx>,
-    type_store: HashMap<Type, DIType<'ctx>>,
+    type_store: HashMap<Type<'arena>, DIType<'ctx>>,
     context: &'ctx Context,
-    pub(super) funcs: AssociatedStore<DISubprogram<'ctx>, TypedFunction>,
-    pub(super) ext_funcs: AssociatedStore<DISubprogram<'ctx>, TypedExternalFunction>,
+    pub(super) funcs: AssociatedStore<DISubprogram<'ctx>, TypedFunction<'arena>>,
+    pub(super) ext_funcs: AssociatedStore<DISubprogram<'ctx>, TypedExternalFunction<'arena>>,
 }
 
-impl<'ctx> DebugContext<'ctx> {
+impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
     pub fn location(&self, scope: DIScope<'ctx>, loc: &Location) -> DILocation<'ctx> {
         self.builder
             .create_debug_location(self.context, loc.line, loc.column, scope, None)
@@ -56,26 +57,24 @@ impl<'ctx> DebugContext<'ctx> {
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
         loc: &Location,
-        typ: &Type,
-        name: &GlobalStr,
+        typ: &Type<'arena>,
+        name: InternedStr<'arena>,
         bb: BasicBlock<'ctx>,
-        module: StoreKey<TypecheckedModule>,
-        structs: &Store<TypedStruct>,
+        module: StoreKey<TypecheckedModule<'arena>>,
+        structs: &Store<TypedStruct<'arena>>,
         arg: u32,
     ) {
         let ty = self.get_type(typ, structs);
-        let info = name.with(|name| {
-            self.builder.create_parameter_variable(
-                scope,
-                name,
-                arg,
-                self.modules[module].1,
-                loc.line,
-                ty,
-                true,
-                DIFlags::ZERO,
-            )
-        });
+        let info = self.builder.create_parameter_variable(
+            scope,
+            &name,
+            arg,
+            self.modules[module].1,
+            loc.line,
+            ty,
+            true,
+            DIFlags::ZERO,
+        );
         self.builder
             .insert_declare_at_end(ptr, Some(info), None, self.location(scope, loc), bb)
     }
@@ -86,29 +85,27 @@ impl<'ctx> DebugContext<'ctx> {
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
         loc: &Location,
-        typ: &Type,
-        name: &GlobalStr,
+        typ: &Type<'arena>,
+        name: InternedStr<'arena>,
         bb: BasicBlock<'ctx>,
-        module: StoreKey<TypecheckedModule>,
-        structs: &Store<TypedStruct>,
+        module: StoreKey<TypecheckedModule<'arena>>,
+        structs: &Store<TypedStruct<'arena>>,
     ) {
         let alignment = typ.alignment(
             (self.default_types.isize.get_bit_width() / 8) as u64,
             structs,
         ) * 8;
         let ty = self.get_type(typ, structs);
-        let info = name.with(|name| {
-            self.builder.create_auto_variable(
-                scope,
-                name,
-                self.modules[module].1,
-                loc.line,
-                ty,
-                true,
-                DIFlags::ZERO,
-                alignment,
-            )
-        });
+        let info = self.builder.create_auto_variable(
+            scope,
+            &name,
+            self.modules[module].1,
+            loc.line,
+            ty,
+            true,
+            DIFlags::ZERO,
+            alignment,
+        );
         self.builder
             .insert_declare_at_end(ptr, Some(info), None, self.location(scope, loc), bb)
     }
@@ -117,7 +114,7 @@ impl<'ctx> DebugContext<'ctx> {
         &self,
         parent_scope: DIScope<'ctx>,
         loc: &Location,
-        module: StoreKey<TypecheckedModule>,
+        module: StoreKey<TypecheckedModule<'arena>>,
     ) -> DILexicalBlock<'ctx> {
         self.builder.create_lexical_block(
             parent_scope,
@@ -131,7 +128,7 @@ impl<'ctx> DebugContext<'ctx> {
         context: &'ctx Context,
         module: &Module<'ctx>,
         default_types: DefaultTypes<'ctx>,
-        tc_ctx: &TypecheckingContext,
+        tc_ctx: &TypecheckingContext<'arena>,
         root_path: &Path,
         optimizations: bool,
     ) -> Self {
@@ -232,26 +229,21 @@ impl<'ctx> DebugContext<'ctx> {
                 .create_subroutine_type(module.1, return_ty, &args, flags);
 
             let mangled_name = mangle_function(tc_ctx, key);
-            let subprogram = func
-                .0
-                .name
-                .clone()
-                .unwrap_or(GlobalStr::new(ANON_FN_NAME))
-                .with(|name| {
-                    me.builder.create_function(
-                        module.0.as_debug_info_scope(),
-                        name,
-                        Some(&mangled_name),
-                        module.1,
-                        func.0.location.line,
-                        fn_ty,
-                        true,
-                        true,
-                        func.0.location.line,
-                        flags,
-                        optimizations,
-                    )
-                });
+            let name = func.0.name.as_deref().copied().unwrap_or(ANON_FN_NAME);
+
+            let subprogram = me.builder.create_function(
+                module.0.as_debug_info_scope(),
+                name,
+                Some(&mangled_name),
+                module.1,
+                func.0.location.line,
+                fn_ty,
+                true,
+                true,
+                func.0.location.line,
+                flags,
+                optimizations,
+            );
             me.funcs.insert(key, subprogram);
         }
         for (key, func) in ext_func_reader.index_value_iter() {
@@ -275,32 +267,30 @@ impl<'ctx> DebugContext<'ctx> {
                 .create_subroutine_type(module.1, return_ty, &args, flags);
 
             let mangled_name = mangle_external_function(tc_ctx, key);
-            let subprogram = func
-                .0
-                .name
-                .clone()
-                .unwrap_or(GlobalStr::new(ANON_FN_NAME))
-                .with(|name: &str| {
-                    me.builder.create_function(
-                        module.0.as_debug_info_scope(),
-                        name,
-                        Some(&mangled_name),
-                        module.1,
-                        func.0.location.line,
-                        fn_ty,
-                        false,
-                        func.1.is_some(),
-                        func.0.location.line,
-                        flags,
-                        optimizations,
-                    )
-                });
+            let name = func.0.name.as_deref().copied().unwrap_or(ANON_FN_NAME);
+            let subprogram = me.builder.create_function(
+                module.0.as_debug_info_scope(),
+                name,
+                Some(&mangled_name),
+                module.1,
+                func.0.location.line,
+                fn_ty,
+                false,
+                func.1.is_some(),
+                func.0.location.line,
+                flags,
+                optimizations,
+            );
             me.ext_funcs.insert(key, subprogram);
         }
         me
     }
 
-    pub fn get_type(&mut self, typ: &Type, structs: &Store<TypedStruct>) -> DIType<'ctx> {
+    pub fn get_type(
+        &mut self,
+        typ: &Type<'arena>,
+        structs: &Store<TypedStruct<'arena>>,
+    ) -> DIType<'ctx> {
         if let Some(v) = self.type_store.get(typ) {
             return *v;
         }
@@ -479,21 +469,19 @@ impl<'ctx> DebugContext<'ctx> {
                             let offset = typ.struct_offset(ptr_size, structs, i);
                             let (size, alignment) = v.size_and_alignment(ptr_size, structs);
                             let ty = self.get_type(v, structs);
-                            name.with(|name| {
-                                self.builder
-                                    .create_member_type(
-                                        self.modules[structure.module_id].0.as_debug_info_scope(),
-                                        name,
-                                        self.modules[structure.module_id].1,
-                                        structure.location.line,
-                                        size * 8,
-                                        alignment * 8,
-                                        offset * 8,
-                                        DIFlags::ZERO,
-                                        ty,
-                                    )
-                                    .as_type()
-                            })
+                            self.builder
+                                .create_member_type(
+                                    self.modules[structure.module_id].0.as_debug_info_scope(),
+                                    name,
+                                    self.modules[structure.module_id].1,
+                                    structure.location.line,
+                                    size * 8,
+                                    alignment * 8,
+                                    offset * 8,
+                                    DIFlags::ZERO,
+                                    ty,
+                                )
+                                .as_type()
                         })
                         .collect::<Vec<_>>();
                     self.builder

@@ -9,8 +9,8 @@ use crate::{
 use super::{expressions::write_implicit_block, formatter::Formatter};
 
 pub struct FuncDisplay<'a>(
-    pub &'a TypecheckedFunctionContract,
-    pub Option<&'a [TypecheckedExpression]>,
+    pub &'a TypecheckedFunctionContract<'a>,
+    pub Option<&'a [TypecheckedExpression<'a>]>,
 );
 
 impl FuncDisplay<'_> {

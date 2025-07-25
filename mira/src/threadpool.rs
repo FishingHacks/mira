@@ -1,11 +1,15 @@
 use std::{
+    cell::RefCell,
+    marker::PhantomData,
+    panic::AssertUnwindSafe,
+    rc::Rc,
     sync::{Arc, Mutex},
     thread::JoinHandle,
 };
 
 use crossbeam::channel::{Receiver, Sender};
 
-pub struct HeapJob<F: FnOnce() + Send + 'static>(F);
+pub struct HeapJob<F: FnOnce() + Send>(F);
 
 trait Job {
     /// Semantically, `this` has ownership of the pointer. As such, execute should drop `this` and
@@ -28,7 +32,7 @@ impl JobRef {
 
 unsafe impl Send for JobRef {}
 
-impl<F: FnOnce() + Send + 'static> HeapJob<F> {
+impl<F: FnOnce() + Send> HeapJob<F> {
     pub fn new(v: F) -> Box<Self> {
         Box::new(Self(v))
     }
@@ -38,7 +42,7 @@ impl<F: FnOnce() + Send + 'static> HeapJob<F> {
     }
 }
 
-impl<F: FnOnce() + Send + 'static> Job for HeapJob<F> {
+impl<F: FnOnce() + Send> Job for HeapJob<F> {
     unsafe fn execute(this: *mut ()) {
         let this = unsafe { Box::from_raw(this as *mut Self) };
         (this.0)()
@@ -100,7 +104,7 @@ impl ThreadPool {
         Self::new(thread_count)
     }
 
-    pub fn spawn<F: FnOnce() + Send + 'static>(&mut self, func: F) {
+    fn spawn<F: FnOnce() + Send>(&mut self, func: F) {
         self.jobs
             .lock()
             .expect("failed to lock the job mutex")
@@ -113,12 +117,24 @@ impl ThreadPool {
             .send(ThreadPoolMessage::JobAvailable)
             .expect("failed to send message to jobs");
     }
+    pub fn enter<'env, F: for<'scope> FnOnce(&'scope ThreadpoolHandle<'scope, 'env>)>(
+        &'env mut self,
+        func: F,
+    ) {
+        let me = Rc::new(RefCell::new(self as *mut _));
+        let handle = ThreadpoolHandle(me.clone(), PhantomData, PhantomData);
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| func(&handle)));
+        unsafe { (&mut **handle.0.borrow_mut()).finish() };
+        if let Err(res) = result {
+            std::panic::resume_unwind(res);
+        }
+    }
 
-    pub fn finish(self) {
+    fn finish(&mut self) {
         _ = self.sender.send(ThreadPoolMessage::Exit);
-        drop(self.sender);
+        self.sender = crossbeam::channel::bounded(0).0;
 
-        let threads: Vec<JoinHandle<()>> = self.threads.into();
+        let threads: Vec<JoinHandle<()>> = std::mem::take(&mut self.threads).into();
         for (i, handle) in threads.into_iter().enumerate() {
             if let Err(payload) = handle.join() {
                 if let Some(v) = payload.downcast_ref::<&'static str>() {
@@ -130,5 +146,18 @@ impl ThreadPool {
                 }
             }
         }
+        self.jobs.lock().unwrap().clear();
+    }
+}
+
+pub struct ThreadpoolHandle<'scope, 'env: 'scope>(
+    Rc<RefCell<*mut ThreadPool>>,
+    PhantomData<&'scope mut &'scope ()>,
+    PhantomData<&'env mut &'env ()>,
+);
+
+impl<'scope, 'env> ThreadpoolHandle<'scope, 'env> {
+    pub fn spawn<F: FnOnce() + Send + 'scope>(&'scope self, func: F) {
+        unsafe { (&mut **self.0.borrow_mut()).spawn(func) };
     }
 }

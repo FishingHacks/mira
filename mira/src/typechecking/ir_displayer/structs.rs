@@ -2,7 +2,7 @@ use crate::typechecking::TypedStruct;
 
 use super::Formatter;
 
-pub struct StructDisplay<'a>(pub &'a TypedStruct);
+pub struct StructDisplay<'a>(pub &'a TypedStruct<'a>);
 
 impl StructDisplay<'_> {
     pub fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {

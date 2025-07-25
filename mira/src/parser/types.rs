@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    error::ParsingError, globals::GlobalStr, module::Function, parser::Location, store::StoreKey,
-    tokenizer::TokenType,
+    error::ParsingError, module::Function, parser::Location, store::StoreKey,
+    string_interner::InternedStr, tokenizer::TokenType,
 };
 
 use super::{expression::PathWithoutGenerics, Annotations, Parser, Path};
@@ -16,44 +16,44 @@ pub static RESERVED_TYPE_NAMES: &[&str] = &[
 ];
 
 #[derive(Clone, Eq, Debug)]
-pub enum TypeRef {
+pub enum TypeRef<'arena> {
     DynReference {
         num_references: u8,
         loc: Location,
-        traits: Vec<PathWithoutGenerics>,
+        traits: Vec<PathWithoutGenerics<'arena>>,
     },
     Reference {
         num_references: u8,
-        type_name: Path,
+        type_name: Path<'arena>,
         loc: Location,
     },
     Void(Location, u8),
     Never(Location),
     UnsizedArray {
         num_references: u8,
-        child: Box<TypeRef>,
+        child: Box<TypeRef<'arena>>,
         loc: Location,
     },
     SizedArray {
         num_references: u8,
-        child: Box<TypeRef>,
+        child: Box<TypeRef<'arena>>,
         number_elements: usize,
         loc: Location,
     },
     Function {
-        return_ty: Box<TypeRef>,
-        args: Vec<TypeRef>,
+        return_ty: Box<TypeRef<'arena>>,
+        args: Vec<TypeRef<'arena>>,
         loc: Location,
         num_references: u8,
     },
     Tuple {
         num_references: u8,
         loc: Location,
-        elements: Vec<TypeRef>,
+        elements: Vec<TypeRef<'arena>>,
     },
 }
 
-impl Display for TypeRef {
+impl Display for TypeRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for _ in 0..self.get_ref_count() {
             f.write_char('&')?;
@@ -116,7 +116,7 @@ impl Display for TypeRef {
     }
 }
 
-impl TypeRef {
+impl<'arena> TypeRef<'arena> {
     pub fn try_clone_deref(mut self) -> Option<Self> {
         match &mut self {
             TypeRef::DynReference { num_references, .. }
@@ -154,7 +154,7 @@ impl TypeRef {
         }
     }
 
-    pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
+    pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
         let mut num_references = 0;
 
         while !parser.is_at_end() {
@@ -196,7 +196,7 @@ impl TypeRef {
             } else if parser.match_tok(TokenType::LogicalNot) {
                 return Ok(Self::Reference {
                     num_references,
-                    type_name: Path::new(GlobalStr::new("!"), Vec::new()),
+                    type_name: Path::new(parser.ctx.intern_str("!"), Vec::new()),
                     loc,
                 });
             } else if parser.match_tok(TokenType::VoidLiteral) {
@@ -279,10 +279,10 @@ impl TypeRef {
     }
 
     fn parse_dyn(
-        parser: &mut Parser,
+        parser: &mut Parser<'_, 'arena>,
         num_references: u8,
         loc: Location,
-    ) -> Result<Self, ParsingError> {
+    ) -> Result<Self, ParsingError<'arena>> {
         parser.advance();
         let mut traits = vec![];
 
@@ -318,7 +318,7 @@ impl TypeRef {
     }
 }
 
-impl PartialEq for TypeRef {
+impl PartialEq for TypeRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         match self {
             Self::Reference {
@@ -413,28 +413,28 @@ impl PartialEq for TypeRef {
     }
 }
 
-pub type Implementation = HashMap<GlobalStr, StoreKey<Function>>;
+pub type Implementation<'arena> = HashMap<InternedStr<'arena>, StoreKey<Function<'arena>>>;
 
 #[derive(Debug)]
-pub struct Struct {
+pub struct Struct<'arena> {
     pub loc: Location,
-    pub name: GlobalStr,
-    pub fields: Vec<(GlobalStr, TypeRef)>,
-    pub generics: Vec<Generic>,
-    pub global_impl: Implementation,
-    pub trait_impls: Vec<(GlobalStr, Implementation)>,
+    pub name: InternedStr<'arena>,
+    pub fields: Vec<(InternedStr<'arena>, TypeRef<'arena>)>,
+    pub generics: Vec<Generic<'arena>>,
+    pub global_impl: Implementation<'arena>,
+    pub trait_impls: Vec<(InternedStr<'arena>, Implementation<'arena>)>,
     pub annotations: Annotations,
 }
 
 #[derive(Debug, Clone)]
-pub struct Generic {
-    pub name: GlobalStr,
-    pub bounds: Vec<(PathWithoutGenerics, Location)>,
+pub struct Generic<'arena> {
+    pub name: InternedStr<'arena>,
+    pub bounds: Vec<(PathWithoutGenerics<'arena>, Location)>,
     pub sized: bool,
 }
 
-impl Generic {
-    pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
+impl<'arena> Generic<'arena> {
+    pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
         let sized = !parser.match_tok(TokenType::Unsized);
         let name = parser.expect_identifier()?;
         let mut bounds = Vec::new();

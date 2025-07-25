@@ -14,7 +14,9 @@ mod parsing;
 use parsing::parse_all;
 
 use crate::{
+    arena::Arena,
     codegen::{CodegenConfig, CodegenContext, CodegenError, Optimizations},
+    context::GlobalContext,
     error::MiraError,
     module_resolution::ModuleResolver,
     optimizations,
@@ -53,6 +55,7 @@ pub struct LinkOptions<'a> {
 pub trait Linker: Send + Sync {
     fn can_link_crt(&self) -> bool;
     fn exists_in(&self, path: &Path) -> Option<PathBuf>;
+    #[allow(clippy::result_large_err)]
     fn link(&self, opts: LinkOptions) -> Result<(), LinkerError>;
 }
 
@@ -406,9 +409,10 @@ impl<'a> FullCompilationOptions<'a> {
 
 /// Runs the pipeline to turn a source file into an executable or shared object.
 /// Returns the path to the executable
-pub fn run_full_compilation_pipeline(
+pub fn run_full_compilation_pipeline<'arena>(
+    arena: &'arena Arena,
     mut opts: FullCompilationOptions,
-) -> Result<Option<PathBuf>, Vec<MiraError>> {
+) -> Result<Option<PathBuf>, Vec<MiraError<'arena>>> {
     if opts.add_extension_to_exe && opts.exec_path.is_some() {
         let mut path = opts.exec_path.unwrap().into_os_string();
         if opts.shared_object {
@@ -454,7 +458,10 @@ pub fn run_full_compilation_pipeline(
     let progress_bar = Arc::new(RwLock::new(ProgressBar::new(ProgressBarStyle::Normal)));
     let parser_item = progress_bar.write().add_item("Parsing".into());
 
+    let ctx = GlobalContext::new(arena).share();
+
     let module_context = parse_all(
+        ctx.clone(),
         opts.file,
         opts.root_directory,
         opts.debug_file.clone(),
@@ -472,14 +479,14 @@ pub fn run_full_compilation_pipeline(
     print_progress_bar(&progress_bar);
 
     let module_context = module_context?;
-    let typechecking_context = TypecheckingContext::new(module_context.clone());
+    let typechecking_context = TypecheckingContext::new(ctx.clone(), module_context.clone());
     let errs = typechecking_context.resolve_imports(module_context.clone());
     if !errs.is_empty() {
-        return Err(errs.into_iter().map(Into::into).collect());
+        return Err(errs.iter().cloned().map(MiraError::typechecking).collect());
     }
     let errs = typechecking_context.resolve_types(module_context.clone());
     if !errs.is_empty() {
-        return Err(errs.into_iter().map(Into::into).collect());
+        return Err(errs.iter().cloned().map(MiraError::typechecking).collect());
     }
 
     progress_bar.write().remove_item(type_resolution_item);
@@ -558,7 +565,7 @@ pub fn run_full_compilation_pipeline(
     print_progress_bar(&progress_bar);
 
     if !errs.is_empty() {
-        return Err(errs.into_iter().map(Into::into).collect());
+        return Err(errs.into_iter().map(MiraError::typechecking).collect());
     }
 
     let mut errs = Vec::new();
@@ -599,7 +606,6 @@ pub fn run_full_compilation_pipeline(
     .expect("failed to create the llvm context");
 
     drop(module_context);
-    crate::globals::clean_slab();
 
     let codegen_item = progress_bar.write().add_item("Codegen".into());
     print_progress_bar(&progress_bar);
@@ -650,7 +656,7 @@ pub fn run_full_compilation_pipeline(
     print_progress_bar(&progress_bar);
 
     if let Err(e) = codegen_context.finish() {
-        errs.push(CodegenError::LLVMNative(e).into());
+        errs.push(MiraError::codegen(CodegenError::LLVMNative(e)));
     }
 
     progress_bar.write().remove_item(codegen_item);
@@ -677,13 +683,12 @@ pub fn run_full_compilation_pipeline(
 
     if let Some(asm_writer) = opts.asm_writer.as_mut() {
         if let Err(e) = codegen_context.write_assembly(asm_writer) {
-            errs.push(e.into());
+            errs.push(MiraError::codegen(e));
         }
     }
 
     let Some(obj_path) = opts.obj_path else {
         drop(codegen_context);
-        crate::globals::clean_slab();
 
         return (errs.is_empty()).then_some(opts.exec_path).ok_or(errs);
     };
@@ -700,7 +705,7 @@ pub fn run_full_compilation_pipeline(
     };
 
     if let Err(e) = codegen_context.write_object(&mut obj_file) {
-        errs.push(e.into());
+        errs.push(MiraError::codegen(e));
     }
     drop(obj_file);
 
@@ -738,7 +743,6 @@ pub fn run_full_compilation_pipeline(
         .map_err(|v| vec![v.into()])?;
 
     drop(codegen_context);
-    crate::globals::clean_slab();
 
     Ok(Some(exec_path))
 }

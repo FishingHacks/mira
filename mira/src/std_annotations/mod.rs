@@ -1,6 +1,5 @@
 pub use crate::annotations::{Annotation, AnnotationParser, AnnotationReceiver, Annotations};
 pub use crate::error::ParsingError;
-pub use crate::globals::GlobalStr;
 pub use crate::tokenizer::TokenType;
 pub use crate::tokenstream::TokenStream;
 use std::collections::HashMap;

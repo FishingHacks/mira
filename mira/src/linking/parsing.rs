@@ -4,6 +4,7 @@ use crossbeam::channel::{bounded, Sender};
 use parking_lot::RwLock;
 
 use crate::{
+    context::SharedContext,
     error::{MiraError, ParsingError, ProgramFormingError, TokenizationError},
     module::{Module, ModuleContext},
     module_resolution::ModuleResolver,
@@ -16,15 +17,16 @@ use crate::{
 
 use super::print_progress_bar;
 
-enum ParsingErrors {
+enum ParsingErrors<'arena> {
     Tokenization(TokenizationError),
-    Parsing(ParsingError),
-    ProgramForming(ProgramFormingError),
+    Parsing(ParsingError<'arena>),
+    ProgramForming(ProgramFormingError<'arena>),
     IO(std::io::Error),
 }
 
 #[allow(clippy::too_many_arguments)]
-fn parse_single(
+fn parse_single<'arena>(
+    ctx: SharedContext<'arena>,
     file: Arc<Path>,
     root_directory: Arc<Path>,
     debug_file: Arc<Path>,
@@ -33,13 +35,13 @@ fn parse_single(
     progress_bar: Arc<RwLock<ProgressBar>>,
     parsing_item: ProgressItemRef,
     finish_sender: Sender<()>,
-    errors: Arc<RwLock<Vec<ParsingErrors>>>,
-    parsing_queue: Arc<RwLock<Vec<ParserQueueEntry>>>,
+    errors: Arc<RwLock<Vec<ParsingErrors<'arena>>>>,
+    parsing_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
     resolvers: Arc<[Box<dyn ModuleResolver>]>,
     path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
     path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
-    module_context: Arc<ModuleContext>,
-    key: StoreKey<Module>,
+    module_context: Arc<ModuleContext<'arena>>,
+    key: StoreKey<Module<'arena>>,
 ) {
     // +--------------+
     // | Tokenization |
@@ -49,7 +51,7 @@ fn parse_single(
         format!("Tokenizing {}", file.display()).into_boxed_str(),
     );
     print_progress_bar(&progress_bar);
-    let mut tokenizer = Tokenizer::new(source, debug_file.clone());
+    let mut tokenizer = Tokenizer::new(ctx.clone(), source, debug_file.clone());
 
     // default includes ("prelude")
     if let Some(path) = always_include {
@@ -61,7 +63,7 @@ fn parse_single(
         });
         tokenizer.push_token(Token {
             typ: TokenType::StringLiteral,
-            literal: Some(Literal::String(path.into())),
+            literal: Some(Literal::String(ctx.intern_str(&path))),
             location: loc.clone(),
         });
         tokenizer.push_token(Token {
@@ -143,7 +145,8 @@ fn parse_single(
 /// `debug_file` - The file that will appear in locations and debug info
 /// `source` - The source that will be parsed
 #[allow(clippy::too_many_arguments)]
-pub fn parse_all(
+pub fn parse_all<'arena>(
+    ctx: SharedContext<'arena>,
     file: Arc<Path>,
     root_directory: Arc<Path>,
     debug_file: Arc<Path>,
@@ -154,9 +157,8 @@ pub fn parse_all(
     path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
     progress_bar: Arc<RwLock<ProgressBar>>,
     parsing_item: ProgressItemRef,
-) -> Result<Arc<ModuleContext>, Vec<MiraError>> {
+) -> Result<Arc<ModuleContext<'arena>>, Vec<MiraError<'arena>>> {
     let errors = Arc::new(RwLock::new(Vec::new()));
-    let mut thread_pool = ThreadPool::new_auto();
     let module_context = Arc::new(ModuleContext::default());
     let parsing_queue = Arc::new(RwLock::new(Vec::new()));
     let (finish_sender, finish_receiver) = bounded::<()>(1);
@@ -167,6 +169,7 @@ pub fn parse_all(
     ));
 
     parse_single(
+        ctx.clone(),
         file,
         root_directory,
         debug_file,
@@ -186,7 +189,10 @@ pub fn parse_all(
     finish_receiver.recv().expect("a sender still exists");
 
     let mut modules_left = 0;
-    'outer_loop: loop {
+
+    let mut thread_pool = ThreadPool::new_auto();
+
+    thread_pool.enter(|handle| 'outer_loop: loop {
         if parsing_queue.read().is_empty() {
             break;
         }
@@ -216,8 +222,11 @@ pub fn parse_all(
         let _parsing_queue = parsing_queue.clone();
         let _module_context = module_context.clone();
         modules_left += 1;
-        thread_pool.spawn(move || {
+        let thread_ctx = ctx.clone();
+        // TODO: Make sure this *does not* compile
+        handle.spawn(move || {
             parse_single(
+                thread_ctx,
                 file.clone(),
                 root,
                 file,
@@ -250,9 +259,7 @@ pub fn parse_all(
                 break 'outer_loop;
             }
         }
-    }
-
-    thread_pool.finish();
+    });
 
     if errors.read().is_empty() {
         Ok(module_context)

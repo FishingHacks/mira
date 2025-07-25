@@ -52,7 +52,10 @@ fn mangle_path(path: &Path, mangled_string: &mut String) {
     }
 }
 
-pub fn mangle_function(ctx: &TypecheckingContext, id: StoreKey<TypedFunction>) -> String {
+pub fn mangle_function<'arena>(
+    ctx: &TypecheckingContext<'arena>,
+    id: StoreKey<TypedFunction<'arena>>,
+) -> String {
     let fn_reader = ctx.functions.read();
     let module_reader = ctx.modules.read();
     let module_id = fn_reader[id].0.module_id;
@@ -66,12 +69,12 @@ pub fn mangle_function(ctx: &TypecheckingContext, id: StoreKey<TypedFunction>) -
 
     match fn_reader[id].0.name {
         None => mangled_name.push_str(MANGLED_ANON_FN_NAME),
-        Some(ref v) => v.with(|v| {
+        Some(ref v) => {
             let mut name = String::new();
             v.chars().for_each(|v| mangle_char(v, &mut name));
             write!(mangled_name, "{}{}", name.len(), name)
                 .expect("writing to a string should never fail");
-        }),
+        }
     }
     mangled_name.push_str("17h"); // hash
     let mut hasher = DefaultHasher::new();
@@ -82,9 +85,9 @@ pub fn mangle_function(ctx: &TypecheckingContext, id: StoreKey<TypedFunction>) -
     mangled_name
 }
 
-pub fn mangle_external_function(
-    ctx: &TypecheckingContext,
-    id: StoreKey<TypedExternalFunction>,
+pub fn mangle_external_function<'arena>(
+    ctx: &TypecheckingContext<'arena>,
+    id: StoreKey<TypedExternalFunction<'arena>>,
 ) -> String {
     let reader = &ctx.external_functions.read()[id].0;
     if let Some(v) = reader
@@ -100,7 +103,10 @@ pub fn mangle_external_function(
         .to_string()
 }
 
-pub fn mangle_struct(ctx: &TypecheckingContext, id: StoreKey<TypedStruct>) -> String {
+pub fn mangle_struct<'arena>(
+    ctx: &TypecheckingContext<'arena>,
+    id: StoreKey<TypedStruct<'arena>>,
+) -> String {
     let module_reader = ctx.modules.read();
     let struct_reader = ctx.structs.read();
     let structure = &struct_reader[id];
@@ -111,7 +117,7 @@ pub fn mangle_struct(ctx: &TypecheckingContext, id: StoreKey<TypedStruct>) -> St
         .unwrap_or(&module.path);
     let mut name = path.display().to_string();
     name.push_str("::");
-    structure.name.with(|v| name.push_str(v));
+    name.push_str(&structure.name);
     name.push_str("::");
     let mut hasher = DefaultHasher::new();
     structure.hash(&mut hasher);
@@ -119,13 +125,16 @@ pub fn mangle_struct(ctx: &TypecheckingContext, id: StoreKey<TypedStruct>) -> St
     name
 }
 
-pub fn mangle_static(ctx: &TypecheckingContext, id: StoreKey<TypedStatic>) -> String {
+pub fn mangle_static<'arena>(
+    ctx: &TypecheckingContext<'arena>,
+    id: StoreKey<TypedStatic<'arena>>,
+) -> String {
     let static_reader = ctx.statics.read();
     let structure = &static_reader[id];
     let mut name = String::from("alloc_");
     let mut hasher = DefaultHasher::new();
-    structure.0.hash(&mut hasher);
-    structure.2.hash(&mut hasher);
+    structure.type_.hash(&mut hasher);
+    structure.module.hash(&mut hasher);
     write!(name, "{:x}", hasher.finish()).expect("writing to a string should never fail");
     name
 }
@@ -138,7 +147,10 @@ pub fn mangle_string(string: &str) -> String {
     name
 }
 
-pub fn mangle_name(ctx: &TypecheckingContext, item: ModuleScopeValue) -> String {
+pub fn mangle_name<'arena>(
+    ctx: &TypecheckingContext<'arena>,
+    item: ModuleScopeValue<'arena>,
+) -> String {
     match item {
         ModuleScopeValue::Function(id) => mangle_function(ctx, id.cast()),
         ModuleScopeValue::ExternalFunction(id) => mangle_external_function(ctx, id.cast()),

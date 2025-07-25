@@ -3,7 +3,7 @@ use crate::{module::ModuleScopeValue, store::StoreKey, typechecking::Typechecked
 use super::formatter::Formatter;
 
 #[repr(transparent)]
-pub struct ModuleDisplay<'a>(pub &'a TypecheckedModule);
+pub struct ModuleDisplay<'a>(pub &'a TypecheckedModule<'a>);
 
 impl ModuleDisplay<'_> {
     pub fn fmt(&self, f: &mut Formatter, id: StoreKey<TypecheckedModule>) -> std::fmt::Result {
@@ -34,7 +34,7 @@ impl ModuleDisplay<'_> {
             for (name, exported_name) in self.0.exports.iter() {
                 f.write_char('\n')?;
                 f.write_value(name)?;
-                if name != exported_name {
+                if *name != *exported_name {
                     f.write_str(" as ")?;
                     f.write_value(exported_name)?;
                 }

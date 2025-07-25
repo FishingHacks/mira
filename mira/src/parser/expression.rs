@@ -6,9 +6,9 @@ use std::{
 use crate::{
     annotations::AnnotationReceiver,
     error::ParsingError,
-    globals::GlobalStr,
     module::{Function, Module, ModuleContext},
     store::StoreKey,
+    string_interner::InternedStr,
     tokenizer::{Literal, Location, NumberType, TokenType},
 };
 
@@ -19,11 +19,11 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Path {
-    pub entries: Vec<(GlobalStr, Vec<TypeRef>)>,
+pub struct Path<'arena> {
+    pub entries: Vec<(InternedStr<'arena>, Vec<TypeRef<'arena>>)>,
 }
 
-impl Display for Path {
+impl Display for Path<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for i in 0..self.entries.len() {
             if i != 0 {
@@ -46,11 +46,11 @@ impl Display for Path {
     }
 }
 
-impl Path {
-    pub fn push(&mut self, name: GlobalStr, generics: Vec<TypeRef>) {
+impl<'arena> Path<'arena> {
+    pub fn push(&mut self, name: InternedStr<'arena>, generics: Vec<TypeRef<'arena>>) {
         self.entries.push((name, generics));
     }
-    pub fn pop(&mut self) -> Option<(GlobalStr, Vec<TypeRef>)> {
+    pub fn pop(&mut self) -> Option<(InternedStr<'arena>, Vec<TypeRef<'arena>>)> {
         // ensure this is at least 1 element
         if self.entries.len() > 1 {
             self.entries.pop()
@@ -58,13 +58,15 @@ impl Path {
             None
         }
     }
-    pub fn new(entry: GlobalStr, generics: Vec<TypeRef>) -> Self {
+    pub fn new(entry: InternedStr<'arena>, generics: Vec<TypeRef<'arena>>) -> Self {
         Self {
             entries: vec![(entry, generics)],
         }
     }
 
-    fn parse_generics(parser: &mut Parser) -> Result<Vec<TypeRef>, ParsingError> {
+    fn parse_generics(
+        parser: &mut Parser<'_, 'arena>,
+    ) -> Result<Vec<TypeRef<'arena>>, ParsingError<'arena>> {
         let mut types = vec![];
 
         while !parser.match_tok(TokenType::GreaterThan) {
@@ -77,7 +79,7 @@ impl Path {
         Ok(types)
     }
 
-    pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
+    pub fn parse<'a>(parser: &mut Parser<'a, 'arena>) -> Result<Self, ParsingError<'arena>> {
         let name = parser.expect_identifier()?;
         let generics = if parser.match_tok(TokenType::LessThan) {
             Self::parse_generics(parser)?
@@ -103,15 +105,15 @@ impl Path {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathWithoutGenerics {
-    pub entries: Vec<GlobalStr>,
+pub struct PathWithoutGenerics<'arena> {
+    pub entries: Vec<InternedStr<'arena>>,
 }
 
-impl PathWithoutGenerics {
-    pub fn push(&mut self, name: GlobalStr) {
+impl<'arena> PathWithoutGenerics<'arena> {
+    pub fn push(&mut self, name: InternedStr<'arena>) {
         self.entries.push(name)
     }
-    pub fn pop(&mut self) -> Option<GlobalStr> {
+    pub fn pop(&mut self) -> Option<InternedStr<'arena>> {
         // ensure this is at least 1 element
         if self.entries.len() > 1 {
             self.entries.pop()
@@ -119,12 +121,12 @@ impl PathWithoutGenerics {
             None
         }
     }
-    pub fn new(entry: GlobalStr) -> Self {
+    pub fn new(entry: InternedStr<'arena>) -> Self {
         Self {
             entries: vec![entry],
         }
     }
-    pub fn parse(parser: &mut Parser) -> Result<Self, ParsingError> {
+    pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
         let mut path = Self::new(parser.expect_identifier()?);
 
         while parser.match_tok(TokenType::NamespaceAccess) {
@@ -135,12 +137,12 @@ impl PathWithoutGenerics {
         Ok(path)
     }
 
-    pub fn as_slice(&self) -> &[GlobalStr] {
+    pub fn as_slice(&self) -> &[InternedStr<'arena>] {
         &self.entries
     }
 }
 
-impl Display for PathWithoutGenerics {
+impl Display for PathWithoutGenerics<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for i in 0..self.entries.len() {
             if i != 0 {
@@ -153,29 +155,32 @@ impl Display for PathWithoutGenerics {
 }
 
 #[derive(Debug, Clone)]
-pub enum ArrayLiteral {
-    Values(Vec<Expression>),
-    CopyInitialized(Box<Expression>, usize),
+pub enum ArrayLiteral<'arena> {
+    Values(Vec<Expression<'arena>>),
+    CopyInitialized(Box<Expression<'arena>>, usize),
 }
 
 #[derive(Debug, Clone)]
-pub enum LiteralValue {
-    String(GlobalStr),
-    Array(ArrayLiteral),
-    Struct(HashMap<GlobalStr, (Location, Expression)>, Path),
-    AnonymousStruct(HashMap<GlobalStr, (Location, Expression)>),
-    Tuple(Vec<(Location, Expression)>),
+pub enum LiteralValue<'arena> {
+    String(InternedStr<'arena>),
+    Array(ArrayLiteral<'arena>),
+    Struct(
+        HashMap<InternedStr<'arena>, (Location, Expression<'arena>)>,
+        Path<'arena>,
+    ),
+    AnonymousStruct(HashMap<InternedStr<'arena>, (Location, Expression<'arena>)>),
+    Tuple(Vec<(Location, Expression<'arena>)>),
     Float(f64, NumberType),
     SInt(i64, NumberType),
     UInt(u64, NumberType),
     Bool(bool),
-    Dynamic(Path),
-    AnonymousFunction(FunctionContract, Box<Statement>),
-    BakedAnonymousFunction(StoreKey<Function>),
+    Dynamic(Path<'arena>),
+    AnonymousFunction(FunctionContract<'arena>, Box<Statement<'arena>>),
+    BakedAnonymousFunction(StoreKey<Function<'arena>>),
     Void,
 }
 
-impl Display for LiteralValue {
+impl Display for LiteralValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LiteralValue::BakedAnonymousFunction(id) => {
@@ -255,7 +260,7 @@ impl Display for LiteralValue {
     }
 }
 
-impl LiteralValue {
+impl LiteralValue<'_> {
     // NOTE: **ONLY** FOR ERROR MESSAGES!!!!!
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -306,64 +311,64 @@ pub enum UnaryOp {
 }
 
 #[derive(Debug, Clone)]
-pub enum Expression {
-    Literal(LiteralValue, Location),
+pub enum Expression<'arena> {
+    Literal(LiteralValue<'arena>, Location),
     Unary {
         operator: UnaryOp,
         loc: Location,
-        right_side: Box<Expression>,
+        right_side: Box<Expression<'arena>>,
     },
     Binary {
         operator: BinaryOp,
         loc: Location,
-        right_side: Box<Expression>,
-        left_side: Box<Expression>,
+        right_side: Box<Expression<'arena>>,
+        left_side: Box<Expression<'arena>>,
     },
     FunctionCall {
-        identifier: Box<Expression>,
-        arguments: Vec<Expression>,
+        identifier: Box<Expression<'arena>>,
+        arguments: Vec<Expression<'arena>>,
     },
     MemberCall {
-        identifier: GlobalStr,
-        lhs: Box<Expression>,
-        arguments: Vec<Expression>,
+        identifier: InternedStr<'arena>,
+        lhs: Box<Expression<'arena>>,
+        arguments: Vec<Expression<'arena>>,
     },
     Indexing {
-        left_side: Box<Expression>,
-        right_side: Box<Expression>,
+        left_side: Box<Expression<'arena>>,
+        right_side: Box<Expression<'arena>>,
     },
     MemberAccess {
-        left_side: Box<Expression>,
-        index: Vec<GlobalStr>,
+        left_side: Box<Expression<'arena>>,
+        index: Vec<InternedStr<'arena>>,
         loc: Location,
     },
     Assignment {
-        left_side: Box<Expression>,
-        right_side: Box<Expression>,
+        left_side: Box<Expression<'arena>>,
+        right_side: Box<Expression<'arena>>,
         loc: Location,
     },
     Range {
-        left_side: Box<Expression>,
-        right_side: Box<Expression>,
+        left_side: Box<Expression<'arena>>,
+        right_side: Box<Expression<'arena>>,
         inclusive: bool,
         loc: Location,
     },
     TypeCast {
-        left_side: Box<Expression>,
-        new_type: TypeRef,
+        left_side: Box<Expression<'arena>>,
+        new_type: TypeRef<'arena>,
         loc: Location,
     },
     Asm {
         loc: Location,
         asm: String,
         volatile: bool,
-        output: TypeRef,
+        output: TypeRef<'arena>,
         registers: String, // input + output + clobber
-        inputs: Vec<(Location, GlobalStr)>,
+        inputs: Vec<(Location, InternedStr<'arena>)>,
     },
 }
 
-impl Display for Expression {
+impl Display for Expression<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Expression::Literal(v, ..) => Display::fmt(v, f),
@@ -513,16 +518,16 @@ impl Display for Expression {
     }
 }
 
-impl Expression {
+impl<'arena> Expression<'arena> {
     pub fn bool(value: bool, loc: Location) -> Self {
         Self::Literal(LiteralValue::Bool(value), loc)
     }
 
-    pub fn string(value: GlobalStr, loc: Location) -> Self {
+    pub fn string(value: InternedStr<'arena>, loc: Location) -> Self {
         Self::Literal(LiteralValue::String(value), loc)
     }
 
-    pub fn unary(operator: UnaryOp, loc: Location, right: Expression) -> Self {
+    pub fn unary(operator: UnaryOp, loc: Location, right: Expression<'arena>) -> Self {
         Self::Unary {
             operator,
             loc,
@@ -530,7 +535,12 @@ impl Expression {
         }
     }
 
-    pub fn binary(operator: BinaryOp, loc: Location, left: Expression, right: Expression) -> Self {
+    pub fn binary(
+        operator: BinaryOp,
+        loc: Location,
+        left: Expression<'arena>,
+        right: Expression<'arena>,
+    ) -> Self {
         Self::Binary {
             operator,
             loc,
@@ -557,9 +567,9 @@ impl Expression {
 
     pub fn bake_functions(
         &mut self,
-        module: &mut Module,
-        module_key: StoreKey<Module>,
-        context: &ModuleContext,
+        module: &mut Module<'arena>,
+        module_key: StoreKey<Module<'arena>>,
+        context: &ModuleContext<'arena>,
     ) {
         match self {
             Self::Asm { .. } => (),
@@ -643,23 +653,31 @@ macro_rules! assign_set {
 }
 
 // asm expression
-impl Parser<'_> {
+impl<'arena> Parser<'_, 'arena> {
     /// Parses [<.0>] "<.1>" (<.2>)
-    fn parse_asm_binding(&mut self) -> Result<(GlobalStr, GlobalStr, GlobalStr), ParsingError> {
+    fn parse_asm_binding(
+        &mut self,
+    ) -> Result<
+        (
+            InternedStr<'arena>,
+            InternedStr<'arena>,
+            InternedStr<'arena>,
+        ),
+        ParsingError<'arena>,
+    > {
         self.expect_tok(TokenType::BracketLeft)?;
         let name = self.expect_identifier()?;
         self.expect_tok(TokenType::BracketRight)?;
         let bound = self
             .expect_tok(TokenType::StringLiteral)?
-            .string_literal()?
-            .clone();
+            .string_literal()?;
         self.expect_tok(TokenType::ParenLeft)?;
         let ident = self.expect_identifier()?;
         self.expect_tok(TokenType::ParenRight)?;
         Ok((name, bound, ident))
     }
 
-    fn parse_asm(&mut self) -> Result<Expression, ParsingError> {
+    fn parse_asm(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let loc = self.advance().location.clone();
         let volatile = self.match_tok(TokenType::Volatile);
         self.expect_tok(TokenType::ParenLeft)?;
@@ -676,13 +694,13 @@ impl Parser<'_> {
                     break;
                 }
             }
-            let tok = self.expect_tok(TokenType::StringLiteral)?;
-            tok.string_literal()?.with(|v| {
-                if !asm.is_empty() {
-                    asm.push('\n');
-                }
-                asm.push_str(v);
-            });
+            let s = self
+                .expect_tok(TokenType::StringLiteral)?
+                .string_literal()?;
+            if !asm.is_empty() {
+                asm.push('\n');
+            }
+            asm.push_str(&s);
         }
 
         'out: {
@@ -698,18 +716,18 @@ impl Parser<'_> {
                 // [v] "=" (ty)
                 let loc = self.peek().location.clone();
                 let (replacer, register, type_name) = self.parse_asm_binding()?;
-                let replacer_string = replacer.with(|v| format!("%[{v}]"));
+                let replacer_string = format!("%[{replacer}]");
                 if replacers.iter().any(|v| v.0 == replacer_string) {
                     return Err(ParsingError::DuplicateAsmReplacer { loc, replacer });
                 }
-                if !register.with(|v| v.starts_with('=')) {
+                if !register.starts_with('=') {
                     return Err(ParsingError::OutputNotStartingWithEqual {
                         loc,
                         output: register,
                     });
                 }
                 replacers.push((replacer_string, format!("${{{}}}", replacers.len())));
-                register.with(|v| registers.push_str(v));
+                registers.push_str(&register);
                 output = TypeRef::Reference {
                     num_references: 0,
                     type_name: Path::new(type_name, Vec::new()),
@@ -733,11 +751,11 @@ impl Parser<'_> {
 
                 let loc = self.peek().location.clone();
                 let (replacer, register, variable) = self.parse_asm_binding()?;
-                let replacer_string = replacer.with(|v| format!("%[{v}]"));
+                let replacer_string = format!("%[{replacer}]");
                 if replacers.iter().any(|v| v.0 == replacer_string) {
                     return Err(ParsingError::DuplicateAsmReplacer { loc, replacer });
                 }
-                if register.with(|v| v.starts_with('=') || v.starts_with('~')) {
+                if register.starts_with('=') || register.starts_with('~') {
                     return Err(ParsingError::InputStartingWithInvalidChar {
                         loc,
                         input: register,
@@ -747,7 +765,7 @@ impl Parser<'_> {
                 if !registers.is_empty() {
                     registers.push(',');
                 }
-                register.with(|v| registers.push_str(v));
+                registers.push_str(&register);
                 inputs.push((loc, variable));
             }
 
@@ -761,17 +779,19 @@ impl Parser<'_> {
                 registers.push(',');
             }
             registers.push_str("~{");
-            self.expect_tok(TokenType::StringLiteral)?
-                .string_literal()?
-                .with(|v| registers.push_str(v));
+            let register = self
+                .expect_tok(TokenType::StringLiteral)?
+                .string_literal()?;
+            registers.push_str(&register);
             registers.push('}');
 
             while !self.match_tok(TokenType::ParenRight) {
                 self.expect_tok(TokenType::Comma)?;
                 registers.push_str(",~{");
-                self.expect_tok(TokenType::StringLiteral)?
-                    .string_literal()?
-                    .with(|v| registers.push_str(v));
+                let register = self
+                    .expect_tok(TokenType::StringLiteral)?
+                    .string_literal()?;
+                registers.push_str(&register);
                 registers.push('}');
             }
         }
@@ -793,14 +813,14 @@ impl Parser<'_> {
         })
     }
 
-    pub fn parse_expression(&mut self) -> Result<Expression, ParsingError> {
+    pub fn parse_expression(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         if self.peek().typ == TokenType::Asm {
             return self.parse_asm();
         }
         self.comparison()
     }
 
-    fn comparison(&mut self) -> Result<Expression, ParsingError> {
+    fn comparison(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let mut expr = self.pipe_operator()?;
 
         loop {
@@ -828,7 +848,7 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    fn pipe_operator(&mut self) -> Result<Expression, ParsingError> {
+    fn pipe_operator(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let mut expr = self.range()?;
 
         while self.match_tok(TokenType::PipeOperator) {
@@ -852,7 +872,7 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    fn range(&mut self) -> Result<Expression, ParsingError> {
+    fn range(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let mut expr = self.term()?;
 
         while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
@@ -870,7 +890,7 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    fn term(&mut self) -> Result<Expression, ParsingError> {
+    fn term(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let mut expr = self.factor()?;
 
         while self.matches(&[
@@ -904,7 +924,7 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    fn factor(&mut self) -> Result<Expression, ParsingError> {
+    fn factor(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let mut expr = self.unary()?;
 
         loop {
@@ -934,7 +954,7 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    fn unary(&mut self) -> Result<Expression, ParsingError> {
+    fn unary(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         if self.matches(&[
             TokenType::Plus,
             TokenType::Minus,
@@ -955,7 +975,7 @@ impl Parser<'_> {
         self.assignment()
     }
 
-    fn assignment(&mut self) -> Result<Expression, ParsingError> {
+    fn assignment(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let expr = self.type_cast()?;
         if self.match_tok(TokenType::Equal) {
             let loc = self.current().location.clone();
@@ -969,7 +989,7 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    fn type_cast(&mut self) -> Result<Expression, ParsingError> {
+    fn type_cast(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let mut expr = self.references()?;
 
         while self.match_tok(TokenType::As) {
@@ -985,7 +1005,7 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    fn references(&mut self) -> Result<Expression, ParsingError> {
+    fn references(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         if self.match_tok(TokenType::Ampersand) {
             Ok(Expression::Unary {
                 operator: UnaryOp::Reference,
@@ -1016,7 +1036,7 @@ impl Parser<'_> {
         }
     }
 
-    fn indexed(&mut self) -> Result<Expression, ParsingError> {
+    fn indexed(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let mut expr = self.primary()?;
 
         while self.matches(&[TokenType::BracketLeft, TokenType::ParenLeft, TokenType::Dot]) {
@@ -1096,12 +1116,12 @@ impl Parser<'_> {
                 let loc = self.peek().location.clone();
                 let name = self.expect_identifier()?;
                 if let Expression::MemberAccess { index, .. } = &mut expr {
-                    index.push(name.clone());
+                    index.push(name);
                     continue;
                 }
                 expr = Expression::MemberAccess {
                     left_side: Box::new(expr),
-                    index: vec![name.clone()],
+                    index: vec![name],
                     loc,
                 };
             } else {
@@ -1112,7 +1132,7 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    fn primary(&mut self) -> Result<Expression, ParsingError> {
+    fn primary(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         if self.match_tok(TokenType::Dot) {
             // .{} / .[] / .()
             let typ = self.peek().typ;
@@ -1202,7 +1222,7 @@ impl Parser<'_> {
         })
     }
 
-    fn try_array(&mut self) -> Result<Option<Expression>, ParsingError> {
+    fn try_array(&mut self) -> Result<Option<Expression<'arena>>, ParsingError<'arena>> {
         if self.match_tok(TokenType::BracketLeft) {
             let loc = self.current().location.clone();
             let mut arr = vec![];
@@ -1249,7 +1269,9 @@ impl Parser<'_> {
     #[allow(clippy::type_complexity)]
     fn try_object(
         &mut self,
-    ) -> Option<Result<HashMap<GlobalStr, (Location, Expression)>, ParsingError>> {
+    ) -> Option<
+        Result<HashMap<InternedStr<'arena>, (Location, Expression<'arena>)>, ParsingError<'arena>>,
+    > {
         if self.match_tok(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
             while !self.match_tok(TokenType::CurlyRight) {
@@ -1275,7 +1297,7 @@ impl Parser<'_> {
                     }));
                 } else {
                     match self.current().literal {
-                        Some(Literal::String(ref v)) => v.clone(),
+                        Some(Literal::String(ref v)) => *v,
                         _ => {
                             return Some(Err(ParsingError::InvalidTokenization {
                                 loc: self.current().location.clone(),
