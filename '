@@ -1,5 +1,0 @@
-use crate::{store::AssociatedStore, typechecking::TypecheckingContext};
-
-pub fn run_dce(context: &mut TypecheckingContext) {
-    let mut used_functions = AssociatedStore::new();
-}
