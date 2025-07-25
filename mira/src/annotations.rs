@@ -1,8 +1,8 @@
 use std::{
     any::Any,
-    cell::RefCell,
     collections::HashMap,
     fmt::{Debug, Display, Write},
+    sync::LazyLock,
 };
 
 use crate::{
@@ -73,11 +73,11 @@ impl Clone for Box<dyn ClonableAnnotation> {
     }
 }
 
-type AnnotationParser =
-    Box<dyn Fn(TokenStream) -> Result<Box<dyn ClonableAnnotation>, ParsingError>>;
+pub type AnnotationParser =
+    Box<dyn Fn(TokenStream) -> Result<Box<dyn ClonableAnnotation>, ParsingError> + Send + Sync>;
 
-thread_local! {
-    static ANNOTATIONS_REGISTRY: RefCell<HashMap<&'static str, AnnotationParser>> = {
+static ANNOTATIONS_REGISTRY: LazyLock<HashMap<&'static str, AnnotationParser>> =
+    LazyLock::new(|| {
         let mut hashmap: HashMap<&'static str, AnnotationParser> = HashMap::new();
 
         macro_rules! annotations {
@@ -92,25 +92,22 @@ thread_local! {
         );
         std_annotations::add_annotations(&mut hashmap);
 
-        RefCell::new(hashmap)
-    };
-}
+        hashmap
+    });
 
 pub fn parse_annotation(
     name: &str,
     tokens: Vec<Token>,
     loc: Location,
 ) -> Result<Box<dyn ClonableAnnotation>, ParsingError> {
-    ANNOTATIONS_REGISTRY.with_borrow(|annotations| {
-        if let Some(parser) = annotations.get(name) {
-            parser(TokenStream::new(tokens, loc))
-        } else {
-            Err(ParsingError::UnknownAnnotation {
-                loc,
-                name: name.to_string(),
-            })
-        }
-    })
+    if let Some(parser) = ANNOTATIONS_REGISTRY.get(name) {
+        parser(TokenStream::new(tokens, loc))
+    } else {
+        Err(ParsingError::UnknownAnnotation {
+            loc,
+            name: name.to_string(),
+        })
+    }
 }
 
 #[derive(Debug, Default, Clone)]

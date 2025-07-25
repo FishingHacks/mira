@@ -1,7 +1,4 @@
-type AnnotationParser =
-    Box<dyn Fn(TokenStream) -> Result<Box<dyn ClonableAnnotation>, ParsingError>>;
-use crate::annotations::ClonableAnnotation;
-pub use crate::annotations::{Annotation, AnnotationReceiver, Annotations};
+pub use crate::annotations::{Annotation, AnnotationParser, AnnotationReceiver, Annotations};
 pub use crate::error::ParsingError;
 pub use crate::globals::GlobalStr;
 pub use crate::tokenizer::TokenType;

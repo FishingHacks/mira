@@ -1,6 +1,6 @@
 use crate::{
     error::ParsingError,
-    globals::GlobalStr,
+    string_interner::GlobalStr,
     tokenizer::{Literal, Location, NumberType, Token, TokenType},
 };
 
@@ -45,7 +45,8 @@ impl TokenStream {
     }
 
     pub fn expect_token(&self, expected: TokenType) -> Result<&Token, ParsingError> {
-        self.0.first()
+        self.0
+            .first()
             .filter(|v| v.typ == expected)
             .ok_or_else(|| ParsingError::ExpectedArbitrary {
                 loc: self.1.clone(),
