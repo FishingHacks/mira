@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::store::{Store, StoreKey};
-use crate::{parser::TypeRef, string_interner::InternedStr, tokenizer::NumberType};
+use crate::{interner::InternedStr, parser::TypeRef, tokenizer::NumberType};
 
 use super::{TypecheckingContext, TypedStruct, TypedTrait};
 
@@ -132,8 +132,8 @@ pub fn resolve_primitive_type<'arena>(typ: &TypeRef<'arena>) -> Option<Type<'are
         TypeRef::Reference {
             num_references,
             type_name,
-            loc: _,
-        } if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() => {
+            span: _,
+        } if type_name.entries.len() == 1 && type_name.entries[0].2.is_empty() => {
             match type_name.entries[0].0.to_str() {
                 "!" => Some(Type::PrimitiveNever),
                 "void" => Some(Type::PrimitiveVoid(*num_references)),

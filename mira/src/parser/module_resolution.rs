@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::tokenizer::Location;
+use crate::tokenizer::span::{SourceMap, Span};
 
 // ./_ -> relative path
 // /_  -> absolute path
@@ -14,10 +14,8 @@ pub fn resolve_module(
     name: &str,
     current_dir: &Path,
     root_dir: Arc<Path>,
-    loc: &Location,
-    resolvers: &[Box<dyn ModuleResolver>],
-    path_exists: &dyn Fn(&Path) -> bool,
-    path_is_dir: &dyn Fn(&Path) -> bool,
+    span: Span,
+    source_map: &SourceMap,
 ) -> Option<ResolvedPath> {
     if name.is_empty() {
         return None;
@@ -30,11 +28,10 @@ pub fn resolve_module(
             root_dir,
             current_dir,
             import: name,
-            loc,
-            path_exists,
-            path_is_dir,
+            span,
+            source_map,
         };
-        for resolver in resolvers {
+        for resolver in source_map.module_resolvers() {
             if let v @ Some(_) = resolver.resolve_relative(data.clone()) {
                 return v;
             }
@@ -44,11 +41,10 @@ pub fn resolve_module(
             root_dir,
             current_dir,
             import: name,
-            loc,
-            path_exists,
-            path_is_dir,
+            span,
+            source_map,
         };
-        for resolver in resolvers {
+        for resolver in source_map.module_resolvers() {
             if let v @ Some(_) = resolver.resolve_absolute(data.clone()) {
                 return v;
             }
@@ -62,11 +58,10 @@ pub fn resolve_module(
             root_dir,
             current_dir,
             import,
-            loc,
-            path_exists,
-            path_is_dir,
+            span,
+            source_map,
         };
-        for resolver in resolvers {
+        for resolver in source_map.module_resolvers() {
             if let v @ Some(_) = resolver.resolve_module(data.clone(), module) {
                 return v;
             }
@@ -109,42 +104,40 @@ pub fn resolve_module(
 pub fn default_lookup_import_in_directory(
     import: &str,
     dir: &Path,
-    path_exists: &dyn Fn(&Path) -> bool,
-    path_is_dir: &dyn Fn(&Path) -> bool,
+    source_map: &SourceMap,
 ) -> Option<PathBuf> {
     let mut path = dir.join(import);
     if import.ends_with(".mr") {
-        return (path_exists(&path) && !path_is_dir(&path)).then_some(path);
+        return (source_map.exists(&path) && !source_map.is_dir(&path)).then_some(path);
     }
-    if path_exists(&path) && path_is_dir(&path) {
+    if source_map.exists(&path) && source_map.is_dir(&path) {
         // $name/$name.mr and $name/lib.mr
         let mut name = path.file_name()?.to_os_string();
         name.push(".mr");
         path.push(&name);
-        if path_exists(&path) && !path_is_dir(&path) {
+        if source_map.exists(&path) && !source_map.is_dir(&path) {
             return Some(path);
         }
         path.pop();
         path.push("lib.mr");
-        (path_exists(&path) && !path_is_dir(&path)).then_some(path)
+        (source_map.exists(&path) && !source_map.is_dir(&path)).then_some(path)
     // $name will turn into $name.mr if $name does not end with .mr or $name does not exist
     } else {
         let mut name = path.file_name()?.to_os_string();
         name.push(".mr");
         path.pop();
         path.push(&name);
-        (path_exists(&path) && !path_is_dir(&path)).then_some(path)
+        (source_map.exists(&path) && !source_map.is_dir(&path)).then_some(path)
     }
 }
 
 #[derive(Clone)]
-pub struct ImportData<'a> {
+pub struct ImportData<'a, 'arena> {
     pub root_dir: Arc<Path>,
     pub current_dir: &'a Path,
     pub import: &'a str,
-    pub loc: &'a Location,
-    pub path_exists: &'a dyn Fn(&Path) -> bool,
-    pub path_is_dir: &'a dyn Fn(&Path) -> bool,
+    pub span: Span<'arena>,
+    pub source_map: &'a SourceMap,
 }
 pub struct ResolvedPath {
     pub root_dir: Arc<Path>,
@@ -171,12 +164,8 @@ pub trait ModuleResolver: 'static + Send + Sync {
 pub struct RelativeResolver;
 impl ModuleResolver for RelativeResolver {
     fn resolve_relative(&self, data: ImportData) -> Option<ResolvedPath> {
-        let file = default_lookup_import_in_directory(
-            data.import,
-            data.current_dir,
-            data.path_exists,
-            data.path_is_dir,
-        )?;
+        let file =
+            default_lookup_import_in_directory(data.import, data.current_dir, data.source_map)?;
         let file = file.into();
         let root_dir = data.root_dir;
         Some(ResolvedPath { file, root_dir })
@@ -189,8 +178,7 @@ impl ModuleResolver for AbsoluteResolver {
         let file = default_lookup_import_in_directory(
             data.import.split(std::path::MAIN_SEPARATOR_STR).last()?,
             Path::new(data.import).parent()?,
-            data.path_exists,
-            data.path_is_dir,
+            data.source_map,
         )?;
         let root_dir = file.parent()?.to_path_buf().into();
         let file = file.into();
@@ -204,13 +192,8 @@ impl ModuleResolver for SingleModuleResolver {
         if module_name != self.0 {
             return None;
         }
-        let file = default_lookup_import_in_directory(
-            data.import,
-            &self.1,
-            data.path_exists,
-            data.path_is_dir,
-        )?
-        .into();
+        let file =
+            default_lookup_import_in_directory(data.import, &self.1, data.source_map)?.into();
         let root_dir = self.1.clone();
         Some(ResolvedPath { root_dir, file })
     }
@@ -228,15 +211,12 @@ impl ModuleResolver for BasicModuleResolver {
         let root_dir = PathBuf::from(self.0[0].replace("$name", module_name)).into();
         for module in self.0.iter() {
             let path = PathBuf::from(module.replace("$name", module_name));
-            if !(data.path_exists)(&path) || !(data.path_is_dir)(&path) {
+            if !data.source_map.exists(&path) || !data.source_map.is_dir(&path) {
                 continue;
             }
-            let Some(file) = default_lookup_import_in_directory(
-                data.import,
-                &path,
-                data.path_exists,
-                data.path_is_dir,
-            ) else {
+            let Some(file) =
+                default_lookup_import_in_directory(data.import, &path, data.source_map)
+            else {
                 continue;
             };
             return Some(ResolvedPath {

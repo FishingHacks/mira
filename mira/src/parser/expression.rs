@@ -6,10 +6,10 @@ use std::{
 use crate::{
     annotations::AnnotationReceiver,
     error::ParsingError,
+    interner::{InternedStr, SpanInterner},
     module::{Function, Module, ModuleContext},
     store::StoreKey,
-    string_interner::InternedStr,
-    tokenizer::{Literal, Location, NumberType, TokenType},
+    tokenizer::{span::Span, Literal, NumberType, TokenType},
 };
 
 use super::{
@@ -20,7 +20,8 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path<'arena> {
-    pub entries: Vec<(InternedStr<'arena>, Vec<TypeRef<'arena>>)>,
+    pub entries: Vec<(InternedStr<'arena>, Span<'arena>, Vec<TypeRef<'arena>>)>,
+    pub span: Span<'arena>,
 }
 
 impl Display for Path<'_> {
@@ -31,13 +32,13 @@ impl Display for Path<'_> {
             }
 
             Display::fmt(&self.entries[i].0, f)?;
-            if !self.entries[i].1.is_empty() {
+            if !self.entries[i].2.is_empty() {
                 f.write_char('<')?;
-                for type_idx in 0..self.entries[i].1.len() {
+                for type_idx in 0..self.entries[i].2.len() {
                     if type_idx != 0 {
                         f.write_str(", ")?;
                     }
-                    Display::fmt(&self.entries[i].1[type_idx], f)?;
+                    Display::fmt(&self.entries[i].2[type_idx], f)?;
                 }
                 f.write_char('>')?;
             }
@@ -47,10 +48,15 @@ impl Display for Path<'_> {
 }
 
 impl<'arena> Path<'arena> {
-    pub fn push(&mut self, name: InternedStr<'arena>, generics: Vec<TypeRef<'arena>>) {
-        self.entries.push((name, generics));
+    pub fn push(
+        &mut self,
+        name: InternedStr<'arena>,
+        span: Span<'arena>,
+        generics: Vec<TypeRef<'arena>>,
+    ) {
+        self.entries.push((name, span, generics));
     }
-    pub fn pop(&mut self) -> Option<(InternedStr<'arena>, Vec<TypeRef<'arena>>)> {
+    pub fn pop(&mut self) -> Option<(InternedStr<'arena>, Span<'arena>, Vec<TypeRef<'arena>>)> {
         // ensure this is at least 1 element
         if self.entries.len() > 1 {
             self.entries.pop()
@@ -58,9 +64,14 @@ impl<'arena> Path<'arena> {
             None
         }
     }
-    pub fn new(entry: InternedStr<'arena>, generics: Vec<TypeRef<'arena>>) -> Self {
+    pub fn new(
+        entry: InternedStr<'arena>,
+        span: Span<'arena>,
+        generics: Vec<TypeRef<'arena>>,
+    ) -> Self {
         Self {
-            entries: vec![(entry, generics)],
+            entries: vec![(entry, span, generics)],
+            span,
         }
     }
 
@@ -78,27 +89,33 @@ impl<'arena> Path<'arena> {
         }
         Ok(types)
     }
+    pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'arena>) {
+        self.span = self.entries[0]
+            .1
+            .combine_with(self.entries[1..].iter().map(|v| v.1), span_interner);
+    }
 
     pub fn parse<'a>(parser: &mut Parser<'a, 'arena>) -> Result<Self, ParsingError<'arena>> {
-        let name = parser.expect_identifier()?;
+        let (name, span) = parser.expect_identifier_span()?;
         let generics = if parser.match_tok(TokenType::LessThan) {
             Self::parse_generics(parser)?
         } else {
             Default::default()
         };
 
-        let mut path = Self::new(name, generics);
+        let mut path = Self::new(name, span, generics);
 
         while parser.match_tok(TokenType::NamespaceAccess) {
-            let subpath = parser.expect_identifier()?;
+            let (subpath, span) = parser.expect_identifier_span()?;
             let generics = if parser.match_tok(TokenType::LessThan) {
                 Self::parse_generics(parser)?
             } else {
                 Default::default()
             };
 
-            path.push(subpath, generics);
+            path.push(subpath, span, generics);
         }
+        path.readjust_self_span(parser.ctx.span_interner());
 
         Ok(path)
     }
@@ -107,33 +124,42 @@ impl<'arena> Path<'arena> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathWithoutGenerics<'arena> {
     pub entries: Vec<InternedStr<'arena>>,
+    pub spans: Vec<Span<'arena>>,
+    pub span: Span<'arena>,
 }
 
 impl<'arena> PathWithoutGenerics<'arena> {
-    pub fn push(&mut self, name: InternedStr<'arena>) {
-        self.entries.push(name)
+    pub fn push(&mut self, name: InternedStr<'arena>, span: Span<'arena>) {
+        self.entries.push(name);
+        self.spans.push(span);
     }
-    pub fn pop(&mut self) -> Option<InternedStr<'arena>> {
+    pub fn pop(&mut self) -> Option<(InternedStr<'arena>, Span<'arena>)> {
         // ensure this is at least 1 element
         if self.entries.len() > 1 {
-            self.entries.pop()
+            Some((self.entries.pop()?, self.spans.pop()?))
         } else {
             None
         }
     }
-    pub fn new(entry: InternedStr<'arena>) -> Self {
+    pub fn new(entry: (InternedStr<'arena>, Span<'arena>)) -> Self {
         Self {
-            entries: vec![entry],
+            span: entry.1,
+            entries: vec![entry.0],
+            spans: vec![entry.1],
         }
     }
+    pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'arena>) {
+        self.span = self.spans[0].combine_with(self.spans[1..].iter().copied(), span_interner);
+    }
     pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
-        let mut path = Self::new(parser.expect_identifier()?);
+        let mut path = Self::new(parser.expect_identifier_span()?);
 
         while parser.match_tok(TokenType::NamespaceAccess) {
-            let subpath = parser.expect_identifier()?;
-            path.push(subpath);
+            let (name, span) = parser.expect_identifier_span()?;
+            path.push(name, span);
         }
 
+        path.readjust_self_span(parser.ctx.span_interner());
         Ok(path)
     }
 
@@ -165,11 +191,11 @@ pub enum LiteralValue<'arena> {
     String(InternedStr<'arena>),
     Array(ArrayLiteral<'arena>),
     Struct(
-        HashMap<InternedStr<'arena>, (Location, Expression<'arena>)>,
+        HashMap<InternedStr<'arena>, (Span<'arena>, Expression<'arena>)>,
         Path<'arena>,
     ),
-    AnonymousStruct(HashMap<InternedStr<'arena>, (Location, Expression<'arena>)>),
-    Tuple(Vec<(Location, Expression<'arena>)>),
+    AnonymousStruct(HashMap<InternedStr<'arena>, (Span<'arena>, Expression<'arena>)>),
+    Tuple(Vec<(Span<'arena>, Expression<'arena>)>),
     Float(f64, NumberType),
     SInt(i64, NumberType),
     UInt(u64, NumberType),
@@ -312,59 +338,62 @@ pub enum UnaryOp {
 
 #[derive(Debug, Clone)]
 pub enum Expression<'arena> {
-    Literal(LiteralValue<'arena>, Location),
+    Literal(LiteralValue<'arena>, Span<'arena>),
     Unary {
         operator: UnaryOp,
-        loc: Location,
+        span: Span<'arena>,
         right_side: Box<Expression<'arena>>,
     },
     Binary {
         operator: BinaryOp,
-        loc: Location,
+        span: Span<'arena>,
         right_side: Box<Expression<'arena>>,
         left_side: Box<Expression<'arena>>,
     },
     FunctionCall {
         identifier: Box<Expression<'arena>>,
         arguments: Vec<Expression<'arena>>,
+        span: Span<'arena>,
     },
     MemberCall {
         identifier: InternedStr<'arena>,
         lhs: Box<Expression<'arena>>,
         arguments: Vec<Expression<'arena>>,
+        span: Span<'arena>,
     },
     Indexing {
         left_side: Box<Expression<'arena>>,
         right_side: Box<Expression<'arena>>,
+        span: Span<'arena>,
     },
     MemberAccess {
         left_side: Box<Expression<'arena>>,
         index: Vec<InternedStr<'arena>>,
-        loc: Location,
+        span: Span<'arena>,
     },
     Assignment {
         left_side: Box<Expression<'arena>>,
         right_side: Box<Expression<'arena>>,
-        loc: Location,
+        span: Span<'arena>,
     },
     Range {
         left_side: Box<Expression<'arena>>,
         right_side: Box<Expression<'arena>>,
         inclusive: bool,
-        loc: Location,
+        span: Span<'arena>,
     },
     TypeCast {
         left_side: Box<Expression<'arena>>,
         new_type: TypeRef<'arena>,
-        loc: Location,
+        span: Span<'arena>,
     },
     Asm {
-        loc: Location,
+        span: Span<'arena>,
         asm: String,
         volatile: bool,
         output: TypeRef<'arena>,
         registers: String, // input + output + clobber
-        inputs: Vec<(Location, InternedStr<'arena>)>,
+        inputs: Vec<(Span<'arena>, InternedStr<'arena>)>,
     },
 }
 
@@ -413,6 +442,7 @@ impl Display for Expression<'_> {
             Expression::Indexing {
                 left_side,
                 right_side,
+                ..
             } => {
                 f.write_str("(index ")?;
                 Display::fmt(left_side, f)?;
@@ -447,7 +477,7 @@ impl Display for Expression<'_> {
                 left_side,
                 right_side,
                 inclusive,
-                loc: _,
+                span: _,
             } => {
                 f.write_str("(range ")?;
                 if *inclusive {
@@ -461,7 +491,7 @@ impl Display for Expression<'_> {
             Expression::TypeCast {
                 left_side,
                 new_type,
-                loc: _,
+                span: _,
             } => {
                 f.write_str("(type-cast ")?;
                 Display::fmt(left_side, f)?;
@@ -473,6 +503,7 @@ impl Display for Expression<'_> {
                 identifier,
                 lhs,
                 arguments,
+                ..
             } => {
                 f.write_str("(member-call ")?;
                 Display::fmt(lhs, f)?;
@@ -519,49 +550,49 @@ impl Display for Expression<'_> {
 }
 
 impl<'arena> Expression<'arena> {
-    pub fn bool(value: bool, loc: Location) -> Self {
+    pub fn bool(value: bool, loc: Span<'arena>) -> Self {
         Self::Literal(LiteralValue::Bool(value), loc)
     }
 
-    pub fn string(value: InternedStr<'arena>, loc: Location) -> Self {
-        Self::Literal(LiteralValue::String(value), loc)
+    pub fn string(value: InternedStr<'arena>, span: Span<'arena>) -> Self {
+        Self::Literal(LiteralValue::String(value), span)
     }
 
-    pub fn unary(operator: UnaryOp, loc: Location, right: Expression<'arena>) -> Self {
+    pub fn unary(operator: UnaryOp, span: Span<'arena>, right: Expression<'arena>) -> Self {
         Self::Unary {
             operator,
-            loc,
+            span,
             right_side: Box::new(right),
         }
     }
 
     pub fn binary(
         operator: BinaryOp,
-        loc: Location,
+        span: Span<'arena>,
         left: Expression<'arena>,
         right: Expression<'arena>,
     ) -> Self {
         Self::Binary {
             operator,
-            loc,
+            span,
             right_side: Box::new(right),
             left_side: Box::new(left),
         }
     }
 
-    pub fn loc(&self) -> &Location {
+    pub fn span(&self) -> Span<'arena> {
         match self {
-            Self::Indexing { right_side: i, .. }
-            | Self::MemberCall { lhs: i, .. }
-            | Self::FunctionCall { identifier: i, .. } => i.loc(),
-            Self::MemberAccess { loc, .. }
-            | Self::Literal(_, loc)
-            | Self::Unary { loc, .. }
-            | Self::Asm { loc, .. }
-            | Self::Binary { loc, .. }
-            | Self::Assignment { loc, .. }
-            | Self::Range { loc, .. }
-            | Self::TypeCast { loc, .. } => loc,
+            Self::FunctionCall { span, .. }
+            | Self::MemberAccess { span, .. }
+            | Self::MemberCall { span, .. }
+            | Self::Indexing { span, .. }
+            | Self::Literal(_, span)
+            | Self::Unary { span, .. }
+            | Self::Asm { span, .. }
+            | Self::Binary { span, .. }
+            | Self::Assignment { span, .. }
+            | Self::Range { span, .. }
+            | Self::TypeCast { span, .. } => *span,
         }
     }
 
@@ -581,12 +612,12 @@ impl<'arena> Expression<'arena> {
                             arguments: std::mem::take(&mut contract.arguments),
                             return_type: contract.return_type.clone(),
                             annotations: std::mem::take(&mut contract.annotations),
-                            location: contract.location.clone(),
+                            span: contract.span,
                             generics: std::mem::take(&mut contract.generics),
                         },
                         std::mem::replace(
                             &mut **statements,
-                            Statement::BakedTrait(StoreKey::undefined(), contract.location.clone()),
+                            Statement::BakedTrait(StoreKey::undefined(), contract.span),
                         ),
                         module_key,
                         context,
@@ -607,6 +638,7 @@ impl<'arena> Expression<'arena> {
             | Self::Indexing {
                 left_side,
                 right_side,
+                ..
             }
             | Self::Range {
                 left_side,
@@ -619,6 +651,7 @@ impl<'arena> Expression<'arena> {
             Self::FunctionCall {
                 identifier,
                 arguments,
+                ..
             } => {
                 identifier.bake_functions(module, module_key, context);
                 arguments
@@ -642,29 +675,27 @@ impl<'arena> Expression<'arena> {
 }
 
 macro_rules! assign_set {
-    ($expr: expr, $right: expr, $operator: expr, $loc: expr) => {
-        let loc = $loc;
+    ($expr: expr, $right: expr, $operator: expr, $span: expr) => {
+        let span = $span;
         $expr = Expression::Assignment {
             left_side: Box::new($expr.clone()),
-            right_side: Box::new(Expression::binary($operator, loc.clone(), $expr, $right)),
-            loc,
+            right_side: Box::new(Expression::binary($operator, span, $expr, $right)),
+            span,
         }
     };
+}
+
+struct AsmBinding<'arena> {
+    name: InternedStr<'arena>,
+    bound: InternedStr<'arena>,
+    type_or_name: InternedStr<'arena>,
+    type_span: Span<'arena>,
 }
 
 // asm expression
 impl<'arena> Parser<'_, 'arena> {
     /// Parses [<.0>] "<.1>" (<.2>)
-    fn parse_asm_binding(
-        &mut self,
-    ) -> Result<
-        (
-            InternedStr<'arena>,
-            InternedStr<'arena>,
-            InternedStr<'arena>,
-        ),
-        ParsingError<'arena>,
-    > {
+    fn parse_asm_binding(&mut self) -> Result<AsmBinding<'arena>, ParsingError<'arena>> {
         self.expect_tok(TokenType::BracketLeft)?;
         let name = self.expect_identifier()?;
         self.expect_tok(TokenType::BracketRight)?;
@@ -672,20 +703,26 @@ impl<'arena> Parser<'_, 'arena> {
             .expect_tok(TokenType::StringLiteral)?
             .string_literal()?;
         self.expect_tok(TokenType::ParenLeft)?;
-        let ident = self.expect_identifier()?;
+        let type_ = self.expect_identifier()?;
+        let type_span = self.last().span;
         self.expect_tok(TokenType::ParenRight)?;
-        Ok((name, bound, ident))
+        Ok(AsmBinding {
+            name,
+            bound,
+            type_or_name: type_,
+            type_span,
+        })
     }
 
     fn parse_asm(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
-        let loc = self.advance().location.clone();
+        let span1 = self.advance().span;
         let volatile = self.match_tok(TokenType::Volatile);
         self.expect_tok(TokenType::ParenLeft)?;
 
         let mut replacers: Vec<(String, String)> = Vec::new();
         let mut registers = String::new();
         let mut inputs = Vec::new();
-        let mut output = TypeRef::Void(loc.clone(), 0);
+        let mut output = TypeRef::Void(span1, 0);
         let mut asm = String::new();
         while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
             if !asm.is_empty() {
@@ -703,9 +740,9 @@ impl<'arena> Parser<'_, 'arena> {
             asm.push_str(&s);
         }
 
-        'out: {
+        let span2 = 'out: {
             if self.current().typ != TokenType::Colon {
-                break 'out;
+                break 'out self.last().span;
             }
 
             // outputs
@@ -713,31 +750,38 @@ impl<'arena> Parser<'_, 'arena> {
                 if self.peek().typ == TokenType::Colon {
                     break 'outputs;
                 }
-                // [v] "=" (ty)
-                let loc = self.peek().location.clone();
-                let (replacer, register, type_name) = self.parse_asm_binding()?;
-                let replacer_string = format!("%[{replacer}]");
+                // [v] "=r" (ty)
+                let loc = self.peek().span;
+                // let (replacer, register, type_name, span) = self.parse_asm_binding()?;
+                let asm_binding = self.parse_asm_binding()?;
+                let replacer_string = format!("%[{}]", asm_binding.name);
                 if replacers.iter().any(|v| v.0 == replacer_string) {
-                    return Err(ParsingError::DuplicateAsmReplacer { loc, replacer });
+                    return Err(ParsingError::DuplicateAsmReplacer {
+                        loc,
+                        name: asm_binding.name,
+                    });
                 }
-                if !register.starts_with('=') {
+                if !asm_binding.bound.starts_with('=') {
                     return Err(ParsingError::OutputNotStartingWithEqual {
                         loc,
-                        output: register,
+                        output: asm_binding.bound,
                     });
                 }
                 replacers.push((replacer_string, format!("${{{}}}", replacers.len())));
-                registers.push_str(&register);
+                registers.push_str(&asm_binding.bound);
                 output = TypeRef::Reference {
                     num_references: 0,
-                    type_name: Path::new(type_name, Vec::new()),
-                    loc,
+                    type_name: Path::new(
+                        asm_binding.type_or_name,
+                        asm_binding.type_span,
+                        Vec::new(),
+                    ),
+                    span: loc,
                 }
             };
 
             if !self.match_tok(TokenType::Colon) {
-                self.expect_tok(TokenType::ParenRight)?;
-                break 'out;
+                break 'out self.expect_tok(TokenType::ParenRight)?.span;
             }
 
             // inputs
@@ -749,31 +793,34 @@ impl<'arena> Parser<'_, 'arena> {
                     }
                 }
 
-                let loc = self.peek().location.clone();
-                let (replacer, register, variable) = self.parse_asm_binding()?;
-                let replacer_string = format!("%[{replacer}]");
+                let loc = self.peek().span;
+                let asm_binding = self.parse_asm_binding()?;
+                let replacer_string = format!("%[{}]", asm_binding.name);
                 if replacers.iter().any(|v| v.0 == replacer_string) {
-                    return Err(ParsingError::DuplicateAsmReplacer { loc, replacer });
+                    return Err(ParsingError::DuplicateAsmReplacer {
+                        loc,
+                        name: asm_binding.name,
+                    });
                 }
-                if register.starts_with('=') || register.starts_with('~') {
+                if asm_binding.bound.starts_with('=') || asm_binding.bound.starts_with('~') {
                     return Err(ParsingError::InputStartingWithInvalidChar {
                         loc,
-                        input: register,
+                        input: asm_binding.bound,
                     });
                 }
                 replacers.push((replacer_string, format!("${{{}}}", replacers.len())));
                 if !registers.is_empty() {
                     registers.push(',');
                 }
-                registers.push_str(&register);
-                inputs.push((loc, variable));
+                registers.push_str(&asm_binding.bound);
+                inputs.push((loc, asm_binding.type_or_name));
             }
 
             if self.current().typ != TokenType::Colon {
-                break 'out;
+                break 'out self.expect_tok(TokenType::ParenRight)?.span;
             }
             if self.match_tok(TokenType::ParenRight) {
-                break 'out;
+                break 'out self.last().span;
             }
             if !registers.is_empty() {
                 registers.push(',');
@@ -785,7 +832,10 @@ impl<'arena> Parser<'_, 'arena> {
             registers.push_str(&register);
             registers.push('}');
 
-            while !self.match_tok(TokenType::ParenRight) {
+            loop {
+                if self.peek().typ == TokenType::ParenRight {
+                    break self.advance().span;
+                }
                 self.expect_tok(TokenType::Comma)?;
                 registers.push_str(",~{");
                 let register = self
@@ -794,7 +844,7 @@ impl<'arena> Parser<'_, 'arena> {
                 registers.push_str(&register);
                 registers.push('}');
             }
-        }
+        };
 
         while let Some((to_replace, value)) = replacers.last() {
             let Some(occurence) = asm.find(to_replace) else {
@@ -804,7 +854,7 @@ impl<'arena> Parser<'_, 'arena> {
             asm.replace_range(occurence..occurence + to_replace.len(), value);
         }
         Ok(Expression::Asm {
-            loc,
+            span: span1.combine_with([span2], self.ctx.span_interner()),
             asm,
             volatile,
             output,
@@ -824,7 +874,6 @@ impl<'arena> Parser<'_, 'arena> {
         let mut expr = self.pipe_operator()?;
 
         loop {
-            let loc = self.peek().location.clone();
             let op = match self.peek().typ {
                 TokenType::EqualEqual => BinaryOp::Equals,
                 TokenType::NotEquals => BinaryOp::NotEquals,
@@ -842,7 +891,13 @@ impl<'arena> Parser<'_, 'arena> {
             };
             self.advance();
             let right = self.pipe_operator()?;
-            expr = Expression::binary(op, loc, expr, right);
+            expr = Expression::binary(
+                op,
+                expr.span()
+                    .combine_with([right.span()], self.ctx.span_interner()),
+                expr,
+                right,
+            );
         }
 
         Ok(expr)
@@ -852,20 +907,22 @@ impl<'arena> Parser<'_, 'arena> {
         let mut expr = self.range()?;
 
         while self.match_tok(TokenType::PipeOperator) {
-            let loc = self.peek().location.clone();
             let call = self.indexed()?;
             match call {
                 Expression::FunctionCall {
                     identifier,
                     mut arguments,
+                    span,
                 } => {
+                    let expr_span = expr.span();
                     arguments.insert(0, expr);
                     expr = Expression::FunctionCall {
                         identifier,
                         arguments,
+                        span: span.combine_with([expr_span], self.ctx.span_interner()),
                     };
                 }
-                _ => return Err(ParsingError::ExpectedFunctionCall { loc }),
+                e => return Err(ParsingError::ExpectedFunctionCall { loc: e.span() }),
             }
         }
 
@@ -877,13 +934,13 @@ impl<'arena> Parser<'_, 'arena> {
 
         while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
             let inclusive = self.current().typ == TokenType::RangeInclusive;
-            let loc = self.current().location.clone();
+            let loc = self.current().span;
             let right_side = Box::new(self.parse_expression()?);
             expr = Expression::Range {
                 left_side: Box::new(expr),
                 right_side,
                 inclusive,
-                loc,
+                span: loc,
             };
         }
 
@@ -899,24 +956,23 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::PlusAssign,
             TokenType::MinusAssign,
         ]) {
-            let mut operator = self.current().clone();
+            let mut operator = *self.current();
             let right = self.factor()?;
+            let span = expr
+                .span()
+                .combine_with([right.span()], self.ctx.span_interner());
 
             match operator.typ {
                 TokenType::PlusAssign => {
                     operator.typ = TokenType::Plus;
-                    assign_set!(expr, right, BinaryOp::Plus, operator.location);
+                    assign_set!(expr, right, BinaryOp::Plus, span);
                 }
                 TokenType::MinusAssign => {
                     operator.typ = TokenType::Minus;
-                    assign_set!(expr, right, BinaryOp::Minus, operator.location);
+                    assign_set!(expr, right, BinaryOp::Minus, span);
                 }
-                TokenType::Plus => {
-                    expr = Expression::binary(BinaryOp::Plus, operator.location, expr, right)
-                }
-                TokenType::Minus => {
-                    expr = Expression::binary(BinaryOp::Minus, operator.location, expr, right)
-                }
+                TokenType::Plus => expr = Expression::binary(BinaryOp::Plus, span, expr, right),
+                TokenType::Minus => expr = Expression::binary(BinaryOp::Minus, span, expr, right),
                 _ => unreachable!(),
             }
         }
@@ -939,15 +995,18 @@ impl<'arena> Parser<'_, 'arena> {
                 (TokenType::GreaterThan, TokenType::GreaterThan) => BinaryOp::RShift,
                 _ => break,
             };
-            let loc = self.advance().location.clone();
+            self.advance();
             if op == BinaryOp::LShift || op == BinaryOp::RShift {
                 self.advance();
             }
             let right = self.unary()?;
+            let span = expr
+                .span()
+                .combine_with([right.span()], self.ctx.span_interner());
             if self.match_tok(TokenType::Equal) {
-                assign_set!(expr, right, op, loc);
+                assign_set!(expr, right, op, span);
             } else {
-                expr = Expression::binary(op, loc, expr, right);
+                expr = Expression::binary(op, span, expr, right);
             }
         }
 
@@ -968,8 +1027,10 @@ impl<'arena> Parser<'_, 'arena> {
                 TokenType::LogicalNot => UnaryOp::LogicalNot,
                 _ => unreachable!(),
             };
-            let loc = self.current().location.clone();
-            return Ok(Expression::unary(operator, loc, self.unary()?));
+            let span = self.current().span;
+            let next = self.unary()?;
+            let span = span.combine_with([next.span()], self.ctx.span_interner());
+            return Ok(Expression::unary(operator, span, next));
         }
 
         self.assignment()
@@ -978,12 +1039,14 @@ impl<'arena> Parser<'_, 'arena> {
     fn assignment(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         let expr = self.type_cast()?;
         if self.match_tok(TokenType::Equal) {
-            let loc = self.current().location.clone();
             let value = self.parse_expression()?;
+            let span = expr
+                .span()
+                .combine_with([value.span()], self.ctx.span_interner());
             return Ok(Expression::Assignment {
                 left_side: Box::new(expr),
                 right_side: Box::new(value),
-                loc,
+                span,
             });
         }
         Ok(expr)
@@ -993,12 +1056,14 @@ impl<'arena> Parser<'_, 'arena> {
         let mut expr = self.references()?;
 
         while self.match_tok(TokenType::As) {
-            let loc = self.current().location.clone();
             let new_type = TypeRef::parse(self)?;
+            let span = expr
+                .span()
+                .combine_with([new_type.span()], self.ctx.span_interner());
             expr = Expression::TypeCast {
                 left_side: Box::new(expr),
                 new_type,
-                loc,
+                span,
             };
         }
 
@@ -1007,29 +1072,39 @@ impl<'arena> Parser<'_, 'arena> {
 
     fn references(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
         if self.match_tok(TokenType::Ampersand) {
+            let right = self.references()?;
+            let span = right
+                .span()
+                .combine_with([self.current().span], self.ctx.span_interner());
             Ok(Expression::Unary {
                 operator: UnaryOp::Reference,
-                loc: self.current().location.clone(),
-                right_side: Box::new(self.references()?),
+                span,
+                right_side: Box::new(right),
             })
         } else if self.match_tok(TokenType::LogicalAnd) {
+            let right = self.references()?;
+            let span = right
+                .span()
+                .combine_with([self.current().span], self.ctx.span_interner());
             let expr = Expression::Unary {
                 operator: UnaryOp::Reference,
-                loc: self.current().location.clone(),
-                right_side: Box::new(self.references()?),
+                span,
+                right_side: Box::new(right),
             };
-            let mut loc = self.current().location.clone();
-            loc.column += 1;
             Ok(Expression::Unary {
                 operator: UnaryOp::Reference,
-                loc,
+                span,
                 right_side: Box::new(expr),
             })
         } else if self.match_tok(TokenType::Asterix) {
+            let right = self.references()?;
+            let span = right
+                .span()
+                .combine_with([self.current().span], self.ctx.span_interner());
             Ok(Expression::Unary {
                 operator: UnaryOp::Dereference,
-                loc: self.current().location.clone(),
-                right_side: Box::new(self.references()?),
+                span,
+                right_side: Box::new(right),
             })
         } else {
             self.indexed()
@@ -1051,13 +1126,13 @@ impl<'arena> Parser<'_, 'arena> {
                         // , or ), but ) is alr handled by the thing above
                         if self.advance().typ != TokenType::Comma {
                             return Err(ParsingError::ExpectedFunctionArgument {
-                                loc: self.current().location.clone(),
+                                loc: self.current().span,
                                 found: self.current().typ,
                             });
                         }
                     }
 
-                    let next_loc = self.peek().location.clone();
+                    let next_loc = self.peek().span;
                     let next_typ = self.peek().typ;
                     if let Ok(expr) = self.parse_expression() {
                         arguments.push(expr);
@@ -1071,58 +1146,69 @@ impl<'arena> Parser<'_, 'arena> {
 
                 if self.tokens[self.current.saturating_sub(2)].typ == TokenType::ParenRight {
                     expr = Expression::FunctionCall {
+                        span: self
+                            .current()
+                            .span
+                            .combine_with([expr.span()], self.ctx.span_interner()),
                         identifier: Box::new(expr),
                         arguments,
                     };
                 } else if let Expression::MemberAccess {
                     left_side,
                     mut index,
-                    loc,
+                    span,
                 } = expr
                 {
                     expr = Expression::MemberCall {
+                        arguments,
+                        span: self
+                            .current()
+                            .span
+                            .combine_with([span], self.ctx.span_interner()),
                         identifier: index
                             .pop()
                             .expect("member access did not access any members"),
                         lhs: Box::new(Expression::MemberAccess {
                             left_side,
                             index,
-                            loc,
+                            span,
                         }),
-                        arguments,
                     }
                 } else {
                     expr = Expression::FunctionCall {
+                        span: self
+                            .current()
+                            .span
+                            .combine_with([expr.span()], self.ctx.span_interner()),
                         identifier: Box::new(expr),
                         arguments,
                     };
                 }
             } else if self.current().typ == TokenType::BracketLeft {
-                let next_loc = self.peek().location.clone();
-                let next_typ = self.peek().typ;
-                let Ok(indexing_expr) = self.parse_expression() else {
-                    return Err(ParsingError::ExpectedFunctionArgumentExpression {
-                        loc: next_loc,
-                        found: next_typ,
-                    });
-                };
+                let indexing_expr = self.parse_expression()?;
 
                 self.expect_tok(TokenType::BracketRight)?;
                 expr = Expression::Indexing {
+                    span: self
+                        .current()
+                        .span
+                        .combine_with([expr.span()], self.ctx.span_interner()),
                     left_side: Box::new(expr),
                     right_side: Box::new(indexing_expr),
                 };
             } else if self.current().typ == TokenType::Dot {
-                let loc = self.peek().location.clone();
                 let name = self.expect_identifier()?;
                 if let Expression::MemberAccess { index, .. } = &mut expr {
                     index.push(name);
                     continue;
                 }
                 expr = Expression::MemberAccess {
+                    span: self
+                        .current()
+                        .span
+                        .combine_with([expr.span()], self.ctx.span_interner()),
                     left_side: Box::new(expr),
                     index: vec![name],
-                    loc,
                 };
             } else {
                 unreachable!();
@@ -1133,10 +1219,10 @@ impl<'arena> Parser<'_, 'arena> {
     }
 
     fn primary(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+        let span1 = self.peek().span;
         if self.match_tok(TokenType::Dot) {
             // .{} / .[] / .()
             let typ = self.peek().typ;
-            let loc = self.peek().location.clone();
             if typ == TokenType::ParenLeft || typ == TokenType::BracketLeft {
                 self.advance();
                 let matching_tok = if typ == TokenType::ParenLeft {
@@ -1154,15 +1240,22 @@ impl<'arena> Parser<'_, 'arena> {
                         }
                     }
 
-                    elements.push((self.peek().location.clone(), self.parse_expression()?));
+                    elements.push((self.peek().span, self.parse_expression()?));
                 }
-                return Ok(Expression::Literal(LiteralValue::Tuple(elements), loc));
+                let span = self
+                    .current()
+                    .span
+                    .combine_with([span1], self.ctx.span_interner());
+                return Ok(Expression::Literal(LiteralValue::Tuple(elements), span));
             } else if typ == TokenType::CurlyLeft {
                 return self
                     .try_object()
                     .expect("this should never return None as we ensured the next token is of type CurlyLeft.")
                     .map(LiteralValue::AnonymousStruct)
-                    .map(move |v| Expression::Literal(v, loc));
+                    .map(move |v| Expression::Literal(v, self
+                        .current()
+                        .span
+                        .combine_with([span1], self.ctx.span_interner())));
             } else {
                 unreachable!()
             }
@@ -1175,9 +1268,9 @@ impl<'arena> Parser<'_, 'arena> {
 
         // functions/callables
         if self.peek().typ == TokenType::Fn {
-            let loc = self.peek().location.clone();
+            let loc = self.peek().span;
             return Ok(Expression::Literal(
-                self.parse_callable(true).and_then(|(contract, body)| {
+                self.parse_callable(true).and_then(|(contract, body, _)| {
                     contract
                         .annotations
                         .are_annotations_valid_for(AnnotationReceiver::Function)?;
@@ -1191,7 +1284,7 @@ impl<'arena> Parser<'_, 'arena> {
             let current = self.current;
             if let Ok(path) = Path::parse(self) {
                 // StructName { ... };
-                let loc = self.peek().location.clone();
+                let loc = self.peek().span;
                 if let Some(obj) = self.try_object() {
                     return match obj {
                         Ok(v) => Ok(Expression::Literal(LiteralValue::Struct(v, path), loc)),
@@ -1206,7 +1299,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
 
         if let Some(lit) = self.peek().to_literal_value() {
-            return Ok(Expression::Literal(lit, self.advance().location.clone()));
+            return Ok(Expression::Literal(lit, self.advance().span));
         }
 
         if self.match_tok(TokenType::ParenLeft) {
@@ -1217,14 +1310,15 @@ impl<'arena> Parser<'_, 'arena> {
 
         let found_token = self.peek();
         Err(ParsingError::ExpectedExpression {
-            loc: found_token.location.clone(),
+            loc: self.peek().span,
             found: found_token.typ,
         })
     }
 
     fn try_array(&mut self) -> Result<Option<Expression<'arena>>, ParsingError<'arena>> {
+        let span = self.peek().span;
         if self.match_tok(TokenType::BracketLeft) {
-            let loc = self.current().location.clone();
+            let loc = self.current().span;
             let mut arr = vec![];
             while !self.match_tok(TokenType::BracketRight) {
                 if arr.len() == 1 && self.match_tok(TokenType::Semicolon) {
@@ -1243,7 +1337,7 @@ impl<'arena> Parser<'_, 'arena> {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
                         return Err(ParsingError::ExpectedArrayElement {
-                            loc: self.peek().location.clone(),
+                            loc: self.peek().span,
                             found: self.peek().typ,
                         });
                     }
@@ -1256,9 +1350,13 @@ impl<'arena> Parser<'_, 'arena> {
                 arr.push(self.parse_expression()?);
             }
 
+            let span = self
+                .peek()
+                .span
+                .combine_with([span], self.ctx.span_interner());
             Ok(Some(Expression::Literal(
                 LiteralValue::Array(ArrayLiteral::Values(arr)),
-                loc,
+                span,
             )))
         } else {
             Ok(None)
@@ -1270,7 +1368,10 @@ impl<'arena> Parser<'_, 'arena> {
     fn try_object(
         &mut self,
     ) -> Option<
-        Result<HashMap<InternedStr<'arena>, (Location, Expression<'arena>)>, ParsingError<'arena>>,
+        Result<
+            HashMap<InternedStr<'arena>, (Span<'arena>, Expression<'arena>)>,
+            ParsingError<'arena>,
+        >,
     > {
         if self.match_tok(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
@@ -1279,7 +1380,7 @@ impl<'arena> Parser<'_, 'arena> {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
                         return Some(Err(ParsingError::ExpectedObjectElement {
-                            loc: self.peek().location.clone(),
+                            loc: self.peek().span,
                             found: self.peek().typ,
                         }));
                     }
@@ -1292,7 +1393,7 @@ impl<'arena> Parser<'_, 'arena> {
                 // parse key : value
                 let key = if !self.match_tok(TokenType::IdentifierLiteral) {
                     return Some(Err(ParsingError::ExpectedIdentifier {
-                        loc: self.peek().location.clone(),
+                        loc: self.peek().span,
                         found: self.peek().typ,
                     }));
                 } else {
@@ -1300,12 +1401,12 @@ impl<'arena> Parser<'_, 'arena> {
                         Some(Literal::String(ref v)) => *v,
                         _ => {
                             return Some(Err(ParsingError::InvalidTokenization {
-                                loc: self.current().location.clone(),
+                                loc: self.current().span,
                             }))
                         }
                     }
                 };
-                let location = self.current().location.clone();
+                let location = self.current().span;
 
                 if let Err(e) = self.expect_tok(TokenType::Colon) {
                     return Some(Err(e));
@@ -1316,6 +1417,7 @@ impl<'arena> Parser<'_, 'arena> {
                     Err(e) => return Some(Err(e)),
                 };
             }
+
             Some(Ok(obj))
         } else {
             None

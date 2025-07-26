@@ -9,7 +9,7 @@ use crate::{
     error::ParsingError,
     lang_items::LangItemAnnotation,
     std_annotations,
-    tokenizer::{Location, Token},
+    tokenizer::{span::Span, Token},
     tokenstream::TokenStream,
     typechecking::intrinsics::IntrinsicAnnotation,
 };
@@ -98,22 +98,22 @@ static ANNOTATIONS_REGISTRY: LazyLock<HashMap<&'static str, AnnotationParser>> =
 pub fn parse_annotation<'arena>(
     name: &str,
     tokens: Vec<Token<'arena>>,
-    loc: Location,
+    span: Span<'arena>,
 ) -> Result<Box<dyn ClonableAnnotation>, ParsingError<'arena>> {
     if let Some(parser) = ANNOTATIONS_REGISTRY.get(name) {
-        parser(TokenStream::new(tokens, loc))
+        parser(TokenStream::new(tokens, span))
     } else {
         Err(ParsingError::UnknownAnnotation {
-            loc,
+            loc: span,
             name: name.to_string(),
         })
     }
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct Annotations(Vec<(Box<dyn ClonableAnnotation>, Location)>);
+pub struct Annotations<'arena>(Vec<(Box<dyn ClonableAnnotation>, Span<'arena>)>);
 
-impl Display for Annotations {
+impl Display for Annotations<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (annotation, _) in self.0.iter() {
             Display::fmt(annotation, f)?;
@@ -123,7 +123,7 @@ impl Display for Annotations {
     }
 }
 
-impl Annotations {
+impl<'arena> Annotations<'arena> {
     pub const fn new() -> Self {
         Self(Vec::new())
     }
@@ -135,25 +135,24 @@ impl Annotations {
         self.0.is_empty()
     }
 
-    pub fn push_annotation<'arena>(
+    pub fn push_annotation(
         &mut self,
         name: &str,
         tokens: Vec<Token<'arena>>,
-        loc: Location,
+        span: Span<'arena>,
     ) -> Result<(), ParsingError<'arena>> {
-        self.0
-            .push((parse_annotation(name, tokens, loc.clone())?, loc));
+        self.0.push((parse_annotation(name, tokens, span)?, span));
         Ok(())
     }
 
-    pub fn are_annotations_valid_for<'arena>(
+    pub fn are_annotations_valid_for(
         &self,
         typ: AnnotationReceiver,
     ) -> Result<(), ParsingError<'arena>> {
-        for (annotation, loc) in &self.0 {
+        for (annotation, span) in &self.0 {
             if !annotation.is_valid_for(typ, self) {
                 return Err(ParsingError::AnnotationDoesNotGoOn {
-                    loc: loc.clone(),
+                    loc: *span,
                     name: annotation.get_name(),
                     thing: typ,
                 });

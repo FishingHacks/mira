@@ -5,8 +5,8 @@ use intrinsics::LLVMIntrinsics;
 use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
+    interner::InternedStr,
     store::StoreKey,
-    string_interner::InternedStr,
     typechecking::{
         expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
         intrinsics::Intrinsic,
@@ -926,7 +926,7 @@ impl<'arena> TypecheckedExpression<'arena> {
         module_id: StoreKey<TypecheckedModule<'arena>>,
     ) -> Result<(), BuilderError> {
         ctx.builder
-            .set_current_debug_location(ctx.debug_ctx.location(scope, self.location()));
+            .set_current_debug_location(ctx.debug_ctx.location(scope, self.span()));
         match self {
             TypecheckedExpression::AttachVtable(_, dst, src, vtable_id) => {
                 let vtable_value = ctx.vtables[vtable_id].as_pointer_value();
@@ -942,12 +942,12 @@ impl<'arena> TypecheckedExpression<'arena> {
                 ctx.push_value(*dst, fat_ptr);
                 Ok(())
             }
-            TypecheckedExpression::DeclareVariable(loc, id, typ, name) => {
+            TypecheckedExpression::DeclareVariable(span, id, typ, name) => {
                 let ptr = ctx.get_value_ptr(*id);
                 ctx.debug_ctx.declare_variable(
                     ptr,
                     scope,
-                    loc,
+                    *span,
                     typ,
                     *name,
                     ctx.current_block,
@@ -1053,8 +1053,8 @@ impl<'arena> TypecheckedExpression<'arena> {
                 );
                 Ok(())
             }
-            TypecheckedExpression::Block(loc, child, _) => {
-                let block = ctx.debug_ctx.new_block(scope, loc, module_id);
+            TypecheckedExpression::Block(span, child, _) => {
+                let block = ctx.debug_ctx.new_block(scope, *span, module_id);
                 let scope = block.as_debug_info_scope();
                 for c in child {
                     c.codegen(ctx, scope, module_id)?;
@@ -1075,7 +1075,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     end_basic_block,
                 )?;
                 ctx.goto(if_basic_block);
-                let block = ctx.debug_ctx.new_block(scope, &if_block.1, module_id);
+                let block = ctx.debug_ctx.new_block(scope, if_block.1, module_id);
                 let scope = block.as_debug_info_scope();
                 for expr in if_block.0.iter() {
                     expr.codegen(ctx, scope, module_id)?;
@@ -1100,7 +1100,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     else_basic_block,
                 )?;
                 ctx.goto(if_basic_block);
-                let block = ctx.debug_ctx.new_block(scope, &if_block.1, module_id);
+                let block = ctx.debug_ctx.new_block(scope, if_block.1, module_id);
                 let scope = block.as_debug_info_scope();
                 for expr in if_block.0.iter() {
                     expr.codegen(ctx, scope, module_id)?;
@@ -1108,7 +1108,7 @@ impl<'arena> TypecheckedExpression<'arena> {
 
                 ctx.terminate(|| ctx.builder.build_unconditional_branch(end_basic_block))?;
                 ctx.goto(else_basic_block);
-                let block = ctx.debug_ctx.new_block(scope, &else_block.1, module_id);
+                let block = ctx.debug_ctx.new_block(scope, else_block.1, module_id);
                 let scope = block.as_debug_info_scope();
                 for expr in else_block.0.iter() {
                     expr.codegen(ctx, scope, module_id)?;
@@ -1139,7 +1139,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     )
                 })?;
                 ctx.goto(body_basic_block);
-                let block = ctx.debug_ctx.new_block(scope, &body.1, module_id);
+                let block = ctx.debug_ctx.new_block(scope, body.1, module_id);
                 let scope = block.as_debug_info_scope();
                 for expr in body.0.iter() {
                     expr.codegen(ctx, scope, module_id)?;
@@ -2240,7 +2240,6 @@ impl<'arena> TypecheckedExpression<'arena> {
             Intrinsic::Write => todo!(),
 
             // TODO: replace these at compile time because they
-            Intrinsic::Location => {}
             Intrinsic::TypeName => todo!(),
         }
         Ok(())

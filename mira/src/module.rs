@@ -4,13 +4,13 @@ use std::{collections::HashMap, fmt::Debug, path::Path, sync::Arc};
 use crate::{
     annotations::Annotations,
     error::ProgramFormingError,
+    interner::InternedStr,
     parser::{Expression, FunctionContract, Generic, LiteralValue, Statement, Trait, TypeRef},
     store::{Store, StoreKey},
-    string_interner::InternedStr,
-    tokenizer::Location,
+    tokenizer::span::Span,
 };
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum ModuleScopeValue<'arena> {
     Function(StoreKey<Function<'arena>>),
     ExternalFunction(StoreKey<ExternalFunction<'arena>>),
@@ -24,14 +24,14 @@ pub enum ModuleScopeValue<'arena> {
 pub struct BakedStruct<'arena> {
     pub name: InternedStr<'arena>,
     pub elements: Vec<(InternedStr<'arena>, TypeRef<'arena>)>,
-    pub location: Location,
+    pub span: Span<'arena>,
     pub global_impl: HashMap<InternedStr<'arena>, StoreKey<Function<'arena>>>,
     pub impls: Vec<(
         InternedStr<'arena>,
         HashMap<InternedStr<'arena>, StoreKey<Function<'arena>>>,
-        Location,
+        Span<'arena>,
     )>,
-    pub annotations: Annotations,
+    pub annotations: Annotations<'arena>,
     pub module_id: StoreKey<Module<'arena>>,
     pub generics: Vec<Generic<'arena>>,
 }
@@ -50,8 +50,8 @@ pub type Static<'arena> = (
     TypeRef<'arena>,
     LiteralValue<'arena>,
     StoreKey<Module<'arena>>,
-    Location,
-    Annotations,
+    Span<'arena>,
+    Annotations<'arena>,
 );
 
 #[derive(Default)]
@@ -79,12 +79,16 @@ pub struct Module<'arena> {
     pub scope: HashMap<InternedStr<'arena>, ModuleScopeValue<'arena>>,
     pub imports: HashMap<
         InternedStr<'arena>,
-        (Location, StoreKey<Module<'arena>>, Vec<InternedStr<'arena>>),
+        (
+            Span<'arena>,
+            StoreKey<Module<'arena>>,
+            Vec<InternedStr<'arena>>,
+        ),
     >,
     pub exports: HashMap<InternedStr<'arena>, InternedStr<'arena>>,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
-    pub assembly: Vec<(Location, String)>,
+    pub assembly: Vec<(Span<'arena>, String)>,
 }
 
 impl Debug for Module<'_> {
@@ -101,7 +105,11 @@ impl<'arena> Module<'arena> {
     pub fn new(
         imports: HashMap<
             InternedStr<'arena>,
-            (Location, StoreKey<Module<'arena>>, Vec<InternedStr<'arena>>),
+            (
+                Span<'arena>,
+                StoreKey<Module<'arena>>,
+                Vec<InternedStr<'arena>>,
+            ),
         >,
         path: Arc<Path>,
         root: Arc<Path>,
@@ -125,10 +133,10 @@ impl<'arena> Module<'arena> {
     ) -> StoreKey<Function<'arena>> {
         let key = {
             let mut writer = context.functions.write();
-            let loc = contract.location.clone();
+            let span = contract.span;
             writer.insert((
                 contract,
-                Statement::Return(None, loc), /* "zeroed" statement */
+                Statement::Return(None, span), /* "zeroed" statement */
                 module,
             ))
         };
@@ -167,16 +175,16 @@ impl<'arena> Module<'arena> {
         context: &ModuleContext<'arena>,
     ) -> Result<(), ProgramFormingError<'arena>> {
         match statement {
-            Statement::Function(contract, body) => {
+            Statement::Function(contract, body, _) => {
                 let Some(name) = contract.name else {
                     return Err(ProgramFormingError::AnonymousFunctionAtGlobalLevel(
-                        contract.location.clone(),
+                        contract.span,
                     ));
                 };
 
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
-                        contract.location.clone(),
+                        contract.span,
                         name,
                     ));
                 }
@@ -190,7 +198,7 @@ impl<'arena> Module<'arena> {
                     || self.imports.contains_key(&r#trait.name)
                 {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
-                        r#trait.location.clone(),
+                        r#trait.span,
                         r#trait.name,
                     ));
                 }
@@ -203,17 +211,14 @@ impl<'arena> Module<'arena> {
             Statement::Struct {
                 name,
                 elements,
-                location,
+                span,
                 global_impl,
                 impls,
                 annotations,
                 generics,
             } => {
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
-                    return Err(ProgramFormingError::IdentAlreadyDefined(
-                        location.clone(),
-                        name,
-                    ));
+                    return Err(ProgramFormingError::IdentAlreadyDefined(span, name));
                 }
 
                 let mut baked_global_impl = HashMap::new();
@@ -224,19 +229,19 @@ impl<'arena> Module<'arena> {
                         .insert(name, self.push_fn(contract, body, module_id, context));
                 }
 
-                for (trait_name, implementation, loc) in impls {
+                for (trait_name, implementation, span) in impls {
                     let mut baked_impl = HashMap::new();
                     for (name, (contract, body)) in implementation {
                         baked_impl.insert(name, self.push_fn(contract, body, module_id, context));
                     }
-                    baked_impls.push((trait_name, baked_impl, loc));
+                    baked_impls.push((trait_name, baked_impl, span));
                 }
 
                 let baked_struct = BakedStruct {
                     name,
                     elements,
                     annotations,
-                    location,
+                    span,
                     global_impl: baked_global_impl,
                     impls: baked_impls,
                     module_id,
@@ -247,36 +252,31 @@ impl<'arena> Module<'arena> {
                 let key = writer.insert(baked_struct);
                 self.scope.insert(name, ModuleScopeValue::Struct(key));
             }
-            Statement::Var(_, _, None, location, _) => {
-                return Err(ProgramFormingError::GlobalValueNoType(location.clone()))
+            Statement::Var(_, _, None, span, _) => {
+                return Err(ProgramFormingError::GlobalValueNoType(span))
             }
-            Statement::Var(name, expr, Some(typ), location, annotations) => {
+            Statement::Var(name, expr, Some(typ), span, annotations) => {
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
-                    return Err(ProgramFormingError::IdentAlreadyDefined(
-                        location.clone(),
-                        name,
-                    ));
+                    return Err(ProgramFormingError::IdentAlreadyDefined(span, name));
                 }
 
                 let Expression::Literal(value, _) = expr else {
-                    return Err(ProgramFormingError::GlobalValueNoLiteral(
-                        expr.loc().clone(),
-                    ));
+                    return Err(ProgramFormingError::GlobalValueNoLiteral(expr.span()));
                 };
                 let mut writer = context.statics.write();
-                let key = writer.insert((typ, value, module_id, location, annotations));
+                let key = writer.insert((typ, value, module_id, span, annotations));
                 self.scope.insert(name, ModuleScopeValue::Static(key));
             }
-            Statement::ExternalFunction(contract, mut body) => {
+            Statement::ExternalFunction(contract, mut body, _) => {
                 let Some(name) = contract.name else {
                     return Err(ProgramFormingError::AnonymousFunctionAtGlobalLevel(
-                        contract.location.clone(),
+                        contract.span,
                     ));
                 };
 
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
-                        contract.location.clone(),
+                        contract.span,
                         name,
                     ));
                 }
@@ -289,16 +289,16 @@ impl<'arena> Module<'arena> {
                 self.scope
                     .insert(name, ModuleScopeValue::ExternalFunction(key));
             }
-            Statement::Export(key, exported_key, loc) => {
+            Statement::Export(key, exported_key, span) => {
                 if !self.scope.contains_key(&key) && !self.imports.contains_key(&key) {
-                    return Err(ProgramFormingError::IdentNotDefined(loc, key));
+                    return Err(ProgramFormingError::IdentNotDefined(span, key));
                 }
                 self.exports.insert(exported_key, key);
             }
-            Statement::ModuleAsm(loc, strn) => self.assembly.push((loc, strn)),
+            Statement::ModuleAsm(span, strn) => self.assembly.push((span, strn)),
             _ => {
                 return Err(ProgramFormingError::NoCodeOutsideOfFunctions(
-                    statement.loc().clone(),
+                    statement.span(),
                 ))
             }
         }

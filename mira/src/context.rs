@@ -1,15 +1,17 @@
-use std::fmt::Debug;
-use std::sync::Arc;
+use std::{fmt::Debug, sync::OnceLock};
 
 use parking_lot::Mutex;
 
 use crate::{
     arena::Arena,
-    string_interner::{InternedStr, StringInterner},
+    interner::{InternedStr, SpanInterner, StringInterner},
+    tokenizer::span::{SourceMap, Span, SpanData},
 };
 
 pub struct GlobalContext<'arena> {
-    string_interner: StringInterner<'arena>,
+    string_interner: Mutex<StringInterner<'arena>>,
+    span_interner: SpanInterner<'arena>,
+    source_map: OnceLock<SourceMap>,
 }
 
 impl Debug for GlobalContext<'_> {
@@ -21,24 +23,52 @@ impl Debug for GlobalContext<'_> {
 impl<'arena> GlobalContext<'arena> {
     pub fn new(arena: &'arena Arena) -> Self {
         Self {
-            string_interner: StringInterner::new(arena),
+            string_interner: StringInterner::new(arena).into(),
+            span_interner: SpanInterner::new(arena),
+            source_map: OnceLock::new(),
         }
     }
 
-    pub fn share(self) -> SharedContext<'arena> {
-        SharedContext::new(self)
+    pub fn init_source_map(&self, source_map: SourceMap) {
+        self.source_map
+            .set(source_map)
+            .map_err(|_| ())
+            .expect("source map should not yet be initialized")
+    }
+
+    pub fn share(&'arena self) -> SharedContext<'arena> {
+        SharedContext(self)
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct SharedContext<'arena>(Arc<Mutex<GlobalContext<'arena>>>);
+#[derive(Clone, Copy, Debug)]
+pub struct SharedContext<'arena>(&'arena GlobalContext<'arena>);
 
 impl<'arena> SharedContext<'arena> {
-    pub fn new(ctx: GlobalContext<'arena>) -> Self {
-        Self(Arc::new(ctx.into()))
+    pub fn intern_str(self, s: &str) -> InternedStr<'arena> {
+        self.0.string_interner.lock().intern(s)
     }
 
-    pub fn intern_str(&self, s: &str) -> InternedStr<'arena> {
-        self.0.lock().string_interner.intern(s)
+    pub fn intern_span(self, data: SpanData) -> Span<'arena> {
+        Span::new(data, &self.0.span_interner)
+    }
+
+    pub fn span_interner(&self) -> &SpanInterner<'arena> {
+        &self.0.span_interner
+    }
+
+    pub fn source_map(&self) -> &SourceMap {
+        self.0
+            .source_map
+            .get()
+            .expect("source map should have been initialized")
+    }
+
+    pub fn init_source_map(self, source_map: SourceMap) {
+        self.0
+            .source_map
+            .set(source_map)
+            .map_err(|_| ())
+            .expect("source map should not yet be initialized")
     }
 }

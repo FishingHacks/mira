@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use crossbeam::channel::{bounded, Sender};
 use parking_lot::RwLock;
@@ -7,18 +7,20 @@ use crate::{
     context::SharedContext,
     error::{MiraError, ParsingError, ProgramFormingError, TokenizationError},
     module::{Module, ModuleContext},
-    module_resolution::ModuleResolver,
     parser::ParserQueueEntry,
     progress_bar::{ProgressBar, ProgressItemRef},
     store::StoreKey,
     threadpool::ThreadPool,
-    tokenizer::{Literal, Location, Token, TokenType, Tokenizer},
+    tokenizer::{
+        span::{BytePos, SourceFile, SourceMap, SpanData},
+        Literal, Token, TokenType, Tokenizer,
+    },
 };
 
 use super::print_progress_bar;
 
 enum ParsingErrors<'arena> {
-    Tokenization(TokenizationError),
+    Tokenization(TokenizationError<'arena>),
     Parsing(ParsingError<'arena>),
     ProgramForming(ProgramFormingError<'arena>),
     IO(std::io::Error),
@@ -27,19 +29,14 @@ enum ParsingErrors<'arena> {
 #[allow(clippy::too_many_arguments)]
 fn parse_single<'arena>(
     ctx: SharedContext<'arena>,
-    file: Arc<Path>,
-    root_directory: Arc<Path>,
-    debug_file: Arc<Path>,
-    source: &str,
+    file: Arc<SourceFile>,
     always_include: Option<String>,
     progress_bar: Arc<RwLock<ProgressBar>>,
     parsing_item: ProgressItemRef,
     finish_sender: Sender<()>,
     errors: Arc<RwLock<Vec<ParsingErrors<'arena>>>>,
     parsing_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
-    resolvers: Arc<[Box<dyn ModuleResolver>]>,
-    path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
-    path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+    source_map: &SourceMap,
     module_context: Arc<ModuleContext<'arena>>,
     key: StoreKey<Module<'arena>>,
 ) {
@@ -48,28 +45,28 @@ fn parse_single<'arena>(
     // +--------------+
     let mut item = progress_bar.write().add_child_item(
         parsing_item,
-        format!("Tokenizing {}", file.display()).into_boxed_str(),
+        format!("Tokenizing {}", file.path.display()).into_boxed_str(),
     );
     print_progress_bar(&progress_bar);
-    let mut tokenizer = Tokenizer::new(ctx.clone(), source, debug_file.clone());
+    let mut tokenizer = Tokenizer::new(ctx, file.clone());
 
     // default includes ("prelude")
+    let span = ctx.intern_span(SpanData::new(BytePos::from_u32(0), 0, file.id));
     if let Some(path) = always_include {
-        let loc = Location::new(debug_file.clone(), 0, 0);
         tokenizer.push_token(Token {
             typ: TokenType::Use,
             literal: None,
-            location: loc.clone(),
+            span,
         });
         tokenizer.push_token(Token {
             typ: TokenType::StringLiteral,
             literal: Some(Literal::String(ctx.intern_str(&path))),
-            location: loc.clone(),
+            span,
         });
         tokenizer.push_token(Token {
             typ: TokenType::Semicolon,
             literal: None,
-            location: loc.clone(),
+            span,
         });
     }
 
@@ -84,7 +81,7 @@ fn parse_single<'arena>(
         writer.remove_item(item);
         item = writer.add_child_item(
             parsing_item,
-            format!("Parsing {}", file.display()).into_boxed_str(),
+            format!("Parsing {}", file.path.display()).into_boxed_str(),
         );
     }
     print_progress_bar(&progress_bar);
@@ -95,10 +92,7 @@ fn parse_single<'arena>(
     let mut current_parser = tokenizer.to_parser(
         parsing_queue.clone(),
         &module_context.modules,
-        root_directory,
-        resolvers,
-        path_exists,
-        path_is_dir,
+        source_map,
         key,
     );
     current_parser.file = file.clone();
@@ -116,15 +110,15 @@ fn parse_single<'arena>(
         writer.remove_item(item);
         item = writer.add_child_item(
             parsing_item,
-            format!("Parsing {}", file.display()).into_boxed_str(),
+            format!("Parsing {}", file.path.display()).into_boxed_str(),
         );
     }
     print_progress_bar(&progress_bar);
 
     let mut module = Module::new(
         current_parser.imports,
-        current_parser.file,
-        current_parser.root_directory,
+        current_parser.file.path.clone(),
+        current_parser.file.package_root.clone(),
     );
     if let Err(errs) = module.push_all(statements, key, &module_context) {
         errors
@@ -142,19 +136,13 @@ fn parse_single<'arena>(
 ///
 /// `file` - The file the source came from. Used to evaluate relative imports
 /// `root_directory` - The path the import `@root/` points to
-/// `debug_file` - The file that will appear in locations and debug info
 /// `source` - The source that will be parsed
 #[allow(clippy::too_many_arguments)]
 pub fn parse_all<'arena>(
     ctx: SharedContext<'arena>,
-    file: Arc<Path>,
-    root_directory: Arc<Path>,
-    debug_file: Arc<Path>,
-    source: &str,
+    file: Arc<SourceFile>,
     always_include: Option<String>,
-    resolvers: Arc<[Box<dyn ModuleResolver>]>,
-    path_exists: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
-    path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
+    source_map: &SourceMap,
     progress_bar: Arc<RwLock<ProgressBar>>,
     parsing_item: ProgressItemRef,
 ) -> Result<Arc<ModuleContext<'arena>>, Vec<MiraError<'arena>>> {
@@ -164,25 +152,20 @@ pub fn parse_all<'arena>(
     let (finish_sender, finish_receiver) = bounded::<()>(1);
     let root_key = module_context.modules.write().insert(Module::new(
         HashMap::new(),
-        file.clone(),
-        root_directory.clone(),
+        file.path.clone(),
+        file.package_root.clone(),
     ));
 
     parse_single(
-        ctx.clone(),
+        ctx,
         file,
-        root_directory,
-        debug_file,
-        source,
         always_include,
         progress_bar.clone(),
         parsing_item,
         finish_sender.clone(),
         errors.clone(),
         parsing_queue.clone(),
-        resolvers.clone(),
-        path_exists.clone(),
-        path_is_dir.clone(),
+        source_map,
         module_context.clone(),
         root_key,
     );
@@ -205,7 +188,7 @@ pub fn parse_all<'arena>(
             .write()
             .insert_reserved(key, Module::new(HashMap::new(), file.clone(), root.clone()));
 
-        let source = match std::fs::read_to_string(&file) {
+        let source = match source_map.load_file(file, root) {
             Ok(v) => v,
             Err(e) => {
                 errors.write().push(ParsingErrors::IO(e));
@@ -214,32 +197,24 @@ pub fn parse_all<'arena>(
         };
 
         let progress_bar = progress_bar.clone();
-        let resolvers = resolvers.clone();
-        let path_exists = path_exists.clone();
-        let path_is_dir = path_is_dir.clone();
         let errors = errors.clone();
         let finish_sender = finish_sender.clone();
         let _parsing_queue = parsing_queue.clone();
         let _module_context = module_context.clone();
         modules_left += 1;
-        let thread_ctx = ctx.clone();
+        let thread_ctx = ctx;
         // TODO: Make sure this *does not* compile
         handle.spawn(move || {
             parse_single(
                 thread_ctx,
-                file.clone(),
-                root,
-                file,
-                &source,
+                source,
                 None,
                 progress_bar,
                 parsing_item,
                 finish_sender,
                 errors,
                 _parsing_queue,
-                resolvers,
-                path_exists,
-                path_is_dir,
+                source_map,
                 _module_context,
                 key,
             );

@@ -1,10 +1,11 @@
 use crate::{
     context::SharedContext,
-    tokenizer::{Literal, Location, NumberType, Token, TokenType},
+    tokenizer::{span::Span, Literal, NumberType, Token, TokenType},
 };
 use std::fmt::Write;
 
-type MacroFn<'arena> = fn(SharedContext<'arena>, &Location, &[Token<'arena>]) -> Vec<Token<'arena>>;
+type MacroFn<'arena> =
+    fn(SharedContext<'arena>, Span<'arena>, &[Token<'arena>]) -> Vec<Token<'arena>>;
 
 pub fn get_builtin_macro(name: &str) -> Option<MacroFn> {
     match name {
@@ -21,7 +22,7 @@ pub fn get_builtin_macro(name: &str) -> Option<MacroFn> {
 
 fn macro_concat<'arena>(
     ctx: SharedContext<'arena>,
-    loc: &Location,
+    span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
     let mut concat_str = String::new();
@@ -34,7 +35,10 @@ fn macro_concat<'arena>(
             | TokenType::FloatLiteral
             | TokenType::Comma
             | TokenType::BooleanLiteral => (),
-            _ => panic!("{}: concat! only accepts literals", arg.location),
+            _ => panic!(
+                "{}: concat! only accepts literals",
+                arg.span.with_source_file(ctx.source_map())
+            ),
         }
         match arg.literal {
             None => (),
@@ -55,20 +59,23 @@ fn macro_concat<'arena>(
     vec![Token {
         typ: TokenType::StringLiteral,
         literal: Some(Literal::String(ctx.intern_str(&concat_str))),
-        location: loc.clone(),
+        span,
     }]
 }
 
 fn macro_concat_idents<'arena>(
     ctx: SharedContext<'arena>,
-    loc: &Location,
+    span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
     let mut concat_str = String::new();
     for arg in args {
         match arg.typ {
             TokenType::IdentifierLiteral | TokenType::Comma => (),
-            _ => panic!("{}: concat! only accepts identifiers", arg.location),
+            _ => panic!(
+                "{}: concat! only accepts identifiers",
+                arg.span.with_source_file(ctx.source_map())
+            ),
         }
         match arg.literal {
             None => (),
@@ -81,78 +88,103 @@ fn macro_concat_idents<'arena>(
     vec![Token {
         typ: TokenType::IdentifierLiteral,
         literal: Some(Literal::String(ctx.intern_str(&concat_str))),
-        location: loc.clone(),
+        span,
     }]
 }
 
 fn macro_line<'arena>(
-    _: SharedContext<'arena>,
-    loc: &Location,
+    ctx: SharedContext<'arena>,
+    span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
     if !args.is_empty() {
-        panic!("{loc}: did not expect any arguments")
+        panic!(
+            "{}: did not expect any arguments",
+            span.with_source_file(ctx.source_map())
+        );
     }
+    let data = span.get_span_data();
+    let line = ctx
+        .source_map()
+        .lookup_line(data.file, data.pos)
+        .map(|v| v + 1)
+        .unwrap_or_default();
     vec![Token {
-        location: loc.clone(),
-        literal: Some(Literal::UInt(loc.line as u64, NumberType::U32)),
+        span,
+        literal: Some(Literal::UInt(line as u64, NumberType::U32)),
         typ: TokenType::UIntLiteral,
     }]
 }
 
 fn macro_column<'arena>(
-    _: SharedContext<'arena>,
-    loc: &Location,
+    ctx: SharedContext<'arena>,
+    span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
     if !args.is_empty() {
-        panic!("{loc}: did not expect any arguments")
+        panic!(
+            "{}: did not expect any arguments",
+            span.with_source_file(ctx.source_map())
+        )
     }
+    let data = span.get_span_data();
+    let column = ctx.source_map().lookup_file_pos(data.file, data.pos).1;
     vec![Token {
-        location: loc.clone(),
-        literal: Some(Literal::UInt(loc.column as u64, NumberType::U32)),
+        span,
+        literal: Some(Literal::UInt(column as u64, NumberType::U32)),
         typ: TokenType::UIntLiteral,
     }]
 }
 
 fn macro_file<'arena>(
     ctx: SharedContext<'arena>,
-    loc: &Location,
+    span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
     if !args.is_empty() {
-        panic!("{loc}: did not expect any arguments")
+        panic!(
+            "{}: did not expect any arguments",
+            span.with_source_file(ctx.source_map())
+        )
     }
     vec![Token {
-        location: loc.clone(),
+        span,
         literal: Some(Literal::String(
-            ctx.intern_str(&loc.file.display().to_string()),
+            ctx.intern_str(
+                &ctx.source_map()
+                    .get_file(span.get_span_data().file)
+                    .unwrap()
+                    .path
+                    .display()
+                    .to_string(),
+            ),
         )),
         typ: TokenType::StringLiteral,
     }]
 }
 
 fn macro_compile_error<'arena>(
-    _: SharedContext<'arena>,
-    loc: &Location,
+    ctx: SharedContext<'arena>,
+    span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
+    let span = span.with_source_file(ctx.source_map());
     if let Some(lit) = args.first().as_ref().and_then(|v| v.literal.as_ref()) {
         match lit {
-            Literal::Float(v, _) => panic!("{loc}: error: {v}"),
-            Literal::SInt(v, _) => panic!("{loc}: error: {v}"),
-            Literal::UInt(v, _) => panic!("{loc}: error: {v}"),
-            Literal::String(v) => panic!("{loc}: error: {v}"),
-            Literal::Bool(v) => panic!("{loc}: error: {v}"),
+            Literal::Float(v, _) => panic!("{span}: error: {v}"),
+            Literal::SInt(v, _) => panic!("{span}: error: {v}"),
+            Literal::UInt(v, _) => panic!("{span}: error: {v}"),
+            Literal::String(v) => panic!("{span}: error: {v}"),
+            Literal::Bool(v) => panic!("{span}: error: {v}"),
         }
     } else {
-        panic!("{loc}: Unknown Compile-time Error")
+        panic!("{span}: Unknown Compile-time Error")
     }
 }
 
 fn macro_stringify<'arena>(
     ctx: SharedContext<'arena>,
-    loc: &Location,
+    span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
     let mut strn = String::new();
@@ -160,7 +192,7 @@ fn macro_stringify<'arena>(
         write!(strn, "{arg}").expect("writing to a string should never fail");
     }
     vec![Token {
-        location: loc.clone(),
+        span,
         literal: Some(Literal::String(ctx.intern_str(&strn))),
         typ: TokenType::StringLiteral,
     }]

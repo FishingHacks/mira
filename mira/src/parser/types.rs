@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    error::ParsingError, module::Function, parser::Location, store::StoreKey,
-    string_interner::InternedStr, tokenizer::TokenType,
+    error::ParsingError, interner::InternedStr, module::Function, store::StoreKey, symbols,
+    tokenizer::span::Span, tokenizer::TokenType,
 };
 
 use super::{expression::PathWithoutGenerics, Annotations, Parser, Path};
@@ -19,36 +19,36 @@ pub static RESERVED_TYPE_NAMES: &[&str] = &[
 pub enum TypeRef<'arena> {
     DynReference {
         num_references: u8,
-        loc: Location,
+        span: Span<'arena>,
         traits: Vec<PathWithoutGenerics<'arena>>,
     },
     Reference {
         num_references: u8,
         type_name: Path<'arena>,
-        loc: Location,
+        span: Span<'arena>,
     },
-    Void(Location, u8),
-    Never(Location),
+    Void(Span<'arena>, u8),
+    Never(Span<'arena>),
     UnsizedArray {
         num_references: u8,
         child: Box<TypeRef<'arena>>,
-        loc: Location,
+        span: Span<'arena>,
     },
     SizedArray {
         num_references: u8,
         child: Box<TypeRef<'arena>>,
         number_elements: usize,
-        loc: Location,
+        span: Span<'arena>,
     },
     Function {
         return_ty: Box<TypeRef<'arena>>,
         args: Vec<TypeRef<'arena>>,
-        loc: Location,
+        span: Span<'arena>,
         num_references: u8,
     },
     Tuple {
         num_references: u8,
-        loc: Location,
+        span: Span<'arena>,
         elements: Vec<TypeRef<'arena>>,
     },
 }
@@ -171,7 +171,7 @@ impl<'arena> TypeRef<'arena> {
                 continue;
             }
 
-            let loc = parser.peek().location.clone();
+            let span = parser.peek().span;
             if parser.match_tok(TokenType::BracketLeft) {
                 let child = Box::new(Self::parse(parser)?);
                 if parser.match_tok(TokenType::Semicolon) {
@@ -183,33 +183,37 @@ impl<'arena> TypeRef<'arena> {
                         num_references,
                         child,
                         number_elements: lit as usize,
-                        loc,
+                        span: parser.span_from(span),
                     });
                 } else {
                     parser.expect_tok(TokenType::BracketRight)?;
                     return Ok(Self::UnsizedArray {
                         num_references,
                         child,
-                        loc,
+                        span: parser.span_from(span),
                     });
                 }
             } else if parser.match_tok(TokenType::LogicalNot) {
                 return Ok(Self::Reference {
                     num_references,
-                    type_name: Path::new(parser.ctx.intern_str("!"), Vec::new()),
-                    loc,
+                    type_name: Path::new(
+                        symbols::Types::NeverType,
+                        parser.current().span,
+                        Vec::new(),
+                    ),
+                    span: parser.span_from(span),
                 });
             } else if parser.match_tok(TokenType::VoidLiteral) {
-                return Ok(Self::Void(loc, num_references));
+                return Ok(Self::Void(parser.span_from(span), num_references));
             } else if parser.peek().typ == TokenType::IdentifierLiteral {
                 let name = parser.peek().string_literal()?;
                 return if *name == "dyn" {
-                    Self::parse_dyn(parser, num_references, loc)
+                    Self::parse_dyn(parser, num_references, span)
                 } else {
                     Ok(Self::Reference {
                         num_references,
                         type_name: Path::parse(parser)?,
-                        loc,
+                        span: parser.span_from(span),
                     })
                 };
             } else if parser.match_tok(TokenType::Fn) {
@@ -219,7 +223,7 @@ impl<'arena> TypeRef<'arena> {
                     if !args.is_empty() {
                         if !parser.match_tok(TokenType::Comma) {
                             return Err(ParsingError::ExpectedFunctionArgument {
-                                loc: parser.peek().location.clone(),
+                                loc: parser.peek().span,
                                 found: parser.peek().typ,
                             });
                         }
@@ -236,13 +240,13 @@ impl<'arena> TypeRef<'arena> {
                 let return_ty = Box::new(if parser.match_tok(TokenType::ReturnType) {
                     TypeRef::parse(parser)?
                 } else {
-                    TypeRef::Void(loc.clone(), 0)
+                    TypeRef::Void(parser.span_from(span), 0)
                 });
 
                 return Ok(TypeRef::Function {
                     return_ty,
                     args,
-                    loc,
+                    span: parser.span_from(span),
                     num_references,
                 });
             } else if parser.match_tok(TokenType::ParenLeft) {
@@ -261,19 +265,19 @@ impl<'arena> TypeRef<'arena> {
 
                 return Ok(TypeRef::Tuple {
                     num_references,
-                    loc,
+                    span: parser.span_from(span),
                     elements,
                 });
             } else {
                 return Err(ParsingError::ExpectedType {
-                    loc: parser.peek().location.clone(),
+                    loc: parser.peek().span,
                     found: parser.peek().typ,
                 });
             }
         }
 
         Err(ParsingError::ExpectedType {
-            loc: parser.peek().location.clone(),
+            loc: parser.peek().span,
             found: TokenType::Eof,
         })
     }
@@ -281,7 +285,7 @@ impl<'arena> TypeRef<'arena> {
     fn parse_dyn(
         parser: &mut Parser<'_, 'arena>,
         num_references: u8,
-        loc: Location,
+        loc: Span<'arena>,
     ) -> Result<Self, ParsingError<'arena>> {
         parser.advance();
         let mut traits = vec![];
@@ -299,21 +303,21 @@ impl<'arena> TypeRef<'arena> {
 
         Ok(Self::DynReference {
             num_references,
-            loc,
+            span: loc,
             traits,
         })
     }
 
-    pub fn loc(&self) -> &Location {
+    pub fn span(&self) -> Span<'arena> {
         match self {
-            Self::Never(loc)
-            | Self::Void(loc, _)
-            | Self::Reference { loc, .. }
-            | Self::SizedArray { loc, .. }
-            | Self::DynReference { loc, .. }
-            | Self::Function { loc, .. }
-            | Self::Tuple { loc, .. }
-            | Self::UnsizedArray { loc, .. } => loc,
+            Self::Never(span)
+            | Self::Void(span, _)
+            | Self::Reference { span, .. }
+            | Self::SizedArray { span, .. }
+            | Self::DynReference { span, .. }
+            | Self::Function { span, .. }
+            | Self::Tuple { span, .. }
+            | Self::UnsizedArray { span, .. } => *span,
         }
     }
 }
@@ -324,12 +328,12 @@ impl PartialEq for TypeRef<'_> {
             Self::Reference {
                 num_references: self_nor,
                 type_name: self_type,
-                loc: _,
+                span: _,
             } => match other {
                 Self::Reference {
                     num_references: other_nor,
                     type_name: other_type,
-                    loc: _,
+                    span: _,
                 } => *other_nor == *self_nor && self_type == other_type,
                 _ => false,
             },
@@ -367,13 +371,13 @@ impl PartialEq for TypeRef<'_> {
                 num_references: self_nor,
                 child: self_child,
                 number_elements: self_aoe,
-                loc: _,
+                span: _,
             } => match other {
                 Self::SizedArray {
                     num_references: other_nor,
                     child: other_child,
                     number_elements: other_aoe,
-                    loc: _,
+                    span: _,
                 } => {
                     *other_nor == *self_nor
                         && *other_aoe == *self_aoe
@@ -384,12 +388,12 @@ impl PartialEq for TypeRef<'_> {
             Self::UnsizedArray {
                 num_references: self_nor,
                 child: self_child,
-                loc: _,
+                span: _,
             } => match other {
                 Self::UnsizedArray {
                     num_references: other_nor,
                     child: other_child,
-                    loc: _,
+                    span: _,
                 } => *other_nor == *self_nor && **other_child == **self_child,
                 _ => false,
             },
@@ -417,19 +421,19 @@ pub type Implementation<'arena> = HashMap<InternedStr<'arena>, StoreKey<Function
 
 #[derive(Debug)]
 pub struct Struct<'arena> {
-    pub loc: Location,
+    pub span: Span<'arena>,
     pub name: InternedStr<'arena>,
     pub fields: Vec<(InternedStr<'arena>, TypeRef<'arena>)>,
     pub generics: Vec<Generic<'arena>>,
     pub global_impl: Implementation<'arena>,
     pub trait_impls: Vec<(InternedStr<'arena>, Implementation<'arena>)>,
-    pub annotations: Annotations,
+    pub annotations: Annotations<'arena>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Generic<'arena> {
     pub name: InternedStr<'arena>,
-    pub bounds: Vec<(PathWithoutGenerics<'arena>, Location)>,
+    pub bounds: Vec<(PathWithoutGenerics<'arena>, Span<'arena>)>,
     pub sized: bool,
 }
 
@@ -450,7 +454,7 @@ impl<'arena> Generic<'arena> {
                 parser.expect_tok(TokenType::Plus)?;
             }
 
-            let loc = parser.peek().location.clone();
+            let loc = parser.peek().span;
             bounds.push((PathWithoutGenerics::parse(parser)?, loc));
         }
         Ok(Self {

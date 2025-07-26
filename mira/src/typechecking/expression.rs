@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    annotations::Annotations, store::StoreKey, string_interner::InternedStr, tokenizer::Location,
+    annotations::Annotations, interner::InternedStr, store::StoreKey, tokenizer::span::Span,
     typechecking::types::FunctionType,
 };
 
@@ -203,26 +203,30 @@ impl Display for OffsetValue {
 
 #[derive(Debug)]
 pub enum TypecheckedExpression<'arena> {
-    Return(Location, TypedLiteral<'arena>),
-    Block(Location, Box<[TypecheckedExpression<'arena>]>, Annotations),
+    Return(Span<'arena>, TypedLiteral<'arena>),
+    Block(
+        Span<'arena>,
+        Box<[TypecheckedExpression<'arena>]>,
+        Annotations<'arena>,
+    ),
     If {
-        loc: Location,
+        span: Span<'arena>,
         cond: TypedLiteral<'arena>,
-        if_block: (Box<[TypecheckedExpression<'arena>]>, Location),
-        else_block: Option<(Box<[TypecheckedExpression<'arena>]>, Location)>,
-        annotations: Annotations,
+        if_block: (Box<[TypecheckedExpression<'arena>]>, Span<'arena>),
+        else_block: Option<(Box<[TypecheckedExpression<'arena>]>, Span<'arena>)>,
+        annotations: Annotations<'arena>,
     },
     While {
-        loc: Location,
+        span: Span<'arena>,
         cond_block: Box<[TypecheckedExpression<'arena>]>,
         cond: TypedLiteral<'arena>,
-        body: (Box<[TypecheckedExpression<'arena>]>, Location),
+        body: (Box<[TypecheckedExpression<'arena>]>, Span<'arena>),
     },
 
     // _dst = _lhs..=_rhs
     // _dst = _lhs.._rhs
     Range {
-        location: Location,
+        span: Span<'arena>,
         typ: Type<'arena>,
         lhs: TypedLiteral<'arena>,
         rhs: TypedLiteral<'arena>,
@@ -231,7 +235,7 @@ pub enum TypecheckedExpression<'arena> {
     },
     // _1 = asm(...)
     Asm {
-        location: Location,
+        span: Span<'arena>,
         dst: ScopeValueId,
         inputs: Vec<ScopeValueId>,
         registers: String,
@@ -239,17 +243,17 @@ pub enum TypecheckedExpression<'arena> {
         asm: String,
     },
     // *_1 = _2
-    StoreAssignment(Location, TypedLiteral<'arena>, TypedLiteral<'arena>),
+    StoreAssignment(Span<'arena>, TypedLiteral<'arena>, TypedLiteral<'arena>),
     // _1 = _2(_3.1, _3.2, d, ...)
     Call(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         Vec<TypedLiteral<'arena>>,
     ),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectCall(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         StoreKey<TypedFunction<'arena>>,
         Vec<TypedLiteral<'arena>>,
@@ -257,175 +261,185 @@ pub enum TypecheckedExpression<'arena> {
     ),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectExternCall(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         StoreKey<TypedExternalFunction<'arena>>,
         Vec<TypedLiteral<'arena>>,
     ),
     // _1 = intrinsic(_3.1, _3.2)
     IntrinsicCall(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         Intrinsic,
         Vec<TypedLiteral<'arena>>,
         Vec<Type<'arena>>,
     ),
     // _1 = +_2
-    Pos(Location, ScopeValueId, TypedLiteral<'arena>),
+    Pos(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // _1 = -_2
-    Neg(Location, ScopeValueId, TypedLiteral<'arena>),
+    Neg(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // _1 = !_2
-    LNot(Location, ScopeValueId, TypedLiteral<'arena>),
+    LNot(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // _1 = ~_2
-    BNot(Location, ScopeValueId, TypedLiteral<'arena>),
+    BNot(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // _1 = _2 + _3
     Add(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 - _3
     Sub(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 * _3
     Mul(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 / _3
     Div(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 % _3
     Mod(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 & _3
     BAnd(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 | _3
     BOr(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 ^ _3
     BXor(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 > _2
     GreaterThan(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 > _2
     LessThan(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 && _2
     LAnd(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 || _2
     LOr(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 >= _2
     GreaterThanEq(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 <= _2
     LessThanEq(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 == _2
     Eq(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 != _2
     Neq(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 << _2
     LShift(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 >> _2
     RShift(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = &_1
     //                                v- guaranteed to either be `Dynamic`, `Static` or `Void`
-    Reference(Location, ScopeValueId, TypedLiteral<'arena>),
+    Reference(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // _1 = *_1
-    Dereference(Location, ScopeValueId, TypedLiteral<'arena>),
+    Dereference(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = &(*_2).a[3].c.d; This is required, because we will offset the _2 pointer by the required
     // offsets
-    Offset(Location, ScopeValueId, TypedLiteral<'arena>, OffsetValue),
+    Offset(
+        Span<'arena>,
+        ScopeValueId,
+        TypedLiteral<'arena>,
+        OffsetValue,
+    ),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = _2.a.b.c.d
-    OffsetNonPointer(Location, ScopeValueId, TypedLiteral<'arena>, usize),
+    OffsetNonPointer(Span<'arena>, ScopeValueId, TypedLiteral<'arena>, usize),
     // Eq::val(&dyn Eq, ...)
     // The last value is the offset into the function pointer part of the vtable.
-    DynCall(Location, ScopeValueId, Vec<TypedLiteral<'arena>>, u32),
+    DynCall(Span<'arena>, ScopeValueId, Vec<TypedLiteral<'arena>>, u32),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
-    Literal(Location, ScopeValueId, TypedLiteral<'arena>),
-    DeclareVariable(Location, ScopeValueId, Type<'arena>, InternedStr<'arena>),
-    Empty(Location),
-    Unreachable(Location),
+    Literal(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    DeclareVariable(
+        Span<'arena>,
+        ScopeValueId,
+        Type<'arena>,
+        InternedStr<'arena>,
+    ),
+    Empty(Span<'arena>),
+    Unreachable(Span<'arena>),
     // ### CASTS ###
     // NOTE: All casts copy the value.
     //
@@ -435,24 +449,24 @@ pub enum TypecheckedExpression<'arena> {
     // &[T] to (&T, usize)
     // &T to &[T; 1]
     // &A to &B
-    Alias(Location, ScopeValueId, TypedLiteral<'arena>),
+    Alias(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // casting u_ to i_ (for integers of the same size)
-    Bitcast(Location, ScopeValueId, TypedLiteral<'arena>),
+    Bitcast(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // i_ or u_ or f_ or bool to i_ or u_ or f_ or bool
-    IntCast(Location, ScopeValueId, TypedLiteral<'arena>),
+    IntCast(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // casts &void to usize (only valid for thin pointers)
-    PtrToInt(Location, ScopeValueId, TypedLiteral<'arena>),
+    PtrToInt(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // casts usize to &void (only valid for thin pointers)
-    IntToPtr(Location, ScopeValueId, TypedLiteral<'arena>),
+    IntToPtr(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // Strips the metadata from a fat pointer, &[T] to &T
-    StripMetadata(Location, ScopeValueId, TypedLiteral<'arena>),
+    StripMetadata(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
     // _2: &[_; _3]
     // let _1 = attach_metadata(_2, _3)
-    MakeUnsizedSlice(Location, ScopeValueId, TypedLiteral<'arena>, usize),
+    MakeUnsizedSlice(Span<'arena>, ScopeValueId, TypedLiteral<'arena>, usize),
     // _2: &<value>
     // let _1 = attach_vtable(_2, trait_1, trait_2)
     AttachVtable(
-        Location,
+        Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
         (Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>),
@@ -460,59 +474,59 @@ pub enum TypecheckedExpression<'arena> {
     None,
 }
 
-impl TypecheckedExpression<'_> {
-    pub fn location(&self) -> &Location {
+impl<'arena> TypecheckedExpression<'arena> {
+    pub fn span(&self) -> Span<'arena> {
         match self {
-            TypecheckedExpression::Range { location, .. }
-            | TypecheckedExpression::Asm { location, .. }
-            | TypecheckedExpression::If { loc: location, .. }
-            | TypecheckedExpression::While { loc: location, .. }
-            | TypecheckedExpression::AttachVtable(location, ..)
-            | TypecheckedExpression::DeclareVariable(location, ..)
-            | TypecheckedExpression::IntrinsicCall(location, ..)
-            | TypecheckedExpression::DirectCall(location, ..)
-            | TypecheckedExpression::DirectExternCall(location, ..)
-            | TypecheckedExpression::DynCall(location, ..)
-            | TypecheckedExpression::StoreAssignment(location, ..)
-            | TypecheckedExpression::OffsetNonPointer(location, ..)
-            | TypecheckedExpression::MakeUnsizedSlice(location, ..)
-            | TypecheckedExpression::StripMetadata(location, ..)
-            | TypecheckedExpression::Bitcast(location, ..)
-            | TypecheckedExpression::IntCast(location, ..)
-            | TypecheckedExpression::PtrToInt(location, ..)
-            | TypecheckedExpression::IntToPtr(location, ..)
-            | TypecheckedExpression::Offset(location, ..)
-            | TypecheckedExpression::Literal(location, ..)
-            | TypecheckedExpression::Call(location, ..)
-            | TypecheckedExpression::Pos(location, ..)
-            | TypecheckedExpression::Neg(location, ..)
-            | TypecheckedExpression::LNot(location, ..)
-            | TypecheckedExpression::BNot(location, ..)
-            | TypecheckedExpression::Add(location, ..)
-            | TypecheckedExpression::Sub(location, ..)
-            | TypecheckedExpression::Mul(location, ..)
-            | TypecheckedExpression::Div(location, ..)
-            | TypecheckedExpression::Mod(location, ..)
-            | TypecheckedExpression::BAnd(location, ..)
-            | TypecheckedExpression::BOr(location, ..)
-            | TypecheckedExpression::BXor(location, ..)
-            | TypecheckedExpression::GreaterThan(location, ..)
-            | TypecheckedExpression::LessThan(location, ..)
-            | TypecheckedExpression::LAnd(location, ..)
-            | TypecheckedExpression::LOr(location, ..)
-            | TypecheckedExpression::GreaterThanEq(location, ..)
-            | TypecheckedExpression::LessThanEq(location, ..)
-            | TypecheckedExpression::Eq(location, ..)
-            | TypecheckedExpression::Neq(location, ..)
-            | TypecheckedExpression::LShift(location, ..)
-            | TypecheckedExpression::RShift(location, ..)
-            | TypecheckedExpression::Reference(location, ..)
-            | TypecheckedExpression::Dereference(location, ..)
-            | TypecheckedExpression::Alias(location, ..)
-            | TypecheckedExpression::Block(location, ..)
-            | TypecheckedExpression::Return(location, ..)
-            | TypecheckedExpression::Unreachable(location)
-            | TypecheckedExpression::Empty(location) => location,
+            TypecheckedExpression::Range { span, .. }
+            | TypecheckedExpression::Asm { span, .. }
+            | TypecheckedExpression::If { span, .. }
+            | TypecheckedExpression::While { span, .. }
+            | TypecheckedExpression::AttachVtable(span, ..)
+            | TypecheckedExpression::DeclareVariable(span, ..)
+            | TypecheckedExpression::IntrinsicCall(span, ..)
+            | TypecheckedExpression::DirectCall(span, ..)
+            | TypecheckedExpression::DirectExternCall(span, ..)
+            | TypecheckedExpression::DynCall(span, ..)
+            | TypecheckedExpression::StoreAssignment(span, ..)
+            | TypecheckedExpression::OffsetNonPointer(span, ..)
+            | TypecheckedExpression::MakeUnsizedSlice(span, ..)
+            | TypecheckedExpression::StripMetadata(span, ..)
+            | TypecheckedExpression::Bitcast(span, ..)
+            | TypecheckedExpression::IntCast(span, ..)
+            | TypecheckedExpression::PtrToInt(span, ..)
+            | TypecheckedExpression::IntToPtr(span, ..)
+            | TypecheckedExpression::Offset(span, ..)
+            | TypecheckedExpression::Literal(span, ..)
+            | TypecheckedExpression::Call(span, ..)
+            | TypecheckedExpression::Pos(span, ..)
+            | TypecheckedExpression::Neg(span, ..)
+            | TypecheckedExpression::LNot(span, ..)
+            | TypecheckedExpression::BNot(span, ..)
+            | TypecheckedExpression::Add(span, ..)
+            | TypecheckedExpression::Sub(span, ..)
+            | TypecheckedExpression::Mul(span, ..)
+            | TypecheckedExpression::Div(span, ..)
+            | TypecheckedExpression::Mod(span, ..)
+            | TypecheckedExpression::BAnd(span, ..)
+            | TypecheckedExpression::BOr(span, ..)
+            | TypecheckedExpression::BXor(span, ..)
+            | TypecheckedExpression::GreaterThan(span, ..)
+            | TypecheckedExpression::LessThan(span, ..)
+            | TypecheckedExpression::LAnd(span, ..)
+            | TypecheckedExpression::LOr(span, ..)
+            | TypecheckedExpression::GreaterThanEq(span, ..)
+            | TypecheckedExpression::LessThanEq(span, ..)
+            | TypecheckedExpression::Eq(span, ..)
+            | TypecheckedExpression::Neq(span, ..)
+            | TypecheckedExpression::LShift(span, ..)
+            | TypecheckedExpression::RShift(span, ..)
+            | TypecheckedExpression::Reference(span, ..)
+            | TypecheckedExpression::Dereference(span, ..)
+            | TypecheckedExpression::Alias(span, ..)
+            | TypecheckedExpression::Block(span, ..)
+            | TypecheckedExpression::Return(span, ..)
+            | TypecheckedExpression::Unreachable(span)
+            | TypecheckedExpression::Empty(span) => *span,
             TypecheckedExpression::None => unreachable!("none expression"),
         }
     }

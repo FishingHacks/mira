@@ -11,6 +11,7 @@ use clap::{Args, ValueEnum};
 use mira::{
     arena::Arena,
     codegen::CodegenConfig,
+    context::GlobalContext,
     linking::{run_full_compilation_pipeline, FullCompilationOptions},
     module_resolution::{
         AbsoluteResolver, BasicModuleResolver, ModuleResolver, RelativeResolver,
@@ -170,13 +171,7 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
         )));
     }
 
-    let mut opts = FullCompilationOptions::new(
-        file,
-        root_directory.into(),
-        resolvers.into(),
-        Arc::new(Path::exists),
-        Arc::new(Path::is_dir),
-    );
+    let mut opts = FullCompilationOptions::new(file, root_directory.into(), resolvers.into());
     opts.set_target(args.target)
         .set_codegen_opts(
             args.opt
@@ -241,7 +236,10 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
         })
     });
 
-    let exec_path = match run_full_compilation_pipeline(&Arena::new(), opts) {
+    let arena = Arena::new();
+    let ctx = GlobalContext::new(&arena);
+    let ctx = ctx.share();
+    let exec_path = match run_full_compilation_pipeline(ctx, opts) {
         Err(e) => {
             println!("Failed to compile:");
             for e in e.iter() {

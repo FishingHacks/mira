@@ -5,9 +5,9 @@ use thiserror::Error;
 use crate::{
     annotations::AnnotationReceiver,
     codegen::CodegenError,
+    interner::InternedStr,
     linking::LinkerError,
-    string_interner::InternedStr,
-    tokenizer::{Location, TokenType},
+    tokenizer::{span::Span, TokenType},
     typechecking::{Type, TypecheckingError},
 };
 
@@ -40,7 +40,7 @@ macro_rules! error_list_wrapper {
 error_list_wrapper!(
     pub struct MiraErrors<'arena>(MiraError);
     add_parsing => Parsing(inner: ParsingError<'arena>);
-    add_tokenization => Tokenization(inner: TokenizationError);
+    add_tokenization => Tokenization(inner: TokenizationError<'arena>);
     add_programforming => ProgramForming(inner: ProgramFormingError<'arena>);
     add_typechecking => Typechecking(inner: TypecheckingError<'arena>);
     add_codegen => Codegen(inner: CodegenError);
@@ -61,7 +61,7 @@ macro_rules! from {
 from!(Parsing(ParsingError<'arena>) parsing);
 from!(ProgramForming(ProgramFormingError<'arena>) program_forming);
 from!(Typechecking(TypecheckingError<'arena>) typechecking);
-from!(Tokenization(TokenizationError) tokenization);
+from!(Tokenization(TokenizationError<'arena>) tokenization);
 from!(Codegen(CodegenError) codegen);
 
 #[derive(Error, Debug)]
@@ -69,7 +69,7 @@ pub enum MiraError<'arena> {
     #[error("{inner}")]
     Parsing { inner: ParsingError<'arena> },
     #[error("{inner}")]
-    Tokenization { inner: TokenizationError },
+    Tokenization { inner: TokenizationError<'arena> },
     #[error("{inner}")]
     ProgramForming { inner: ProgramFormingError<'arena> },
     #[error("{inner}")]
@@ -92,106 +92,106 @@ pub enum MiraError<'arena> {
 
 #[derive(Clone, Debug, Error)]
 pub enum ParsingError<'arena> {
-    #[error("{loc}: Cannot resolved import {name:?}")]
+    #[error("{loc:?}: Cannot resolved import {name:?}")]
     CannotResolveModule {
-        loc: Location,
+        loc: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{loc}: Expected let, fn, extern, struct, use or trait, but found {typ:?}")]
-    ExpectedElementForPub { loc: Location, typ: TokenType },
-    #[error("{loc}: Output constraint must start with `=`")]
+    #[error("{loc:?}: Expected let, fn, extern, struct, use or trait, but found {typ:?}")]
+    ExpectedElementForPub { loc: Span<'arena>, typ: TokenType },
+    #[error("{loc:?}: Output constraint must start with `=`")]
     OutputNotStartingWithEqual {
-        loc: Location,
+        loc: Span<'arena>,
         output: InternedStr<'arena>,
     },
-    #[error("{loc}: Input constraint cannot start with `=` or `~`")]
+    #[error("{loc:?}: Input constraint cannot start with `=` or `~`")]
     InputStartingWithInvalidChar {
-        loc: Location,
+        loc: Span<'arena>,
         input: InternedStr<'arena>,
     },
-    #[error("{loc}: Duplicate Replacer `{replacer}`")]
+    #[error("{loc:?}: Duplicate Replacer `{name}`")]
     DuplicateAsmReplacer {
-        loc: Location,
-        replacer: InternedStr<'arena>,
+        loc: Span<'arena>,
+        name: InternedStr<'arena>,
     },
-    #[error("{loc}: {name} is an invalid function attribute")]
+    #[error("{loc:?}: {name} is an invalid function attribute")]
     InvalidFunctionAttribute {
-        loc: Location,
+        loc: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{loc}: {name} is an invalid intrinsic")]
+    #[error("{loc:?}: {name} is an invalid intrinsic")]
     InvalidIntrinsic {
-        loc: Location,
+        loc: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{loc}: {name} is an invalid calling convention")]
+    #[error("{loc:?}: {name} is an invalid calling convention")]
     InvalidCallConv {
-        loc: Location,
+        loc: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{loc}: Expected a type, but found {found:?}")]
-    ExpectedType { loc: Location, found: TokenType },
-    #[error("{loc}: Expected a function call")]
-    ExpectedFunctionCall { loc: Location },
-    #[error("{loc}: Expected `,` or `)`, but found {found:?}")]
-    ExpectedFunctionArgument { loc: Location, found: TokenType },
-    #[error("{loc}: Expected `,` or `]`, but found {found:?}")]
-    ExpectedArrayElement { loc: Location, found: TokenType },
-    #[error("{loc}: Expected `,` or `}}`, but found {found:?}")]
-    ExpectedObjectElement { loc: Location, found: TokenType },
-    #[error("{loc}: Expected an expression or `)`, but found {found:?}")]
-    ExpectedFunctionArgumentExpression { loc: Location, found: TokenType },
-    #[error("{loc}: Expected `=` or `{{`, but found {found:?}")]
-    ExpectedFunctionBody { loc: Location, found: TokenType },
-    #[error("{loc}: Expected an expression, but found {found:?}")]
-    ExpectedExpression { loc: Location, found: TokenType },
-    #[error("{loc}: Expected an identifier, but found {found:?}")]
-    ExpectedIdentifier { loc: Location, found: TokenType },
-    #[error("{loc}: Incorrect Tokenization (this was an error of the compiler! report it!)")]
-    InvalidTokenization { loc: Location },
-    #[error("{loc}: Expected {expected:?} but found {found:?}")]
+    #[error("{loc:?}: Expected a type, but found {found:?}")]
+    ExpectedType { loc: Span<'arena>, found: TokenType },
+    #[error("{loc:?}: Expected a function call")]
+    ExpectedFunctionCall { loc: Span<'arena> },
+    #[error("{loc:?}: Expected `,` or `)`, but found {found:?}")]
+    ExpectedFunctionArgument { loc: Span<'arena>, found: TokenType },
+    #[error("{loc:?}: Expected `,` or `]`, but found {found:?}")]
+    ExpectedArrayElement { loc: Span<'arena>, found: TokenType },
+    #[error("{loc:?}: Expected `,` or `}}`, but found {found:?}")]
+    ExpectedObjectElement { loc: Span<'arena>, found: TokenType },
+    #[error("{loc:?}: Expected an expression or `)`, but found {found:?}")]
+    ExpectedFunctionArgumentExpression { loc: Span<'arena>, found: TokenType },
+    #[error("{loc:?}: Expected `=` or `{{`, but found {found:?}")]
+    ExpectedFunctionBody { loc: Span<'arena>, found: TokenType },
+    #[error("{loc:?}: Expected an expression, but found {found:?}")]
+    ExpectedExpression { loc: Span<'arena>, found: TokenType },
+    #[error("{loc:?}: Expected an identifier, but found {found:?}")]
+    ExpectedIdentifier { loc: Span<'arena>, found: TokenType },
+    #[error("{loc:?}: Incorrect Tokenization (this was an error of the compiler! report it!)")]
+    InvalidTokenization { loc: Span<'arena> },
+    #[error("{loc:?}: Expected {expected:?} but found {found:?}")]
     ExpectedArbitrary {
-        loc: Location,
+        loc: Span<'arena>,
         expected: TokenType,
         found: TokenType,
     },
-    #[error("{loc}: `{keyword}` is not allowed here")]
+    #[error("{loc:?}: `{keyword}` is not allowed here")]
     InvalidKeyword {
         keyword: &'static str,
-        loc: Location,
+        loc: Span<'arena>,
     },
     #[error(
-        "{loc}: Function `{name}` is already defined\n{first_func_loc}: `{name}` is defined here"
+        "{loc:?}: Function `{name}` is already defined\n{first_func_loc:?}: `{name}` is defined here"
     )]
     FunctionAlreadyDefined {
-        loc: Location,
+        loc: Span<'arena>,
         name: InternedStr<'arena>,
-        first_func_loc: Location,
+        first_func_loc: Span<'arena>,
     },
-    #[error("{loc}: Expected {}fn or `}}`, but found {found:?}", if *.is_trait_impl { "impl, " } else { "" })]
+    #[error("{loc:?}: Expected {}fn or `}}`, but found {found:?}", if *.is_trait_impl { "impl, " } else { "" })]
     StructImplRegionExpect {
-        loc: Location,
+        loc: Span<'arena>,
         found: TokenType,
         is_trait_impl: bool,
     },
-    #[error("{loc}: Expected a statement")]
-    ExpectedStatement { loc: Location },
-    #[error("{loc}: Expected a let, while, if, for, block, function, struct or trait statement")]
-    ExpectedAnnotationStatement { loc: Location },
-    #[error("{loc}: expected a statement, but found an expression")]
-    ExpressionAtTopLevel { loc: Location },
-    #[error("{loc}: annotation `{name}` cannot go on a {thing}")]
+    #[error("{loc:?}: Expected a statement")]
+    ExpectedStatement { loc: Span<'arena> },
+    #[error("{loc:?}: Expected a let, while, if, for, block, function, struct or trait statement")]
+    ExpectedAnnotationStatement { loc: Span<'arena> },
+    #[error("{loc:?}: expected a statement, but found an expression")]
+    ExpressionAtTopLevel { loc: Span<'arena> },
+    #[error("{loc:?}: annotation `{name}` cannot go on a {thing}")]
     AnnotationDoesNotGoOn {
-        loc: Location,
+        loc: Span<'arena>,
         name: &'static str,
         thing: AnnotationReceiver,
     },
-    #[error("{loc}: Unknown annotation `{name}`")]
-    UnknownAnnotation { loc: Location, name: String },
+    #[error("{loc:?}: Unknown annotation `{name}`")]
+    UnknownAnnotation { loc: Span<'arena>, name: String },
 }
 
-impl ParsingError<'_> {
-    pub fn get_loc(&self) -> &Location {
+impl<'arena> ParsingError<'arena> {
+    pub fn get_loc(&self) -> &Span<'arena> {
         match self {
             Self::InvalidIntrinsic { loc, .. }
             | Self::InvalidCallConv { loc, .. }
@@ -225,33 +225,33 @@ impl ParsingError<'_> {
 }
 
 #[derive(Clone, Error, Debug)]
-pub enum TokenizationError {
-    #[error("{loc}: Unknown token `{character}`")]
-    UnknownTokenError { loc: Location, character: char },
-    #[error("{loc}: Could not parse the number")]
-    InvalidNumberError { loc: Location },
-    #[error("{loc}: Expected `\"`, but found nothing")]
-    UnclosedString { loc: Location },
-    #[error("{0}: Invalid number type")]
-    InvalidNumberType(Location),
-    #[error("{loc}: unclosed macro invocation (Expected a `{bracket}`))")]
-    UnclosedMacro { loc: Location, bracket: char },
-    #[error("{loc}: expected a bracket (`(`, `[` or `{{`), but found {character}")]
-    MacroExpectedBracket { loc: Location, character: char },
+pub enum TokenizationError<'arena> {
+    #[error("{loc:?}: Unknown token `{character}`")]
+    UnknownTokenError { loc: Span<'arena>, character: char },
+    #[error("{loc:?}: Could not parse the number")]
+    InvalidNumberError { loc: Span<'arena> },
+    #[error("{loc:?}: Expected `\"`, but found nothing")]
+    UnclosedString { loc: Span<'arena> },
+    #[error("{0:?}: Invalid number type")]
+    InvalidNumberType(Span<'arena>),
+    #[error("{loc:?}: unclosed macro invocation (Expected a `{bracket}`))")]
+    UnclosedMacro { loc: Span<'arena>, bracket: char },
+    #[error("{loc:?}: expected a bracket (`(`, `[` or `{{`), but found {character}")]
+    MacroExpectedBracket { loc: Span<'arena>, character: char },
 }
 
-impl TokenizationError {
-    pub fn invalid_number(loc: Location) -> Self {
+impl<'arena> TokenizationError<'arena> {
+    pub fn invalid_number(loc: Span<'arena>) -> Self {
         Self::InvalidNumberError { loc }
     }
-    pub fn unclosed_string(loc: Location) -> Self {
+    pub fn unclosed_string(loc: Span<'arena>) -> Self {
         Self::UnclosedString { loc }
     }
-    pub fn unknown_token(loc: Location, character: char) -> Self {
+    pub fn unknown_token(loc: Span<'arena>, character: char) -> Self {
         Self::UnknownTokenError { loc, character }
     }
 
-    pub fn get_loc(&self) -> &Location {
+    pub fn get_loc(&self) -> &Span<'arena> {
         match self {
             Self::UnclosedString { loc }
             | Self::InvalidNumberError { loc }
@@ -265,18 +265,18 @@ impl TokenizationError {
 
 #[derive(Clone, Debug, Error)]
 pub enum ProgramFormingError<'arena> {
-    #[error("{0}: Code outside of a function boundary")]
-    NoCodeOutsideOfFunctions(Location),
-    #[error("{0}: There are no anonymous functions at global level allowed")]
-    AnonymousFunctionAtGlobalLevel(Location),
-    #[error("{0}: global-level let or const expects you to pass a literal")]
-    GlobalValueNoLiteral(Location),
-    #[error("{0}: global-level const expects you to pass a type")]
-    GlobalValueNoType(Location),
-    #[error("{0}: could not find `{1}` in the current module")]
-    IdentNotDefined(Location, InternedStr<'arena>),
-    #[error("{0}: `{1}` is already defined in the current module")]
-    IdentAlreadyDefined(Location, InternedStr<'arena>),
+    #[error("{0:?}: Code outside of a function boundary")]
+    NoCodeOutsideOfFunctions(Span<'arena>),
+    #[error("{0:?}: There are no anonymous functions at global level allowed")]
+    AnonymousFunctionAtGlobalLevel(Span<'arena>),
+    #[error("{0:?}: global-level let or const expects you to pass a literal")]
+    GlobalValueNoLiteral(Span<'arena>),
+    #[error("{0:?}: global-level const expects you to pass a type")]
+    GlobalValueNoType(Span<'arena>),
+    #[error("{0:?}: could not find `{1}` in the current module")]
+    IdentNotDefined(Span<'arena>, InternedStr<'arena>),
+    #[error("{0:?}: `{1}` is already defined in the current module")]
+    IdentAlreadyDefined(Span<'arena>, InternedStr<'arena>),
 }
 
 pub struct FunctionList<'a>(pub &'a [Type<'a>]);

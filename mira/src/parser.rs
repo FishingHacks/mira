@@ -1,4 +1,3 @@
-use module_resolution::ModuleResolver;
 use parking_lot::RwLock;
 use std::{collections::HashMap, sync::Arc};
 
@@ -6,10 +5,13 @@ use crate::{
     annotations::Annotations,
     context::SharedContext,
     error::ParsingError,
+    interner::InternedStr,
     module::Module,
     store::{Store, StoreKey},
-    string_interner::InternedStr,
-    tokenizer::{Location, Token, TokenType},
+    tokenizer::{
+        span::{SourceFile, SourceMap, Span},
+        Token, TokenType,
+    },
 };
 pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
@@ -21,48 +23,6 @@ pub mod module_resolution;
 mod statement;
 mod types;
 
-/*
-#[derive(Default, Debug, Clone)]
-pub struct Annotations(pub Vec<Annotation>);
-
-impl Display for Annotations {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for annotation in self.0.iter() {
-            f.write_char('@')?;
-            Display::fmt(&annotation.name, f)?;
-            f.write_char('(')?;
-            for i in 0..annotation.args.len() {
-                if i != 0 {
-                    f.write_char(' ')?;
-                }
-                Display::fmt(&annotation.args[i], f)?;
-            }
-            f.write_str(")\n")?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Annotation {
-    loc: Location,
-    name: GlobalStr,
-    args: Vec<Token>,
-}
-
-impl Display for Annotation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_char('@')?;
-        Display::fmt(&self.name, f)?;
-        f.write_char('(')?;
-        for arg in self.args.iter() {
-            Display::fmt(arg, f)?;
-        }
-        f.write_char(')')
-    }
-}
-*/
-
 #[derive(Clone, Debug)]
 pub struct ParserQueueEntry<'arena> {
     pub file: Arc<std::path::Path>,
@@ -71,32 +31,33 @@ pub struct ParserQueueEntry<'arena> {
 }
 
 pub struct Parser<'a, 'arena> {
-    pub file: Arc<std::path::Path>,
-    pub root_directory: Arc<std::path::Path>,
     pub ctx: SharedContext<'arena>,
+    pub file: Arc<SourceFile>,
 
     pub tokens: Vec<Token<'arena>>,
     pub current: usize,
-    current_annotations: Annotations,
+    current_annotations: Annotations<'arena>,
     pub parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
     pub modules: &'a RwLock<Store<Module<'arena>>>,
     /// a map of idents => imports. if the size of the vec is 0, the identifier refers to the
     /// module itself. otherwise, it refers to something in it.
     pub imports: HashMap<
         InternedStr<'arena>,
-        (Location, StoreKey<Module<'arena>>, Vec<InternedStr<'arena>>),
+        (
+            Span<'arena>,
+            StoreKey<Module<'arena>>,
+            Vec<InternedStr<'arena>>,
+        ),
     >,
-    resolvers: Arc<[Box<dyn ModuleResolver>]>,
-    path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
-    path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+    source_map: &'a SourceMap,
     pub key: StoreKey<Module<'arena>>,
 }
 
 impl std::fmt::Debug for Parser<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Parser")
-            .field("file", &self.file)
-            .field("root_directory", &self.root_directory)
+            .field("file", &self.file.path)
+            .field("root_directory", &self.file.package_root)
             .field("tokens", &self.tokens)
             .field("current", &self.current)
             .field("current_annotations", &self.current_annotations)
@@ -113,11 +74,8 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         tokens: Vec<Token<'arena>>,
         parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
         modules: &'a RwLock<Store<Module<'arena>>>,
-        file: Arc<std::path::Path>,
-        root_directory: Arc<std::path::Path>,
-        resolvers: Arc<[Box<dyn ModuleResolver>]>,
-        path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
-        path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+        file: Arc<SourceFile>,
+        source_map: &'a SourceMap,
         key: StoreKey<Module<'arena>>,
     ) -> Self {
         Self {
@@ -129,10 +87,7 @@ impl<'a, 'arena> Parser<'a, 'arena> {
             parser_queue,
             modules,
             file,
-            root_directory,
-            resolvers,
-            path_exists,
-            path_is_dir,
+            source_map,
             key,
         }
     }
@@ -182,6 +137,14 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         &self.tokens[self.current - 1]
     }
 
+    fn last(&self) -> &Token<'arena> {
+        if self.current < 2 {
+            &self.tokens[0]
+        } else {
+            &self.tokens[self.current - 2]
+        }
+    }
+
     fn current(&self) -> &Token<'arena> {
         if self.current < 1 {
             &self.tokens[0]
@@ -211,7 +174,7 @@ impl<'a, 'arena> Parser<'a, 'arena> {
             Ok(self.advance())
         } else {
             Err(ParsingError::ExpectedArbitrary {
-                loc: self.peek().location.clone(),
+                loc: self.peek().span,
                 expected: token_type,
                 found: self.peek().typ,
             })

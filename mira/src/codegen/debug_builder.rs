@@ -6,9 +6,10 @@ use std::{
 
 use crate::{
     codegen::debug_constants::BasicTypeEncoding,
+    context::SharedContext,
+    interner::InternedStr,
     store::{AssociatedStore, Store, StoreKey},
-    string_interner::InternedStr,
-    tokenizer::Location,
+    tokenizer::span::Span,
     typechecking::{
         intrinsics::IntrinsicAnnotation, Type, TypecheckedModule, TypecheckingContext,
         TypedExternalFunction, TypedFunction, TypedStruct,
@@ -33,6 +34,7 @@ use super::{
 };
 
 pub struct DebugContext<'ctx, 'arena> {
+    ctx: SharedContext<'arena>,
     pub(super) builder: DebugInfoBuilder<'ctx>,
     global_scope: DIScope<'ctx>,
     root_file: DIFile<'ctx>,
@@ -46,9 +48,10 @@ pub struct DebugContext<'ctx, 'arena> {
 }
 
 impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
-    pub fn location(&self, scope: DIScope<'ctx>, loc: &Location) -> DILocation<'ctx> {
+    pub fn location(&self, scope: DIScope<'ctx>, span: Span<'arena>) -> DILocation<'ctx> {
+        let (line, column) = span.with_source_file(self.ctx.source_map()).lookup_pos();
         self.builder
-            .create_debug_location(self.context, loc.line, loc.column, scope, None)
+            .create_debug_location(self.context, line, column, scope, None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -56,7 +59,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         &mut self,
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
-        loc: &Location,
+        loc: Span<'arena>,
         typ: &Type<'arena>,
         name: InternedStr<'arena>,
         bb: BasicBlock<'ctx>,
@@ -70,7 +73,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             &name,
             arg,
             self.modules[module].1,
-            loc.line,
+            loc.with_source_file(self.ctx.source_map()).lookup_pos().0,
             ty,
             true,
             DIFlags::ZERO,
@@ -84,7 +87,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         &mut self,
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
-        loc: &Location,
+        loc: Span<'arena>,
         typ: &Type<'arena>,
         name: InternedStr<'arena>,
         bb: BasicBlock<'ctx>,
@@ -100,7 +103,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             scope,
             &name,
             self.modules[module].1,
-            loc.line,
+            loc.with_source_file(self.ctx.source_map()).lookup_pos().0,
             ty,
             true,
             DIFlags::ZERO,
@@ -113,15 +116,12 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
     pub fn new_block(
         &self,
         parent_scope: DIScope<'ctx>,
-        loc: &Location,
+        loc: Span<'arena>,
         module: StoreKey<TypecheckedModule<'arena>>,
     ) -> DILexicalBlock<'ctx> {
-        self.builder.create_lexical_block(
-            parent_scope,
-            self.modules[module].1,
-            loc.line,
-            loc.column,
-        )
+        let (line, column) = loc.with_source_file(self.ctx.source_map()).lookup_pos();
+        self.builder
+            .create_lexical_block(parent_scope, self.modules[module].1, line, column)
     }
 
     pub fn new(
@@ -131,6 +131,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         tc_ctx: &TypecheckingContext<'arena>,
         root_path: &Path,
         optimizations: bool,
+        ctx: SharedContext<'arena>,
     ) -> Self {
         module.add_basic_value_flag(
             "Debug Info Version",
@@ -182,6 +183,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             root_file,
             funcs: AssociatedStore::with_capacity(func_reader.len()),
             ext_funcs: AssociatedStore::with_capacity(ext_func_reader.len()),
+            ctx,
         };
         for (key, module) in module_reader.index_value_iter() {
             let file = if *module.path == *root_path {
@@ -231,16 +233,22 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             let mangled_name = mangle_function(tc_ctx, key);
             let name = func.0.name.as_deref().copied().unwrap_or(ANON_FN_NAME);
 
+            let line = func
+                .0
+                .span
+                .with_source_file(me.ctx.source_map())
+                .lookup_pos()
+                .0;
             let subprogram = me.builder.create_function(
                 module.0.as_debug_info_scope(),
                 name,
                 Some(&mangled_name),
                 module.1,
-                func.0.location.line,
+                line,
                 fn_ty,
                 true,
                 true,
-                func.0.location.line,
+                line,
                 flags,
                 optimizations,
             );
@@ -268,16 +276,22 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
 
             let mangled_name = mangle_external_function(tc_ctx, key);
             let name = func.0.name.as_deref().copied().unwrap_or(ANON_FN_NAME);
+            let line = func
+                .0
+                .span
+                .with_source_file(me.ctx.source_map())
+                .lookup_pos()
+                .0;
             let subprogram = me.builder.create_function(
                 module.0.as_debug_info_scope(),
                 name,
                 Some(&mangled_name),
                 module.1,
-                func.0.location.line,
+                line,
                 fn_ty,
                 false,
                 func.1.is_some(),
-                func.0.location.line,
+                line,
                 flags,
                 optimizations,
             );
@@ -462,6 +476,11 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                     let elements = &structure.elements;
                     let ptr_size = (self.default_types.isize.get_bit_width() / 8) as u64;
                     let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
+                    let line = structure
+                        .span
+                        .with_source_file(self.ctx.source_map())
+                        .lookup_pos()
+                        .0;
                     let fields = elements
                         .iter()
                         .enumerate()
@@ -474,7 +493,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                                     self.modules[structure.module_id].0.as_debug_info_scope(),
                                     name,
                                     self.modules[structure.module_id].1,
-                                    structure.location.line,
+                                    line,
                                     size * 8,
                                     alignment * 8,
                                     offset * 8,
@@ -489,7 +508,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                             self.modules[structure.module_id].0.as_debug_info_scope(),
                             &name,
                             self.modules[structure.module_id].1,
-                            structure.location.line,
+                            line,
                             size * 8,
                             alignment * 8,
                             DIFlags::ZERO,

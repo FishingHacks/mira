@@ -12,6 +12,7 @@ use std::{
 use crate::{libfinder, VER};
 use clap::{Args, ValueEnum};
 use mira::arena::Arena;
+use mira::context::GlobalContext;
 use mira::module_resolution::SingleModuleResolver;
 use mira::{
     codegen::CodegenConfig,
@@ -175,7 +176,6 @@ fn print_help(editor_mode: bool) {
     println!("│ --ir [file]        │ [dev] emits the intermediate representation │");
     println!("│ --obj <file>       │ emits the object code                       │");
     println!("│ --exec <file>      │ emits the executable                        │");
-    println!("│ --file <file>      │ set the file used in the debug info         │");
     println!("│ --target <target>  │ set the target (<arch>-<os>[-<abi>])        │");
     println!("│ --verbose          │ Output what the compiler is doing           │");
     let _ = ("└─ [ mira vN.N.N ]───┴─────────────────────────────────────────────┘",);
@@ -251,7 +251,6 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     let mut exec_file = None;
     let mut target = Target::from_name("x86_64-linux");
     let mut verbose = false;
-    let mut file = None;
     let mut i = 0;
     while i < opts.len() {
         match opts[i].as_str() {
@@ -355,25 +354,6 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                 let path = PathBuf::from(file);
                 exec_file = Some(path);
             }
-            "--file" => {
-                opts.remove(i);
-                if opts.get(i).is_none() {
-                    println!("`file` needs a file");
-                    return;
-                }
-                let filename = opts.remove(i);
-                let path = match Path::new(&filename).is_absolute() {
-                    true => PathBuf::from(filename),
-                    false => {
-                        let Ok(mut dir) = std::env::current_dir() else {
-                            return println!("failed to get current directory");
-                        };
-                        dir.push(Path::new(&filename));
-                        dir
-                    }
-                };
-                file = Some(path);
-            }
             "--target" => {
                 opts.remove(i);
                 if opts.get(i).is_none() {
@@ -403,7 +383,7 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     let mut compilation_opts = FullCompilationOptions::new(
         repl.data.file.clone(),
         repl.data.current_dir.clone(),
-        Arc::new([
+        Box::new([
             Box::new(RelativeResolver),
             Box::new(AbsoluteResolver),
             Box::new(SingleModuleResolver(
@@ -420,12 +400,7 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                 ".mira/modules/$name/src",
             ])),
         ]),
-        Arc::new(std::path::Path::exists),
-        Arc::new(std::path::Path::is_dir),
     );
-    if let Some(file) = file {
-        compilation_opts.set_debug_file(file.into());
-    }
     compilation_opts
         .with_source(Some(&repl.buf))
         .set_binary_path(exec_file.clone(), false)
@@ -440,7 +415,9 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         .codegen_opts
         .optimizations_of(CodegenConfig::new_release_safe());
 
-    if let Err(e) = run_full_compilation_pipeline(&Arena::new(), compilation_opts) {
+    if let Err(e) =
+        run_full_compilation_pipeline(GlobalContext::new(&Arena::new()).share(), compilation_opts)
+    {
         println!("Failed to compile:");
         for e in e.iter() {
             println!("{e}");

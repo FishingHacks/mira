@@ -2,13 +2,13 @@ use std::fmt::{Debug, Display, Write};
 
 use crate::context::SharedContext;
 use crate::store::StoreKey;
+use crate::tokenizer::span::Span;
 use crate::typechecking::{TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct};
 use crate::{
     annotations::{Annotation, AnnotationReceiver, Annotations},
     error::{FunctionList, ParsingError},
     error_list_wrapper,
-    string_interner::InternedStr,
-    tokenizer::Location,
+    interner::InternedStr,
     tokenstream::TokenStream,
     typechecking::{Type, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
 };
@@ -94,7 +94,7 @@ macro_rules! lang_item_def {
             /// Pushes a struct as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_struct(&mut self, id: StoreKey<TypedStruct<'arena>>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_struct(&mut self, id: StoreKey<TypedStruct<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_struct $ty, self, $lang_item, id, loc),)*
@@ -106,7 +106,7 @@ macro_rules! lang_item_def {
             /// Pushes a trait as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_trait(&mut self, id: StoreKey<TypedTrait<'arena>>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_trait(&mut self, id: StoreKey<TypedTrait<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_trait $ty, self, $lang_item, id, loc),)*
@@ -118,7 +118,7 @@ macro_rules! lang_item_def {
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_static(&mut self, id: StoreKey<TypedStatic<'arena>>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_static(&mut self, id: StoreKey<TypedStatic<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_static $ty, self, $lang_item, id, loc),)*
@@ -128,7 +128,7 @@ macro_rules! lang_item_def {
             }
 
             #[allow(unreachable_code)]
-            fn internal_push_fn(&mut self, _: FunctionLangItem<'arena>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            fn internal_push_fn(&mut self, _: FunctionLangItem<'arena>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_function $ty, self, $lang_item, id, loc),)*
@@ -139,13 +139,13 @@ macro_rules! lang_item_def {
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_external_function(&mut self, id: StoreKey<TypedExternalFunction<'arena>>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_external_function(&mut self, id: StoreKey<TypedExternalFunction<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
                 self.internal_push_fn(FunctionLangItem::External(id), lang_item, loc)
             }
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_function(&mut self, id: StoreKey<TypedFunction<'arena>>, lang_item: &str, loc: Location) -> Result<bool, LangItemAssignmentError> {
+            pub fn push_function(&mut self, id: StoreKey<TypedFunction<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
                 self.internal_push_fn(FunctionLangItem::Internal(id), lang_item, loc)
             }
 
@@ -196,16 +196,16 @@ impl Display for LangItemType {
 }
 
 #[derive(Clone, Debug, Error)]
-pub enum LangItemAssignmentError {
-    #[error("{loc}: expected lang item `{lang_item}` to be a {expected}, but got a {got}")]
+pub enum LangItemAssignmentError<'arena> {
+    #[error("{loc:?}: expected lang item `{lang_item}` to be a {expected}, but got a {got}")]
     InvalidLangItemError {
         lang_item: &'static str,
-        loc: Location,
+        loc: Span<'arena>,
         got: LangItemType,
         expected: LangItemType,
     },
-    #[error("{0}: tried to redefine lang item `{1}`")]
-    Redefinition(&'static str, Location),
+    #[error("{1:?}: tried to redefine lang item `{0}`")]
+    Redefinition(&'static str, Span<'arena>),
 }
 
 struct GenericList<'a, 'arena>(&'a [InternedStr<'arena>]);

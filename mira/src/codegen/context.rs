@@ -31,12 +31,13 @@ use inkwell::{
 };
 
 use crate::{
+    context::SharedContext,
+    interner::InternedStr,
     std_annotations::{
         alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
         noinline::Noinline, section::SectionAnnotation,
     },
     store::{AssociatedStore, StoreKey},
-    string_interner::InternedStr,
     target::{Target, NATIVE_TARGET},
     typechecking::{
         expression::{TypecheckedExpression, TypedLiteral},
@@ -241,6 +242,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         module: &str,
         path: Arc<Path>,
         config: CodegenConfig<'ctx>,
+        shared_ctx: SharedContext<'arena>,
     ) -> Result<Self, CodegenError> {
         LLVMTarget::initialize_all(&InitializationConfig::default());
         let (triple, _) = config.target.to_llvm_triple();
@@ -284,6 +286,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             &ctx,
             &path,
             config.optimizations != Optimizations::None,
+            shared_ctx,
         );
 
         let builder = context.create_builder();
@@ -677,7 +680,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 
         function_ctx
             .builder
-            .set_current_debug_location(function_ctx.debug_ctx.location(scope, &contract.location));
+            .set_current_debug_location(function_ctx.debug_ctx.location(scope, contract.span));
 
         let mut param_idx = 0;
         for (idx, (name, arg)) in contract.arguments.iter().enumerate() {
@@ -691,7 +694,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             function_ctx.debug_ctx.declare_param(
                 ptr,
                 scope,
-                &contract.location,
+                contract.span,
                 arg,
                 *name,
                 function_ctx.current_block,

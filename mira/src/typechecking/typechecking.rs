@@ -1,12 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
+    interner::InternedStr,
     module::{ModuleContext, ModuleScopeValue},
     parser::{ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp},
     std_annotations::ext_vararg::ExternVarArg,
     store::StoreKey,
-    string_interner::InternedStr,
-    tokenizer::{Location, NumberType},
+    tokenizer::{span::Span, NumberType},
     typechecking::typed_resolve_import,
 };
 
@@ -118,7 +118,7 @@ pub fn typecheck_static<'arena>(
         context,
         tc_module_reader[static_id].module,
         &mut Scopes::default(),
-        &Expression::Literal(expr, tc_module_reader[static_id].loc.clone()),
+        &Expression::Literal(expr, tc_module_reader[static_id].loc),
         &mut Vec::new(),
         TypeSuggestion::from_type(typ),
     ) {
@@ -131,13 +131,13 @@ pub fn typecheck_static<'arena>(
                 errs.push(TypecheckingError::MismatchingType {
                     expected: typ.clone(),
                     found: expr_typ,
-                    location: tc_module_reader[static_id].loc.clone(),
+                    location: tc_module_reader[static_id].loc,
                 });
                 return false;
             }
             if !expr.is_entirely_literal() {
                 errs.push(TypecheckingError::StaticsNeedToBeLiteral(
-                    tc_module_reader[static_id].loc.clone(),
+                    tc_module_reader[static_id].loc,
                 ));
             }
             drop(tc_module_reader);
@@ -191,13 +191,13 @@ fn inner_typecheck_function<'arena>(
         (
             contract.return_type.clone(),
             contract.arguments.clone(),
-            contract.location.clone(),
+            contract.span,
         )
     } else {
         let reader = context.functions.read();
         let contract = &reader[function_id].0;
         if contract.annotations.has_annotation::<IntrinsicAnnotation>() {
-            let loc = contract.location.clone();
+            let loc = contract.span;
             drop(reader);
             context.functions.write()[function_id].1 =
                 Box::new([TypecheckedExpression::Unreachable(loc)]);
@@ -206,7 +206,7 @@ fn inner_typecheck_function<'arena>(
         (
             contract.return_type.clone(),
             contract.arguments.clone(),
-            contract.location.clone(),
+            contract.span,
         )
     };
 
@@ -215,16 +215,16 @@ fn inner_typecheck_function<'arena>(
         && (!return_type.is_primitive()
             || (return_type.refcount() > 0 && !return_type.is_thin_ptr()))
     {
-        errs.push(TypecheckingError::InvalidExternReturnType(loc.clone()));
+        errs.push(TypecheckingError::InvalidExternReturnType(loc));
     }
     if !return_type.is_sized() {
         errs.push(TypecheckingError::UnsizedReturnType(
-            loc.clone(),
+            loc,
             return_type.clone(),
         ));
     }
     for (_, arg) in args.iter().filter(|v| !v.1.is_sized()) {
-        errs.push(TypecheckingError::UnsizedArgument(loc.clone(), arg.clone()));
+        errs.push(TypecheckingError::UnsizedArgument(loc, arg.clone()));
     }
     (errs.is_empty()).then_some(()).ok_or(errs)?;
 
@@ -245,14 +245,14 @@ fn inner_typecheck_function<'arena>(
         Ok(always_returns) => {
             if !matches!(return_type, Type::PrimitiveVoid(0)) && !always_returns {
                 return Err(vec![TypecheckingError::BodyDoesNotAlwaysReturn {
-                    location: statement.loc().clone(),
+                    location: statement.span(),
                 }]);
             }
             if !always_returns {
                 typecheck_statement(
                     context,
                     &mut scope,
-                    &Statement::Return(None, statement.loc().clone()),
+                    &Statement::Return(None, statement.span()),
                     module_id.cast(),
                     &return_type,
                     &mut exprs,
@@ -293,7 +293,7 @@ fn typecheck_statement<'arena>(
             condition,
             if_stmt,
             else_stmt,
-            location,
+            span,
             annotations,
         } => {
             let mut errs = Vec::new();
@@ -332,7 +332,7 @@ fn typecheck_statement<'arena>(
                 errs.push(TypecheckingError::MismatchingType {
                     expected: Type::PrimitiveBool(0),
                     found: condition_ty,
-                    location: location.clone(),
+                    location: *span,
                 });
             }
             let Ok(if_stmt_exits) = if_stmt_result else {
@@ -345,12 +345,12 @@ fn typecheck_statement<'arena>(
                 return Err(errs);
             }
             exprs.push(TypecheckedExpression::If {
-                loc: location.clone(),
+                span: *span,
                 cond,
-                if_block: (if_exprs.into_boxed_slice(), if_stmt.loc().clone()),
+                if_block: (if_exprs.into_boxed_slice(), if_stmt.span()),
                 else_block: else_stmt
                     .as_ref()
-                    .map(move |stmt| (else_exprs.into_boxed_slice(), stmt.loc().clone())),
+                    .map(move |stmt| (else_exprs.into_boxed_slice(), stmt.span())),
                 annotations: annotations.clone(),
             });
             Ok(if_stmt_exits && else_stmt_exits)
@@ -358,7 +358,7 @@ fn typecheck_statement<'arena>(
         Statement::While {
             condition,
             child,
-            location,
+            span,
             ..
         } => {
             let mut errs = Vec::new();
@@ -384,7 +384,7 @@ fn typecheck_statement<'arena>(
                 errs.push(TypecheckingError::MismatchingType {
                     expected: Type::PrimitiveBool(0),
                     found: condition_ty,
-                    location: location.clone(),
+                    location: *span,
                 });
             }
             let Ok(mut always_exits) = body_result else {
@@ -396,27 +396,24 @@ fn typecheck_statement<'arena>(
             // while (true) {} also never exits
             always_exits = always_exits || matches!(cond, TypedLiteral::Bool(true));
             exprs.push(TypecheckedExpression::While {
-                loc: location.clone(),
+                span: *span,
                 cond_block: condition_block.into_boxed_slice(),
                 cond,
-                body: (body.into_boxed_slice(), child.loc().clone()),
+                body: (body.into_boxed_slice(), child.span()),
             });
 
             Ok(always_exits)
         }
         Statement::For { .. } => todo!("iterator (requires generics)"),
-        Statement::Return(None, location) => {
+        Statement::Return(None, span) => {
             if matches!(return_type, Type::PrimitiveVoid(0)) {
-                exprs.push(TypecheckedExpression::Return(
-                    location.clone(),
-                    TypedLiteral::Void,
-                ));
+                exprs.push(TypecheckedExpression::Return(*span, TypedLiteral::Void));
                 Ok(true)
             } else {
                 Err(vec![TypecheckingError::MismatchingType {
                     expected: return_type.clone(),
                     found: Type::PrimitiveVoid(0),
-                    location: location.clone(),
+                    location: *span,
                 }])
             }
         }
@@ -434,13 +431,10 @@ fn typecheck_statement<'arena>(
                 return Err(vec![TypecheckingError::MismatchingType {
                     expected: return_type.clone(),
                     found: typ,
-                    location: expression.loc().clone(),
+                    location: expression.span(),
                 }]);
             }
-            exprs.push(TypecheckedExpression::Return(
-                location.clone(),
-                typed_expression,
-            ));
+            exprs.push(TypecheckedExpression::Return(*location, typed_expression));
             Ok(true)
         }
         Statement::Block(statements, location, annotations) => {
@@ -461,8 +455,7 @@ fn typecheck_statement<'arena>(
                     Ok(true) => {
                         always_returns = true;
                         if !matches!(statement, Statement::Return(..)) {
-                            block_exprs
-                                .push(TypecheckedExpression::Unreachable(statement.loc().clone()));
+                            block_exprs.push(TypecheckedExpression::Unreachable(statement.span()));
                         }
                         break;
                     }
@@ -479,7 +472,7 @@ fn typecheck_statement<'arena>(
                 Err(errs)
             } else {
                 exprs.push(TypecheckedExpression::Block(
-                    location.clone(),
+                    *location,
                     block_exprs.into_boxed_slice(),
                     annotations.clone(),
                 ));
@@ -511,7 +504,7 @@ fn typecheck_statement<'arena>(
                     return Err(vec![TypecheckingError::MismatchingType {
                         expected: expected_typ,
                         found: typ,
-                        location: location.clone(),
+                        location: *location,
                     }]);
                 }
             }
@@ -520,20 +513,13 @@ fn typecheck_statement<'arena>(
                 TypedLiteral::Dynamic(id) => id,
                 _ => {
                     let id = scope.push(typ.clone());
-                    exprs.push(TypecheckedExpression::Literal(
-                        expression.loc().clone(),
-                        id,
-                        expr,
-                    ));
+                    exprs.push(TypecheckedExpression::Literal(expression.span(), id, expr));
                     id
                 }
             };
             scope.insert(*name, id);
             exprs.push(TypecheckedExpression::DeclareVariable(
-                location.clone(),
-                id,
-                typ,
-                *name,
+                *location, id, typ, *name,
             ));
             scope.make_stack_allocated(id);
             Ok(false)
@@ -675,8 +661,8 @@ fn typecheck_expression<'arena>(
                 let typ = match type_suggestion {
                     TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
                         .to_type(context)
-                        .ok_or_else(|| TypecheckingError::CannotInferArrayType(location.clone()))?,
-                    _ => return Err(TypecheckingError::CannotInferArrayType(location.clone())),
+                        .ok_or(TypecheckingError::CannotInferArrayType(*location))?,
+                    _ => return Err(TypecheckingError::CannotInferArrayType(*location)),
                 };
                 Ok((typ.clone(), TypedLiteral::Array(typ, Vec::new())))
             }
@@ -718,7 +704,7 @@ fn typecheck_expression<'arena>(
                         return Err(TypecheckingError::MismatchingType {
                             expected: typ,
                             found: el_typ,
-                            location: expr.loc().clone(),
+                            location: expr.span(),
                         });
                     }
                     elements.push(el_lit);
@@ -762,9 +748,7 @@ fn typecheck_expression<'arena>(
                 let struct_id = if let TypeSuggestion::Struct(id) = type_suggestion {
                     id
                 } else {
-                    return Err(TypecheckingError::CannotInferAnonStructType(
-                        location.clone(),
-                    ));
+                    return Err(TypecheckingError::CannotInferAnonStructType(*location));
                 };
 
                 let structure = &context.structs.read()[struct_id];
@@ -772,7 +756,7 @@ fn typecheck_expression<'arena>(
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
                         return Err(TypecheckingError::NoSuchFieldFound {
-                            location: values[k].0.clone(),
+                            location: values[k].0,
                             name: *k,
                         });
                     }
@@ -782,7 +766,7 @@ fn typecheck_expression<'arena>(
                 for (key, typ) in structure.elements.iter() {
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
-                            location: location.clone(),
+                            location: *location,
                             name: *key,
                         });
                     };
@@ -798,7 +782,7 @@ fn typecheck_expression<'arena>(
                         return Err(TypecheckingError::MismatchingType {
                             expected: typ.clone(),
                             found: expr_typ,
-                            location: loc.clone(),
+                            location: *loc,
                         });
                     }
                     elements.push(expr_lit);
@@ -820,19 +804,16 @@ fn typecheck_expression<'arena>(
                     location,
                     &mut Vec::new(),
                 )
-                .map_err(|_| TypecheckingError::CannotFindValue(location.clone(), path.clone()))?;
+                .map_err(|_| TypecheckingError::CannotFindValue(*location, path.clone()))?;
                 let ModuleScopeValue::Struct(struct_id) = value else {
-                    return Err(TypecheckingError::CannotFindValue(
-                        location.clone(),
-                        path.clone(),
-                    ));
+                    return Err(TypecheckingError::CannotFindValue(*location, path.clone()));
                 };
                 let structure = &context.structs.read()[struct_id.cast()];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
                         return Err(TypecheckingError::NoSuchFieldFound {
-                            location: values[k].0.clone(),
+                            location: values[k].0,
                             name: *k,
                         });
                     }
@@ -842,7 +823,7 @@ fn typecheck_expression<'arena>(
                 for (key, typ) in structure.elements.iter() {
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
-                            location: location.clone(),
+                            location: *location,
                             name: *key,
                         });
                     };
@@ -858,7 +839,7 @@ fn typecheck_expression<'arena>(
                         return Err(TypecheckingError::MismatchingType {
                             expected: typ.clone(),
                             found: expr_typ,
-                            location: loc.clone(),
+                            location: *loc,
                         });
                     }
                     elements.push(expr_lit);
@@ -885,13 +866,13 @@ fn typecheck_expression<'arena>(
             )),
             LiteralValue::Bool(v) => Ok((Type::PrimitiveBool(0), TypedLiteral::Bool(*v))),
             LiteralValue::Dynamic(path) => {
-                if path.entries.len() == 1 && path.entries[0].1.is_empty() {
+                if path.entries.len() == 1 && path.entries[0].2.is_empty() {
                     if let Some(((typ, _), id)) = scope.get(path.entries[0].0) {
                         return Ok((typ.clone(), TypedLiteral::Dynamic(id)));
                     }
                 }
                 let mut generics = Vec::new();
-                for (_, generic_value) in path.entries.iter() {
+                for (.., generic_value) in path.entries.iter() {
                     generics.extend_from_slice(generic_value);
                 }
 
@@ -902,7 +883,7 @@ fn typecheck_expression<'arena>(
                     location,
                     &mut Vec::new(),
                 )
-                .map_err(|_| TypecheckingError::CannotFindValue(location.clone(), path.clone()))?;
+                .map_err(|_| TypecheckingError::CannotFindValue(*location, path.clone()))?;
                 match value {
                     ModuleScopeValue::Function(id) => {
                         let reader = &context.functions.read()[id.cast()];
@@ -912,7 +893,7 @@ fn typecheck_expression<'arena>(
                         };
                         if reader.0.generics.len() != generics.len() {
                             return Err(TypecheckingError::MismatchingGenericCount(
-                                location.clone(),
+                                *location,
                                 reader.0.generics.len(),
                                 generics.len(),
                             ));
@@ -923,8 +904,7 @@ fn typecheck_expression<'arena>(
                             let ty = context.resolve_type(module, typ, &[])?;
                             if reader.0.generics[i].sized && !ty.is_sized() {
                                 return Err(TypecheckingError::UnsizedForSizedGeneric(
-                                    location.clone(),
-                                    ty,
+                                    *location, ty,
                                 ));
                             }
                             generic_types.push(ty);
@@ -973,7 +953,7 @@ fn typecheck_expression<'arena>(
                     ModuleScopeValue::Static(id) => {
                         if !generics.is_empty() {
                             return Err(TypecheckingError::UnexpectedGenerics {
-                                location: location.clone(),
+                                location: *location,
                             });
                         }
                         Ok((
@@ -981,10 +961,7 @@ fn typecheck_expression<'arena>(
                             TypedLiteral::Static(id.cast()),
                         ))
                     }
-                    _ => Err(TypecheckingError::CannotFindValue(
-                        location.clone(),
-                        path.clone(),
-                    )),
+                    _ => Err(TypecheckingError::CannotFindValue(*location, path.clone())),
                 }
             }
             LiteralValue::BakedAnonymousFunction(fn_id) => {
@@ -1002,7 +979,7 @@ fn typecheck_expression<'arena>(
             LiteralValue::Void => Ok((Type::PrimitiveVoid(0), TypedLiteral::Void)),
         },
         Expression::Asm {
-            loc,
+            span: loc,
             asm,
             volatile,
             output,
@@ -1028,21 +1005,21 @@ fn typecheck_expression<'arena>(
                 })
                 .ok_or_else(|| {
                     TypecheckingError::AsmNonNumericType(
-                        loc.clone(),
+                        *loc,
                         name.unwrap(), /* see comment above as to why this is fine */
                     )
                 })?;
             let mut typed_inputs = Vec::with_capacity(inputs.len());
-            for (loc, name) in inputs {
+            for (span, name) in inputs {
                 let Some(((entry_ty, _), id)) = scope.get(*name) else {
                     return Err(TypecheckingError::CannotFindValue(
-                        loc.clone(),
-                        Path::new(*name, Vec::new()),
+                        *span,
+                        Path::new(*name, *span, Vec::new()),
                     ));
                 };
                 if !entry_ty.is_asm_primitive() {
                     return Err(TypecheckingError::AsmNonNumericTypeResolved(
-                        loc.clone(),
+                        *span,
                         entry_ty.clone(),
                     ));
                 }
@@ -1050,7 +1027,7 @@ fn typecheck_expression<'arena>(
             }
             let id = scope.push(output.clone());
             exprs.push(TypecheckedExpression::Asm {
-                location: loc.clone(),
+                span: *loc,
                 dst: id,
                 inputs: typed_inputs,
                 registers: registers.clone(),
@@ -1073,34 +1050,34 @@ fn typecheck_expression<'arena>(
         Expression::Unary {
             operator,
             right_side,
-            loc,
+            span: loc,
         } => {
             let (typ, right_side) =
                 typecheck_expression(context, module, scope, right_side, exprs, type_suggestion)?;
             match operator {
                 UnaryOp::Plus if typ.is_int_like() => {
-                    tc_res!(unary scope, exprs; Pos(loc.clone(), right_side, typ))
+                    tc_res!(unary scope, exprs; Pos(*loc, right_side, typ))
                 }
-                UnaryOp::Plus => Err(TypecheckingError::CannotPos(loc.clone(), typ)),
+                UnaryOp::Plus => Err(TypecheckingError::CannotPos(*loc, typ)),
                 UnaryOp::Minus if (typ.is_int_like() && !typ.is_unsigned()) || typ.is_float() => {
-                    tc_res!(unary scope, exprs; Neg(loc.clone(), right_side, typ))
+                    tc_res!(unary scope, exprs; Neg(*loc, right_side, typ))
                 }
-                UnaryOp::Minus => Err(TypecheckingError::CannotNeg(loc.clone(), typ)),
+                UnaryOp::Minus => Err(TypecheckingError::CannotNeg(*loc, typ)),
                 UnaryOp::LogicalNot if matches!(typ, Type::PrimitiveBool(0)) => {
-                    tc_res!(unary scope, exprs; LNot(loc.clone(), right_side, typ))
+                    tc_res!(unary scope, exprs; LNot(*loc, right_side, typ))
                 }
-                UnaryOp::LogicalNot => Err(TypecheckingError::CannotLNot(loc.clone(), typ)),
+                UnaryOp::LogicalNot => Err(TypecheckingError::CannotLNot(*loc, typ)),
                 UnaryOp::BitwiseNot
                     if typ.is_int_like() || matches!(typ, Type::PrimitiveBool(0)) =>
                 {
-                    tc_res!(unary scope, exprs; BNot(loc.clone(), right_side, typ))
+                    tc_res!(unary scope, exprs; BNot(*loc, right_side, typ))
                 }
-                UnaryOp::BitwiseNot => Err(TypecheckingError::CannotBNot(loc.clone(), typ)),
+                UnaryOp::BitwiseNot => Err(TypecheckingError::CannotBNot(*loc, typ)),
                 UnaryOp::Dereference => match typ.deref() {
                     Ok(typ) => {
-                        tc_res!(unary scope, exprs; Dereference(loc.clone(), right_side, typ))
+                        tc_res!(unary scope, exprs; Dereference(*loc, right_side, typ))
                     }
-                    Err(typ) => Err(TypecheckingError::CannotDeref(loc.clone(), typ)),
+                    Err(typ) => Err(TypecheckingError::CannotDeref(*loc, typ)),
                 },
                 UnaryOp::Reference => unreachable!(),
             }
@@ -1109,7 +1086,7 @@ fn typecheck_expression<'arena>(
             operator,
             right_side,
             left_side,
-            loc,
+            span,
         } => {
             if matches!(operator, BinaryOp::LShift | BinaryOp::RShift) {
                 let (typ, left_side) = typecheck_expression(
@@ -1129,22 +1106,19 @@ fn typecheck_expression<'arena>(
                     TypeSuggestion::Number(NumberType::Usize),
                 )?;
                 if !typ_right.is_int_like() || !typ_right.is_unsigned() {
-                    return Err(TypecheckingError::CannotShiftByNonUInt(
-                        loc.clone(),
-                        typ_right,
-                    ));
+                    return Err(TypecheckingError::CannotShiftByNonUInt(*span, typ_right));
                 }
 
                 return match operator {
                     BinaryOp::LShift if typ.is_int_like() => {
-                        tc_res!(binary scope, exprs; LShift(loc.clone(), left_side, right_side, typ))
+                        tc_res!(binary scope, exprs; LShift(*span, left_side, right_side, typ))
                     }
                     BinaryOp::RShift if typ.is_int_like() => {
-                        tc_res!(binary scope, exprs; RShift(loc.clone(), left_side, right_side, typ))
+                        tc_res!(binary scope, exprs; RShift(*span, left_side, right_side, typ))
                     }
 
-                    BinaryOp::LShift => Err(TypecheckingError::CannotShl(loc.clone(), typ)),
-                    BinaryOp::RShift => Err(TypecheckingError::CannotShr(loc.clone(), typ)),
+                    BinaryOp::LShift => Err(TypecheckingError::CannotShl(*span, typ)),
+                    BinaryOp::RShift => Err(TypecheckingError::CannotShr(*span, typ)),
                     _ => unreachable!(),
                 };
             }
@@ -1159,14 +1133,10 @@ fn typecheck_expression<'arena>(
                 TypeSuggestion::from_type(&typ_left),
             )?;
             if typ_left != typ_right {
-                return Err(TypecheckingError::LhsNotRhs(
-                    loc.clone(),
-                    typ_left,
-                    typ_right,
-                ));
+                return Err(TypecheckingError::LhsNotRhs(*span, typ_left, typ_right));
             }
             let typ = typ_left;
-            let loc = loc.clone();
+            let loc = *span;
             match operator {
                 BinaryOp::Plus if typ.is_int_like() => {
                     tc_res!(binary scope, exprs; Add(loc, left_side, right_side, typ))
@@ -1240,6 +1210,7 @@ fn typecheck_expression<'arena>(
         Expression::FunctionCall {
             identifier,
             arguments,
+            ..
         } => {
             let (typ, function_expr) = typecheck_expression(
                 context,
@@ -1259,20 +1230,18 @@ fn typecheck_expression<'arena>(
             };
             let Type::Function(function_type, _) = typ else {
                 return Err(TypecheckingError::TypeIsNotAFunction {
-                    location: identifier.loc().clone(),
+                    location: identifier.span(),
                 });
             };
             let mut typed_arguments = Vec::with_capacity(function_type.arguments.len());
             if arguments.len() < function_type.arguments.len() {
                 return Err(TypecheckingError::MissingArguments {
-                    location: identifier.loc().clone(),
+                    location: identifier.span(),
                 });
             }
             if arguments.len() > function_type.arguments.len() && !has_vararg {
                 return Err(TypecheckingError::TooManyArguments {
-                    location: arguments[function_type.arguments.len().saturating_sub(1)]
-                        .loc()
-                        .clone(),
+                    location: arguments[function_type.arguments.len().saturating_sub(1)].span(),
                 });
             }
             for (i, arg) in arguments.iter().enumerate() {
@@ -1296,7 +1265,7 @@ fn typecheck_expression<'arena>(
                     return Err(TypecheckingError::MismatchingType {
                         expected: function_type.arguments[i].clone(),
                         found: typ,
-                        location: arguments[i].loc().clone(),
+                        location: arguments[i].span(),
                     });
                 }
                 typed_arguments.push(expr);
@@ -1306,7 +1275,7 @@ fn typecheck_expression<'arena>(
                 let typ = function_type.return_type.clone();
                 let id = scope.push(typ.clone());
                 exprs.push(TypecheckedExpression::IntrinsicCall(
-                    identifier.loc().clone(),
+                    identifier.span(),
                     id,
                     intrinsic,
                     typed_arguments,
@@ -1317,7 +1286,7 @@ fn typecheck_expression<'arena>(
                 let typ = function_type.return_type.clone();
                 let id = scope.push(typ.clone());
                 exprs.push(TypecheckedExpression::DirectCall(
-                    identifier.loc().clone(),
+                    identifier.span(),
                     id,
                     fn_id,
                     typed_arguments,
@@ -1325,9 +1294,9 @@ fn typecheck_expression<'arena>(
                 ));
                 Ok((typ, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::ExternalFunction(fn_id) = function_expr {
-                tc_res!(binary scope, exprs; DirectExternCall(identifier.loc().clone(), fn_id, typed_arguments, function_type.return_type.clone()))
+                tc_res!(binary scope, exprs; DirectExternCall(identifier.span(), fn_id, typed_arguments, function_type.return_type.clone()))
             } else {
-                tc_res!(binary scope, exprs; Call(identifier.loc().clone(), function_expr, typed_arguments, function_type.return_type.clone()))
+                tc_res!(binary scope, exprs; Call(identifier.span(), function_expr, typed_arguments, function_type.return_type.clone()))
             }
         }
         Expression::Indexing { .. } | Expression::MemberAccess { .. } => {
@@ -1337,11 +1306,12 @@ fn typecheck_expression<'arena>(
             identifier,
             lhs,
             arguments,
+            ..
         } => typecheck_membercall(context, module, scope, exprs, lhs, identifier, arguments),
         Expression::Assignment {
             left_side,
             right_side,
-            loc,
+            span,
         } => {
             let (typ_lhs, lhs) = match &**left_side {
                 Expression::Unary {
@@ -1357,9 +1327,9 @@ fn typecheck_expression<'arena>(
                         exprs,
                         TypeSuggestion::Unknown,
                     )?;
-                    let typ = typ.deref().map_err(|typ| {
-                        TypecheckingError::CannotDeref(right_side.loc().clone(), typ)
-                    })?;
+                    let typ = typ
+                        .deref()
+                        .map_err(|typ| TypecheckingError::CannotDeref(right_side.span(), typ))?;
 
                     (typ, lhs)
                 }
@@ -1370,7 +1340,7 @@ fn typecheck_expression<'arena>(
                         scope,
                         &Expression::Unary {
                             operator: UnaryOp::Reference,
-                            loc: loc.clone(),
+                            span: *span,
                             right_side: left_side.clone(),
                         },
                         exprs,
@@ -1395,14 +1365,10 @@ fn typecheck_expression<'arena>(
                 return Err(TypecheckingError::MismatchingType {
                     expected: typ_lhs,
                     found: typ_rhs,
-                    location: loc.clone(),
+                    location: *span,
                 });
             }
-            exprs.push(TypecheckedExpression::StoreAssignment(
-                loc.clone(),
-                lhs,
-                rhs,
-            ));
+            exprs.push(TypecheckedExpression::StoreAssignment(*span, lhs, rhs));
             Ok((Type::PrimitiveVoid(0), TypedLiteral::Void))
         }
         Expression::Range {
@@ -1424,7 +1390,7 @@ fn typecheck_expression<'arena>(
                 return Err(TypecheckingError::MismatchingType {
                     expected: typ.clone(),
                     found: typ_rhs.clone(),
-                    location: right_side.loc().clone(),
+                    location: right_side.span(),
                 });
             }
 
@@ -1433,12 +1399,12 @@ fn typecheck_expression<'arena>(
         Expression::TypeCast {
             left_side,
             new_type,
-            loc,
+            span,
         } => {
             let (typ, lhs) =
                 typecheck_expression(context, module, scope, left_side, exprs, type_suggestion)?;
             let new_type = context.resolve_type(module, new_type, &[])?;
-            typecheck_cast(scope, exprs, typ, new_type, lhs, loc.clone(), context)
+            typecheck_cast(scope, exprs, typ, new_type, lhs, *span, context)
         }
     }
 }
@@ -1450,7 +1416,7 @@ fn typecheck_cast<'arena>(
     typ: Type<'arena>,
     new_typ: Type<'arena>,
     lhs: TypedLiteral<'arena>,
-    loc: Location,
+    loc: Span<'arena>,
     context: &TypecheckingContext<'arena>,
 ) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
     if typ == new_typ {
@@ -1637,7 +1603,7 @@ fn typecheck_dyn_membercall<'arena>(
     ident: &InternedStr<'arena>,
     args: &[Expression<'arena>],
     lhs: TypedLiteral<'arena>,
-    lhs_loc: Location,
+    lhs_loc: Span<'arena>,
     trait_refs: Vec<(StoreKey<TypedTrait<'arena>>, InternedStr<'arena>)>,
     num_references: u8,
 ) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
@@ -1691,7 +1657,7 @@ fn typecheck_dyn_membercall<'arena>(
     while typ.refcount() > 1 {
         typ = typ.deref().expect("dereferencing &_ should never fail");
         let id = scope.push(typ.clone());
-        exprs.push(TypecheckedExpression::Dereference(lhs_loc.clone(), id, lhs));
+        exprs.push(TypecheckedExpression::Dereference(lhs_loc, id, lhs));
         lhs = TypedLiteral::Dynamic(id);
     }
 
@@ -1703,7 +1669,7 @@ fn typecheck_dyn_membercall<'arena>(
     }
     if args.len() > arg_typs.len() - 1 {
         return Err(TypecheckingError::TooManyArguments {
-            location: args[arg_typs.len() - 1].loc().clone(),
+            location: args[arg_typs.len() - 1].span(),
         });
     }
 
@@ -1720,7 +1686,7 @@ fn typecheck_dyn_membercall<'arena>(
             return Err(TypecheckingError::MismatchingType {
                 expected: arg_typs.remove(i + 1).1,
                 found: typ,
-                location: args[i].loc().clone(),
+                location: args[i].span(),
             });
         }
         typed_args.push(lit);
@@ -1762,7 +1728,7 @@ fn typecheck_membercall<'arena>(
                 ident,
                 args,
                 typed_literal_lhs,
-                lhs.loc().clone(),
+                lhs.span(),
                 trait_refs,
                 num_references,
             );
@@ -1824,7 +1790,7 @@ fn typecheck_membercall<'arena>(
     drop(struct_reader);
     let Some(function_id) = function_id else {
         return Err(TypecheckingError::CannotFindFunctionOnType(
-            lhs.loc().clone(),
+            lhs.span(),
             *ident,
             typ_lhs,
         ));
@@ -1839,7 +1805,7 @@ fn typecheck_membercall<'arena>(
         != Some(typ_lhs.clone().without_ref())
     {
         return Err(TypecheckingError::NonMemberFunction(
-            function.0.location.clone(),
+            function.0.span,
             *ident,
             typ_lhs,
         ));
@@ -1852,19 +1818,14 @@ fn typecheck_membercall<'arena>(
                 .expect("you should always be able to deref &_");
             let new_id = scope.push(typ_lhs.clone());
             exprs.push(TypecheckedExpression::Dereference(
-                lhs.loc().clone(),
+                lhs.span(),
                 new_id,
                 typed_literal_lhs,
             ));
             typed_literal_lhs = TypedLiteral::Dynamic(new_id);
         } else {
-            typed_literal_lhs = make_reference(
-                scope,
-                exprs,
-                typ_lhs.clone(),
-                typed_literal_lhs,
-                lhs.loc().clone(),
-            );
+            typed_literal_lhs =
+                make_reference(scope, exprs, typ_lhs.clone(), typed_literal_lhs, lhs.span());
             typ_lhs = typ_lhs.take_ref();
         }
     }
@@ -1873,12 +1834,12 @@ fn typecheck_membercall<'arena>(
     typed_arguments.push(typed_literal_lhs);
     if args.len() < function.0.arguments.len() - 1 {
         return Err(TypecheckingError::MissingArguments {
-            location: lhs.loc().clone(),
+            location: lhs.span(),
         });
     }
     if args.len() > function.0.arguments.len() - 1 {
         return Err(TypecheckingError::TooManyArguments {
-            location: args[function.0.arguments.len() - 1].loc().clone(),
+            location: args[function.0.arguments.len() - 1].span(),
         });
     }
     for (i, (_, arg)) in function.0.arguments.iter().skip(1).enumerate() {
@@ -1894,7 +1855,7 @@ fn typecheck_membercall<'arena>(
             return Err(TypecheckingError::MismatchingType {
                 expected: function.0.arguments[i + 1].1.clone(),
                 found: typ,
-                location: args[i].loc().clone(),
+                location: args[i].span(),
             });
         }
         typed_arguments.push(expr);
@@ -1902,7 +1863,7 @@ fn typecheck_membercall<'arena>(
 
     let call_id = scope.push(function.0.return_type.clone());
     exprs.push(TypecheckedExpression::DirectCall(
-        lhs.loc().clone(),
+        lhs.span(),
         call_id,
         function_id,
         typed_arguments,
@@ -1966,7 +1927,7 @@ fn ref_resolve_indexing<'arena>(
         Expression::MemberAccess {
             left_side,
             index,
-            loc,
+            span,
         } => {
             let (mut typ_lhs, mut typed_literal_lhs) = ref_resolve_indexing(
                 context,
@@ -1984,7 +1945,7 @@ fn ref_resolve_indexing<'arena>(
                         .expect("&_ should never fail to dereference");
                     let id = scope.push(typ_lhs.clone().take_ref());
                     exprs.push(TypecheckedExpression::Dereference(
-                        expression.loc().clone(),
+                        expression.span(),
                         id,
                         typed_literal_lhs,
                     ));
@@ -2005,7 +1966,7 @@ fn ref_resolve_indexing<'arena>(
                                 typ_lhs = typ.clone();
                                 let new_val = scope.push(typ_lhs.clone().take_ref());
                                 exprs.push(TypecheckedExpression::Offset(
-                                    loc.clone(),
+                                    *span,
                                     new_val,
                                     typed_literal_lhs,
                                     OffsetValue::Static(idx),
@@ -2014,19 +1975,14 @@ fn ref_resolve_indexing<'arena>(
                             }
                             None => {
                                 return Err(TypecheckingError::FieldNotFound(
-                                    expression.loc().clone(),
+                                    expression.span(),
                                     typ_lhs,
                                     *element_name,
                                 ))
                             }
                         }
                     }
-                    _ => {
-                        return Err(TypecheckingError::AccessNonStructValue(
-                            loc.clone(),
-                            typ_lhs,
-                        ))
-                    }
+                    _ => return Err(TypecheckingError::AccessNonStructValue(*span, typ_lhs)),
                 };
             }
             Ok((typ_lhs, typed_literal_lhs))
@@ -2034,6 +1990,7 @@ fn ref_resolve_indexing<'arena>(
         Expression::Indexing {
             left_side,
             right_side,
+            ..
         } => {
             let (mut typ_lhs, mut typed_literal_lhs) = ref_resolve_indexing(
                 context,
@@ -2050,7 +2007,7 @@ fn ref_resolve_indexing<'arena>(
                     .expect("&_ should never fail to dereference");
                 let id = scope.push(typ_lhs.clone().take_ref());
                 exprs.push(TypecheckedExpression::Dereference(
-                    expression.loc().clone(),
+                    expression.span(),
                     id,
                     typed_literal_lhs,
                 ));
@@ -2063,13 +2020,11 @@ fn ref_resolve_indexing<'arena>(
                 Type::UnsizedArray { typ, .. } => *typ,
                 Type::Tuple { elements, .. } => match offset {
                     OffsetValue::Dynamic(_) => {
-                        return Err(TypecheckingError::TupleDynamicIndex(
-                            expression.loc().clone(),
-                        ))
+                        return Err(TypecheckingError::TupleDynamicIndex(expression.span()))
                     }
                     OffsetValue::Static(idx) if idx >= elements.len() => {
                         return Err(TypecheckingError::TupleIndexOutOfBounds(
-                            expression.loc().clone(),
+                            expression.span(),
                             elements.len(),
                             idx,
                         ))
@@ -2078,7 +2033,7 @@ fn ref_resolve_indexing<'arena>(
                 },
                 _ => {
                     return Err(TypecheckingError::IndexNonArrayElem(
-                        expression.loc().clone(),
+                        expression.span(),
                         typ_lhs,
                     ))
                 }
@@ -2086,7 +2041,7 @@ fn ref_resolve_indexing<'arena>(
 
             let id = scope.push(typ.clone().take_ref());
             exprs.push(TypecheckedExpression::Offset(
-                expression.loc().clone(),
+                expression.span(),
                 id,
                 typed_literal_lhs,
                 offset,
@@ -2116,7 +2071,7 @@ fn ref_resolve_indexing<'arena>(
                     };
                     let id = scope.push(typ.clone().take_ref());
                     exprs.push(TypecheckedExpression::MakeUnsizedSlice(
-                        expression.loc().clone(),
+                        expression.span(),
                         id,
                         typed_literal,
                         *number_elements,
@@ -2151,7 +2106,7 @@ fn ref_resolve_indexing<'arena>(
                             number_elements,
                         },
                         typed_literal,
-                        expression.loc().clone(),
+                        expression.span(),
                     );
                     let typ = Type::UnsizedArray {
                         typ,
@@ -2159,7 +2114,7 @@ fn ref_resolve_indexing<'arena>(
                     };
                     let id = scope.push(typ.clone().take_ref());
                     exprs.push(TypecheckedExpression::MakeUnsizedSlice(
-                        expression.loc().clone(),
+                        expression.span(),
                         id,
                         typed_literal_sized_array_ref,
                         number_elements,
@@ -2168,7 +2123,7 @@ fn ref_resolve_indexing<'arena>(
                 }
                 (_, typ) => Ok((
                     typ.clone(),
-                    make_reference(scope, exprs, typ, typed_literal, expression.loc().clone()),
+                    make_reference(scope, exprs, typ, typed_literal, expression.span()),
                 )),
             }
         }
@@ -2195,7 +2150,7 @@ fn indexing_resolve_rhs<'arena>(
         return Err(TypecheckingError::MismatchingType {
             expected: Type::PrimitiveUSize(0),
             found: typ,
-            location: expression.loc().clone(),
+            location: expression.span(),
         });
     }
     match rhs {
@@ -2212,7 +2167,7 @@ fn make_reference<'arena>(
     expressions: &mut Vec<TypecheckedExpression<'arena>>,
     typ: Type<'arena>,
     mut typed_literal: TypedLiteral<'arena>,
-    loc: Location,
+    loc: Span<'arena>,
 ) -> TypedLiteral<'arena> {
     match typed_literal {
         TypedLiteral::Void | TypedLiteral::Static(_) => {}
@@ -2220,11 +2175,7 @@ fn make_reference<'arena>(
         _ => {
             let lit_id = scope.push(typ.clone());
             scope.make_stack_allocated(lit_id);
-            expressions.push(TypecheckedExpression::Literal(
-                loc.clone(),
-                lit_id,
-                typed_literal,
-            ));
+            expressions.push(TypecheckedExpression::Literal(loc, lit_id, typed_literal));
             typed_literal = TypedLiteral::Dynamic(lit_id);
         }
     }
@@ -2247,6 +2198,7 @@ fn copy_resolve_indexing<'arena>(
         Expression::Indexing {
             left_side,
             right_side,
+            ..
         } => {
             let offset = indexing_resolve_rhs(context, module, scope, right_side, exprs)?;
             let (typ, lhs) = copy_resolve_indexing(
@@ -2261,23 +2213,18 @@ fn copy_resolve_indexing<'arena>(
                 typ,
                 Type::UnsizedArray { .. } | Type::SizedArray { .. } | Type::Tuple { .. }
             ) {
-                return Err(TypecheckingError::IndexNonArrayElem(
-                    expression.loc().clone(),
-                    typ,
-                ));
+                return Err(TypecheckingError::IndexNonArrayElem(expression.span(), typ));
             }
             if typ.refcount() == 0 {
                 let new_typ = match typ.clone() {
                     Type::SizedArray { typ, .. } => *typ,
                     Type::Tuple { elements, .. } => match offset {
                         OffsetValue::Dynamic(_) => {
-                            return Err(TypecheckingError::TupleDynamicIndex(
-                                expression.loc().clone(),
-                            ))
+                            return Err(TypecheckingError::TupleDynamicIndex(expression.span()))
                         }
                         OffsetValue::Static(v) if v >= elements.len() => {
                             return Err(TypecheckingError::TupleIndexOutOfBounds(
-                                expression.loc().clone(),
+                                expression.span(),
                                 elements.len(),
                                 v,
                             ))
@@ -2291,7 +2238,7 @@ fn copy_resolve_indexing<'arena>(
                     OffsetValue::Static(offset) => {
                         let new_id = scope.push(new_typ.clone());
                         exprs.push(TypecheckedExpression::OffsetNonPointer(
-                            expression.loc().clone(),
+                            expression.span(),
                             new_id,
                             lhs,
                             offset,
@@ -2303,17 +2250,17 @@ fn copy_resolve_indexing<'arena>(
                             scope.make_stack_allocated(lhs);
                         }
                         let typed_lit_ref =
-                            make_reference(scope, exprs, typ, lhs, expression.loc().clone());
+                            make_reference(scope, exprs, typ, lhs, expression.span());
                         let offset_id = scope.push(new_typ.clone().take_ref());
                         let new_id = scope.push(new_typ.clone());
                         exprs.push(TypecheckedExpression::Offset(
-                            expression.loc().clone(),
+                            expression.span(),
                             offset_id,
                             typed_lit_ref,
                             off,
                         ));
                         exprs.push(TypecheckedExpression::Dereference(
-                            expression.loc().clone(),
+                            expression.span(),
                             new_id,
                             TypedLiteral::Dynamic(offset_id),
                         ));
@@ -2328,7 +2275,7 @@ fn copy_resolve_indexing<'arena>(
                     typ = typ.deref().expect("dereferencing &_ should never fail");
                     let new_id = scope.push(typ.clone());
                     exprs.push(TypecheckedExpression::Dereference(
-                        expression.loc().clone(),
+                        expression.span(),
                         new_id,
                         lhs,
                     ));
@@ -2341,13 +2288,13 @@ fn copy_resolve_indexing<'arena>(
                 let offset_id = scope.push(typ.clone().take_ref());
                 let value_id = scope.push(typ.clone());
                 exprs.push(TypecheckedExpression::Offset(
-                    expression.loc().clone(),
+                    expression.span(),
                     offset_id,
                     lhs,
                     offset,
                 ));
                 exprs.push(TypecheckedExpression::Dereference(
-                    expression.loc().clone(),
+                    expression.span(),
                     value_id,
                     TypedLiteral::Dynamic(offset_id),
                 ));
@@ -2357,7 +2304,7 @@ fn copy_resolve_indexing<'arena>(
         Expression::MemberAccess {
             index,
             left_side,
-            loc,
+            span,
         } => {
             let (mut typ_lhs, mut typed_literal_lhs) = copy_resolve_indexing(
                 context,
@@ -2373,7 +2320,7 @@ fn copy_resolve_indexing<'arena>(
                     typ_lhs = typ_lhs.deref().expect("dereferencing &_ should never fail");
                     let new_id = scope.push(typ_lhs.clone());
                     exprs.push(TypecheckedExpression::Dereference(
-                        expression.loc().clone(),
+                        expression.span(),
                         new_id,
                         typed_literal_lhs,
                     ));
@@ -2395,19 +2342,14 @@ fn copy_resolve_indexing<'arena>(
                             }
                             None => {
                                 return Err(TypecheckingError::FieldNotFound(
-                                    expression.loc().clone(),
+                                    expression.span(),
                                     typ_lhs.without_ref(),
                                     *element_name,
                                 ))
                             }
                         }
                     }
-                    _ => {
-                        return Err(TypecheckingError::AccessNonStructValue(
-                            loc.clone(),
-                            typ_lhs,
-                        ))
-                    }
+                    _ => return Err(TypecheckingError::AccessNonStructValue(*span, typ_lhs)),
                 };
                 if !needs_deref {
                     let new_id = scope.push(typ_lhs.clone());
@@ -2415,7 +2357,7 @@ fn copy_resolve_indexing<'arena>(
                         scope.make_stack_allocated(id);
                     }
                     exprs.push(TypecheckedExpression::OffsetNonPointer(
-                        loc.clone(),
+                        *span,
                         new_id,
                         typed_literal_lhs,
                         offset,
@@ -2425,13 +2367,13 @@ fn copy_resolve_indexing<'arena>(
                     let offset_id = scope.push(typ_lhs.clone().take_ref());
                     let deref_id = scope.push(typ_lhs.clone());
                     exprs.push(TypecheckedExpression::Offset(
-                        loc.clone(),
+                        *span,
                         offset_id,
                         typed_literal_lhs,
                         OffsetValue::Static(offset),
                     ));
                     exprs.push(TypecheckedExpression::Dereference(
-                        loc.clone(),
+                        *span,
                         deref_id,
                         TypedLiteral::Dynamic(offset_id),
                     ));

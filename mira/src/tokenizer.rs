@@ -1,86 +1,110 @@
 use parking_lot::RwLock;
-use std::{
-    fmt::{Display, Write},
-    path::Path,
-    str::FromStr,
-    sync::Arc,
-};
+use span::{BytePos, SourceFile, SourceMap, Span, SpanData};
+use std::{fmt::Display, str::FromStr, sync::Arc};
+
+pub mod span;
 
 use crate::{
     context::SharedContext,
     error::{ParsingError, TokenizationError},
+    interner::InternedStr,
     module::Module,
-    module_resolution::ModuleResolver,
     parser::{LiteralValue, Parser, ParserQueueEntry},
     store::{Store, StoreKey},
-    string_interner::InternedStr,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TokenType {
-    Let,                  // done, done
-    EqualEqual,           // done, done
-    NotEquals,            // done, done
-    LessThan,             // done, done
-    GreaterThan,          // done, done
-    LogicalNot,           // done, done
-    LogicalAnd,           // done, done
-    LogicalOr,            // done, done
-    StringLiteral,        // done, done
-    FloatLiteral,         // done, done
-    SIntLiteral,          // done, done
-    UIntLiteral,          // done, done
-    BooleanLiteral,       // done, done
-    VoidLiteral,          // done, done
-    IdentifierLiteral,    // done, done
-    Equal,                // done, done
-    Colon,                // done, done
-    Semicolon,            // done, done
-    ParenLeft,            // done, done
-    ParenRight,           // done, done
-    CurlyLeft,            // done, done
-    CurlyRight,           // done, done
-    BracketLeft,          // done, done
-    BracketRight,         // done, done
-    Plus,                 // done, done
-    Minus,                // done, done
-    Asterix,              // done, done
-    Divide,               // done, done
-    Modulo,               // done, done
-    BitwiseNot,           // done, done
-    Ampersand,            // done, done
-    BitwiseOr,            // done, done
-    BitwiseXor,           // done, done
-    PipeOperator,         // done, done
-    Return,               // done, done
-    Fn,                   // done, done
-    Extern,               // done, done
-    Use,                  // done, done
-    Export,               // done, done
-    If,                   // done, done
-    Else,                 // done, done
-    Asm,                  // done, done
-    Volatile,             // done, done
-    While,                // done, done
-    For,                  // done, done
-    Pub,                  // done, done
-    In,                   // done, done
-    Unsized,              // done, done
-    Range,                // done, done
-    RangeInclusive,       // done, done
-    ReturnType,           // done, done
-    Struct,               // done, done
-    Trait,                // done, done
-    Impl,                 // done, done
-    Comma,                // done, done
-    PlusAssign,           // done, done
-    MinusAssign,          // done, done
-    Dot,                  // done, done
-    As,                   // done, done
-    QuestionMark,         // done, done
-    AnnotationIntroducer, // done, done
-    NamespaceAccess,      // done, done
-    Eof,                  // done, done
+macro_rules! token_type {
+    ($($key:ident $(=$value:literal)?),* $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum TokenType {
+            $($key),*
+        }
+
+        impl TokenType {
+            pub fn char_len(self) -> Option<u32> {
+                self.as_str().map(|s| s.len() as u32)
+            }
+
+            pub fn as_str(self) -> Option<&'static str> {
+                match self {
+                    $(Self::$key => token_type!(!internal $($value)?),)*
+                }
+            }
+        }
+    };
+    (!internal) => {
+        None
+    };
+    (!internal $value:literal) => {
+        Some($value)
+    };
+}
+
+// #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// pub enum TokenType {
+token_type! {
+    Let = "let",
+    EqualEqual = "==",
+    NotEquals = "!=",
+    LessThan = "<",
+    GreaterThan = ">",
+    LogicalNot = "!",
+    LogicalAnd = "&&",
+    LogicalOr = "||",
+    StringLiteral,
+    FloatLiteral,
+    SIntLiteral,
+    UIntLiteral,
+    BooleanLiteral,
+    VoidLiteral = "void",
+    IdentifierLiteral,
+    Equal = "=",
+    Colon = ":",
+    Semicolon = ";",
+    ParenLeft = "(",
+    ParenRight = ")",
+    CurlyLeft = "{",
+    CurlyRight = "}",
+    BracketLeft = "[",
+    BracketRight = "]",
+    Plus = "+",
+    Minus = "-",
+    Asterix = "*",
+    Divide = "/",
+    Modulo = "%",
+    BitwiseNot = "~",
+    Ampersand = "&",
+    BitwiseOr = "|",
+    BitwiseXor = "^",
+    PipeOperator = "|>",
+    Return = "return",
+    Fn = "fn",
+    Extern = "extern",
+    Use = "use",
+    Export = "export",
+    If = "if",
+    Else = "else",
+    Asm = "asm",
+    Volatile = "volatile",
+    While = "while",
+    For = "for",
+    Pub = "pub",
+    In = "in",
+    Unsized = "unsized",
+    Range = "..",
+    RangeInclusive = "..=",
+    ReturnType = "->",
+    Struct = "struct",
+    Trait = "trait",
+    Impl = "impl",
+    Comma = ",",
+    PlusAssign = "+=",
+    MinusAssign = "-=",
+    Dot = ".",
+    As = "as",
+    AnnotationIntroducer = "@",
+    NamespaceAccess = "::",
+    Eof = "",
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,101 +175,27 @@ pub enum Literal<'arena> {
     Bool(bool),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Location {
-    pub line: u32,
-    pub column: u32,
-    pub file: Arc<Path>,
-}
-
-impl Location {
-    pub fn new(file: Arc<Path>, line: u32, column: u32) -> Self {
-        Self { column, file, line }
-    }
-}
-
-impl Display for Location {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.file.display(), f)?;
-        f.write_char(':')?;
-        Display::fmt(&self.line, f)?;
-        f.write_char(':')?;
-        Display::fmt(&self.column, f)
-    }
-}
-
-#[macro_export]
-macro_rules! loc {
-    ($file:expr;$line:expr) => {
-        $crate::tokenizer::Location::new($file.clone(), $line, 0)
-    };
-    ($file:expr;$line:expr;$column:expr) => {
-        $crate::tokenizer::Location::new($file.clone(), $line, $column)
-    };
-}
-pub(crate) use loc;
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Token<'arena> {
     pub typ: TokenType,
     pub literal: Option<Literal<'arena>>,
-    pub location: Location,
+    pub span: Span<'arena>,
 }
 
 impl Display for Token<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(s) = self.typ.as_str() {
+            return f.write_str(s);
+        }
         match self.typ {
-            TokenType::As => f.write_str("as"),
-            TokenType::Colon => f.write_str(":"),
-            TokenType::Equal => f.write_str("="),
-            TokenType::Ampersand => f.write_str("&"),
-            TokenType::BitwiseNot => f.write_str("~"),
-            TokenType::BitwiseOr => f.write_str("|"),
-            TokenType::BitwiseXor => f.write_str("^"),
-            TokenType::VoidLiteral => f.write_str("void"),
             TokenType::BooleanLiteral => match &self.literal {
                 Some(Literal::Bool(v)) => f.write_fmt(format_args!("bool({v})")),
                 _ => f.write_str("bool(malformed data)"),
             },
-            TokenType::BracketLeft => f.write_str("["),
-            TokenType::BracketRight => f.write_str("]"),
-            TokenType::Comma => f.write_str(","),
-            TokenType::CurlyLeft => f.write_str("{"),
-            TokenType::CurlyRight => f.write_str("}"),
-            TokenType::Divide => f.write_str("/"),
-            TokenType::Dot => f.write_str("."),
-            TokenType::Else => f.write_str("else"),
-            TokenType::Asm => f.write_str("asm"),
-            TokenType::Volatile => f.write_str("volatile"),
-            TokenType::Eof => f.write_str("<EOF>"),
-            TokenType::EqualEqual => f.write_str("=="),
-            TokenType::Extern => f.write_str("extern"),
-            TokenType::Fn => f.write_str("fn"),
-            TokenType::For => f.write_str("for"),
-            TokenType::Pub => f.write_str("pub"),
-            TokenType::GreaterThan => f.write_str(">"),
             TokenType::IdentifierLiteral => match &self.literal {
                 Some(Literal::String(v)) => f.write_fmt(format_args!("identifier({v})")),
                 _ => f.write_str("identifier(malformed data)"),
             },
-            TokenType::Use => f.write_str("use"),
-            TokenType::Export => f.write_str("export"),
-            TokenType::If => f.write_str("if"),
-            TokenType::Impl => f.write_str("impl"),
-            TokenType::In => f.write_str("in"),
-            TokenType::Unsized => f.write_str("unsized"),
-            TokenType::LessThan => f.write_str("<"),
-            TokenType::Let => f.write_str("let"),
-            TokenType::LogicalAnd => f.write_str("&&"),
-            TokenType::LogicalNot => f.write_str("!"),
-            TokenType::LogicalOr => f.write_str("||"),
-            TokenType::Minus => f.write_str("-"),
-            TokenType::MinusAssign => f.write_str("-="),
-            TokenType::Modulo => f.write_str("%"),
-            TokenType::Asterix => f.write_str("*"),
-            TokenType::NotEquals => f.write_str("!="),
-            TokenType::AnnotationIntroducer => f.write_str("@"),
-            TokenType::NamespaceAccess => f.write_str("::"),
             TokenType::FloatLiteral => match self.literal {
                 Some(Literal::Float(v, typ)) => f.write_fmt(format_args!("float({v}{typ})")),
                 _ => f.write_str("float(malformed data)"),
@@ -258,43 +208,18 @@ impl Display for Token<'_> {
                 Some(Literal::UInt(v, typ)) => f.write_fmt(format_args!("uint({v}{typ})")),
                 _ => f.write_str("uint(malformed data)"),
             },
-            TokenType::ParenLeft => f.write_str("("),
-            TokenType::ParenRight => f.write_str(")"),
-            TokenType::PipeOperator => f.write_str("|>"),
-            TokenType::Plus => f.write_str("+"),
-            TokenType::PlusAssign => f.write_str("+="),
-            TokenType::QuestionMark => f.write_str("?"),
-            TokenType::Range => f.write_str(".."),
-            TokenType::RangeInclusive => f.write_str("..="),
-            TokenType::Return => f.write_str("return"),
-            TokenType::ReturnType => f.write_str("->"),
-            TokenType::Semicolon => f.write_str(";"),
             TokenType::StringLiteral => match &self.literal {
                 Some(Literal::String(v)) => f.write_fmt(format_args!("string({v:?})")),
                 _ => f.write_str("string(malformed data)"),
             },
-            TokenType::Struct => f.write_str("struct"),
-            TokenType::Trait => f.write_str("trait"),
-            TokenType::While => f.write_str("while"),
+            _ => unreachable!(),
         }
-        //f.write_str(" at ")?;
-        //Display::fmt(&self.location, f)
     }
 }
 
 impl<'arena> Token<'arena> {
-    pub fn new(
-        typ: TokenType,
-        literal: Option<Literal<'arena>>,
-        line_number: u32,
-        column: u32,
-        file: Arc<Path>,
-    ) -> Self {
-        Self {
-            typ,
-            location: loc!(file;line_number;column),
-            literal,
-        }
+    pub fn new(typ: TokenType, literal: Option<Literal<'arena>>, span: Span<'arena>) -> Self {
+        Self { typ, span, literal }
     }
 
     pub fn to_literal_value(&self) -> Option<LiteralValue<'arena>> {
@@ -313,7 +238,7 @@ impl<'arena> Token<'arena> {
             TokenType::VoidLiteral => Some(LiteralValue::Void),
             TokenType::IdentifierLiteral => match self.literal {
                 Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(
-                    crate::parser::Path::new(*v, Vec::new()),
+                    crate::parser::Path::new(*v, self.span, Vec::new()),
                 )),
                 _ => None,
             },
@@ -324,84 +249,68 @@ impl<'arena> Token<'arena> {
     pub fn void_literal(&self) -> Result<(), ParsingError<'arena>> {
         match &self.literal {
             None => Ok(()),
-            _ => Err(ParsingError::InvalidTokenization {
-                loc: self.location.clone(),
-            }),
+            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
         }
     }
 
     pub fn string_literal(&self) -> Result<InternedStr<'arena>, ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::String(v)) => Ok(*v),
-            _ => Err(ParsingError::InvalidTokenization {
-                loc: self.location.clone(),
-            }),
+            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
         }
     }
 
     pub fn bool_literal(&self) -> Result<bool, ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::Bool(v)) => Ok(*v),
-            _ => Err(ParsingError::InvalidTokenization {
-                loc: self.location.clone(),
-            }),
+            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
         }
     }
 
     pub fn float_literal(&self) -> Result<(f64, NumberType), ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::Float(v, numty)) => Ok((*v, *numty)),
-            _ => Err(ParsingError::InvalidTokenization {
-                loc: self.location.clone(),
-            }),
+            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
         }
     }
 
     pub fn sint_literal(&self) -> Result<(i64, NumberType), ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::SInt(v, numty)) => Ok((*v, *numty)),
-            _ => Err(ParsingError::InvalidTokenization {
-                loc: self.location.clone(),
-            }),
+            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
         }
     }
 
     pub fn uint_literal(&self) -> Result<(u64, NumberType), ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::UInt(v, numty)) => Ok((*v, *numty)),
-            _ => Err(ParsingError::InvalidTokenization {
-                loc: self.location.clone(),
-            }),
+            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
         }
     }
 }
 
 pub struct Tokenizer<'arena> {
     source: Vec<char>,
-    pub file: Arc<Path>,
+    pub file: Arc<SourceFile>,
     tokens: Vec<Token<'arena>>,
     start: usize,
     current: usize,
-    line: u32,
-    column: u32,
     ctx: SharedContext<'arena>,
 }
 
 impl<'arena> Tokenizer<'arena> {
-    pub fn new(ctx: SharedContext<'arena>, source: &str, file: Arc<Path>) -> Self {
+    pub fn new(ctx: SharedContext<'arena>, file: Arc<SourceFile>) -> Self {
         Self {
-            source: source.chars().collect(),
+            source: file.source.chars().collect(),
             file,
             start: 0,
             current: 0,
             tokens: vec![],
-            line: 1,
-            column: 0,
             ctx,
         }
     }
 
-    pub fn scan_tokens(&mut self) -> Result<(), Vec<TokenizationError>> {
+    pub fn scan_tokens(&mut self) -> Result<(), Vec<TokenizationError<'arena>>> {
         let mut errors = vec![];
         while !self.is_at_end() {
             self.start = self.current;
@@ -413,7 +322,9 @@ impl<'arena> Tokenizer<'arena> {
         self.tokens.push(Token {
             typ: TokenType::Eof,
             literal: None,
-            location: loc!(self.file;self.line + 1),
+            span: self
+                .ctx
+                .intern_span(SpanData::new(self.file.source_len + 1, 1, self.file.id)),
         });
 
         if !errors.is_empty() {
@@ -431,12 +342,7 @@ impl<'arena> Tokenizer<'arena> {
         if self.is_at_end() {
             return '\0';
         }
-        self.column += 1;
         self.current += 1;
-        if self.current > 1 && self.source[self.current - 2] == '\n' {
-            self.line += 1;
-            self.column = 0;
-        }
         self.source[self.current - 1]
     }
 
@@ -461,13 +367,13 @@ impl<'arena> Tokenizer<'arena> {
         self.tokens.push(tok);
     }
 
-    fn scan_token(&mut self) -> Result<(), TokenizationError> {
+    fn scan_token(&mut self) -> Result<(), TokenizationError<'arena>> {
         let tok = self.int_scan_token()?;
         let Some(tok) = tok else { return Ok(()) };
         match tok.typ {
             TokenType::IdentifierLiteral if self.if_char_advance('!') => match &tok.literal {
                 Some(Literal::String(str)) => {
-                    let mut tokens = self.do_macro(&tok.location, str)?;
+                    let mut tokens = self.do_macro(tok.span, str)?;
                     self.tokens.append(&mut tokens);
                 }
                 _ => unreachable!(
@@ -479,7 +385,7 @@ impl<'arena> Tokenizer<'arena> {
         Ok(())
     }
 
-    fn int_scan_token(&mut self) -> Result<Option<Token<'arena>>, TokenizationError> {
+    fn int_scan_token(&mut self) -> Result<Option<Token<'arena>>, TokenizationError<'arena>> {
         let c = self.advance();
 
         macro_rules! token {
@@ -497,7 +403,6 @@ impl<'arena> Tokenizer<'arena> {
         }
 
         match c {
-            '?' => token!(QuestionMark),
             '(' => token!(ParenLeft),
             ')' => token!(ParenRight),
             '{' => token!(CurlyLeft),
@@ -557,19 +462,18 @@ impl<'arena> Tokenizer<'arena> {
             _ if Self::is_valid_identifier_char(c) && !c.is_ascii_digit() => {
                 self.parse_identifier(c)
             }
-            _ => {
-                return Err(TokenizationError::unknown_token(
-                    loc!(self.file;self.line),
-                    c,
-                ))
-            }
+            _ => return Err(TokenizationError::unknown_token(self.current_span(), c)),
         }
         .map(Some)
     }
 
     #[inline(always)]
     fn get_token(&self, token: TokenType) -> Token<'arena> {
-        Token::new(token, None, self.line, self.column, self.file.clone())
+        Token::new(
+            token,
+            None,
+            self.span_from(self.current - token.char_len().unwrap() as usize),
+        )
     }
 
     fn skip_to_after_number(&mut self) {
@@ -593,36 +497,34 @@ impl<'arena> Tokenizer<'arena> {
 
     fn parse_numtype(
         &mut self,
-        loc: Location,
+        start_bytepos: usize,
         first_char: char,
         value: u64,
         is_negative: bool,
         allow_float: bool,
-    ) -> Result<Token<'arena>, TokenizationError> {
+    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
         let mut typ = String::from(first_char);
+        let first_type_char = self.current - 1;
 
         loop {
             match self.peek() {
                 'a'..='z' | '0'..='9' => typ.push(self.advance()),
                 _ => {
-                    let err = TokenizationError::InvalidNumberType(
-                        loc!(self.file;self.line;self.column - typ.len() as u32),
-                    );
+                    let err = TokenizationError::InvalidNumberType(self.span_from(first_type_char));
                     let Ok(number_type) = NumberType::from_str(&typ) else {
                         return Err(err);
                     };
                     return match number_type {
                         NumberType::F32 | NumberType::F64 if !allow_float => Err(err),
-                        NumberType::F32 | NumberType::F64 if is_negative => Ok(self
-                            .get_token_lit_loc(
-                                TokenType::FloatLiteral,
-                                Literal::Float(-(value as f64), number_type),
-                                loc,
-                            )),
-                        NumberType::F32 | NumberType::F64 => Ok(self.get_token_lit_loc(
+                        NumberType::F32 | NumberType::F64 if is_negative => Ok(Token::new(
                             TokenType::FloatLiteral,
-                            Literal::Float(value as f64, number_type),
-                            loc,
+                            Some(Literal::Float(-(value as f64), number_type)),
+                            self.span_from(start_bytepos),
+                        )),
+                        NumberType::F32 | NumberType::F64 => Ok(Token::new(
+                            TokenType::FloatLiteral,
+                            Some(Literal::Float(value as f64, number_type)),
+                            self.span_from(start_bytepos),
                         )),
                         NumberType::U8
                         | NumberType::U16
@@ -633,15 +535,15 @@ impl<'arena> Tokenizer<'arena> {
                         {
                             Err(err)
                         }
-                        _ if is_negative => Ok(self.get_token_lit_loc(
+                        _ if is_negative => Ok(Token::new(
                             TokenType::SIntLiteral,
-                            Literal::SInt(-(value as i64), number_type),
-                            loc,
+                            Some(Literal::SInt(-(value as i64), number_type)),
+                            self.span_from(start_bytepos),
                         )),
-                        _ => Ok(self.get_token_lit_loc(
+                        _ => Ok(Token::new(
                             TokenType::SIntLiteral,
-                            Literal::UInt(value, number_type),
-                            loc,
+                            Some(Literal::UInt(value, number_type)),
+                            self.span_from(start_bytepos),
                         )),
                     };
                 }
@@ -651,9 +553,9 @@ impl<'arena> Tokenizer<'arena> {
 
     fn parse_hex(
         &mut self,
-        location: Location,
+        start_bytepos: usize,
         is_negative: bool,
-    ) -> Result<Token<'arena>, TokenizationError> {
+    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
         let mut value: u64 = 0;
 
         loop {
@@ -661,40 +563,21 @@ impl<'arena> Tokenizer<'arena> {
                 '0'..='9' => value = (value << 4) | (self.advance() as u64 - '0' as u64),
                 'a'..='f' => value = (value << 4) | (self.advance() as u64 - 'a' as u64 + 0xa),
                 'A'..='F' => value = (value << 4) | (self.advance() as u64 - 'A' as u64 + 0xa),
-                '.' if self
-                    .source
-                    .get(self.current + 1)
-                    .copied()
-                    .unwrap_or('\0')
-                    .is_ascii_hexdigit() =>
-                {
-                    self.advance();
-                    loop {
-                        match self.peek() {
-                            '0'..='9' => _ = self.advance(),
-                            '.' => break,
-                            _ => break,
-                        }
-                    }
-                    return Err(TokenizationError::InvalidNumberError {
-                        loc: loc!(self.file;self.line;self.column),
-                    });
-                }
                 c if Self::is_valid_identifier_char(c) => {
-                    return self.parse_numtype(location, c, value, is_negative, false)
+                    return self.parse_numtype(start_bytepos, c, value, is_negative, false)
                 }
                 _ if is_negative => {
-                    return Ok(self.get_token_lit_loc(
+                    return Ok(Token::new(
                         TokenType::SIntLiteral,
-                        Literal::SInt(-(value as i64), NumberType::None),
-                        location,
+                        Some(Literal::SInt(-(value as i64), NumberType::None)),
+                        self.span_from(start_bytepos),
                     ))
                 }
                 _ => {
-                    return Ok(self.get_token_lit_loc(
+                    return Ok(Token::new(
                         TokenType::UIntLiteral,
-                        Literal::UInt(value, NumberType::None),
-                        location,
+                        Some(Literal::UInt(value, NumberType::None)),
+                        self.span_from(start_bytepos),
                     ))
                 }
             }
@@ -703,9 +586,9 @@ impl<'arena> Tokenizer<'arena> {
 
     fn parse_bin(
         &mut self,
-        location: Location,
+        start_bytepos: usize,
         is_negative: bool,
-    ) -> Result<Token<'arena>, TokenizationError> {
+    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
         let mut value: u64 = 0;
 
         loop {
@@ -714,37 +597,24 @@ impl<'arena> Tokenizer<'arena> {
                 '2'..='9' => {
                     self.advance();
                     return Err(TokenizationError::InvalidNumberError {
-                        loc: loc!(self.file;self.line;self.column),
-                    });
-                }
-                '.' if self
-                    .source
-                    .get(self.current + 1)
-                    .copied()
-                    .unwrap_or('\0')
-                    .is_ascii_digit() =>
-                {
-                    self.advance();
-                    self.skip_to_after_number();
-                    return Err(TokenizationError::InvalidNumberError {
-                        loc: loc!(self.file;self.line;self.column),
+                        loc: self.span_from(start_bytepos),
                     });
                 }
                 c if Self::is_valid_identifier_char(c) => {
-                    return self.parse_numtype(location, c, value, is_negative, false)
+                    return self.parse_numtype(start_bytepos, c, value, is_negative, false)
                 }
                 _ if is_negative => {
-                    return Ok(self.get_token_lit_loc(
+                    return Ok(Token::new(
                         TokenType::SIntLiteral,
-                        Literal::SInt(-(value as i64), NumberType::None),
-                        location,
+                        Some(Literal::SInt(-(value as i64), NumberType::None)),
+                        self.span_from(start_bytepos),
                     ))
                 }
                 _ => {
-                    return Ok(self.get_token_lit_loc(
+                    return Ok(Token::new(
                         TokenType::UIntLiteral,
-                        Literal::UInt(value, NumberType::None),
-                        location,
+                        Some(Literal::UInt(value, NumberType::None)),
+                        self.span_from(start_bytepos),
                     ))
                 }
             }
@@ -753,9 +623,9 @@ impl<'arena> Tokenizer<'arena> {
 
     fn parse_oct(
         &mut self,
-        location: Location,
+        start_bytepos: usize,
         is_negative: bool,
-    ) -> Result<Token<'arena>, TokenizationError> {
+    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
         let mut value: u64 = 0;
 
         loop {
@@ -764,37 +634,24 @@ impl<'arena> Tokenizer<'arena> {
                 '8' | '9' => {
                     self.advance();
                     return Err(TokenizationError::InvalidNumberError {
-                        loc: loc!(self.file;self.line;self.column),
-                    });
-                }
-                '.' if self
-                    .source
-                    .get(self.current + 1)
-                    .copied()
-                    .unwrap_or('\0')
-                    .is_ascii_digit() =>
-                {
-                    self.advance();
-                    self.skip_to_after_number();
-                    return Err(TokenizationError::InvalidNumberError {
-                        loc: loc!(self.file;self.line;self.column),
+                        loc: self.span_from(start_bytepos),
                     });
                 }
                 c if Self::is_valid_identifier_char(c) => {
-                    return self.parse_numtype(location, c, value, is_negative, false)
+                    return self.parse_numtype(start_bytepos, c, value, is_negative, false)
                 }
                 _ if is_negative => {
-                    return Ok(self.get_token_lit_loc(
+                    return Ok(Token::new(
                         TokenType::SIntLiteral,
-                        Literal::SInt(-(value as i64), NumberType::None),
-                        location,
+                        Some(Literal::SInt(-(value as i64), NumberType::None)),
+                        self.span_from(start_bytepos),
                     ))
                 }
                 _ => {
-                    return Ok(self.get_token_lit_loc(
+                    return Ok(Token::new(
                         TokenType::UIntLiteral,
-                        Literal::UInt(value, NumberType::None),
-                        location,
+                        Some(Literal::UInt(value, NumberType::None)),
+                        self.span_from(start_bytepos),
                     ))
                 }
             }
@@ -817,8 +674,11 @@ impl<'arena> Tokenizer<'arena> {
         value
     }
 
-    fn parse_number(&mut self, mut first_char: char) -> Result<Token<'arena>, TokenizationError> {
-        let loc = loc!(self.file;self.line;self.column);
+    fn parse_number(
+        &mut self,
+        mut first_char: char,
+    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
+        let start_byte = self.current;
         let is_negative = first_char == '-';
         let mut is_float = false;
         if is_negative {
@@ -830,28 +690,28 @@ impl<'arena> Tokenizer<'arena> {
             if !self.peek().is_ascii_hexdigit() {
                 self.advance();
                 return Err(TokenizationError::InvalidNumberError {
-                    loc: loc!(self.file;self.line;self.column),
+                    loc: self.span_from(start_byte),
                 });
             }
-            return self.parse_hex(loc, is_negative);
+            return self.parse_hex(start_byte, is_negative);
         } else if first_char == '0' && self.peek() == 'b' {
             self.advance();
             if !matches!(self.peek(), '0' | '1') {
                 self.advance();
                 return Err(TokenizationError::InvalidNumberError {
-                    loc: loc!(self.file;self.line;self.column),
+                    loc: self.span_from(start_byte),
                 });
             }
-            return self.parse_bin(loc, is_negative);
+            return self.parse_bin(start_byte, is_negative);
         } else if first_char == '0' && self.peek() == 'o' {
             self.advance();
             if !matches!(self.peek(), '0'..='7') {
                 self.advance();
                 return Err(TokenizationError::InvalidNumberError {
-                    loc: loc!(self.file;self.line;self.column),
+                    loc: self.span_from(start_byte),
                 });
             }
-            return self.parse_oct(loc, is_negative);
+            return self.parse_oct(start_byte, is_negative);
         }
 
         let mut str = String::new();
@@ -888,7 +748,7 @@ impl<'arena> Tokenizer<'arena> {
                 if is_float {
                     self.skip_to_after_number();
                     return Err(TokenizationError::InvalidNumberError {
-                        loc: loc!(self.file;self.line;self.column),
+                        loc: self.span_from(start_byte),
                     });
                 }
                 is_float = true;
@@ -910,7 +770,7 @@ impl<'arena> Tokenizer<'arena> {
             Err(_) if typ.is_empty() => NumberType::None,
             _ => {
                 return Err(TokenizationError::InvalidNumberType(
-                    loc!(self.file;self.line;self.column - typ.len() as u32),
+                    self.span_from(start_byte),
                 ))
             }
         };
@@ -919,7 +779,9 @@ impl<'arena> Tokenizer<'arena> {
             let num = match str.parse::<f64>() {
                 Ok(num) => num,
                 Err(..) => {
-                    return Err(TokenizationError::invalid_number(loc!(self.file;self.line)))
+                    return Err(TokenizationError::invalid_number(
+                        self.span_from(start_byte),
+                    ))
                 }
             };
             (Literal::Float(num, number_type), TokenType::FloatLiteral)
@@ -935,13 +797,16 @@ impl<'arena> Tokenizer<'arena> {
             )
         };
 
-        Ok(self.get_token_lit_loc(tok, lit, loc))
+        Ok(Token::new(tok, Some(lit), self.span_from(start_byte)))
     }
 
-    fn parse_string(&mut self, string_char: char) -> Result<Token<'arena>, TokenizationError> {
+    fn parse_string(
+        &mut self,
+        string_char: char,
+    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
         let mut is_backslash = false;
         let mut s = String::new();
-        let loc = loc!(self.file;self.line;self.column);
+        let start = self.current;
 
         while !self.is_at_end() {
             let c = self.advance();
@@ -958,15 +823,13 @@ impl<'arena> Tokenizer<'arena> {
             }
         }
         if self.cur_char() != string_char || self.source[self.current - 2] == '\\' {
-            return Err(TokenizationError::unclosed_string(
-                loc!(self.file;self.line+1),
-            ));
+            return Err(TokenizationError::unclosed_string(self.current_span()));
         }
 
-        Ok(self.get_token_lit_loc(
+        Ok(Token::new(
             TokenType::StringLiteral,
-            Literal::String(self.ctx.intern_str(&s)),
-            loc,
+            Some(Literal::String(self.ctx.intern_str(&s))),
+            self.span_from(start),
         ))
     }
 
@@ -983,10 +846,10 @@ impl<'arena> Tokenizer<'arena> {
     fn parse_identifier(
         &mut self,
         starting_char: char,
-    ) -> Result<Token<'arena>, TokenizationError> {
+    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
         let mut identifier = String::new();
         identifier.push(starting_char);
-        let loc = loc!(self.file;self.line;self.column);
+        let start = self.current;
 
         while !self.is_at_end() {
             if !Self::is_valid_identifier_char(self.peek()) {
@@ -996,17 +859,17 @@ impl<'arena> Tokenizer<'arena> {
         }
         match identifier.as_str() {
             "true" => {
-                return Ok(self.get_token_lit_loc(
+                return Ok(Token::new(
                     TokenType::BooleanLiteral,
-                    Literal::Bool(true),
-                    loc,
+                    Some(Literal::Bool(true)),
+                    self.span_from(start),
                 ))
             }
             "false" => {
-                return Ok(self.get_token_lit_loc(
+                return Ok(Token::new(
                     TokenType::BooleanLiteral,
-                    Literal::Bool(false),
-                    loc,
+                    Some(Literal::Bool(false)),
+                    self.span_from(start),
                 ))
             }
             "void" => return Ok(self.get_token(TokenType::VoidLiteral)),
@@ -1015,45 +878,66 @@ impl<'arena> Tokenizer<'arena> {
         Ok(Self::try_token_from_keyword(&identifier)
             .map(|v| self.get_token(v))
             .unwrap_or_else(|| {
-                self.get_token_lit_loc(
+                Token::new(
                     TokenType::IdentifierLiteral,
-                    Literal::String(self.ctx.intern_str(&identifier)),
-                    loc,
+                    Some(Literal::String(self.ctx.intern_str(&identifier))),
+                    self.span_from(start),
                 )
             }))
     }
 
+    fn span_from(&self, from: usize) -> Span<'arena> {
+        self.span((self.current - from) as u32)
+    }
+
+    fn span(&self, len: u32) -> Span<'arena> {
+        self.ctx.intern_span(SpanData::new(
+            BytePos::from_u32((self.current as u32).saturating_sub(len)),
+            len,
+            self.file.id,
+        ))
+    }
+
+    fn current_span(&self) -> Span<'arena> {
+        self.ctx.intern_span(SpanData::new(
+            BytePos::from_u32((self.current as u32).saturating_sub(1)),
+            1,
+            self.file.id,
+        ))
+    }
+
     fn do_macro(
         &mut self,
-        loc: &Location,
+        loc: Span<'arena>,
         name: &InternedStr<'arena>,
-    ) -> Result<Vec<Token<'arena>>, TokenizationError> {
-        let closing_bracket_type = match self.peek() {
+    ) -> Result<Vec<Token<'arena>>, TokenizationError<'arena>> {
+        let start = loc.get_span_data().pos.to_usize();
+
+        let bracket_type = match self.peek() {
             '[' => ']',
             '(' => ')',
             '{' => '}',
             _ => {
                 return Err(TokenizationError::MacroExpectedBracket {
-                    loc: loc!(self.file.clone();self.line;self.column + 1),
+                    loc: self.current_span(),
                     character: self.peek(),
                 })
             }
         };
-        let opening_bracket_type = self.advance();
         let mut depth = 0usize;
         let mut tokens = Vec::new();
         loop {
-            if self.peek() == closing_bracket_type && depth > 0 {
+            if self.peek() == bracket_type && depth > 0 {
                 depth -= 1;
-            } else if self.peek() == closing_bracket_type {
+            } else if self.peek() == bracket_type {
                 self.advance();
                 break;
-            } else if self.peek() == opening_bracket_type {
+            } else if self.peek() == bracket_type {
                 depth += 1;
             } else if self.peek() == '\0' || self.is_at_end() {
                 return Err(TokenizationError::UnclosedMacro {
-                    loc: loc!(self.file;self.line;self.column),
-                    bracket: closing_bracket_type,
+                    loc: self.current_span(),
+                    bracket: bracket_type,
                 });
             }
             let Some(tok) = self.int_scan_token()? else {
@@ -1065,13 +949,13 @@ impl<'arena> Tokenizer<'arena> {
                         "TokenType::IdentifierLiteral should always have a string literal value"
                     )
                 };
-                tokens.append(&mut self.do_macro(&tok.location, name)?);
+                tokens.append(&mut self.do_macro(tok.span, name)?);
             } else {
                 tokens.push(tok);
             }
         }
         let tokens = if let Some(macro_fn) = crate::builtin_macros::get_builtin_macro(name) {
-            macro_fn(self.ctx.clone(), loc, &tokens)
+            macro_fn(self.ctx, self.span_from(start), &tokens)
         } else {
             // TODO: implement macros
             unimplemented!("custom macros");
@@ -1104,21 +988,6 @@ impl<'arena> Tokenizer<'arena> {
         }
     }
 
-    fn get_token_lit_loc(
-        &self,
-        token: TokenType,
-        literal: Literal<'arena>,
-        location: Location,
-    ) -> Token<'arena> {
-        Token::new(
-            token,
-            Some(literal),
-            location.line,
-            location.column,
-            location.file,
-        )
-    }
-
     /// valid characters:
     /// abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$#
     fn is_valid_identifier_char(character: char) -> bool {
@@ -1137,10 +1006,7 @@ impl<'arena> Tokenizer<'arena> {
         self,
         parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
         modules: &'a RwLock<Store<Module<'arena>>>,
-        root: Arc<Path>,
-        resolvers: Arc<[Box<dyn ModuleResolver>]>,
-        path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
-        path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
+        source_map: &'a SourceMap,
         key: StoreKey<Module<'arena>>,
     ) -> Parser<'a, 'arena> {
         Parser::new(
@@ -1149,10 +1015,7 @@ impl<'arena> Tokenizer<'arena> {
             parser_queue,
             modules,
             self.file,
-            root,
-            resolvers,
-            path_exists,
-            path_is_dir,
+            source_map,
             key,
         )
     }
@@ -1160,6 +1023,8 @@ impl<'arena> Tokenizer<'arena> {
 
 #[cfg(test)]
 mod test {
+    use std::path::Path;
+
     use crate::{arena::Arena, context::GlobalContext};
 
     use super::*;
@@ -1191,8 +1056,15 @@ mod test {
     fn get_tokens<'arena>(
         ctx: SharedContext<'arena>,
         src: &str,
-    ) -> (Vec<Token<'arena>>, Vec<TokenizationError>) {
-        let mut tokenizer = Tokenizer::new(ctx, src, Path::new("test").into());
+    ) -> (Vec<Token<'arena>>, Vec<TokenizationError<'arena>>) {
+        let mut tokenizer = Tokenizer::new(
+            ctx,
+            ctx.source_map().new_file(
+                Path::new("file").into(),
+                Path::new("root").into(),
+                src.into(),
+            ),
+        );
         let errs = tokenizer.scan_tokens().err().unwrap_or_default();
         check_tokens(tokenizer.get_tokens());
         (tokenizer.tokens, errs)
@@ -1200,8 +1072,10 @@ mod test {
 
     fn assert_token_eq(src: &str, expected_tokens: &[(TokenType, Option<Literal>)]) {
         let arena = Arena::new();
+        let ctx = GlobalContext::new(&arena);
+        ctx.init_source_map(SourceMap::new([].into()));
         let eof_token = (TokenType::Eof, None);
-        let (tokens, errs) = get_tokens(GlobalContext::new(&arena).share(), src);
+        let (tokens, errs) = get_tokens(ctx.share(), src);
         assert_eq!(errs.len(), 0, "unexpected errors: {errs:?}");
         assert_eq!(tokens.len(), expected_tokens.len() + 1 /* eof token */);
         for (tok, expected) in tokens
@@ -1217,7 +1091,10 @@ mod test {
     macro_rules! match_errs {
         ($str: expr; $($pat:pat),* $(,)?) => {
             let mut i = 0;
-            let (_, errs) = get_tokens(GlobalContext::new(&Arena::new()).share(), $str);
+            let arena = Arena::new();
+            let ctx = GlobalContext::new(&arena);
+            ctx.init_source_map(SourceMap::new([].into()));
+            let (_, errs) = get_tokens(ctx.share(), $str);
             $(
                 if i >= errs.len() {
                     panic!("Expected error matching {:?} ({i})", stringify!($pat));

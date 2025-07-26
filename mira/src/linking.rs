@@ -14,15 +14,15 @@ mod parsing;
 use parsing::parse_all;
 
 use crate::{
-    arena::Arena,
     codegen::{CodegenConfig, CodegenContext, CodegenError, Optimizations},
-    context::GlobalContext,
+    context::SharedContext,
     error::MiraError,
     module_resolution::ModuleResolver,
     optimizations,
     progress_bar::{ProgressBar, ProgressBarStyle},
     store::AssociatedStore,
     target::{Abi, Arch, Os, Target},
+    tokenizer::span::SourceMap,
     typechecking::{
         intrinsics::IntrinsicAnnotation,
         ir_displayer::{Formatter, IoWriteWrapper, ReadOnlyTypecheckingContext, TCContextDisplay},
@@ -258,8 +258,6 @@ pub struct FullCompilationOptions<'a> {
     pub file: Arc<Path>,
     /// The path the import `@root/` points to
     pub root_directory: Arc<Path>,
-    /// The file that will appear in locations and debug info
-    pub debug_file: Arc<Path>,
     /// The source that will be parsed, reads `self.file` if None.
     /// Has to be specified if `self.file` points at a file that does not actually exists
     /// (e.g. because this is running in a repl)
@@ -269,11 +267,7 @@ pub struct FullCompilationOptions<'a> {
     /// that represents the entry point of the executable and calls the main function.
     pub always_include: Option<String>,
     /// A list of resolvers to use to resolve imports.
-    pub resolvers: Arc<[Box<dyn ModuleResolver>]>,
-    /// The resolvers will use this function to check if a path exists
-    pub path_exists: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
-    /// The resolvers will use this function to check if a path is an directory
-    pub path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
+    pub resolvers: Box<[Box<dyn ModuleResolver>]>,
     /// Set to true if you need a shared object (.so / .dll)
     pub shared_object: bool,
     /// An Optional path to a linker script
@@ -328,20 +322,14 @@ impl<'a> FullCompilationOptions<'a> {
     pub fn new(
         file: Arc<Path>,
         root_directory: Arc<Path>,
-        resolvers: Arc<[Box<dyn ModuleResolver>]>,
-        path_exists: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
-        path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>,
+        resolvers: Box<[Box<dyn ModuleResolver>]>,
     ) -> Self {
-        let debug_file = file.clone();
         Self {
             file,
             root_directory,
-            debug_file,
             source: None,
             always_include: None,
             resolvers,
-            path_exists,
-            path_is_dir,
             shared_object: false,
             linker_script: None,
             obj_path: None,
@@ -363,9 +351,8 @@ impl<'a> FullCompilationOptions<'a> {
         with_source => source: Option<&'a str>,
         set_file => file: Arc<Path>,
         set_root_dir => root_directory: Arc<Path>,
-        set_debug_file => debug_file: Arc<Path>,
         always_include_file => always_include: Option<String>,
-        set_module_resolver => resolvers: Arc<[Box<dyn ModuleResolver>]>,
+        set_module_resolver => resolvers: Box<[Box<dyn ModuleResolver>]>,
         shared_object => shared_object: bool,
         set_linker_script => linker_script: Option<&'a Path>,
         set_object_path => obj_path: Option<PathBuf>,
@@ -410,7 +397,7 @@ impl<'a> FullCompilationOptions<'a> {
 /// Runs the pipeline to turn a source file into an executable or shared object.
 /// Returns the path to the executable
 pub fn run_full_compilation_pipeline<'arena>(
-    arena: &'arena Arena,
+    ctx: SharedContext<'arena>,
     mut opts: FullCompilationOptions,
 ) -> Result<Option<PathBuf>, Vec<MiraError<'arena>>> {
     if opts.add_extension_to_exe && opts.exec_path.is_some() {
@@ -445,31 +432,24 @@ pub fn run_full_compilation_pipeline<'arena>(
         println!("Relocation Mode: {:?}", opts.codegen_opts.reloc_mode);
         println!("Assuming cpu features: {}", opts.codegen_opts.cpu_features);
     }
-    let mut read = String::new();
-    let source = opts
-        .source
-        .map(Ok)
-        .unwrap_or_else(|| {
-            read = std::fs::read_to_string(&opts.file)?;
-            Ok(&read)
-        })
-        .map_err(|inner| vec![inner])?;
+
+    ctx.init_source_map(SourceMap::new(opts.resolvers));
+    let source_map = ctx.source_map();
+    let source = match opts.source {
+        Some(v) => source_map.new_file(opts.file.clone(), opts.root_directory, v.into()),
+        None => source_map
+            .load_file(opts.file.clone(), opts.root_directory)
+            .map_err(|inner| vec![inner.into()])?,
+    };
 
     let progress_bar = Arc::new(RwLock::new(ProgressBar::new(ProgressBarStyle::Normal)));
     let parser_item = progress_bar.write().add_item("Parsing".into());
 
-    let ctx = GlobalContext::new(arena).share();
-
     let module_context = parse_all(
-        ctx.clone(),
-        opts.file,
-        opts.root_directory,
-        opts.debug_file.clone(),
+        ctx,
         source,
         opts.always_include,
-        opts.resolvers,
-        opts.path_exists,
-        opts.path_is_dir,
+        source_map,
         progress_bar.clone(),
         parser_item,
     );
@@ -479,7 +459,7 @@ pub fn run_full_compilation_pipeline<'arena>(
     print_progress_bar(&progress_bar);
 
     let module_context = module_context?;
-    let typechecking_context = TypecheckingContext::new(ctx.clone(), module_context.clone());
+    let typechecking_context = TypecheckingContext::new(ctx, module_context.clone());
     let errs = typechecking_context.resolve_imports(module_context.clone());
     if !errs.is_empty() {
         return Err(errs.iter().cloned().map(MiraError::typechecking).collect());
@@ -591,17 +571,18 @@ pub fn run_full_compilation_pipeline<'arena>(
 
     let context = Context::create();
 
-    let debug_filename = opts
-        .debug_file
+    let filename = opts
+        .file
         .file_name()
-        .expect("debug file needs a filename")
+        .expect("file should have a filename")
         .to_string_lossy();
     let mut codegen_context = CodegenContext::new(
         &context,
         typechecking_context.clone(),
-        &debug_filename,
-        opts.debug_file.clone(),
+        &filename,
+        opts.file.clone(),
         opts.codegen_opts,
+        ctx,
     )
     .expect("failed to create the llvm context");
 
@@ -746,159 +727,6 @@ pub fn run_full_compilation_pipeline<'arena>(
 
     Ok(Some(exec_path))
 }
-
-/*
-/// Parses a string of text into a module
-///
-/// `file` - The file the source came from. Used to evaluate relative imports
-/// `root_directory` - The path the import `@root/` points to
-/// `debug_file` - The file that will appear in locations and debug info
-/// `source` - The source that will be parsed
-#[allow(clippy::too_many_arguments)]
-pub fn parse_all(
-    file: Arc<Path>,
-    root_directory: Arc<Path>,
-    debug_file: Arc<Path>,
-    source: &str,
-    always_include: Option<String>,
-    resolvers: Arc<[Box<dyn ModuleResolver>]>,
-    path_exists: Arc<dyn Fn(&std::path::Path) -> bool>,
-    path_is_dir: Arc<dyn Fn(&std::path::Path) -> bool>,
-    progress_bar: Arc<RwLock<ProgressBar>>,
-    parsing_item: ProgressItemRef,
-) -> Result<Arc<ModuleContext>, Vec<MiraError>> {
-    let mut errors = vec![];
-
-    let mut item = progress_bar.write().add_child_item(
-        parsing_item,
-        format!("Tokenizing {}", file.display()).into_boxed_str(),
-    );
-    print_progress_bar(&progress_bar);
-    let mut tokenizer = Tokenizer::new(source, debug_file.clone());
-    if let Some(path) = always_include {
-        let loc = Location::new(debug_file.clone(), 0, 0);
-        tokenizer.push_token(Token {
-            typ: TokenType::Use,
-            literal: None,
-            location: loc.clone(),
-        });
-        tokenizer.push_token(Token {
-            typ: TokenType::StringLiteral,
-            literal: Some(Literal::String(path.into())),
-            location: loc.clone(),
-        });
-        tokenizer.push_token(Token {
-            typ: TokenType::Semicolon,
-            literal: None,
-            location: loc.clone(),
-        });
-    }
-    if let Err(errs) = tokenizer.scan_tokens() {
-        errors.extend(
-            errs.into_iter()
-                .map(|inner| MiraError::Tokenization { inner }),
-        );
-    }
-
-    let modules = Arc::new(RwLock::new(vec![ParserQueueEntry {
-        file: debug_file,
-        root_dir: root_directory.clone(),
-    }]));
-    let mut current_parser = tokenizer.to_parser(
-        modules.clone(),
-        root_directory,
-        resolvers.clone(),
-        path_exists.clone(),
-        path_is_dir.clone(),
-    );
-    current_parser.file = file;
-
-    let module_context = Arc::new(ModuleContext::default());
-
-    loop {
-        {
-            let mut writer = progress_bar.write();
-            writer.remove_item(item);
-            item = writer.add_child_item(
-                parsing_item,
-                format!("Parsing {}", current_parser.file.display()).into_boxed_str(),
-            );
-        }
-        print_progress_bar(&progress_bar);
-
-        let (statements, parsing_errors) = current_parser.parse_all();
-        errors.extend(
-            parsing_errors
-                .into_iter()
-                .map(|inner| MiraError::Parsing { inner }),
-        );
-        let (path, root) = {
-            let module = &modules.read()[module_context.modules.read().len()];
-            (module.file.clone(), module.root_dir.clone())
-        };
-        let mut module = Module::new(current_parser.imports, path, root);
-        if let Err(errs) = module.push_all(
-            statements,
-            module_context.modules.read().len(),
-            &module_context,
-        ) {
-            errors.extend(
-                errs.into_iter()
-                    .map(|inner| MiraError::ProgramForming { inner }),
-            );
-        }
-        let mut writer = module_context.modules.write();
-        writer.push(module);
-
-        let read_modules = modules.read();
-        if read_modules.len() > writer.len() {
-            let entry = read_modules[writer.len()].clone();
-            drop(read_modules);
-            drop(writer);
-            let source = match std::fs::read_to_string(&entry.file) {
-                Ok(v) => v,
-                Err(e) => {
-                    errors.push(e.into());
-                    return Err(errors);
-                }
-            };
-            let mut tokenizer = Tokenizer::new(&source, entry.file);
-            {
-                let mut writer = progress_bar.write();
-                writer.remove_item(item);
-                item = writer.add_child_item(
-                    parsing_item,
-                    format!("Tokenizing {}", tokenizer.file.display()).into_boxed_str(),
-                );
-            }
-            print_progress_bar(&progress_bar);
-            if let Err(errs) = tokenizer.scan_tokens() {
-                errors.extend(
-                    errs.into_iter()
-                        .map(|inner| MiraError::Tokenization { inner }),
-                );
-            }
-            current_parser = tokenizer.to_parser(
-                modules.clone(),
-                entry.root_dir,
-                resolvers.clone(),
-                path_exists.clone(),
-                path_is_dir.clone(),
-            );
-        } else {
-            progress_bar.write().remove_item(parsing_item);
-            print_progress_bar(&progress_bar);
-            break;
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(module_context)
-    } else {
-        Err(errors)
-    }
-}
-*/
 
 struct ClosureDisplay<F: Fn(&mut std::fmt::Formatter) -> std::fmt::Result>(pub F);
 impl<F: Fn(&mut std::fmt::Formatter) -> std::fmt::Result> std::fmt::Display for ClosureDisplay<F> {

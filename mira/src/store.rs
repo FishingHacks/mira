@@ -7,7 +7,12 @@ use std::{
 };
 
 #[derive(PartialOrd, Ord)]
-pub struct StoreKey<T: ?Sized>(usize, PhantomData<T>);
+pub struct StoreKey<T: ?Sized>(usize, PhantomData<*const T>);
+
+// SAFETY: the store key does not actually store or associate itself with any data, the generic
+// parameter only exists to ensure the storekey does not accidentally get used on a wrong store.
+unsafe impl<T: ?Sized> Send for StoreKey<T> {}
+unsafe impl<T: ?Sized> Sync for StoreKey<T> {}
 
 impl<T: ?Sized> Copy for StoreKey<T> {}
 impl<T: ?Sized> Clone for StoreKey<T> {

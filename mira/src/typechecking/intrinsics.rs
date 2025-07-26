@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use crate::annotations::{Annotation, AnnotationReceiver, Annotations};
 use crate::error::ParsingError;
-use crate::tokenizer::Location;
+use crate::tokenizer::span::Span;
 use crate::tokenstream::TokenStream;
 
 use super::{Type, TypecheckingError};
@@ -44,7 +44,6 @@ intrinsics! {
     SizeOfVal => size_of_val, // <unsized T>(v: &T) -> usize, returns the size of v in bytes
     Breakpoint => breakpoint, // () -> void
     Trap => trap, // () -> !
-    Location => location, // () -> (u64, u64, &str)
     Offset => offset, // <unsized T>(v: &T, off: usize) -> &T, offsets a pointer
     GetMetadata => get_metadata, // <unsized T>(v: &T) -> usize, returns the metadata of a fat
     // pointer or 0 for a thin pointer
@@ -89,7 +88,6 @@ impl Intrinsic {
         match self {
             Intrinsic::Breakpoint
             | Intrinsic::Trap
-            | Intrinsic::Location
             | Intrinsic::Unreachable
             | Intrinsic::ReturnAddress => 0,
             _ => 1,
@@ -99,7 +97,7 @@ impl Intrinsic {
     #[allow(clippy::result_large_err)]
     pub fn is_valid_for<'arena>(
         &self,
-        loc: Location,
+        loc: Span<'arena>,
         generics: &[Type<'arena>],
     ) -> Result<(), TypecheckingError<'arena>> {
         let required_generics = self.generic_count();
@@ -158,7 +156,6 @@ impl Intrinsic {
             Intrinsic::Unreachable
             | Intrinsic::Breakpoint
             | Intrinsic::Trap
-            | Intrinsic::Location
             | Intrinsic::ReturnAddress => Ok(()),
             // ------------------------
             // - all types intrinsics -

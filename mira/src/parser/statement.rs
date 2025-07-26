@@ -6,11 +6,12 @@ use std::{
 use crate::{
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
+    interner::InternedStr,
     module::{BakedStruct, ExternalFunction, Function, Module, ModuleContext, Static},
     parser::{module_resolution::resolve_module, ParserQueueEntry},
     store::StoreKey,
-    string_interner::InternedStr,
-    tokenizer::{Literal, Location, Token, TokenType},
+    symbols,
+    tokenizer::{span::Span, Literal, Token, TokenType},
 };
 
 use super::{
@@ -32,11 +33,11 @@ pub struct Trait<'arena> {
         InternedStr<'arena>,
         Vec<Argument<'arena>>,
         TypeRef<'arena>,
-        Annotations,
-        Location,
+        Annotations<'arena>,
+        Span<'arena>,
     )>,
-    pub location: Location,
-    pub annotations: Annotations,
+    pub span: Span<'arena>,
+    pub annotations: Annotations<'arena>,
     pub module: StoreKey<Module<'arena>>,
 }
 
@@ -77,81 +78,89 @@ pub enum Statement<'arena> {
         condition: Expression<'arena>,
         if_stmt: Box<Statement<'arena>>,
         else_stmt: Option<Box<Statement<'arena>>>,
-        location: Location,
-        annotations: Annotations,
+        span: Span<'arena>,
+        annotations: Annotations<'arena>,
     },
     While {
         condition: Expression<'arena>,
         child: Box<Statement<'arena>>,
-        location: Location,
-        annotations: Annotations,
+        span: Span<'arena>,
+        annotations: Annotations<'arena>,
     },
     For {
         iterator: Expression<'arena>,
         var_name: InternedStr<'arena>,
         child: Box<Statement<'arena>>,
-        location: Location,
-        annotations: Annotations,
+        span: Span<'arena>,
+        annotations: Annotations<'arena>,
     },
-    Return(Option<Expression<'arena>>, Location),
-    Block(Box<[Statement<'arena>]>, Location, Annotations),
+    Return(Option<Expression<'arena>>, Span<'arena>),
+    Block(Box<[Statement<'arena>]>, Span<'arena>, Annotations<'arena>),
     Var(
         InternedStr<'arena>,
         Expression<'arena>,
         Option<TypeRef<'arena>>,
-        Location,
-        Annotations,
+        Span<'arena>,
+        Annotations<'arena>,
     ),
     Expression(Expression<'arena>),
-    Function(FunctionContract<'arena>, Box<Statement<'arena>>),
-    ExternalFunction(FunctionContract<'arena>, Option<Box<Statement<'arena>>>),
+    Function(
+        FunctionContract<'arena>,
+        Box<Statement<'arena>>,
+        Span<'arena>,
+    ),
+    ExternalFunction(
+        FunctionContract<'arena>,
+        Option<Box<Statement<'arena>>>,
+        Span<'arena>,
+    ),
     Struct {
         name: InternedStr<'arena>,
         elements: Vec<(InternedStr<'arena>, TypeRef<'arena>)>,
-        location: Location,
+        span: Span<'arena>,
         global_impl: HashMap<InternedStr<'arena>, (FunctionContract<'arena>, Statement<'arena>)>,
         #[allow(clippy::type_complexity)]
         impls: Vec<(
             InternedStr<'arena>,
             HashMap<InternedStr<'arena>, (FunctionContract<'arena>, Statement<'arena>)>,
-            Location,
+            Span<'arena>,
         )>,
         generics: Vec<Generic<'arena>>,
-        annotations: Annotations,
+        annotations: Annotations<'arena>,
     },
     Trait(Trait<'arena>),
     /// key (the name of the thing in the module), export key (the name during import), location
-    Export(InternedStr<'arena>, InternedStr<'arena>, Location),
-    ModuleAsm(Location, String),
+    Export(InternedStr<'arena>, InternedStr<'arena>, Span<'arena>),
+    ModuleAsm(Span<'arena>, String),
 
-    BakedFunction(StoreKey<Function<'arena>>, Location),
-    BakedExternalFunction(StoreKey<ExternalFunction<'arena>>, Location),
-    BakedStruct(StoreKey<BakedStruct<'arena>>, Location),
-    BakedStatic(StoreKey<Static<'arena>>, Location),
-    BakedTrait(StoreKey<Trait<'arena>>, Location),
+    BakedFunction(StoreKey<Function<'arena>>, Span<'arena>),
+    BakedExternalFunction(StoreKey<ExternalFunction<'arena>>, Span<'arena>),
+    BakedStruct(StoreKey<BakedStruct<'arena>>, Span<'arena>),
+    BakedStatic(StoreKey<Static<'arena>>, Span<'arena>),
+    BakedTrait(StoreKey<Trait<'arena>>, Span<'arena>),
 }
 
 impl<'arena> Statement<'arena> {
-    pub fn loc(&self) -> &Location {
+    pub fn span(&self) -> Span<'arena> {
         match self {
-            Self::Expression(expr) => expr.loc(),
-            Self::ExternalFunction(c, _) | Self::Function(c, _) => &c.location,
-
-            Self::Export(_, _, location)
-            | Self::Block(_, location, _)
-            | Self::ModuleAsm(location, _)
-            | Self::For { location, .. }
-            | Self::If { location, .. }
-            | Self::Return(_, location)
-            | Self::Struct { location, .. }
-            | Self::Var(_, _, _, location, _)
-            | Self::BakedFunction(_, location)
-            | Self::BakedExternalFunction(_, location)
-            | Self::BakedStruct(_, location)
-            | Self::BakedStatic(_, location)
-            | Self::BakedTrait(_, location)
-            | Self::Trait(Trait { location, .. })
-            | Self::While { location, .. } => location,
+            Self::Expression(expr) => expr.span(),
+            Self::ExternalFunction(.., span)
+            | Self::Function(.., span)
+            | Self::Export(_, _, span)
+            | Self::Block(_, span, _)
+            | Self::ModuleAsm(span, _)
+            | Self::For { span, .. }
+            | Self::If { span, .. }
+            | Self::Return(_, span)
+            | Self::Struct { span, .. }
+            | Self::Var(_, _, _, span, _)
+            | Self::BakedFunction(_, span)
+            | Self::BakedExternalFunction(_, span)
+            | Self::BakedStruct(_, span)
+            | Self::BakedStatic(_, span)
+            | Self::BakedTrait(_, span)
+            | Self::Trait(Trait { span, .. })
+            | Self::While { span, .. } => *span,
         }
     }
 
@@ -171,10 +180,10 @@ impl<'arena> Statement<'arena> {
             | Self::Export(..)
             | Self::ModuleAsm(..)
             | Self::Trait { .. } => (),
-            Self::ExternalFunction(..) => unreachable!("function in a non-top-level scope"),
-            Self::Struct { location, .. } => {
-                panic!("{location}: use Module::push_statement to bake a struct")
+            Self::ExternalFunction(..) => {
+                unreachable!("external function in a non-top-level scope")
             }
+            Self::Struct { .. } => unreachable!("struct in a non-top-level scope"),
             Self::Function(..) => unreachable!("function in a non-top-level scope"),
             Self::Block(statements, ..) => statements
                 .iter_mut()
@@ -253,7 +262,7 @@ impl Display for Statement<'_> {
                 condition,
                 if_stmt,
                 else_stmt: Some(else_stmt),
-                location: _,
+                span: _,
                 annotations,
             } => f.write_fmt(format_args!(
                 "{annotations}(if {condition} {if_stmt} {else_stmt})"
@@ -262,14 +271,14 @@ impl Display for Statement<'_> {
                 condition,
                 if_stmt,
                 else_stmt: None,
-                location: _,
+                span: _,
                 annotations,
             } => f.write_fmt(format_args!("{annotations}(if {condition} {if_stmt})")),
             Self::For {
                 iterator,
                 var_name,
                 child,
-                location: _,
+                span: _,
                 annotations,
             } => f.write_fmt(format_args!(
                 "{annotations}(for {var_name} {iterator} {child})"
@@ -277,13 +286,13 @@ impl Display for Statement<'_> {
             Self::While {
                 condition,
                 child,
-                location: _,
+                span: _,
                 annotations,
             } => f.write_fmt(format_args!("{annotations}(while {condition} {child})")),
             Self::Struct {
                 name,
                 elements: arguments,
-                location: _,
+                span: _,
                 generics,
                 ..
             } => {
@@ -319,17 +328,17 @@ impl Display for Statement<'_> {
 
                 f.write_str("}")
             }
-            Self::Function(contract, body) => {
+            Self::Function(contract, body, _) => {
                 display_contract(f, contract, false)?;
                 f.write_char(' ')?;
                 Display::fmt(body, f)?;
                 f.write_char(')')
             }
-            Self::ExternalFunction(contract, None) => {
+            Self::ExternalFunction(contract, None, _) => {
                 display_contract(f, contract, true)?;
                 f.write_char(')')
             }
-            Self::ExternalFunction(contract, Some(body)) => {
+            Self::ExternalFunction(contract, Some(body), _) => {
                 display_contract(f, contract, true)?;
                 f.write_char(' ')?;
                 Display::fmt(body, f)?;
@@ -434,7 +443,7 @@ impl<'arena> Parser<'_, 'arena> {
 
         if !self.current_annotations.is_empty() {
             errors.push(ParsingError::ExpectedStatement {
-                loc: self.peek().location.clone(),
+                loc: self.peek().span,
             });
         }
 
@@ -451,7 +460,7 @@ impl<'arena> Parser<'_, 'arena> {
             }
         }
         Err(ParsingError::ExpectedStatement {
-            loc: self.peek().location.clone(),
+            loc: self.peek().span,
         })
     }
 
@@ -463,7 +472,7 @@ impl<'arena> Parser<'_, 'arena> {
             ($kw: literal) => {
                 return Err(ParsingError::InvalidKeyword {
                     keyword: $kw,
-                    loc: self.peek().location.clone(),
+                    loc: self.peek().span,
                 })
             };
         }
@@ -486,7 +495,7 @@ impl<'arena> Parser<'_, 'arena> {
         {
             self.bail();
             return Err(ParsingError::ExpectedAnnotationStatement {
-                loc: self.peek().location.clone(),
+                loc: self.peek().span,
             });
         }
 
@@ -516,11 +525,11 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Struct => self.parse_struct().map(Some),
             TokenType::Fn => self
                 .parse_callable(false)
-                .and_then(|(contract, body)| {
+                .and_then(|(contract, body, span)| {
                     contract
                         .annotations
                         .are_annotations_valid_for(AnnotationReceiver::Function)?;
-                    Ok(Statement::Function(contract, Box::new(body)))
+                    Ok(Statement::Function(contract, Box::new(body), span))
                 })
                 .map(Some),
             TokenType::AnnotationIntroducer => {
@@ -530,7 +539,7 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Extern => self.parse_external().map(Some),
             TokenType::Eof => {
                 return Err(ParsingError::ExpectedStatement {
-                    loc: self.peek().location.clone(),
+                    loc: self.peek().span,
                 });
             }
             TokenType::Use => self.parse_use().map(|_| None),
@@ -538,7 +547,7 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Pub => self.parse_pub().map(Some),
             _ if is_global => {
                 return Err(ParsingError::ExpressionAtTopLevel {
-                    loc: self.peek().location.clone(),
+                    loc: self.peek().span,
                 });
             }
             _ => self.parse_expression_stmt().map(Some),
@@ -555,14 +564,16 @@ impl<'arena> Parser<'_, 'arena> {
     }
 
     fn parse_pub(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let loc = self.advance().location.clone();
+        let span = self.advance().span;
         let stmt = match self.peek().typ {
-            TokenType::Fn => self.parse_callable(false).and_then(|(contract, body)| {
-                contract
-                    .annotations
-                    .are_annotations_valid_for(AnnotationReceiver::Function)?;
-                Ok(Statement::Function(contract, Box::new(body)))
-            })?,
+            TokenType::Fn => self
+                .parse_callable(false)
+                .and_then(|(contract, body, span)| {
+                    contract
+                        .annotations
+                        .are_annotations_valid_for(AnnotationReceiver::Function)?;
+                    Ok(Statement::Function(contract, Box::new(body), span))
+                })?,
 
             TokenType::Let => self.parse_let_stmt(true)?,
             TokenType::Struct => self.parse_struct()?,
@@ -570,22 +581,19 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Trait => self.parse_trait()?,
             _ => {
                 return Err(ParsingError::ExpectedElementForPub {
-                    loc,
+                    loc: self.peek().span,
                     typ: self.peek().typ,
                 })
             }
         };
-        let (symbol, loc) = match &stmt {
-            Statement::Function(c, _) | Statement::ExternalFunction(c, _) => (
-                c.name
-                    .as_ref()
-                    .cloned()
-                    .expect("global functions should always have a name"),
-                c.location.clone(),
+        let (symbol, symbol_span) = match &stmt {
+            Statement::Function(c, ..) | Statement::ExternalFunction(c, ..) => (
+                c.name.expect("global functions should always have a name"),
+                c.span,
             ),
-            Statement::Trait(Trait { name, location, .. })
-            | Statement::Var(name, .., location, _)
-            | Statement::Struct { name, location, .. } => (*name, location.clone()),
+            Statement::Trait(Trait { name, span, .. })
+            | Statement::Var(name, .., span, _)
+            | Statement::Struct { name, span, .. } => (*name, *span),
             _ => unreachable!(),
         };
         self.tokens.insert(
@@ -593,7 +601,7 @@ impl<'arena> Parser<'_, 'arena> {
             Token {
                 typ: TokenType::Export,
                 literal: None,
-                location: loc.clone(),
+                span,
             },
         );
         self.tokens.insert(
@@ -601,7 +609,7 @@ impl<'arena> Parser<'_, 'arena> {
             Token {
                 typ: TokenType::IdentifierLiteral,
                 literal: Some(Literal::String(symbol)),
-                location: loc.clone(),
+                span: symbol_span,
             },
         );
         self.tokens.insert(
@@ -609,15 +617,23 @@ impl<'arena> Parser<'_, 'arena> {
             Token {
                 typ: TokenType::Semicolon,
                 literal: None,
-                location: loc,
+                span,
             },
         );
 
         Ok(stmt)
     }
 
+    pub fn join_spans(&self, left: Span<'arena>, right: Span<'arena>) -> Span<'arena> {
+        left.combine_with([right], self.ctx.span_interner())
+    }
+
+    pub fn span_from(&self, previous: Span<'arena>) -> Span<'arena> {
+        self.join_spans(self.current().span, previous)
+    }
+
     fn parse_global_asm(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let loc = self.advance().location.clone();
+        let span = self.advance().span;
         self.expect_tok(TokenType::ParenLeft)?;
         let mut strn = String::new();
         while !self.match_tok(TokenType::ParenRight) {
@@ -633,11 +649,11 @@ impl<'arena> Parser<'_, 'arena> {
             }
             strn.push_str(&tok.string_literal()?);
         }
-        Ok(Statement::ModuleAsm(loc, strn))
+        Ok(Statement::ModuleAsm(self.span_from(span), strn))
     }
 
     fn parse_export(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let loc = self.advance().location.clone();
+        let span = self.advance().span;
         let name = self.expect_identifier()?;
         let exported_name = if self.match_tok(TokenType::As) {
             self.expect_identifier()?
@@ -645,29 +661,25 @@ impl<'arena> Parser<'_, 'arena> {
             name
         };
         self.consume_semicolon()?;
-        Ok(Statement::Export(name, exported_name, loc))
+        Ok(Statement::Export(name, exported_name, self.span_from(span)))
     }
 
     fn parse_use(&mut self) -> Result<(), ParsingError<'arena>> {
-        let loc = self.advance().location.clone();
+        let span = self.advance().span;
         let name = self
             .expect_tok(TokenType::StringLiteral)?
             .string_literal()?;
         let ResolvedPath { root_dir, file } = resolve_module(
             &name,
             self.file
+                .path
                 .parent()
                 .expect("file should have a parent directory"),
-            self.root_directory.clone(),
-            &loc,
-            &self.resolvers,
-            &*self.path_exists,
-            &*self.path_is_dir,
+            self.file.package_root.clone(),
+            span,
+            self.source_map,
         )
-        .ok_or_else(|| ParsingError::CannotResolveModule {
-            loc: loc.clone(),
-            name,
-        })?;
+        .ok_or(ParsingError::CannotResolveModule { loc: span, name })?;
 
         let module_key = self
             .modules
@@ -696,7 +708,7 @@ impl<'arena> Parser<'_, 'arena> {
 
         if self.match_tok(TokenType::As) {
             let name = self.expect_identifier()?;
-            self.imports.insert(name, (loc, module_key, Vec::new()));
+            self.imports.insert(name, (span, module_key, Vec::new()));
             self.consume_semicolon()?;
             return Ok(());
         }
@@ -720,11 +732,11 @@ impl<'arena> Parser<'_, 'arena> {
                 if self.match_tok(TokenType::As) {
                     let alias_name = self.expect_identifier()?;
                     self.imports
-                        .insert(alias_name, (loc.clone(), module_key, import_name));
+                        .insert(alias_name, (span, module_key, import_name));
                 } else {
                     self.imports.insert(
                         import_name[import_name.len() - 1],
-                        (loc.clone(), module_key, import_name),
+                        (span, module_key, import_name),
                     );
                 }
             }
@@ -737,14 +749,14 @@ impl<'arena> Parser<'_, 'arena> {
         if self.match_tok(TokenType::As) {
             let alias_name = self.expect_identifier()?;
             self.imports
-                .insert(alias_name, (loc, module_key, import_name));
+                .insert(alias_name, (self.span_from(span), module_key, import_name));
             self.consume_semicolon()?;
             return Ok(());
         }
 
         self.imports.insert(
             import_name[import_name.len() - 1],
-            (loc, module_key, import_name),
+            (self.span_from(span), module_key, import_name),
         );
         self.consume_semicolon()?;
         Ok(())
@@ -757,12 +769,12 @@ impl<'arena> Parser<'_, 'arena> {
             InternedStr<'arena>,
             Vec<Argument<'arena>>,
             TypeRef<'arena>,
-            Annotations,
-            Location,
+            Annotations<'arena>,
+            Span<'arena>,
         ),
         ParsingError<'arena>,
     > {
-        let location = self.tokens[self.current].location.clone();
+        let span = self.current().span;
         let name = self.expect_identifier()?;
 
         let mut arguments = vec![];
@@ -773,7 +785,7 @@ impl<'arena> Parser<'_, 'arena> {
             if !arguments.is_empty() {
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
-                        loc: self.peek().location.clone(),
+                        loc: self.peek().span,
                         found: self.peek().typ,
                     });
                 }
@@ -793,7 +805,7 @@ impl<'arena> Parser<'_, 'arena> {
         let return_type = if self.match_tok(TokenType::ReturnType) {
             TypeRef::parse(self)?
         } else {
-            TypeRef::Void(self.peek().location.clone(), 0)
+            TypeRef::Void(self.peek().span, 0)
         };
 
         self.expect_tok(TokenType::Semicolon)?;
@@ -803,12 +815,12 @@ impl<'arena> Parser<'_, 'arena> {
             arguments,
             return_type,
             std::mem::take(&mut self.current_annotations),
-            location,
+            self.span_from(span),
         ))
     }
 
     fn parse_trait(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let location = self.advance().location.clone(); // skip `trait`
+        let span = self.advance().span; // skip `trait`
         let name = self.expect_identifier()?;
 
         self.expect_tok(TokenType::CurlyLeft)?;
@@ -831,7 +843,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(Statement::Trait(Trait {
             name,
             functions,
-            location,
+            span: self.span_from(span),
             annotations,
             module: self.key,
         }))
@@ -859,7 +871,7 @@ impl<'arena> Parser<'_, 'arena> {
     ) -> Result<Statement<'arena>, ParsingError<'arena>> {
         // let <identifier>;
         // let <identifier> = <expr>;
-        let location = self.advance().location.clone(); // skip `let`
+        let span = self.advance().span; // skip `let`
 
         let annotations = std::mem::take(&mut self.current_annotations);
         annotations.are_annotations_valid_for(if is_static {
@@ -880,14 +892,20 @@ impl<'arena> Parser<'_, 'arena> {
 
         let expr = self.parse_expression()?;
         self.consume_semicolon()?;
-        Ok(Statement::Var(name, expr, typ, location, annotations))
+        Ok(Statement::Var(
+            name,
+            expr,
+            typ,
+            self.span_from(span),
+            annotations,
+        ))
     }
     fn parse_block_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let annotations = std::mem::take(&mut self.current_annotations);
         annotations.are_annotations_valid_for(AnnotationReceiver::Block)?;
 
         // { <...statements...> }
-        let location = self.advance().location.clone(); // skip `{`
+        let span = self.advance().span; // skip `{`
         let mut statements = vec![];
 
         while !self.match_tok(TokenType::CurlyRight) {
@@ -896,20 +914,20 @@ impl<'arena> Parser<'_, 'arena> {
 
         Ok(Statement::Block(
             statements.into_boxed_slice(),
-            location,
+            self.span_from(span),
             annotations,
         ))
     }
     fn parse_return_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
         // return;
         // return <expr>;
-        let location = self.advance().location.clone(); // skip `return`
+        let span = self.advance().span; // skip `return`
         if self.match_tok(TokenType::Semicolon) {
-            return Ok(Statement::Return(None, location));
+            return Ok(Statement::Return(None, self.span_from(span)));
         }
         let expr = self.parse_expression()?;
         self.consume_semicolon()?;
-        Ok(Statement::Return(Some(expr), location))
+        Ok(Statement::Return(Some(expr), self.span_from(span)))
     }
     fn parse_if_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let annotations = std::mem::take(&mut self.current_annotations);
@@ -918,7 +936,7 @@ impl<'arena> Parser<'_, 'arena> {
         // if (<expr>) <stmt>
         // if (<expr>) <stmt> else <stmt>
         // we have else if support, because else <stmt>, the stmt can be another if expression!
-        let location = self.advance().location.clone(); // skip `if`
+        let span = self.advance().span; // skip `if`
         self.expect_tok(TokenType::ParenLeft)?;
 
         let condition = self.parse_expression()?;
@@ -930,7 +948,7 @@ impl<'arena> Parser<'_, 'arena> {
                 condition,
                 if_stmt: Box::new(if_stmt),
                 else_stmt: Some(Box::new(self.parse_statement(false)?)),
-                location,
+                span: self.span_from(span),
                 annotations: std::mem::take(&mut self.current_annotations),
             });
         }
@@ -938,7 +956,7 @@ impl<'arena> Parser<'_, 'arena> {
             condition,
             if_stmt: Box::new(if_stmt),
             else_stmt: None,
-            location,
+            span: self.span_from(span),
             annotations,
         })
     }
@@ -948,7 +966,7 @@ impl<'arena> Parser<'_, 'arena> {
 
         // while (<expr>) <stmt>
         // we have else if support, because else <stmt>, the stmt can be another if expression!
-        let location = self.advance().location.clone(); // skip `while`
+        let span = self.advance().span; // skip `while`
 
         self.expect_tok(TokenType::ParenLeft)?;
         let condition = self.parse_expression()?;
@@ -957,7 +975,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(Statement::While {
             condition,
             child: Box::new(self.parse_statement(false)?),
-            location,
+            span: self.span_from(span),
             annotations,
         })
     }
@@ -966,7 +984,7 @@ impl<'arena> Parser<'_, 'arena> {
         annotations.are_annotations_valid_for(AnnotationReceiver::For)?;
 
         // for (<identifier> in <expr>) <stmt>
-        let location = self.advance().location.clone(); // skip over `for`
+        let span = self.advance().span; // skip over `for`
 
         self.expect_tok(TokenType::ParenLeft)?;
 
@@ -982,7 +1000,7 @@ impl<'arena> Parser<'_, 'arena> {
             iterator,
             var_name,
             child,
-            location,
+            span: self.span_from(span),
             annotations,
         })
     }
@@ -994,7 +1012,7 @@ impl<'arena> Parser<'_, 'arena> {
         // fields: field: type,[...]
         // implementation area: fn implementation area | impl TraitName { implementation area no trait } implementation area | ""
         // implementation area no trait: fn implementation area no trait | ""
-        let location = self.advance().location.clone(); // skip over `struct`
+        let span = self.advance().span; // skip over `struct`
         let name = self.expect_identifier()?;
 
         let mut generics = vec![];
@@ -1021,7 +1039,7 @@ impl<'arena> Parser<'_, 'arena> {
                 // needs comma
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedObjectElement {
-                        loc: self.peek().location.clone(),
+                        loc: self.peek().span,
                         found: self.peek().typ,
                     });
                 }
@@ -1033,7 +1051,7 @@ impl<'arena> Parser<'_, 'arena> {
             let name = self.expect_identifier()?;
             if !self.match_tok(TokenType::Colon) {
                 return Err(ParsingError::ExpectedType {
-                    loc: self.peek().location.clone(),
+                    loc: self.peek().span,
                     found: self.peek().typ,
                 });
             }
@@ -1061,15 +1079,15 @@ impl<'arena> Parser<'_, 'arena> {
                             .expect("non-anonymous function without name");
                         if let Some(other_func) = global_impl.get(&name) {
                             return Err(ParsingError::FunctionAlreadyDefined {
-                                loc: func.0.location.clone(),
+                                loc: func.0.span,
                                 name,
-                                first_func_loc: other_func.0.location.clone(),
+                                first_func_loc: other_func.0.span,
                             });
                         }
-                        global_impl.insert(name, func);
+                        global_impl.insert(name, (func.0, func.1));
                     }
                     TokenType::Impl => {
-                        let loc = self.advance().location.clone();
+                        let loc = self.advance().span;
                         let trait_name: InternedStr = self.expect_identifier()?;
                         let mut current_impl = HashMap::<
                             InternedStr<'arena>,
@@ -1080,7 +1098,7 @@ impl<'arena> Parser<'_, 'arena> {
                         while !self.match_tok(TokenType::CurlyRight) {
                             if self.peek().typ != TokenType::Fn {
                                 return Err(ParsingError::StructImplRegionExpect {
-                                    loc: self.peek().location.clone(),
+                                    loc: self.peek().span,
                                     found: self.peek().typ,
                                     is_trait_impl: true,
                                 });
@@ -1094,18 +1112,18 @@ impl<'arena> Parser<'_, 'arena> {
                                 .expect("non-anonymous function without name");
                             if let Some(other_func) = current_impl.get(&name) {
                                 return Err(ParsingError::FunctionAlreadyDefined {
-                                    loc: func.0.location,
+                                    loc: func.0.span,
                                     name,
-                                    first_func_loc: other_func.0.location.clone(),
+                                    first_func_loc: other_func.0.span,
                                 });
                             }
-                            current_impl.insert(name, func);
+                            current_impl.insert(name, (func.0, func.1));
                         }
                         impls.push((trait_name, current_impl, loc));
                     }
                     token => {
                         return Err(ParsingError::StructImplRegionExpect {
-                            loc: self.peek().location.clone(),
+                            loc: self.peek().span,
                             found: token,
                             is_trait_impl: false,
                         })
@@ -1117,7 +1135,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(Statement::Struct {
             name,
             elements,
-            location,
+            span: self.span_from(span),
             global_impl,
             impls,
             annotations,
@@ -1125,39 +1143,51 @@ impl<'arena> Parser<'_, 'arena> {
         })
     }
 
+    pub fn expect_identifier_span(
+        &mut self,
+    ) -> Result<(InternedStr<'arena>, Span<'arena>), ParsingError<'arena>> {
+        if !self.match_tok(TokenType::IdentifierLiteral) {
+            return Err(ParsingError::ExpectedIdentifier {
+                loc: self.peek().span,
+                found: self.peek().typ,
+            });
+        }
+        Ok((self.current().string_literal()?, self.current().span))
+    }
+
     pub fn expect_identifier(&mut self) -> Result<InternedStr<'arena>, ParsingError<'arena>> {
         if !self.match_tok(TokenType::IdentifierLiteral) {
             return Err(ParsingError::ExpectedIdentifier {
-                loc: self.peek().location.clone(),
+                loc: self.peek().span,
                 found: self.peek().typ,
             });
         }
         self.current().string_literal()
     }
     pub fn parse_annotation(&mut self) -> Result<(), ParsingError<'arena>> {
-        let loc = self.peek().location.clone();
+        let span = self.peek().span;
         assert_eq!(self.advance().typ, TokenType::AnnotationIntroducer);
 
         let name = match self.peek().typ {
-            TokenType::If => self.ctx.intern_str("if"),
-            TokenType::While => self.ctx.intern_str("while"),
-            TokenType::For => self.ctx.intern_str("for"),
-            TokenType::Pub => self.ctx.intern_str("pub"),
-            TokenType::As => self.ctx.intern_str("as"),
-            TokenType::Else => self.ctx.intern_str("else"),
-            TokenType::Asm => self.ctx.intern_str("asm"),
-            TokenType::Volatile => self.ctx.intern_str("volatile"),
-            TokenType::Impl => self.ctx.intern_str("impl"),
-            TokenType::Fn => self.ctx.intern_str("fn"),
-            TokenType::In => self.ctx.intern_str("in"),
-            TokenType::Unsized => self.ctx.intern_str("unsized"),
-            TokenType::Struct => self.ctx.intern_str("struct"),
-            TokenType::Trait => self.ctx.intern_str("trait"),
+            TokenType::If => symbols::Keywords::If,
+            TokenType::While => symbols::Keywords::While,
+            TokenType::For => symbols::Keywords::For,
+            TokenType::Pub => symbols::Keywords::Pub,
+            TokenType::As => symbols::Keywords::As,
+            TokenType::Else => symbols::Keywords::Else,
+            TokenType::Asm => symbols::Keywords::Asm,
+            TokenType::Volatile => symbols::Keywords::Volatile,
+            TokenType::Impl => symbols::Keywords::Impl,
+            TokenType::Fn => symbols::Keywords::Fn,
+            TokenType::In => symbols::Keywords::In,
+            TokenType::Unsized => symbols::Keywords::Unsized,
+            TokenType::Struct => symbols::Keywords::Struct,
+            TokenType::Trait => symbols::Keywords::Trait,
             TokenType::IdentifierLiteral => self.peek().string_literal()?,
 
             _ => {
                 return Err(ParsingError::ExpectedIdentifier {
-                    loc: self.peek().location.clone(),
+                    loc: self.peek().span,
                     found: self.peek().typ,
                 })
             }
@@ -1172,7 +1202,7 @@ impl<'arena> Parser<'_, 'arena> {
             match self.peek().typ {
                 TokenType::Eof => {
                     return Err(ParsingError::ExpectedArbitrary {
-                        loc: self.peek().location.clone(),
+                        loc: self.peek().span,
                         expected: TokenType::ParenRight,
                         found: TokenType::Eof,
                     })
@@ -1185,10 +1215,11 @@ impl<'arena> Parser<'_, 'arena> {
                 TokenType::ParenLeft => deepness += 1,
                 _ => (),
             }
-            args.push(self.advance().clone());
+            args.push(*self.advance());
         }
 
-        self.current_annotations.push_annotation(&name, args, loc)
+        self.current_annotations
+            .push_annotation(&name, args, self.span_from(span))
     }
 }
 
@@ -1217,8 +1248,8 @@ pub struct FunctionContract<'arena> {
     pub name: Option<InternedStr<'arena>>,
     pub arguments: Vec<Argument<'arena>>,
     pub return_type: TypeRef<'arena>,
-    pub location: Location,
-    pub annotations: Annotations,
+    pub span: Span<'arena>,
+    pub annotations: Annotations<'arena>,
     pub generics: Vec<Generic<'arena>>,
 }
 
@@ -1237,23 +1268,34 @@ arguments => list of argument seperated by comma, trailing comma allowed, the la
 
 impl<'arena> Parser<'_, 'arena> {
     pub fn parse_external(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let location = self.advance().location.clone();
+        let location = self.advance().span;
         self.parse_any_callable(false, false, false)
-            .and_then(|(mut contract, body)| {
+            .and_then(|(mut contract, body, span)| {
                 contract
                     .annotations
                     .are_annotations_valid_for(AnnotationReceiver::ExternalFunction)?;
-                contract.location = location;
-                Ok(Statement::ExternalFunction(contract, body.map(Box::new)))
+                contract.span = location;
+                Ok(Statement::ExternalFunction(
+                    contract,
+                    body.map(Box::new),
+                    span,
+                ))
             })
     }
 
     pub fn parse_callable(
         &mut self,
         anonymous: bool,
-    ) -> Result<(FunctionContract<'arena>, Statement<'arena>), ParsingError<'arena>> {
+    ) -> Result<(FunctionContract<'arena>, Statement<'arena>, Span<'arena>), ParsingError<'arena>>
+    {
         self.parse_any_callable(anonymous, true, true)
-            .map(|(contract, body)| (contract, body.expect("there should always exist a body")))
+            .map(|(contract, body, span)| {
+                (
+                    contract,
+                    body.expect("there should always exist a body"),
+                    span,
+                )
+            })
     }
 
     pub fn parse_any_callable(
@@ -1261,11 +1303,17 @@ impl<'arena> Parser<'_, 'arena> {
         anonymous: bool,
         needs_body: bool,
         can_have_generics: bool,
-    ) -> Result<(FunctionContract<'arena>, Option<Statement<'arena>>), ParsingError<'arena>> {
+    ) -> Result<
+        (
+            FunctionContract<'arena>,
+            Option<Statement<'arena>>,
+            Span<'arena>,
+        ),
+        ParsingError<'arena>,
+    > {
         let annotations = std::mem::take(&mut self.current_annotations);
 
-        let location = self.peek().location.clone();
-        self.expect_tok(TokenType::Fn)?;
+        let span = self.expect_tok(TokenType::Fn)?.span;
 
         let name = if anonymous {
             self.expect_identifier().ok()
@@ -1287,7 +1335,7 @@ impl<'arena> Parser<'_, 'arena> {
             if !arguments.is_empty() {
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
-                        loc: self.peek().location.clone(),
+                        loc: self.peek().span,
                         found: self.peek().typ,
                     });
                 }
@@ -1307,7 +1355,7 @@ impl<'arena> Parser<'_, 'arena> {
         let return_type = if self.match_tok(TokenType::ReturnType) {
             TypeRef::parse(self)?
         } else {
-            TypeRef::Void(self.peek().location.clone(), 0)
+            TypeRef::Void(self.peek().span, 0)
         };
 
         let body = if !needs_body && self.match_tok(TokenType::Semicolon) {
@@ -1318,7 +1366,7 @@ impl<'arena> Parser<'_, 'arena> {
                 TokenType::Equal => {
                     self.advance();
                     let expr = self.parse_expression()?;
-                    let return_location = expr.loc().clone();
+                    let return_location = expr.span();
                     if !anonymous {
                         // needs a semicolon if this isnt anonymous
                         self.consume_semicolon()?;
@@ -1327,23 +1375,25 @@ impl<'arena> Parser<'_, 'arena> {
                 }
                 _ => {
                     return Err(ParsingError::ExpectedFunctionBody {
-                        loc: self.peek().location.clone(),
+                        loc: self.peek().span,
                         found: self.peek().typ,
                     })
                 }
             })
         };
 
+        let span = self.span_from(span);
         Ok((
             FunctionContract {
                 name,
                 arguments,
                 return_type,
-                location,
+                span,
                 annotations,
                 generics,
             },
             body,
+            span,
         ))
     }
 
