@@ -2,8 +2,8 @@ use parking_lot::Mutex;
 use std::{alloc::Layout, mem::MaybeUninit};
 
 const MAX_ALIGNMENT: usize = std::mem::align_of::<u64>();
-const PAGE: usize = 1024;
-const HUGE_PAGE: usize = 2 * PAGE * PAGE;
+const PAGE: usize = 4096;
+const HUGE_PAGE: usize = 2 * 1024 * 1024;
 
 struct Chunk {
     data: Box<[MaybeUninit<u8>]>,
