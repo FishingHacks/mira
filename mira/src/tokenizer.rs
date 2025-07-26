@@ -1076,6 +1076,7 @@ mod test {
         ctx.init_source_map(SourceMap::new([].into()));
         let eof_token = (TokenType::Eof, None);
         let (tokens, errs) = get_tokens(ctx.share(), src);
+        println!("{tokens:?}");
         assert_eq!(errs.len(), 0, "unexpected errors: {errs:?}");
         assert_eq!(tokens.len(), expected_tokens.len() + 1 /* eof token */);
         for (tok, expected) in tokens
@@ -1191,9 +1192,15 @@ mod test {
             ],
         );
 
-        match_errs!("0x1.2; -0x1.2";
-            TokenizationError::InvalidNumberError { loc: _ },
-            TokenizationError::InvalidNumberError { loc: _ },
+        assert_token_eq(
+            "0x1.2; -0x1.2",
+            &[
+                tok!(UIntLiteral, UInt(1, _)),
+                tok!(FloatLiteral, Float(0.2, _)),
+                tok!(Semicolon),
+                tok!(SIntLiteral, SInt(-1, _)),
+                tok!(FloatLiteral, Float(0.2, _)),
+            ],
         );
 
         assert_token_eq(
@@ -1205,9 +1212,15 @@ mod test {
             ],
         );
 
-        match_errs!("0b10.2; -0b10.1";
-            TokenizationError::InvalidNumberError { loc: _ },
-            TokenizationError::InvalidNumberError { loc: _ },
+        assert_token_eq(
+            "0b10.2; -0b10.1",
+            &[
+                tok!(UIntLiteral, UInt(0b10, _)),
+                tok!(FloatLiteral, Float(0.2, _)),
+                tok!(Semicolon),
+                tok!(SIntLiteral, SInt(-0b10, _)),
+                tok!(FloatLiteral, Float(0.1, _)),
+            ],
         );
 
         assert_token_eq(
@@ -1219,9 +1232,15 @@ mod test {
             ],
         );
 
-        match_errs!("0o6.23; -0o5.76";
-            TokenizationError::InvalidNumberError { loc: _ },
-            TokenizationError::InvalidNumberError { loc: _ },
+        assert_token_eq(
+            "0o6.23; -0o5.76",
+            &[
+                tok!(UIntLiteral, UInt(0o6, _)),
+                tok!(FloatLiteral, Float(0.23, _)),
+                tok!(Semicolon),
+                tok!(SIntLiteral, SInt(-0o5, _)),
+                tok!(FloatLiteral, Float(0.76, _)),
+            ],
         );
     }
 }
