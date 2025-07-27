@@ -234,47 +234,43 @@ fn inner_typecheck_function<'arena>(
         scope.make_stack_allocated(id);
     }
 
-    match typecheck_statement(
+    let always_returns = typecheck_statement(
         context,
         &mut scope,
         statement,
         module_id.cast(),
         &return_type,
         &mut exprs,
-    ) {
-        Ok(always_returns) => {
-            if !matches!(return_type, Type::PrimitiveVoid(0)) && !always_returns {
-                return Err(vec![TypecheckingError::BodyDoesNotAlwaysReturn {
-                    location: statement.span(),
-                }]);
-            }
-            if !always_returns {
-                typecheck_statement(
-                    context,
-                    &mut scope,
-                    &Statement::Return(None, statement.span()),
-                    module_id.cast(),
-                    &return_type,
-                    &mut exprs,
-                )?;
-            }
-            if is_external {
-                let mut exprs = Some(exprs.into_boxed_slice());
-                std::mem::swap(
-                    &mut exprs,
-                    &mut context.external_functions.write()[function_id.cast()].1,
-                );
-                assert!(exprs.is_none());
-            } else {
-                let mut boxed_slice = exprs.into_boxed_slice();
-                std::mem::swap(
-                    &mut boxed_slice,
-                    &mut context.functions.write()[function_id].1,
-                );
-                assert_eq!(boxed_slice.len(), 0);
-            }
-        }
-        Err(e) => return Err(e),
+    )?;
+    if !matches!(return_type, Type::PrimitiveVoid(0)) && !always_returns {
+        return Err(vec![TypecheckingError::BodyDoesNotAlwaysReturn {
+            location: statement.span(),
+        }]);
+    }
+    if !always_returns {
+        typecheck_statement(
+            context,
+            &mut scope,
+            &Statement::Return(None, statement.span()),
+            module_id.cast(),
+            &return_type,
+            &mut exprs,
+        )?;
+    }
+    if is_external {
+        let mut exprs = Some(exprs.into_boxed_slice());
+        std::mem::swap(
+            &mut exprs,
+            &mut context.external_functions.write()[function_id.cast()].1,
+        );
+        assert!(exprs.is_none());
+    } else {
+        let mut boxed_slice = exprs.into_boxed_slice();
+        std::mem::swap(
+            &mut boxed_slice,
+            &mut context.functions.write()[function_id].1,
+        );
+        assert_eq!(boxed_slice.len(), 0);
     }
     Ok(scope.values)
 }
