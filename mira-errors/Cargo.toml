@@ -1,0 +1,8 @@
+[package]
+name = "mira-errors"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mira = { path = "../mira" }
+mira-macros = { path = "../mira-macros" }

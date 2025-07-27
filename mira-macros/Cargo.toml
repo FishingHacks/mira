@@ -1,0 +1,12 @@
+[package]
+name = "mira-macros"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+syn = "2.0.104"
+proc-macro2 = "1.0.95"
+quote = "1.0.40"
+
+[lib]
+proc-macro = true

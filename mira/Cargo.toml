@@ -9,7 +9,7 @@ authors = ["Skylar (github.com/FishingHacks)", "Eden (Discord - @your.eden)"]
 
 [dependencies]
 parking_lot = "0.12.3"
-thiserror = "2.0.3"
+thiserror = "1.0.69"
 inkwell = { git = "https://github.com/fishinghacks/inkwell.git", features = ["llvm19-1-prefer-static"] }
 cfg-if = "1.0.0"
 termsize = "0.1.9"
