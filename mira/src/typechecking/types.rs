@@ -5,7 +5,8 @@ use std::{
 };
 
 use crate::store::{Store, StoreKey};
-use crate::{interner::InternedStr, parser::TypeRef, tokenizer::NumberType};
+use crate::{parser::TypeRef, tokenizer::NumberType};
+use mira_spans::interner::InternedStr;
 
 use super::{TypecheckingContext, TypedStruct, TypedTrait};
 

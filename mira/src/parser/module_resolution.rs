@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::tokenizer::span::{SourceMap, Span};
+use mira_spans::{ImportData, ModuleResolver, ResolvedPath, SourceMap, Span};
 
 // ./_ -> relative path
 // /_  -> absolute path
@@ -128,36 +128,6 @@ pub fn default_lookup_import_in_directory(
         path.pop();
         path.push(&name);
         (source_map.exists(&path) && !source_map.is_dir(&path)).then_some(path)
-    }
-}
-
-#[derive(Clone)]
-pub struct ImportData<'a, 'arena> {
-    pub root_dir: Arc<Path>,
-    pub current_dir: &'a Path,
-    pub import: &'a str,
-    pub span: Span<'arena>,
-    pub source_map: &'a SourceMap,
-}
-pub struct ResolvedPath {
-    pub root_dir: Arc<Path>,
-    pub file: Arc<Path>,
-}
-pub trait ModuleResolver: 'static + Send + Sync {
-    /// uses starting with ./, will get stripped from `data.import`
-    #[allow(unused_variables)]
-    fn resolve_relative(&self, data: ImportData) -> Option<ResolvedPath> {
-        None
-    }
-    /// uses starting with /, won't get stripped from `data.import`
-    #[allow(unused_variables)]
-    fn resolve_absolute(&self, data: ImportData) -> Option<ResolvedPath> {
-        None
-    }
-    /// uses starting with `<name>/` or just `name`, will get stripped from `data.import` and provided as `module_name`
-    #[allow(unused_variables)]
-    fn resolve_module(&self, data: ImportData, module_name: &str) -> Option<ResolvedPath> {
-        None
     }
 }
 

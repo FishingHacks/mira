@@ -3,10 +3,8 @@ use std::{
     fmt::{Display, Write},
 };
 
-use crate::{
-    annotations::Annotations, interner::InternedStr, store::StoreKey, tokenizer::span::Span,
-    typechecking::types::FunctionType,
-};
+use crate::{annotations::Annotations, store::StoreKey, typechecking::types::FunctionType};
+use mira_spans::{interner::InternedStr, Span};
 
 use super::{
     intrinsics::Intrinsic,

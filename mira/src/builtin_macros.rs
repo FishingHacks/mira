@@ -1,7 +1,8 @@
 use crate::{
     context::SharedContext,
-    tokenizer::{span::Span, Literal, NumberType, Token, TokenType},
+    tokenizer::{Literal, NumberType, Token, TokenType},
 };
+use mira_spans::Span;
 use std::fmt::Write;
 
 type MacroFn<'arena> =

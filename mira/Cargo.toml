@@ -14,3 +14,6 @@ inkwell = { git = "https://github.com/fishinghacks/inkwell.git", features = ["ll
 cfg-if = "1.0.0"
 termsize = "0.1.9"
 crossbeam = "0.8.4"
+mira-errors = { path = "../mira-errors" }
+mira-macros = { path = "../mira-macros" }
+mira-spans = { path = "../mira-spans" }

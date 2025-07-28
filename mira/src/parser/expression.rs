@@ -6,10 +6,13 @@ use std::{
 use crate::{
     annotations::AnnotationReceiver,
     error::ParsingError,
-    interner::{InternedStr, SpanInterner},
     module::{Function, Module, ModuleContext},
     store::StoreKey,
-    tokenizer::{span::Span, Literal, NumberType, TokenType},
+    tokenizer::{Literal, NumberType, TokenType},
+};
+use mira_spans::{
+    interner::{InternedStr, SpanInterner},
+    Span,
 };
 
 use super::{

@@ -3,8 +3,8 @@ use std::str::FromStr;
 
 use crate::annotations::{Annotation, AnnotationReceiver, Annotations};
 use crate::error::ParsingError;
-use crate::tokenizer::span::Span;
 use crate::tokenstream::TokenStream;
+use mira_spans::Span;
 
 use super::{Type, TypecheckingError};
 

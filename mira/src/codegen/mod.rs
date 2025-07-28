@@ -5,7 +5,6 @@ use intrinsics::LLVMIntrinsics;
 use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
-    interner::InternedStr,
     store::StoreKey,
     typechecking::{
         expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
@@ -15,6 +14,7 @@ use crate::{
     },
 };
 pub use inkwell::context::Context as InkwellContext;
+use mira_spans::interner::InternedStr;
 pub mod mangling;
 pub use context::{CodegenConfig, CodegenContext, Optimizations};
 pub use error::CodegenError;

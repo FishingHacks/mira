@@ -32,7 +32,6 @@ use inkwell::{
 
 use crate::{
     context::SharedContext,
-    interner::InternedStr,
     std_annotations::{
         alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
         noinline::Noinline, section::SectionAnnotation,
@@ -47,6 +46,7 @@ use crate::{
         TypedTrait,
     },
 };
+use mira_spans::interner::InternedStr;
 
 #[derive(Clone, Copy)]
 pub(super) struct DefaultTypes<'ctx> {

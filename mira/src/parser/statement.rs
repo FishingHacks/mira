@@ -6,19 +6,18 @@ use std::{
 use crate::{
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
-    interner::InternedStr,
     module::{BakedStruct, ExternalFunction, Function, Module, ModuleContext, Static},
     parser::{module_resolution::resolve_module, ParserQueueEntry},
     store::StoreKey,
     symbols,
-    tokenizer::{span::Span, Literal, Token, TokenType},
+    tokenizer::{Literal, Token, TokenType},
 };
 
 use super::{
-    module_resolution::ResolvedPath,
     types::{Generic, TypeRef},
     Expression, Parser,
 };
+use mira_spans::{interner::InternedStr, ResolvedPath, Span};
 
 #[derive(Clone, Debug)]
 pub enum BakableFunction<'arena> {

@@ -5,11 +5,11 @@ use thiserror::Error;
 use crate::{
     annotations::AnnotationReceiver,
     codegen::CodegenError,
-    interner::InternedStr,
     linking::LinkerError,
-    tokenizer::{span::Span, TokenType},
+    tokenizer::TokenType,
     typechecking::{Type, TypecheckingError},
 };
+use mira_spans::{interner::InternedStr, Span};
 
 #[macro_export]
 macro_rules! error_list_wrapper {

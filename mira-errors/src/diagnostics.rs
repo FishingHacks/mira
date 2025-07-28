@@ -3,8 +3,8 @@ use std::{
     fmt::{Arguments, Debug, Display, Write},
 };
 
-use mira::tokenizer::span::{SourceMap, Span, SpanWithFile};
 use mira_macros::Display;
+use mira_spans::{SourceMap, Span, SpanWithFile};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Display)]
 pub enum Severity {

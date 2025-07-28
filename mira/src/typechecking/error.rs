@@ -2,11 +2,10 @@ use thiserror::Error;
 
 use crate::{
     error::FunctionList,
-    interner::InternedStr,
     lang_items::{LangItemAssignmentError, LangItemError},
     parser::{Path, PathWithoutGenerics},
-    tokenizer::span::Span,
 };
+use mira_spans::{interner::InternedStr, Span};
 
 use super::{types::Type, ScopeKind};
 

@@ -11,11 +11,9 @@ use crate::{
     progress_bar::{ProgressBar, ProgressItemRef},
     store::StoreKey,
     threadpool::ThreadPool,
-    tokenizer::{
-        span::{BytePos, SourceFile, SourceMap, SpanData},
-        Literal, Token, TokenType, Tokenizer,
-    },
+    tokenizer::{Literal, Token, TokenType, Tokenizer},
 };
+use mira_spans::{BytePos, SourceFile, SourceMap, SpanData};
 
 use super::print_progress_bar;
 

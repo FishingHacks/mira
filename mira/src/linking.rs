@@ -17,12 +17,10 @@ use crate::{
     codegen::{CodegenConfig, CodegenContext, CodegenError, Optimizations},
     context::SharedContext,
     error::MiraError,
-    module_resolution::ModuleResolver,
     optimizations,
     progress_bar::{ProgressBar, ProgressBarStyle},
     store::AssociatedStore,
     target::{Abi, Arch, Os, Target},
-    tokenizer::span::SourceMap,
     typechecking::{
         intrinsics::IntrinsicAnnotation,
         ir_displayer::{Formatter, IoWriteWrapper, ReadOnlyTypecheckingContext, TCContextDisplay},
@@ -30,6 +28,7 @@ use crate::{
         TypecheckingContext,
     },
 };
+use mira_spans::{ModuleResolver, SourceMap};
 
 #[derive(Debug)]
 pub enum LinkerInput {

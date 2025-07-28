@@ -2,16 +2,15 @@ use std::fmt::{Debug, Display, Write};
 
 use crate::context::SharedContext;
 use crate::store::StoreKey;
-use crate::tokenizer::span::Span;
 use crate::typechecking::{TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct};
 use crate::{
     annotations::{Annotation, AnnotationReceiver, Annotations},
     error::{FunctionList, ParsingError},
     error_list_wrapper,
-    interner::InternedStr,
     tokenstream::TokenStream,
     typechecking::{Type, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
 };
+use mira_spans::{interner::InternedStr, Span};
 use thiserror::Error;
 
 #[derive(Clone, Debug)]
