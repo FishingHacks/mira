@@ -553,7 +553,38 @@ mod monotonic {
 use monotonic::MonotonicVec;
 use parking_lot::{RwLock, RwLockReadGuard};
 
-use crate::{interner::SpanInterner, module_resolution::ModuleResolver};
+pub trait ModuleResolver: 'static + Send + Sync {
+    /// uses starting with ./, will get stripped from `data.import`
+    #[allow(unused_variables)]
+    fn resolve_relative(&self, data: ImportData) -> Option<ResolvedPath> {
+        None
+    }
+    /// uses starting with /, won't get stripped from `data.import`
+    #[allow(unused_variables)]
+    fn resolve_absolute(&self, data: ImportData) -> Option<ResolvedPath> {
+        None
+    }
+    /// uses starting with `<name>/` or just `name`, will get stripped from `data.import` and provided as `module_name`
+    #[allow(unused_variables)]
+    fn resolve_module(&self, data: ImportData, module_name: &str) -> Option<ResolvedPath> {
+        None
+    }
+}
+
+#[derive(Clone)]
+pub struct ImportData<'a, 'arena> {
+    pub root_dir: Arc<Path>,
+    pub current_dir: &'a Path,
+    pub import: &'a str,
+    pub span: Span<'arena>,
+    pub source_map: &'a SourceMap,
+}
+pub struct ResolvedPath {
+    pub root_dir: Arc<Path>,
+    pub file: Arc<Path>,
+}
+
+use crate::interner::SpanInterner;
 
 #[cfg(test)]
 mod test {

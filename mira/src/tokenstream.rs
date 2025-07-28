@@ -1,8 +1,8 @@
 use crate::{
     error::ParsingError,
-    interner::InternedStr,
-    tokenizer::{span::Span, Literal, NumberType, Token, TokenType},
+    tokenizer::{Literal, NumberType, Token, TokenType},
 };
+use mira_spans::{interner::InternedStr, Span};
 
 enum LiteralType {
     String,

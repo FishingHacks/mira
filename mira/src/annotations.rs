@@ -6,13 +6,10 @@ use std::{
 };
 
 use crate::{
-    error::ParsingError,
-    lang_items::LangItemAnnotation,
-    std_annotations,
-    tokenizer::{span::Span, Token},
-    tokenstream::TokenStream,
-    typechecking::intrinsics::IntrinsicAnnotation,
+    error::ParsingError, lang_items::LangItemAnnotation, std_annotations, tokenizer::Token,
+    tokenstream::TokenStream, typechecking::intrinsics::IntrinsicAnnotation,
 };
+use mira_spans::Span;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AnnotationReceiver {

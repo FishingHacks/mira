@@ -8,7 +8,7 @@ use std::{
 
 use parking_lot::Mutex;
 
-use crate::{arena::Arena, tokenizer::span::SpanData};
+use crate::{arena::Arena, span::SpanData};
 
 macro_rules! interner {
     ($interner: ident, $internee: ident, $ty: ty, |$arena:ident, $value:ident| $blk: expr $(, $default_values:expr)?) => {
@@ -114,7 +114,7 @@ extra_traits!(for InternedStr impl debug, display);
 
 mod span {
     use crate::arena::Arena;
-    use crate::tokenizer::span::SpanData;
+    use crate::span::SpanData;
     use std::collections::HashSet;
     use std::{borrow::Borrow, fmt::Debug, hash::Hash, ops::Deref};
 
@@ -142,11 +142,6 @@ impl<'arena> InternedStr<'arena> {
 
     pub fn to_str(self) -> &'arena str {
         self.0
-    }
-
-    #[cfg(test)]
-    pub fn shady_new(s: &'static str) -> Self {
-        Self(s)
     }
 }
 

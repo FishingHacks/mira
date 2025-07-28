@@ -14,15 +14,14 @@ use types::{resolve_primitive_type, FunctionType};
 use crate::{
     annotations::Annotations,
     context::SharedContext,
-    interner::InternedStr,
     lang_items::LangItems,
     module::{
         BakedStruct, ExternalFunction, Function, Module, ModuleContext, ModuleScopeValue, Static,
     },
     parser::{Trait, TypeRef},
     store::{AssociatedStore, Store, StoreKey},
-    tokenizer::span::Span,
 };
+use mira_spans::{interner::InternedStr, Span};
 
 mod error;
 pub mod expression;

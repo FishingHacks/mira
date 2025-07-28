@@ -270,6 +270,9 @@ dependencies = [
  "cfg-if",
  "crossbeam",
  "inkwell",
+ "mira-errors",
+ "mira-macros",
+ "mira-spans",
  "parking_lot",
  "termsize",
  "thiserror",
@@ -283,8 +286,8 @@ version = "0.1.0"
 name = "mira-errors"
 version = "0.1.0"
 dependencies = [
- "mira",
  "mira-macros",
+ "mira-spans",
 ]
 
 [[package]]
@@ -294,6 +297,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "mira-spans"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
 ]
 
 [[package]]

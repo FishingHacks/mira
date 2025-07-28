@@ -2,10 +2,9 @@ use std::{fmt::Debug, sync::OnceLock};
 
 use parking_lot::Mutex;
 
-use crate::{
-    arena::Arena,
+use mira_spans::{
     interner::{InternedStr, SpanInterner, StringInterner},
-    tokenizer::span::{SourceMap, Span, SpanData},
+    Arena, SourceMap, Span, SpanData,
 };
 
 pub struct GlobalContext<'arena> {

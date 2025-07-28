@@ -4,11 +4,10 @@ use std::{collections::HashMap, fmt::Debug, path::Path, sync::Arc};
 use crate::{
     annotations::Annotations,
     error::ProgramFormingError,
-    interner::InternedStr,
     parser::{Expression, FunctionContract, Generic, LiteralValue, Statement, Trait, TypeRef},
     store::{Store, StoreKey},
-    tokenizer::span::Span,
 };
+use mira_spans::{interner::InternedStr, Span};
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum ModuleScopeValue<'arena> {

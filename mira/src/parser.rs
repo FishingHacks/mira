@@ -5,17 +5,14 @@ use crate::{
     annotations::Annotations,
     context::SharedContext,
     error::ParsingError,
-    interner::InternedStr,
     module::Module,
     store::{Store, StoreKey},
-    tokenizer::{
-        span::{SourceFile, SourceMap, Span},
-        Token, TokenType,
-    },
+    tokenizer::{Token, TokenType},
 };
 pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
+use mira_spans::{interner::InternedStr, SourceFile, SourceMap, Span};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, Struct, TypeRef, RESERVED_TYPE_NAMES};
 mod expression;

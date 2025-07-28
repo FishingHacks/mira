@@ -7,9 +7,7 @@ use std::{
 use crate::{
     codegen::debug_constants::BasicTypeEncoding,
     context::SharedContext,
-    interner::InternedStr,
     store::{AssociatedStore, Store, StoreKey},
-    tokenizer::span::Span,
     typechecking::{
         intrinsics::IntrinsicAnnotation, Type, TypecheckedModule, TypecheckingContext,
         TypedExternalFunction, TypedFunction, TypedStruct,
@@ -27,6 +25,7 @@ use inkwell::{
     values::PointerValue,
     AddressSpace,
 };
+use mira_spans::{interner::InternedStr, Span};
 
 use super::{
     context::DefaultTypes,

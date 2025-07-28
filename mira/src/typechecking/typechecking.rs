@@ -1,14 +1,14 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    interner::InternedStr,
     module::{ModuleContext, ModuleScopeValue},
     parser::{ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp},
     std_annotations::ext_vararg::ExternVarArg,
     store::StoreKey,
-    tokenizer::{span::Span, NumberType},
+    tokenizer::NumberType,
     typechecking::typed_resolve_import,
 };
+use mira_spans::{interner::InternedStr, Span};
 
 use super::{
     expression::{OffsetValue, TypecheckedExpression, TypedLiteral},

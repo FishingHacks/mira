@@ -5,18 +5,11 @@ use std::{
     sync::Arc,
 };
 
-use mira::{
-    context::SharedContext,
-    tokenizer::span::{FileId, SourceFile},
-};
 pub use mira_macros::{Display, ErrorData};
+use mira_spans::{FileId, SourceFile, SourceMap};
 mod diagnostics;
 pub mod printers;
 pub use diagnostics::*;
-// this is used by the proc macro to not break it when used inside of mira, where mira would be
-// `crate::`.
-#[doc(hidden)]
-pub use mira::tokenizer::span::Span as MiraSpan;
 use printers::Loc;
 pub use printers::{AsciiPrinter, StyledPrinter, Styles, UnicodePrinter};
 
@@ -56,7 +49,7 @@ impl Write for StdoutWriter {
 }
 
 pub struct DiagnosticFormatter<'arena, P: StyledPrinter> {
-    ctx: SharedContext<'arena>,
+    source_map: &'arena SourceMap,
     unicode: bool,
     output: Output,
     printer: P,
@@ -64,9 +57,9 @@ pub struct DiagnosticFormatter<'arena, P: StyledPrinter> {
 }
 
 impl<'arena, P: StyledPrinter> DiagnosticFormatter<'arena, P> {
-    pub fn new(ctx: SharedContext<'arena>, output: Output, printer: P, styles: Styles) -> Self {
+    pub fn new(source_map: &'arena SourceMap, output: Output, printer: P, styles: Styles) -> Self {
         Self {
-            ctx,
+            source_map,
             unicode: false,
             output,
             styles,
@@ -80,7 +73,7 @@ impl<'arena, P: StyledPrinter> DiagnosticFormatter<'arena, P> {
 
     pub fn with_output<R>(&mut self, f: impl FnOnce(Formatter) -> R) -> R {
         let ctx = FormattingCtx {
-            source_map: self.ctx.source_map(),
+            source_map: self.source_map,
             unicode: self.unicode,
         };
         self.output
@@ -92,7 +85,7 @@ impl<'arena, P: StyledPrinter> DiagnosticFormatter<'arena, P> {
             panic!("Diagnostic was already emitted")
         };
         let ctx = FormattingCtx {
-            source_map: self.ctx.source_map(),
+            source_map: self.source_map,
             unicode: self.unicode,
         };
         self.output.with_writer(|writer| {
@@ -301,13 +294,10 @@ impl<'a, 'b> Iterator for LineSplitter<'a, 'b> {
 
 #[cfg(test)]
 mod test {
+    use mira_spans::{Arena, BytePos, SourceMap, Span, SpanData, interner::SpanInterner};
+
     use super::*;
     use crate as mira_errors;
-    use mira::{
-        arena::Arena,
-        context::GlobalContext,
-        tokenizer::span::{BytePos, SourceMap, Span, SpanData},
-    };
     use std::path::Path;
 
     #[derive(ErrorData)]
@@ -323,59 +313,61 @@ mod test {
     #[test]
     fn test() {
         let arena = Arena::new();
-        let ctx = GlobalContext::new(&arena);
-        let ctx = ctx.share();
+        let interner = SpanInterner::new(&arena);
         let source_map = SourceMap::new([].into());
         let file = source_map.new_file(
             Path::new("src/main.rs").into(),
             Path::new("src").into(),
             SOURCE.into(),
         );
-        ctx.init_source_map(source_map);
-        let mut emitter =
-            DiagnosticFormatter::new(ctx, Output::Stdout, UnicodePrinter::new(), Styles::DEFAULT)
-                .unicode(true);
-        let meow = new_span(ctx, &file, 2, 26, 3);
+        let mut emitter = DiagnosticFormatter::new(
+            &source_map,
+            Output::Stdout,
+            UnicodePrinter::new(),
+            Styles::DEFAULT,
+        )
+        .unicode(true);
+        let meow = new_span(&interner, &file, 2, 26, 3);
         let diagnostic = Diagnostic::new(TestError { meow }, Severity::Warn)
-            .with_secondary_label(new_span(ctx, &file, 2, 8, 1), "binding `s` declared here")
-            .with_secondary_label(new_span(ctx, &file, 5, 16, 5), "borrow of `s` occurs here")
-            .with_secondary_label(new_span(ctx, &file, 5, 8, 5), "this is `other`")
+            .with_secondary_label(new_span(&interner, &file, 2, 8, 1), "binding `s` declared here")
+            .with_secondary_label(new_span(&interner, &file, 5, 16, 5), "borrow of `s` occurs here")
+            .with_secondary_label(new_span(&interner, &file, 5, 8, 5), "this is `other`")
             .with_primary_label(
-                new_span(ctx, &file, 6, 9, 1),
+                new_span(&interner, &file, 6, 9, 1),
                 "move out of `s` occurs here",
             )
-            .with_secondary_label(new_span(ctx, &file, 9, 18, 7), "borrow later used here")
+            .with_secondary_label(new_span(&interner, &file, 9, 18, 7), "borrow later used here")
             .with_note("this error originates in the macro `$crate::format_args_nl` which comes from the expansion of the macro `println` (in Nightly builds, run with -Z macro-backtrace for more info)");
 
         emitter.display_diagnostic(diagnostic).unwrap();
         let diagnostic = Diagnostic::new(TestError { meow }, Severity::Error)
-            .with_secondary_label(new_span(ctx, &file, 2, 8, 1), "binding `s` declared here")
-            .with_secondary_label(new_span(ctx, &file, 5, 16, 6), "borrow of `s` occurs here")
-            .with_secondary_label(new_span(ctx, &file, 5, 8, 5), "this is `other`")
+            .with_secondary_label(new_span(&interner, &file, 2, 8, 1), "binding `s` declared here")
+            .with_secondary_label(new_span(&interner, &file, 5, 16, 6), "borrow of `s` occurs here")
+            .with_secondary_label(new_span(&interner, &file, 5, 8, 5), "this is `other`")
             .with_primary_label(
-                new_span(ctx, &file, 6, 9, 1),
+                new_span(&interner, &file, 6, 9, 1),
                 "move out of `s` occurs here",
             )
-            .with_secondary_label(new_span(ctx, &file, 8, 18, 7), "borrow later used here")
+            .with_secondary_label(new_span(&interner, &file, 8, 18, 7), "borrow later used here")
             .with_note("this error originates in the macro `$crate::format_args_nl` which comes from the expansion of the macro `println` (in Nightly builds, run with -Z macro-backtrace for more info)");
 
         emitter.display_diagnostic(diagnostic).unwrap();
         panic!()
     }
 
-    fn new_span<'ctx>(
-        ctx: SharedContext<'ctx>,
+    fn new_span<'arena>(
+        interner: &SpanInterner<'arena>,
         file: &SourceFile,
         line: u32,
         col: u32,
         len: u32,
-    ) -> Span<'ctx> {
+    ) -> Span<'arena> {
         let mut offset = 0;
         for line in 1..line {
             offset += file.get_line(line as usize - 1).len() + 1;
         }
         let pos = BytePos::from_u32(offset as u32 + col);
-        ctx.intern_span(SpanData::new(pos, len, file.id))
+        Span::new(SpanData::new(pos, len, file.id), interner)
     }
 
     const SOURCE: &str = r#"fn main() {

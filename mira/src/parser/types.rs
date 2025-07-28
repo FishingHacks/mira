@@ -4,9 +4,9 @@ use std::{
 };
 
 use crate::{
-    error::ParsingError, interner::InternedStr, module::Function, store::StoreKey, symbols,
-    tokenizer::span::Span, tokenizer::TokenType,
+    error::ParsingError, module::Function, store::StoreKey, symbols, tokenizer::TokenType,
 };
+use mira_spans::{interner::InternedStr, Span};
 
 use super::{expression::PathWithoutGenerics, Annotations, Parser, Path};
 

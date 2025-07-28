@@ -53,6 +53,7 @@ fn derive_for_enum(s: DataEnum, ident: Ident, generics: Generics) -> Result<Toke
     let (impl_generics, ty_generics, where_clauses) = generics.split_for_impl();
 
     Ok(quote! {
+        #[allow(unused, dead_code)]
         impl #impl_generics mira_errors::ErrorData for #ident #ty_generics #where_clauses {
             fn message<'ctx>(
                 &'ctx self,
@@ -121,7 +122,7 @@ fn generate_maybecopy() -> TokenStream {
                 *self
             }
         }
-        impl MaybeCopy for mira_errors::MiraSpan<'_> {
+        impl MaybeCopy for mira_spans::Span<'_> {
             fn copy(&self) -> Self {
                 *self
             }
@@ -174,6 +175,7 @@ fn derive_for_struct(
     let maybe_copy = generate_maybecopy();
 
     Ok(quote! {
+        #[allow(unused, dead_code)]
         impl #impl_generics mira_errors::ErrorData for #ident #ty_generics #where_clauses {
             fn message<'ctx>(
                 &'ctx self,

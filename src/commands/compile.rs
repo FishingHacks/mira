@@ -9,15 +9,15 @@ use std::{
 
 use clap::{Args, ValueEnum};
 use mira::{
-    arena::Arena,
     codegen::CodegenConfig,
     context::GlobalContext,
     linking::{run_full_compilation_pipeline, FullCompilationOptions},
     module_resolution::{
-        AbsoluteResolver, BasicModuleResolver, ModuleResolver, RelativeResolver,
-        SingleFileModuleResolver, SingleModuleResolver,
+        AbsoluteResolver, BasicModuleResolver, RelativeResolver, SingleFileModuleResolver,
+        SingleModuleResolver,
     },
     target::{Target, NATIVE_TARGET},
+    Arena, ModuleResolver,
 };
 
 use crate::libfinder;

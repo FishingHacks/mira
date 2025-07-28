@@ -1,17 +1,15 @@
+use mira_spans::{BytePos, SourceFile, SourceMap, Span, SpanData};
 use parking_lot::RwLock;
-use span::{BytePos, SourceFile, SourceMap, Span, SpanData};
 use std::{fmt::Display, str::FromStr, sync::Arc};
-
-pub mod span;
 
 use crate::{
     context::SharedContext,
     error::{ParsingError, TokenizationError},
-    interner::InternedStr,
     module::Module,
     parser::{LiteralValue, Parser, ParserQueueEntry},
     store::{Store, StoreKey},
 };
+use mira_spans::interner::InternedStr;
 
 macro_rules! token_type {
     ($($key:ident $(=$value:literal)?),* $(,)?) => {
@@ -1025,7 +1023,8 @@ impl<'arena> Tokenizer<'arena> {
 mod test {
     use std::path::Path;
 
-    use crate::{arena::Arena, context::GlobalContext};
+    use crate::context::GlobalContext;
+    use mira_spans::{interner::StringInterner, Arena};
 
     use super::*;
 
@@ -1112,22 +1111,17 @@ mod test {
     }
 
     macro_rules! tok {
-        (IdentifierLiteral, $lit:ident) => {
+        ($interner:expr, IdentifierLiteral, $lit:ident) => {
             (
                 TokenType::IdentifierLiteral,
-                Some(Literal::String(
-                    InternedStr::shady_new(stringify!($lit)).into(),
-                )),
+                Some(Literal::String($interner.intern(stringify!($lit)))),
             )
         };
         ($ty:ident) => {
             (TokenType::$ty, None)
         };
-        ($ty: ident, $lit:ident($val:expr)) => {
-            (
-                TokenType::$ty,
-                Some(Literal::$lit(InternedStr::shady_new($val))),
-            )
+        ($interner:expr, $ty: ident, $lit:ident($val:expr)) => {
+            (TokenType::$ty, Some(Literal::$lit($interner.intern($val))))
         };
         ($ty: ident, $lit:ident($val:expr, _)) => {
             (TokenType::$ty, Some(Literal::$lit($val, NumberType::None)))
@@ -1142,6 +1136,8 @@ mod test {
 
     #[test]
     fn test_strings() {
+        let arena = Arena::new();
+        let mut interner = StringInterner::new(&arena);
         assert_token_eq(
             r#"
 "a b c";
@@ -1149,11 +1145,11 @@ mod test {
 "a\t\3";
             "#,
             &[
-                tok!(StringLiteral, String("a b c")),
+                tok!(interner, StringLiteral, String("a b c")),
                 tok!(Semicolon),
-                tok!(StringLiteral, String("a\n\n\\t")),
+                tok!(interner, StringLiteral, String("a\n\n\\t")),
                 tok!(Semicolon),
-                tok!(StringLiteral, String("a\t3")),
+                tok!(interner, StringLiteral, String("a\t3")),
                 tok!(Semicolon),
             ],
         );
@@ -1163,11 +1159,16 @@ mod test {
 
     #[test]
     fn test_idents() {
-        assert_token_eq("jkhdfgkjhdf", &[tok!(IdentifierLiteral, jkhdfgkjhdf)]);
-        assert_token_eq("_Zn3Meow", &[tok!(IdentifierLiteral, _Zn3Meow)]);
+        let arena = Arena::new();
+        let mut interner = StringInterner::new(&arena);
+        assert_token_eq(
+            "jkhdfgkjhdf",
+            &[tok!(interner, IdentifierLiteral, jkhdfgkjhdf)],
+        );
+        assert_token_eq("_Zn3Meow", &[tok!(interner, IdentifierLiteral, _Zn3Meow)]);
         assert_token_eq(
             "_3$5#12_mow",
-            &[tok!(IdentifierLiteral, String("_3$5#12_mow"))],
+            &[tok!(interner, IdentifierLiteral, String("_3$5#12_mow"))],
         );
         match_errs!("1289hjdsjhfgdfg_meow"; TokenizationError::InvalidNumberType(_));
     }

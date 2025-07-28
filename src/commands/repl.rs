@@ -11,9 +11,9 @@ use std::{
 
 use crate::{libfinder, VER};
 use clap::{Args, ValueEnum};
-use mira::arena::Arena;
 use mira::context::GlobalContext;
 use mira::module_resolution::SingleModuleResolver;
+use mira::Arena;
 use mira::{
     codegen::CodegenConfig,
     linking::{run_full_compilation_pipeline, FullCompilationOptions},
