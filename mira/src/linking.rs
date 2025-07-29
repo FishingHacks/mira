@@ -1,14 +1,15 @@
 use std::{
     fs::File,
-    io::{ErrorKind, Write},
+    io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus},
     sync::Arc,
 };
 
 use inkwell::context::Context;
+use mira_errors::Diagnostics;
+use mira_macros::ErrorData;
 use parking_lot::RwLock;
-use thiserror::Error;
 
 mod parsing;
 use parsing::parse_all;
@@ -16,7 +17,7 @@ use parsing::parse_all;
 use crate::{
     codegen::{CodegenConfig, CodegenContext, CodegenError, Optimizations},
     context::SharedContext,
-    error::MiraError,
+    error::{CurrentDirError, FailedToWriteIR, FileOpenError, IoReadError},
     optimizations,
     progress_bar::{ProgressBar, ProgressBarStyle},
     store::AssociatedStore,
@@ -66,15 +67,16 @@ macro_rules! arg_if {
     };
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, ErrorData)]
+#[no_arena_lifetime]
 pub enum LinkerError {
     #[error("Unable to find a valid linker")]
     UnableToLocateLinker,
     #[error("Unable to find a valid program loader for the operating sytem")]
     UnableToLocateLoader,
-    #[error("failed to run command {0:?}: {1}")]
+    #[error("failed to run command {_0:?}: {_1}")]
     SpawnFailed(Command, std::io::Error),
-    #[error("command {0:?} exited with a failure (exit code {1:?})")]
+    #[error("command {_0:?} exited with a failure (exit code {_1:?})")]
     UnsuccessfulExit(Command, ExitStatus, Child),
 }
 
@@ -398,7 +400,7 @@ impl<'a> FullCompilationOptions<'a> {
 pub fn run_full_compilation_pipeline<'arena>(
     ctx: SharedContext<'arena>,
     mut opts: FullCompilationOptions,
-) -> Result<Option<PathBuf>, Vec<MiraError<'arena>>> {
+) -> Result<Option<PathBuf>, Diagnostics<'arena>> {
     if opts.add_extension_to_exe && opts.exec_path.is_some() {
         let mut path = opts.exec_path.unwrap().into_os_string();
         if opts.shared_object {
@@ -410,10 +412,7 @@ pub fn run_full_compilation_pipeline<'arena>(
         if path.is_relative() {
             path = match std::env::current_dir() {
                 Ok(v) => v,
-                Err(e) => {
-                    println!("failed to get the current directory");
-                    return Err(vec![MiraError::IO { inner: e }]);
-                }
+                Err(e) => return Err(CurrentDirError(e).to_error().into()),
             }
             .join(path);
         }
@@ -438,7 +437,7 @@ pub fn run_full_compilation_pipeline<'arena>(
         Some(v) => source_map.new_file(opts.file.clone(), opts.root_directory, v.into()),
         None => source_map
             .load_file(opts.file.clone(), opts.root_directory)
-            .map_err(|inner| vec![inner.into()])?,
+            .map_err(|e| vec![IoReadError(opts.file.to_path_buf(), e).to_error()])?,
     };
 
     let progress_bar = Arc::new(RwLock::new(ProgressBar::new(ProgressBarStyle::Normal)));
@@ -461,11 +460,11 @@ pub fn run_full_compilation_pipeline<'arena>(
     let typechecking_context = TypecheckingContext::new(ctx, module_context.clone());
     let errs = typechecking_context.resolve_imports(module_context.clone());
     if !errs.is_empty() {
-        return Err(errs.iter().cloned().map(MiraError::typechecking).collect());
+        return Err(errs);
     }
     let errs = typechecking_context.resolve_types(module_context.clone());
     if !errs.is_empty() {
-        return Err(errs.iter().cloned().map(MiraError::typechecking).collect());
+        return Err(errs);
     }
 
     progress_bar.write().remove_item(type_resolution_item);
@@ -486,7 +485,7 @@ pub fn run_full_compilation_pipeline<'arena>(
         .indices()
         .collect::<Vec<_>>();
 
-    let mut errs = Vec::new();
+    let mut errs = Diagnostics::new();
     let mut scopes_fns = AssociatedStore::new();
     let mut scopes_ext_fns = AssociatedStore::new();
 
@@ -497,9 +496,8 @@ pub fn run_full_compilation_pipeline<'arena>(
         );
         print_progress_bar(&progress_bar);
 
-        match typecheck_function(&typechecking_context, &module_context, key) {
-            Ok(v) => _ = scopes_fns.insert(key, v),
-            Err(e) => errs.extend(e),
+        if let Ok(v) = typecheck_function(&typechecking_context, &module_context, key, &mut errs) {
+            scopes_fns.insert(key, v);
         }
 
         progress_bar.write().remove_item(item);
@@ -512,9 +510,10 @@ pub fn run_full_compilation_pipeline<'arena>(
         );
         print_progress_bar(&progress_bar);
 
-        match typecheck_external_function(&typechecking_context, &module_context, key) {
-            Ok(v) => _ = scopes_ext_fns.insert(key, v),
-            Err(e) => errs.extend(e),
+        if let Ok(v) =
+            typecheck_external_function(&typechecking_context, &module_context, key, &mut errs)
+        {
+            scopes_ext_fns.insert(key, v);
         }
 
         progress_bar.write().remove_item(item);
@@ -544,10 +543,8 @@ pub fn run_full_compilation_pipeline<'arena>(
     print_progress_bar(&progress_bar);
 
     if !errs.is_empty() {
-        return Err(errs.into_iter().map(MiraError::typechecking).collect());
+        return Err(errs);
     }
-
-    let mut errs = Vec::new();
 
     if let Some(writer) = opts.ir_writer.as_mut() {
         let readonly_ctx = ReadOnlyTypecheckingContext {
@@ -562,9 +559,7 @@ pub fn run_full_compilation_pipeline<'arena>(
         let mut wrapper = IoWriteWrapper(writer);
         let mut formatter = Formatter::new(&mut wrapper, readonly_ctx);
         if TCContextDisplay.fmt(&mut formatter).is_err() {
-            errs.push(MiraError::IO {
-                inner: ErrorKind::Other.into(),
-            });
+            errs.add_err(FailedToWriteIR);
         }
     }
 
@@ -604,7 +599,7 @@ pub fn run_full_compilation_pipeline<'arena>(
             fn_id,
             scopes_fns.remove(&fn_id).expect("scope should be there"),
         ) {
-            errs.push(MiraError::Codegen { inner: e.into() });
+            errs.add_err(CodegenError::from(e));
         }
         progress_bar.write().remove_item(item);
     }
@@ -622,7 +617,7 @@ pub fn run_full_compilation_pipeline<'arena>(
                 .remove(&fn_id)
                 .expect("scope should be there"),
         ) {
-            errs.push(MiraError::Codegen { inner: e.into() });
+            errs.add_err(CodegenError::from(e));
         }
         progress_bar.write().remove_item(item);
     }
@@ -636,7 +631,7 @@ pub fn run_full_compilation_pipeline<'arena>(
     print_progress_bar(&progress_bar);
 
     if let Err(e) = codegen_context.finish() {
-        errs.push(MiraError::codegen(CodegenError::LLVMNative(e)));
+        errs.add_err(CodegenError::from(e));
     }
 
     progress_bar.write().remove_item(codegen_item);
@@ -647,7 +642,7 @@ pub fn run_full_compilation_pipeline<'arena>(
     // this hopefully should not error.
     if let Some(ir_writer) = opts.llvm_ir_writer.as_mut() {
         if let Err(e) = codegen_context.write_ir(ir_writer) {
-            errs.push(e.into());
+            errs.add_err(CodegenError::WriteLLVMIRError(e));
         }
     }
 
@@ -657,13 +652,13 @@ pub fn run_full_compilation_pipeline<'arena>(
 
     if let Some(bc_writer) = opts.llvm_bc_writer.as_mut() {
         if let Err(e) = codegen_context.write_bitcode(bc_writer) {
-            errs.push(e.into());
+            errs.add_err(CodegenError::WriteBitcodeError(e));
         }
     }
 
     if let Some(asm_writer) = opts.asm_writer.as_mut() {
         if let Err(e) = codegen_context.write_assembly(asm_writer) {
-            errs.push(MiraError::codegen(e));
+            errs.add_err(e);
         }
     }
 
@@ -678,14 +673,14 @@ pub fn run_full_compilation_pipeline<'arena>(
         .create(true)
         .truncate(true)
         .open(&obj_path)
-        .map_err(|v| errs.push(v.into()))
+        .map_err(|e| _ = errs.add_err(FileOpenError(obj_path.clone(), e)))
     {
         Ok(v) => v,
         Err(()) => return Err(errs),
     };
 
     if let Err(e) = codegen_context.write_object(&mut obj_file) {
-        errs.push(MiraError::codegen(e));
+        errs.add_err(e);
     }
     drop(obj_file);
 
@@ -700,7 +695,8 @@ pub fn run_full_compilation_pipeline<'arena>(
     let Some((linker, linker_path)) =
         search_for_linker(opts.link_with_crt, opts.additional_linker_directories)
     else {
-        return Err(vec![LinkerError::UnableToLocateLinker.into()]);
+        errs.add_unable_to_locate_linker();
+        return Err(errs);
     };
 
     linker
@@ -720,7 +716,10 @@ pub fn run_full_compilation_pipeline<'arena>(
             create_dynamic_library: opts.shared_object,
             target: opts.codegen_opts.target,
         })
-        .map_err(|v| vec![v.into()])?;
+        .map_err(move |v| {
+            errs.add_err(v);
+            errs
+        })?;
 
     drop(codegen_context);
 

@@ -58,7 +58,6 @@ intrinsics! {
     Select => select, // <T>(cond: bool, a: T, b: T) -> T, equivalent to cond ? a : b
     VolatileRead => volatile_read, // <T>(ptr: &T) -> T
     VolatileWrite => volatile_write, // <T>(ptr: &T, val: T);
-    // jump to
     // ### INTEGER INTRINSICS ###
     // The following are *only* valid for ints
     ByteSwap => byte_swap, // <T>(v: T) -> T

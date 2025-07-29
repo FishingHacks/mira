@@ -1,6 +1,10 @@
 use mira_spans::{BytePos, SourceFile, SourceMap, Span, SpanData};
 use parking_lot::RwLock;
-use std::{fmt::Display, str::FromStr, sync::Arc};
+use std::{
+    fmt::{Debug, Display},
+    str::FromStr,
+    sync::Arc,
+};
 
 use crate::{
     context::SharedContext,
@@ -180,6 +184,24 @@ pub struct Token<'arena> {
     pub span: Span<'arena>,
 }
 
+impl Display for TokenType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(s) = self.as_str() {
+            return f.write_str(s);
+        }
+        match self {
+            TokenType::IdentifierLiteral => f.write_str("identifier"),
+            TokenType::SIntLiteral => f.write_str("signed number"),
+            TokenType::UIntLiteral => f.write_str("unsigned number"),
+            TokenType::VoidLiteral => f.write_str("void"),
+            TokenType::FloatLiteral => f.write_str("decimal number"),
+            TokenType::StringLiteral => f.write_str("string"),
+            TokenType::BooleanLiteral => f.write_str("boolean"),
+            _ => unreachable!(),
+        }
+    }
+}
+
 impl Display for Token<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(s) = self.typ.as_str() {
@@ -187,27 +209,27 @@ impl Display for Token<'_> {
         }
         match self.typ {
             TokenType::BooleanLiteral => match &self.literal {
-                Some(Literal::Bool(v)) => f.write_fmt(format_args!("bool({v})")),
+                Some(Literal::Bool(v)) => Display::fmt(v, f),
                 _ => f.write_str("bool(malformed data)"),
             },
             TokenType::IdentifierLiteral => match &self.literal {
-                Some(Literal::String(v)) => f.write_fmt(format_args!("identifier({v})")),
+                Some(Literal::String(v)) => Display::fmt(v, f),
                 _ => f.write_str("identifier(malformed data)"),
             },
             TokenType::FloatLiteral => match self.literal {
-                Some(Literal::Float(v, typ)) => f.write_fmt(format_args!("float({v}{typ})")),
+                Some(Literal::Float(v, typ)) => f.write_fmt(format_args!("{v}{typ}")),
                 _ => f.write_str("float(malformed data)"),
             },
             TokenType::SIntLiteral => match self.literal {
-                Some(Literal::SInt(v, typ)) => f.write_fmt(format_args!("int({v}{typ})")),
+                Some(Literal::SInt(v, typ)) => f.write_fmt(format_args!("{v}{typ}")),
                 _ => f.write_str("int(malformed data)"),
             },
             TokenType::UIntLiteral => match self.literal {
-                Some(Literal::UInt(v, typ)) => f.write_fmt(format_args!("uint({v}{typ})")),
+                Some(Literal::UInt(v, typ)) => f.write_fmt(format_args!("{v}{typ}")),
                 _ => f.write_str("uint(malformed data)"),
             },
             TokenType::StringLiteral => match &self.literal {
-                Some(Literal::String(v)) => f.write_fmt(format_args!("string({v:?})")),
+                Some(Literal::String(v)) => Debug::fmt(v, f),
                 _ => f.write_str("string(malformed data)"),
             },
             _ => unreachable!(),
@@ -247,42 +269,42 @@ impl<'arena> Token<'arena> {
     pub fn void_literal(&self) -> Result<(), ParsingError<'arena>> {
         match &self.literal {
             None => Ok(()),
-            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
+            _ => Err(ParsingError::InvalidTokenization(self.span)),
         }
     }
 
     pub fn string_literal(&self) -> Result<InternedStr<'arena>, ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::String(v)) => Ok(*v),
-            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
+            _ => Err(ParsingError::InvalidTokenization(self.span)),
         }
     }
 
     pub fn bool_literal(&self) -> Result<bool, ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::Bool(v)) => Ok(*v),
-            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
+            _ => Err(ParsingError::InvalidTokenization(self.span)),
         }
     }
 
     pub fn float_literal(&self) -> Result<(f64, NumberType), ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::Float(v, numty)) => Ok((*v, *numty)),
-            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
+            _ => Err(ParsingError::InvalidTokenization(self.span)),
         }
     }
 
     pub fn sint_literal(&self) -> Result<(i64, NumberType), ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::SInt(v, numty)) => Ok((*v, *numty)),
-            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
+            _ => Err(ParsingError::InvalidTokenization(self.span)),
         }
     }
 
     pub fn uint_literal(&self) -> Result<(u64, NumberType), ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::UInt(v, numty)) => Ok((*v, *numty)),
-            _ => Err(ParsingError::InvalidTokenization { loc: self.span }),
+            _ => Err(ParsingError::InvalidTokenization(self.span)),
         }
     }
 }
@@ -594,9 +616,9 @@ impl<'arena> Tokenizer<'arena> {
                 '0' | '1' => value = (value << 1) | (self.advance() as u64 - '0' as u64),
                 '2'..='9' => {
                     self.advance();
-                    return Err(TokenizationError::InvalidNumberError {
-                        loc: self.span_from(start_bytepos),
-                    });
+                    return Err(TokenizationError::invalid_number(
+                        self.span_from(start_bytepos),
+                    ));
                 }
                 c if Self::is_valid_identifier_char(c) => {
                     return self.parse_numtype(start_bytepos, c, value, is_negative, false)
@@ -631,9 +653,9 @@ impl<'arena> Tokenizer<'arena> {
                 '0'..='7' => value = (value << 3) | (self.advance() as u64 - '0' as u64),
                 '8' | '9' => {
                     self.advance();
-                    return Err(TokenizationError::InvalidNumberError {
-                        loc: self.span_from(start_bytepos),
-                    });
+                    return Err(TokenizationError::invalid_number(
+                        self.span_from(start_bytepos),
+                    ));
                 }
                 c if Self::is_valid_identifier_char(c) => {
                     return self.parse_numtype(start_bytepos, c, value, is_negative, false)
@@ -687,27 +709,27 @@ impl<'arena> Tokenizer<'arena> {
             self.advance();
             if !self.peek().is_ascii_hexdigit() {
                 self.advance();
-                return Err(TokenizationError::InvalidNumberError {
-                    loc: self.span_from(start_byte),
-                });
+                return Err(TokenizationError::invalid_number(
+                    self.span_from(start_byte),
+                ));
             }
             return self.parse_hex(start_byte, is_negative);
         } else if first_char == '0' && self.peek() == 'b' {
             self.advance();
             if !matches!(self.peek(), '0' | '1') {
                 self.advance();
-                return Err(TokenizationError::InvalidNumberError {
-                    loc: self.span_from(start_byte),
-                });
+                return Err(TokenizationError::invalid_number(
+                    self.span_from(start_byte),
+                ));
             }
             return self.parse_bin(start_byte, is_negative);
         } else if first_char == '0' && self.peek() == 'o' {
             self.advance();
             if !matches!(self.peek(), '0'..='7') {
                 self.advance();
-                return Err(TokenizationError::InvalidNumberError {
-                    loc: self.span_from(start_byte),
-                });
+                return Err(TokenizationError::invalid_number(
+                    self.span_from(start_byte),
+                ));
             }
             return self.parse_oct(start_byte, is_negative);
         }
@@ -745,9 +767,9 @@ impl<'arena> Tokenizer<'arena> {
             {
                 if is_float {
                     self.skip_to_after_number();
-                    return Err(TokenizationError::InvalidNumberError {
-                        loc: self.span_from(start_byte),
-                    });
+                    return Err(TokenizationError::invalid_number(
+                        self.span_from(start_byte),
+                    ));
                 }
                 is_float = true;
                 str.push(self.advance());

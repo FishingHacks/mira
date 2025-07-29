@@ -1,25 +1,41 @@
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::{
     Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, Fields, Generics, Ident, Variant,
-    parse::ParseStream, parse_macro_input,
+    parse::ParseStream, parse_macro_input, spanned::Spanned,
 };
 
 use crate::utils::{enum_make_match, struct_make_fields};
 
 pub fn derive_error_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    let with_arena_lifetime = parse_with_arena_lifetime(&input.attrs);
     match input.data {
-        syn::Data::Struct(s) => derive_for_struct(s, &input.attrs, input.ident, input.generics)
-            .unwrap_or_else(|err| err.to_compile_error())
-            .into(),
-        syn::Data::Enum(e) => derive_for_enum(e, input.ident, input.generics)
+        syn::Data::Struct(s) => derive_for_struct(
+            s,
+            &input.attrs,
+            input.ident,
+            input.generics,
+            with_arena_lifetime,
+        )
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into(),
+        syn::Data::Enum(e) => derive_for_enum(e, input.ident, input.generics, with_arena_lifetime)
             .unwrap_or_else(|err| err.to_compile_error())
             .into(),
         syn::Data::Union(_) => Error::new(input.ident.span(), "ErrorData does not support unions")
             .to_compile_error()
             .into(),
     }
+}
+
+fn parse_with_arena_lifetime(attrs: &[Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("no_arena_lifetime") {
+            return false;
+        }
+    }
+    true
 }
 
 fn enum_make_match_empty(variant: &Variant) -> TokenStream {
@@ -31,7 +47,12 @@ fn enum_make_match_empty(variant: &Variant) -> TokenStream {
     }
 }
 
-fn derive_for_enum(s: DataEnum, ident: Ident, generics: Generics) -> Result<TokenStream, Error> {
+fn derive_for_enum(
+    s: DataEnum,
+    ident: Ident,
+    generics: Generics,
+    with_arena_lifetime: bool,
+) -> Result<TokenStream, Error> {
     let mut errs = Vec::with_capacity(s.variants.len());
     let mut notes = Vec::with_capacity(s.variants.len());
     let mut error_codes = Vec::with_capacity(s.variants.len());
@@ -51,9 +72,15 @@ fn derive_for_enum(s: DataEnum, ident: Ident, generics: Generics) -> Result<Toke
     let maybe_copy = generate_maybecopy();
 
     let (impl_generics, ty_generics, where_clauses) = generics.split_for_impl();
+    let diagnostic_generics = if with_arena_lifetime {
+        ty_generics.to_token_stream()
+    } else {
+        quote! { <'static> }
+    };
+    let diagnostics_ext = enum_diagnostics_ext(&ident, s.variants.iter());
 
     Ok(quote! {
-        #[allow(unused, dead_code)]
+        #[allow(unused, dead_code, deprecated)]
         impl #impl_generics mira_errors::ErrorData for #ident #ty_generics #where_clauses {
             fn message<'ctx>(
                 &'ctx self,
@@ -89,7 +116,135 @@ fn derive_for_enum(s: DataEnum, ident: Ident, generics: Generics) -> Result<Toke
                 }
             }
         }
+
+        impl #impl_generics #ident #ty_generics #where_clauses {
+            pub fn to_error(self) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, mira_errors::Severity::Error) }
+            pub fn to_warning(self) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, mira_errors::Severity::Warn) }
+            pub fn as_diagnostic(self, severity: mira_errors::Severity) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, severity) }
+        }
+
+        #diagnostics_ext
     })
+}
+
+fn to_camel_case(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+
+    for c in s.chars() {
+        if c.is_uppercase() && !result.is_empty() {
+            result.push('_');
+        }
+        c.to_lowercase().for_each(|c| result.push(c));
+    }
+
+    result
+}
+
+fn enum_diagnostics_ext<'a>(
+    ident: &Ident,
+    variants: impl Iterator<Item = &'a Variant>,
+) -> TokenStream {
+    let ext_trait = Ident::new(&format!("{ident}DiagnosticsExt"), ident.span());
+    let mut stream = TokenStream::new();
+    let mut stream_impls = TokenStream::new();
+
+    for variant in variants {
+        let mut camel_case_name = to_camel_case(&format!("{}", variant.ident));
+        camel_case_name.insert_str(0, "add_");
+        let mut function_args = TokenStream::new();
+        let mut constructor = TokenStream::new();
+        let variant_name = &variant.ident;
+        let camel_case_name = Ident::new(&camel_case_name, variant.ident.span());
+
+        let add_func = if variant
+            .attrs
+            .iter()
+            .any(|v| v.path().is_ident("is_warning"))
+        {
+            Ident::new("add_warn", ident.span())
+        } else {
+            Ident::new("add_err", ident.span())
+        };
+
+        match &variant.fields {
+            Fields::Named(fields) => {
+                for field in fields.named.iter() {
+                    let ty = &field.ty;
+                    let name = field.ident.as_ref().unwrap();
+                    function_args.extend(quote! { #name : #ty , });
+                    constructor.extend(quote! { #name , });
+                }
+                constructor = quote! { #ident::#variant_name {#constructor} };
+            }
+            Fields::Unnamed(fields) => {
+                for (i, field) in fields.unnamed.iter().enumerate() {
+                    let argname = format!("field_{i}");
+                    let argname = Ident::new(&argname, field.span());
+                    let ty = &field.ty;
+                    function_args.extend(quote! { #argname : #ty , });
+                    constructor.extend(quote! { #argname , });
+                }
+                constructor = quote! { #ident::#variant_name (#constructor) };
+            }
+            Fields::Unit => constructor = quote! { #ident::#variant_name },
+        }
+        stream.extend(quote! { fn #camel_case_name(&mut self, #function_args) -> &mut mira_errors::Diagnostic<'arena>; });
+        stream_impls.extend(quote! {
+            fn #camel_case_name(&mut self, #function_args) -> &mut mira_errors::Diagnostic<'arena> {
+                self.#add_func(#constructor)
+            }
+        });
+    }
+
+    quote! { pub trait #ext_trait<'arena> { #stream } impl<'arena> #ext_trait<'arena> for mira_errors::Diagnostics<'arena> { #stream_impls } }
+}
+
+fn struct_diagnostics_ext(fields: &Fields, attrs: &[Attribute], ident: &Ident) -> TokenStream {
+    let ext_trait = Ident::new(&format!("{ident}DiagnosticsExt"), ident.span());
+    let mut camel_case_name = to_camel_case(&format!("{ident}"));
+    camel_case_name.insert_str(0, "add_");
+    let camel_case_name = Ident::new(&camel_case_name, ident.span());
+    let mut function_args = TokenStream::new();
+    let mut constructor = TokenStream::new();
+
+    let add_func = if attrs.iter().any(|v| v.path().is_ident("is_warning")) {
+        Ident::new("add_warn", ident.span())
+    } else {
+        Ident::new("add_err", ident.span())
+    };
+
+    match &fields {
+        Fields::Named(fields) => {
+            for field in fields.named.iter() {
+                let ty = &field.ty;
+                let name = field.ident.as_ref().unwrap();
+                function_args.extend(quote! { #name : #ty , });
+                constructor.extend(quote! { #name , });
+            }
+            constructor = quote! { #ident {#constructor} };
+        }
+        Fields::Unnamed(fields) => {
+            for (i, field) in fields.unnamed.iter().enumerate() {
+                let argname = format!("field_{i}");
+                let argname = Ident::new(&argname, field.span());
+                let ty = &field.ty;
+                function_args.extend(quote! { #argname : #ty , });
+                constructor.extend(quote! { #argname , });
+            }
+            constructor = quote! { #ident (#constructor) };
+        }
+        Fields::Unit => constructor = quote! { #ident },
+    }
+    quote! {
+        trait #ext_trait<'arena> {
+            fn #camel_case_name(&mut self, #function_args) -> &mut mira_errors::Diagnostic<'arena>;
+        }
+        impl<'arena> #ext_trait<'arena> for mira_errors::Diagnostics<'arena> {
+            fn #camel_case_name(&mut self, #function_args) -> &mut mira_errors::Diagnostic<'arena> {
+                self.#add_func(#constructor)
+            }
+        }
+    }
 }
 
 enum ParsedLabeledSpanType {
@@ -133,18 +288,23 @@ fn generate_maybecopy() -> TokenStream {
 fn generate_labeled_spans_for_fields(fields: &Fields) -> Result<TokenStream, Error> {
     let mut stream = quote! { let mut labels = Vec::new(); };
 
-    for (field, member) in fields.iter().zip(fields.members()) {
+    for (idx, field) in fields.iter().enumerate() {
+        let field_name = field
+            .ident
+            .clone()
+            .unwrap_or_else(|| Ident::new(&format!("_{idx}"), field.span()));
+
         for v in parse_field_attrs(&field.attrs) {
             let (typ, format) = v?;
             match typ {
                 ParsedLabeledSpanType::Primary => stream.extend(quote! {
-                    labels.push(mira_errors::LabeledSpan::primary(format!(#format), MaybeCopy::copy(&self.#member)));
+                    labels.push(mira_errors::LabeledSpan::primary(format!(#format), MaybeCopy::copy(#field_name)));
                 }),
                 ParsedLabeledSpanType::Secondary => stream.extend(quote! {
-                    labels.push(mira_errors::LabeledSpan::secondary(format!(#format), MaybeCopy::copy(&self.#member)));
+                    labels.push(mira_errors::LabeledSpan::secondary(format!(#format), MaybeCopy::copy(#field_name)));
                 }),
                 ParsedLabeledSpanType::SecondaryList => stream.extend(quote! {
-                    for span in self.#member.iter() {
+                    for span in #field_name.iter() {
                         labels.push(mira_errors::LabeledSpan::secondary(format!(#format), MaybeCopy::copy(&span)));
                     }
                 }),
@@ -162,7 +322,9 @@ fn derive_for_struct(
     attrs: &[Attribute],
     ident: Ident,
     generics: Generics,
+    with_arena_lifetime: bool,
 ) -> Result<TokenStream, Error> {
+    let diagnostics_ext = struct_diagnostics_ext(&s.fields, attrs, &ident);
     let attrs = parse_attrs(attrs, ident.span())?;
     let ErrorAttrs {
         error_code,
@@ -173,9 +335,14 @@ fn derive_for_struct(
     let (impl_generics, ty_generics, where_clauses) = generics.split_for_impl();
     let labeled_spans = generate_labeled_spans_for_fields(&s.fields)?;
     let maybe_copy = generate_maybecopy();
+    let diagnostic_generics = if with_arena_lifetime {
+        ty_generics.to_token_stream()
+    } else {
+        quote! { <'static> }
+    };
 
     Ok(quote! {
-        #[allow(unused, dead_code)]
+        #[allow(unused, dead_code, deprecated)]
         impl #impl_generics mira_errors::ErrorData for #ident #ty_generics #where_clauses {
             fn message<'ctx>(
                 &'ctx self,
@@ -207,6 +374,14 @@ fn derive_for_struct(
                 #labeled_spans
             }
         }
+
+        impl #impl_generics #ident #ty_generics #where_clauses {
+            pub fn to_error(self) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, mira_errors::Severity::Error) }
+            pub fn to_warning(self) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, mira_errors::Severity::Warn) }
+            pub fn as_diagnostic(self, severity: mira_errors::Severity) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, severity) }
+        }
+
+        #diagnostics_ext
     })
 }
 

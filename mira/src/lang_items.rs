@@ -1,3 +1,4 @@
+use mira_errors::{Diagnostic, Diagnostics};
 use std::fmt::{Debug, Display, Write};
 
 use crate::context::SharedContext;
@@ -6,12 +7,11 @@ use crate::typechecking::{TypedExternalFunction, TypedFunction, TypedStatic, Typ
 use crate::{
     annotations::{Annotation, AnnotationReceiver, Annotations},
     error::{FunctionList, ParsingError},
-    error_list_wrapper,
     tokenstream::TokenStream,
     typechecking::{Type, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
 };
+use mira_macros::ErrorData;
 use mira_spans::{interner::InternedStr, Span};
-use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct LangItemAnnotation(String);
@@ -93,9 +93,9 @@ macro_rules! lang_item_def {
             /// Pushes a struct as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_struct(&mut self, id: StoreKey<TypedStruct<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
+            pub fn push_struct(&mut self, id: StoreKey<TypedStruct<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
-                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
+                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(loc, stringify!($ty)).to_error()),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_struct $ty, self, $lang_item, id, loc),)*
                     _ => return Ok(false),
                 }
@@ -105,9 +105,9 @@ macro_rules! lang_item_def {
             /// Pushes a trait as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_trait(&mut self, id: StoreKey<TypedTrait<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
+            pub fn push_trait(&mut self, id: StoreKey<TypedTrait<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
-                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
+                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(loc, stringify!($ty)).to_error()),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_trait $ty, self, $lang_item, id, loc),)*
                     _ => return Ok(false),
                 }
@@ -117,9 +117,9 @@ macro_rules! lang_item_def {
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_static(&mut self, id: StoreKey<TypedStatic<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
+            pub fn push_static(&mut self, id: StoreKey<TypedStatic<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
-                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
+                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(loc, stringify!($ty)).to_error()),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_static $ty, self, $lang_item, id, loc),)*
                     _ => return Ok(false),
                 }
@@ -127,9 +127,9 @@ macro_rules! lang_item_def {
             }
 
             #[allow(unreachable_code)]
-            fn internal_push_fn(&mut self, _: FunctionLangItem<'arena>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
+            fn internal_push_fn(&mut self, _: FunctionLangItem<'arena>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
-                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(stringify!($ty), loc)),)*
+                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(loc, stringify!($ty)).to_error()),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_function $ty, self, $lang_item, id, loc),)*
                     _ => return Ok(false),
                 }
@@ -138,13 +138,13 @@ macro_rules! lang_item_def {
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_external_function(&mut self, id: StoreKey<TypedExternalFunction<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
+            pub fn push_external_function(&mut self, id: StoreKey<TypedExternalFunction<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 self.internal_push_fn(FunctionLangItem::External(id), lang_item, loc)
             }
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_function(&mut self, id: StoreKey<TypedFunction<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, LangItemAssignmentError<'arena>> {
+            pub fn push_function(&mut self, id: StoreKey<TypedFunction<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 self.internal_push_fn(FunctionLangItem::Internal(id), lang_item, loc)
             }
 
@@ -157,16 +157,16 @@ macro_rules! lang_item_def {
     (underlying_typ Static) => { StoreKey<TypedStatic<'arena>> };
 
     (expect_struct Struct, $self: ident, $key: ident, $id: ident, $loc: ident) => { $self.$key = Some($id) };
-    (expect_struct $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Struct, expected: LangItemType::$expected_ty }) };
+    (expect_struct $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Struct, expected: LangItemType::$expected_ty }.to_error()) };
 
     (expect_trait Trait, $self: ident, $key: ident, $id: ident, $loc: ident) => { $self.$key = Some($id) };
-    (expect_trait $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Trait, expected: LangItemType::$expected_ty }) };
+    (expect_trait $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Trait, expected: LangItemType::$expected_ty }.to_error()) };
 
     (expect_static Static, $self: ident, $key: ident, $id: ident, $loc: ident) => { $self.$key = Some($id) };
-    (expect_static $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Static, expected: LangItemType::$expected_ty }) };
+    (expect_static $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Static, expected: LangItemType::$expected_ty }.to_error()) };
 
     (expect_function Function, $self: ident, $key: ident, $id: ident, $loc: ident) => { $self.$key = Some($id) };
-    (expect_function $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Function, expected: LangItemType::$expected_ty }) };
+    (expect_function $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Function, expected: LangItemType::$expected_ty }.to_error()) };
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -194,17 +194,21 @@ impl Display for LangItemType {
     }
 }
 
-#[derive(Clone, Debug, Error)]
+#[derive(Clone, Debug, ErrorData)]
 pub enum LangItemAssignmentError<'arena> {
-    #[error("{loc:?}: expected lang item `{lang_item}` to be a {expected}, but got a {got}")]
+    #[error("expected lang item `{lang_item}` to be a {expected}, but got a {got}")]
     InvalidLangItemError {
-        lang_item: &'static str,
+        #[primary_label("lang item defined here")]
         loc: Span<'arena>,
+        lang_item: &'static str,
         got: LangItemType,
         expected: LangItemType,
     },
-    #[error("{1:?}: tried to redefine lang item `{0}`")]
-    Redefinition(&'static str, Span<'arena>),
+    #[error("tried to redefine lang item `{_1}`")]
+    Redefinition(
+        #[primary_label("redefinitiion occurs here")] Span<'arena>,
+        &'static str,
+    ),
 }
 
 struct GenericList<'a, 'arena>(&'a [InternedStr<'arena>]);
@@ -220,31 +224,7 @@ impl Display for GenericList<'_, '_> {
     }
 }
 
-error_list_wrapper!(
-    pub struct LangItemErrors<'arena>(LangItemError);
-    add_missing_item => MissingItem(langitem: &'static str, ty: LangItemType);
-    add_static_missing_trait => StaticIsMissingTrait(name: InternedStr<'arena>, langitem: &'static str);
-    add_static_is_primitive => StaticIsPrimitive(langitem: &'static str);
-    add_struct_misses_generics => StructMissesGeneric(lang_item: &'static str, generic: Vec<InternedStr<'arena>>);
-    add_struct_unexpected_generic => StructUnexpectedGeneric(lang_item: &'static str, generic: InternedStr<'arena>);
-    add_trait_excessive_fun => TraitExcessiveFunction(lang_item: &'static str, function: InternedStr<'arena>);
-    add_struct_unexpected_field => StructUnexpectedField(name: InternedStr<'arena>, langitem: &'static str);
-    add_struct_missing_fun => StructMissingFunction(lang_item: &'static str, function: InternedStr<'arena>);
-    add_struct_missing_trait => StructMissingTrait(lang_item: &'static str, trait_name: InternedStr<'arena>);
-    add_trait_missing_fun => TraitMissingFunction(lang_item: &'static str, function: InternedStr<'arena>);
-    add_struct_missing_element => StructMissingElement(name: InternedStr<'arena>, ty: Type<'arena>, langitem: &'static str);
-    add_struct_mismatching_field => StructMismatchingField(name: InternedStr<'arena>, expected: Type<'arena>, found: Type<'arena>, langitem: &'static str);
-    add_trait_mismatching_args => TraitMismatchingArguments(expected: Vec<Type<'arena>>, found: Vec<Type<'arena>>, function: InternedStr<'arena>, lang_item: &'static str);
-    add_trait_mismatch_returnty => TraitMismatchingReturnType(expected: Type<'arena>, found: Type<'arena>, function: InternedStr<'arena>, lang_item: &'static str);
-    add_struct_mismatch_args => StructMismatchingArguments(expected: Vec<Type<'arena>>, found: Vec<Type<'arena>>, function: InternedStr<'arena>, lang_item: &'static str);
-    add_struct_mismatch_returnty => StructMismatchingReturnType(expected: Type<'arena>, found: Type<'arena>, function: InternedStr<'arena>, lang_item: &'static str);
-    add_struct_generic_mismatch => StructGenericMismatch(lang_item: &'static str, generic: InternedStr<'arena>, expected: Vec<InternedStr<'arena>>, found: Vec<InternedStr<'arena>>);
-    add_struct_sizing_incompatability => StructGenericSizingIncompatability(lang_item: &'static str, generic: InternedStr<'arena>);
-    add_mismatching_args => MismatchingArguments(expected: Vec<Type<'arena>>, found: Vec<Type<'arena>>, lang_item: &'static str);
-    add_mismatching_returnty => MismatchingReturnType(expected: Type<'arena>, found: Type<'arena>, lang_item: &'static str);
-);
-
-#[derive(Clone, Error, Debug)]
+#[derive(Clone, ErrorData, Debug)]
 pub enum LangItemError<'arena> {
     #[error("No lang item for `{langitem}` found (type: {ty})")]
     MissingItem {
@@ -293,7 +273,7 @@ pub enum LangItemError<'arena> {
         lang_item: &'static str,
         function: InternedStr<'arena>,
     },
-    #[error("Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(.expected), FunctionList(.found))]
+    #[error("Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(expected), FunctionList(found))]
     TraitMismatchingArguments {
         expected: Vec<Type<'arena>>,
         found: Vec<Type<'arena>>,
@@ -307,7 +287,7 @@ pub enum LangItemError<'arena> {
         function: InternedStr<'arena>,
         lang_item: &'static str,
     },
-    #[error("Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(.expected), FunctionList(.found))]
+    #[error("Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(expected), FunctionList(found))]
     StructMismatchingArguments {
         expected: Vec<Type<'arena>>,
         found: Vec<Type<'arena>>,
@@ -328,14 +308,17 @@ pub enum LangItemError<'arena> {
         lang_item: &'static str,
         generic: InternedStr<'arena>,
     },
-    #[error("Struct lang-item `{lang_item}`s generic `{generic}` doesn't match, expected {}, but found {}", GenericList(.expected), GenericList(.found))]
+    #[error("Struct lang-item `{lang_item}`s generic `{generic}` doesn't match, expected {}, but found {}", GenericList(expected), GenericList(found))]
     StructGenericMismatch {
         lang_item: &'static str,
         generic: InternedStr<'arena>,
         expected: Vec<InternedStr<'arena>>,
         found: Vec<InternedStr<'arena>>,
     },
-    #[error("Struct lang-item `{lang_item}` misses generic with bounds {}", GenericList(.generic))]
+    #[error(
+        "Struct lang-item `{lang_item}` misses generic with bounds {}",
+        GenericList(generic)
+    )]
     StructMissesGeneric {
         lang_item: &'static str,
         generic: Vec<InternedStr<'arena>>,
@@ -345,7 +328,11 @@ pub enum LangItemError<'arena> {
         lang_item: &'static str,
         generic: InternedStr<'arena>,
     },
-    #[error("Function lang-item `{lang_item}` has a mismatching signature. Expected: {}, but found {}", FunctionList(.expected), FunctionList(.found))]
+    #[error(
+        "Function lang-item `{lang_item}` has a mismatching signature. Expected: {}, but found {}",
+        FunctionList(expected),
+        FunctionList(found)
+    )]
     MismatchingArguments {
         expected: Vec<Type<'arena>>,
         found: Vec<Type<'arena>>,
@@ -367,10 +354,7 @@ pub enum LangItemError<'arena> {
 macro_rules! check_langitem {
     (required $self:ident.$lang_item:ident: $ty:ident; $reader:ident $errors:ident $context:ident) => {
         if $self.$lang_item.is_none() {
-            $errors.push(LangItemError::MissingItem{
-                langitem: stringify!($lang_item),
-                ty: LangItemType::$ty,
-            });
+            $errors.add_missing_item(stringify!($lang_item), LangItemType::$ty);
         }
         check_langitem!($lang_item: $ty; $self $reader $errors $context);
     };
@@ -568,11 +552,7 @@ impl<'arena> LangItems<'arena> {
         }
     }
 
-    pub fn check(
-        &self,
-        errors: &mut LangItemErrors<'arena>,
-        context: &TypecheckingContext<'arena>,
-    ) {
+    pub fn check(&self, errors: &mut Diagnostics<'arena>, context: &TypecheckingContext<'arena>) {
         let trait_reader = context.traits.read();
         let struct_reader = context.structs.read();
         let static_reader = context.statics.read();
@@ -602,12 +582,12 @@ fn does_function_match<'arena>(
     func_a: &LangItemFunction<'arena>,
     func_b: &TypecheckedFunctionContract<'arena>,
     lang_item: &'static str,
-    errors: &mut LangItemErrors<'arena>,
+    errors: &mut Diagnostics<'arena>,
 ) -> bool {
     let num_errs = errors.len();
 
     if func_a.return_type != func_b.return_type {
-        errors.add_mismatching_returnty(
+        errors.add_mismatching_return_type(
             func_a.return_type.clone(),
             func_b.return_type.clone(),
             lang_item,
@@ -621,7 +601,7 @@ fn does_function_match<'arena>(
         .all(|(a, (_, b))| *a == *b)
     {
         let args = func_b.arguments.iter().map(|(_, v)| v).cloned().collect();
-        errors.add_mismatching_args(func_a.args.clone(), args, lang_item);
+        errors.add_mismatching_arguments(func_a.args.clone(), args, lang_item);
     }
 
     errors.len() == num_errs
@@ -631,7 +611,7 @@ fn does_struct_match<'arena>(
     structure_a: &LangItemStruct<'arena>,
     structure_b: &TypedStruct<'arena>,
     lang_item: &'static str,
-    errors: &mut LangItemErrors<'arena>,
+    errors: &mut Diagnostics<'arena>,
     context: &TypecheckingContext<'arena>,
 ) -> bool {
     let num_errs = errors.len();
@@ -650,13 +630,15 @@ fn does_struct_match<'arena>(
                     errors.add_struct_generic_mismatch(lang_item, generic.name, expected, found);
                 }
                 if !bounds.0 && generic.sized {
-                    errors.add_struct_sizing_incompatability(lang_item, generic.name);
+                    errors.add_struct_generic_sizing_incompatability(lang_item, generic.name);
                 }
             }
-            None => errors.push(LangItemError::StructMissesGeneric {
-                lang_item,
-                generic: bounds.1.iter().map(|v| trait_reader[*v].name).collect(),
-            }),
+            None => {
+                errors.add_struct_misses_generic(
+                    lang_item,
+                    bounds.1.iter().map(|v| trait_reader[*v].name).collect(),
+                );
+            }
         }
     }
     for generic in structure_b
@@ -666,7 +648,7 @@ fn does_struct_match<'arena>(
         .map(|v| &v.name)
         .cloned()
     {
-        errors.push(LangItemError::StructUnexpectedGeneric { lang_item, generic })
+        errors.add_struct_unexpected_generic(lang_item, generic);
     }
 
     for (element_name, element_type) in structure_a.fields.iter() {
@@ -676,14 +658,16 @@ fn does_struct_match<'arena>(
             .find(|(v, _)| *v == *element_name)
         {
             Some(v) if v.1 == *element_type => {}
-            Some((_, other_type)) => errors.add_struct_mismatching_field(
-                *element_name,
-                element_type.clone(),
-                other_type.clone(),
-                lang_item,
-            ),
+            Some((_, other_type)) => {
+                errors.add_struct_mismatching_field(
+                    *element_name,
+                    element_type.clone(),
+                    other_type.clone(),
+                    lang_item,
+                );
+            }
             None => {
-                errors.add_struct_missing_element(*element_name, element_type.clone(), lang_item)
+                errors.add_struct_missing_element(*element_name, element_type.clone(), lang_item);
             }
         }
     }
@@ -706,13 +690,13 @@ fn does_struct_match<'arena>(
 
     for (fn_name, func) in structure_a.funcs.iter() {
         let Some(func_impl) = structure_b.global_impl.get(fn_name) else {
-            errors.add_struct_missing_fun(lang_item, *fn_name);
+            errors.add_struct_missing_function(lang_item, *fn_name);
             continue;
         };
         let func_impl = &func_reader[*func_impl].0;
 
         if func_impl.return_type != func.return_type {
-            errors.add_struct_mismatch_returnty(
+            errors.add_struct_mismatching_return_type(
                 func.return_type.clone(),
                 func_impl.return_type.clone(),
                 *fn_name,
@@ -726,17 +710,13 @@ fn does_struct_match<'arena>(
             .zip(func_impl.arguments.iter())
             .all(|(a, (_, b))| *a == *b)
         {
-            errors.add_struct_mismatch_args(
-                func.args.clone(),
-                func_impl
-                    .arguments
-                    .iter()
-                    .map(|(_, v)| v)
-                    .cloned()
-                    .collect(),
-                *fn_name,
-                lang_item,
-            );
+            let found = func_impl
+                .arguments
+                .iter()
+                .map(|(_, v)| v)
+                .cloned()
+                .collect();
+            errors.add_struct_mismatching_arguments(func.args.clone(), found, *fn_name, lang_item);
         }
     }
 
@@ -747,7 +727,7 @@ fn does_static_match<'arena>(
     traits: &[StoreKey<TypedTrait<'arena>>],
     typ: &Type<'arena>,
     lang_item: &'static str,
-    errors: &mut LangItemErrors<'arena>,
+    errors: &mut Diagnostics<'arena>,
     context: &TypecheckingContext<'arena>,
 ) -> bool {
     let trait_reader = context.traits.read();
@@ -757,7 +737,7 @@ fn does_static_match<'arena>(
             for trait_id in traits.iter().copied() {
                 if !trait_refs.iter().any(|(v, _)| *v == trait_id) {
                     matches = false;
-                    errors.add_static_missing_trait(trait_reader[trait_id].name, lang_item);
+                    errors.add_static_is_missing_trait(trait_reader[trait_id].name, lang_item);
                 }
             }
             matches
@@ -768,7 +748,7 @@ fn does_static_match<'arena>(
             for trait_id in traits {
                 if !struct_traits.contains_key(trait_id) {
                     matches = false;
-                    errors.add_static_missing_trait(trait_reader[*trait_id].name, lang_item);
+                    errors.add_static_is_missing_trait(trait_reader[*trait_id].name, lang_item);
                 }
             }
             matches
@@ -784,7 +764,7 @@ fn does_trait_match<'arena>(
     trait_a: &LangItemTrait<'arena>,
     trait_b: &TypedTrait<'arena>,
     lang_item: &'static str,
-    errors: &mut LangItemErrors<'arena>,
+    errors: &mut Diagnostics<'arena>,
 ) -> bool {
     let mut traits_match = false;
 
@@ -795,13 +775,13 @@ fn does_trait_match<'arena>(
             .find(|(name, ..)| func_name == name)
         else {
             traits_match = false;
-            errors.add_trait_missing_fun(lang_item, *func_name);
+            errors.add_trait_missing_function(lang_item, *func_name);
             continue;
         };
 
         if func_a.return_type != *func_return_b {
             traits_match = false;
-            errors.add_trait_mismatch_returnty(
+            errors.add_trait_mismatching_return_type(
                 func_a.return_type.clone(),
                 func_return_b.clone(),
                 *func_name,
@@ -817,9 +797,10 @@ fn does_trait_match<'arena>(
                 .all(|(a, (_, b))| a == b)
         {
             traits_match = false;
-            errors.add_trait_mismatching_args(
+            let found = func_args_b.iter().map(|(_, v)| v).cloned().collect();
+            errors.add_trait_mismatching_arguments(
                 func_a.args.clone(),
-                func_args_b.iter().map(|(_, v)| v).cloned().collect(),
+                found,
                 *func_name,
                 lang_item,
             );
@@ -829,7 +810,7 @@ fn does_trait_match<'arena>(
     for (func_name, ..) in trait_b.functions.iter() {
         if !trait_a.funcs.iter().any(|(name, ..)| name == func_name) {
             traits_match = false;
-            errors.add_trait_excessive_fun(lang_item, *func_name);
+            errors.add_trait_excessive_function(lang_item, *func_name);
         }
     }
 

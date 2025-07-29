@@ -8,14 +8,15 @@ use crate::{
     tokenizer::NumberType,
     typechecking::typed_resolve_import,
 };
+use mira_errors::{Diagnostic, Diagnostics};
 use mira_spans::{interner::InternedStr, Span};
 
 use super::{
     expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
     intrinsics::IntrinsicAnnotation,
     types::{FunctionType, Type, TypeSuggestion},
-    TypecheckedModule, TypecheckingContext, TypecheckingError, TypedExternalFunction,
-    TypedFunction, TypedStatic, TypedTrait,
+    TypecheckedModule, TypecheckingContext, TypecheckingError, TypecheckingErrorDiagnosticsExt,
+    TypedExternalFunction, TypedFunction, TypedStatic, TypedTrait,
 };
 
 pub type ScopeValueId = usize;
@@ -103,7 +104,7 @@ pub fn typecheck_static<'arena>(
     context: &TypecheckingContext<'arena>,
     module_context: &ModuleContext<'arena>,
     static_id: StoreKey<TypedStatic<'arena>>,
-    errs: &mut Vec<TypecheckingError<'arena>>,
+    errs: &mut Diagnostics<'arena>,
 ) -> bool {
     let tc_module_reader = context.statics.read();
     let typ = &tc_module_reader[static_id].type_;
@@ -123,22 +124,16 @@ pub fn typecheck_static<'arena>(
         TypeSuggestion::from_type(typ),
     ) {
         Err(e) => {
-            errs.push(e);
+            errs.add(e);
             return false;
         }
         Ok((expr_typ, expr)) => {
             if *typ != expr_typ {
-                errs.push(TypecheckingError::MismatchingType {
-                    expected: typ.clone(),
-                    found: expr_typ,
-                    location: tc_module_reader[static_id].loc,
-                });
+                errs.add_mismatching_type(tc_module_reader[static_id].loc, typ.clone(), expr_typ);
                 return false;
             }
             if !expr.is_entirely_literal() {
-                errs.push(TypecheckingError::StaticsNeedToBeLiteral(
-                    tc_module_reader[static_id].loc,
-                ));
+                errs.add_statics_need_to_be_literal(tc_module_reader[static_id].loc);
             }
             drop(tc_module_reader);
             context.statics.write()[static_id].value = expr;
@@ -147,20 +142,30 @@ pub fn typecheck_static<'arena>(
     true
 }
 
+#[allow(clippy::result_unit_err)]
 pub fn typecheck_external_function<'arena>(
     context: &TypecheckingContext<'arena>,
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedExternalFunction<'arena>>,
-) -> Result<Vec<(Type<'arena>, ScopeTypeMetadata)>, Vec<TypecheckingError<'arena>>> {
-    inner_typecheck_function(context, module_context, function_id.cast(), true)
+    diagnostics: &mut Diagnostics<'arena>,
+) -> Result<Vec<(Type<'arena>, ScopeTypeMetadata)>, ()> {
+    inner_typecheck_function(
+        context,
+        module_context,
+        function_id.cast(),
+        true,
+        diagnostics,
+    )
 }
 
+#[allow(clippy::result_unit_err)]
 pub fn typecheck_function<'arena>(
     context: &TypecheckingContext<'arena>,
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedFunction<'arena>>,
-) -> Result<Vec<(Type<'arena>, ScopeTypeMetadata)>, Vec<TypecheckingError<'arena>>> {
-    inner_typecheck_function(context, module_context, function_id, false)
+    diagnostics: &mut Diagnostics<'arena>,
+) -> Result<Vec<(Type<'arena>, ScopeTypeMetadata)>, ()> {
+    inner_typecheck_function(context, module_context, function_id, false, diagnostics)
 }
 
 // NOTE: function_id has to be StoreKey<TypedExternalFunction> if is_external is set to true.
@@ -169,7 +174,10 @@ fn inner_typecheck_function<'arena>(
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedFunction<'arena>>,
     is_external: bool,
-) -> Result<Vec<(Type<'arena>, ScopeTypeMetadata)>, Vec<TypecheckingError<'arena>>> {
+    errs: &mut Diagnostics<'arena>,
+) -> Result<Vec<(Type<'arena>, ScopeTypeMetadata)>, ()> {
+    let errs_start_len = errs.len();
+
     let ext_fn_reader = module_context.external_functions.read();
     let fn_reader = module_context.functions.read();
     let (statement, module_id) = if is_external {
@@ -210,23 +218,19 @@ fn inner_typecheck_function<'arena>(
         )
     };
 
-    let mut errs = vec![];
     if is_external
         && (!return_type.is_primitive()
             || (return_type.refcount() > 0 && !return_type.is_thin_ptr()))
     {
-        errs.push(TypecheckingError::InvalidExternReturnType(loc));
+        errs.add_invalid_extern_return_type(loc);
     }
     if !return_type.is_sized() {
-        errs.push(TypecheckingError::UnsizedReturnType(
-            loc,
-            return_type.clone(),
-        ));
+        errs.add_unsized_return_type(loc, return_type.clone());
     }
     for (_, arg) in args.iter().filter(|v| !v.1.is_sized()) {
-        errs.push(TypecheckingError::UnsizedArgument(loc, arg.clone()));
+        errs.add_unsized_argument(loc, arg.clone());
     }
-    (errs.is_empty()).then_some(()).ok_or(errs)?;
+    (errs.len() == errs_start_len).then_some(()).ok_or(())?;
 
     let mut exprs = vec![];
     for arg in args {
@@ -241,12 +245,13 @@ fn inner_typecheck_function<'arena>(
         module_id.cast(),
         &return_type,
         &mut exprs,
+        errs,
     )?;
     if !matches!(return_type, Type::PrimitiveVoid(0)) && !always_returns {
-        return Err(vec![TypecheckingError::BodyDoesNotAlwaysReturn {
-            location: statement.span(),
-        }]);
+        errs.add_body_does_not_always_return(statement.span());
+        return Err(());
     }
+    // add an implicit `return;` at the end of the function
     if !always_returns {
         typecheck_statement(
             context,
@@ -255,6 +260,7 @@ fn inner_typecheck_function<'arena>(
             module_id.cast(),
             &return_type,
             &mut exprs,
+            errs,
         )?;
     }
     if is_external {
@@ -283,7 +289,9 @@ fn typecheck_statement<'arena>(
     module: StoreKey<TypecheckedModule<'arena>>,
     return_type: &Type<'arena>,
     exprs: &mut Vec<TypecheckedExpression<'arena>>,
-) -> Result<bool, Vec<TypecheckingError<'arena>>> {
+    errs: &mut Diagnostics<'arena>,
+) -> Result<bool, ()> {
+    let errs_at_start = errs.len();
     match statement {
         Statement::If {
             condition,
@@ -292,7 +300,6 @@ fn typecheck_statement<'arena>(
             span,
             annotations,
         } => {
-            let mut errs = Vec::new();
             let expr_result = typecheck_expression(
                 context,
                 module,
@@ -301,13 +308,19 @@ fn typecheck_statement<'arena>(
                 exprs,
                 TypeSuggestion::Bool,
             )
-            .map_err(|v| errs.push(v));
+            .map_err(|v| _ = errs.add(v));
 
             let mut if_exprs = Vec::new();
             let mut else_exprs = Vec::new();
-            let if_stmt_result =
-                typecheck_statement(context, scope, if_stmt, module, return_type, &mut if_exprs)
-                    .map_err(|v| errs.extend(v));
+            let if_stmt_result = typecheck_statement(
+                context,
+                scope,
+                if_stmt,
+                module,
+                return_type,
+                &mut if_exprs,
+                errs,
+            );
             let else_stmt_result = if let Some(else_stmt) = else_stmt {
                 typecheck_statement(
                     context,
@@ -316,29 +329,21 @@ fn typecheck_statement<'arena>(
                     module,
                     return_type,
                     &mut else_exprs,
+                    errs,
                 )
-                .map_err(|v| errs.extend(v))
             } else {
                 Ok(false)
             };
             let Ok((condition_ty, cond)) = expr_result else {
-                return Err(errs);
+                return Err(());
             };
             if condition_ty != Type::PrimitiveBool(0) {
-                errs.push(TypecheckingError::MismatchingType {
-                    expected: Type::PrimitiveBool(0),
-                    found: condition_ty,
-                    location: *span,
-                });
+                errs.add_mismatching_type(*span, Type::PrimitiveBool(0), condition_ty);
             }
-            let Ok(if_stmt_exits) = if_stmt_result else {
-                return Err(errs);
-            };
-            let Ok(else_stmt_exits) = else_stmt_result else {
-                return Err(errs);
-            };
-            if !errs.is_empty() {
-                return Err(errs);
+            let if_stmt_exits = if_stmt_result?;
+            let else_stmt_exits = else_stmt_result?;
+            if errs.len() != errs_at_start {
+                return Err(());
             }
             exprs.push(TypecheckedExpression::If {
                 span: *span,
@@ -357,7 +362,6 @@ fn typecheck_statement<'arena>(
             span,
             ..
         } => {
-            let mut errs = Vec::new();
             let mut condition_block = Vec::new();
             let mut body = Vec::new();
 
@@ -369,25 +373,18 @@ fn typecheck_statement<'arena>(
                 &mut condition_block,
                 TypeSuggestion::Bool,
             )
-            .map_err(|v| errs.push(v));
+            .map_err(|v| _ = errs.add(v));
             let body_result =
-                typecheck_statement(context, scope, child, module, return_type, &mut body)
-                    .map_err(|v| errs.extend(v));
+                typecheck_statement(context, scope, child, module, return_type, &mut body, errs);
             let Ok((condition_ty, cond)) = condition_result else {
-                return Err(errs);
+                return Err(());
             };
             if condition_ty != Type::PrimitiveBool(0) {
-                errs.push(TypecheckingError::MismatchingType {
-                    expected: Type::PrimitiveBool(0),
-                    found: condition_ty,
-                    location: *span,
-                });
+                errs.add_mismatching_type(*span, Type::PrimitiveBool(0), condition_ty);
             }
-            let Ok(mut always_exits) = body_result else {
-                return Err(errs);
-            };
-            if !errs.is_empty() {
-                return Err(errs);
+            let mut always_exits = body_result?;
+            if errs.len() != errs_at_start {
+                return Err(());
             }
             // while (true) {} also never exits
             always_exits = always_exits || matches!(cond, TypedLiteral::Bool(true));
@@ -406,11 +403,8 @@ fn typecheck_statement<'arena>(
                 exprs.push(TypecheckedExpression::Return(*span, TypedLiteral::Void));
                 Ok(true)
             } else {
-                Err(vec![TypecheckingError::MismatchingType {
-                    expected: return_type.clone(),
-                    found: Type::PrimitiveVoid(0),
-                    location: *span,
-                }])
+                errs.add_mismatching_type(*span, return_type.clone(), Type::PrimitiveVoid(0));
+                Err(())
             }
         }
         Statement::Return(Some(expression), location) => {
@@ -422,50 +416,41 @@ fn typecheck_statement<'arena>(
                 exprs,
                 TypeSuggestion::from_type(return_type),
             )
-            .map_err(|e| vec![e])?;
+            .map_err(|e| _ = errs.add(e))?;
             if typ != *return_type {
-                return Err(vec![TypecheckingError::MismatchingType {
-                    expected: return_type.clone(),
-                    found: typ,
-                    location: expression.span(),
-                }]);
+                errs.add_mismatching_type(expression.span(), return_type.clone(), typ);
+                return Err(());
             }
             exprs.push(TypecheckedExpression::Return(*location, typed_expression));
             Ok(true)
         }
         Statement::Block(statements, location, annotations) => {
-            let mut errs = Vec::new();
             let mut block_exprs = Vec::with_capacity(statements.len());
             let mut always_returns = false;
             scope.push_scope();
 
             for statement in statements.iter() {
-                match typecheck_statement(
+                if let Ok(true) = typecheck_statement(
                     context,
                     scope,
                     statement,
                     module,
                     return_type,
                     &mut block_exprs,
+                    errs,
                 ) {
-                    Ok(true) => {
-                        always_returns = true;
-                        if !matches!(statement, Statement::Return(..)) {
-                            block_exprs.push(TypecheckedExpression::Unreachable(statement.span()));
-                        }
-                        break;
+                    always_returns = true;
+                    if !matches!(statement, Statement::Return(..)) {
+                        block_exprs.push(TypecheckedExpression::Unreachable(statement.span()));
                     }
-                    Ok(_) => {}
-                    Err(e) => {
-                        errs.extend(e);
-                    }
+                    break;
                 }
             }
 
             scope.pop_scope();
 
-            if !errs.is_empty() {
-                Err(errs)
+            if errs.len() != errs_at_start {
+                Err(())
             } else {
                 exprs.push(TypecheckedExpression::Block(
                     *location,
@@ -480,7 +465,7 @@ fn typecheck_statement<'arena>(
                 .as_ref()
                 .map(|v| context.resolve_type(module, v, &[]))
                 .transpose()
-                .map_err(|v| vec![v])?;
+                .map_err(|v| _ = errs.add(v))?;
 
             let (typ, expr) = typecheck_expression(
                 context,
@@ -493,15 +478,12 @@ fn typecheck_statement<'arena>(
                     .map(TypeSuggestion::from_type)
                     .unwrap_or_default(),
             )
-            .map_err(|e| vec![e])?;
+            .map_err(|e| _ = errs.add(e))?;
 
             if let Some(expected_typ) = expected_typ {
                 if expected_typ != typ {
-                    return Err(vec![TypecheckingError::MismatchingType {
-                        expected: expected_typ,
-                        found: typ,
-                        location: *location,
-                    }]);
+                    errs.add_mismatching_type(*location, expected_typ, typ);
+                    return Err(());
                 }
             }
 
@@ -528,7 +510,7 @@ fn typecheck_statement<'arena>(
             exprs,
             Default::default(),
         )
-        .map_err(|v| vec![v])
+        .map_err(|e| _ = errs.add(e))
         .map(|(typ, _)| matches!(typ, Type::PrimitiveNever)),
         Statement::BakedFunction(..)
         | Statement::Function(..)
@@ -647,7 +629,7 @@ fn typecheck_expression<'arena>(
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypecheckedExpression<'arena>>,
     type_suggestion: TypeSuggestion<'arena>,
-) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     match expression {
         Expression::Literal(literal_value, location) => match literal_value {
             LiteralValue::String(global_str) => {
@@ -655,10 +637,12 @@ fn typecheck_expression<'arena>(
             }
             LiteralValue::Array(ArrayLiteral::Values(vec)) if vec.is_empty() => {
                 let typ = match type_suggestion {
-                    TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
-                        .to_type(context)
-                        .ok_or(TypecheckingError::CannotInferArrayType(*location))?,
-                    _ => return Err(TypecheckingError::CannotInferArrayType(*location)),
+                    TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => {
+                        type_suggestion.to_type(context).ok_or_else(|| {
+                            TypecheckingError::CannotInferArrayType(*location).to_error()
+                        })?
+                    }
+                    _ => return Err(TypecheckingError::CannotInferArrayType(*location).to_error()),
                 };
                 Ok((typ.clone(), TypedLiteral::Array(typ, Vec::new())))
             }
@@ -701,7 +685,8 @@ fn typecheck_expression<'arena>(
                             expected: typ,
                             found: el_typ,
                             location: expr.span(),
-                        });
+                        }
+                        .to_error());
                     }
                     elements.push(el_lit);
                 }
@@ -744,7 +729,7 @@ fn typecheck_expression<'arena>(
                 let struct_id = if let TypeSuggestion::Struct(id) = type_suggestion {
                     id
                 } else {
-                    return Err(TypecheckingError::CannotInferAnonStructType(*location));
+                    return Err(TypecheckingError::CannotInferAnonStructType(*location).to_error());
                 };
 
                 let structure = &context.structs.read()[struct_id];
@@ -754,7 +739,8 @@ fn typecheck_expression<'arena>(
                         return Err(TypecheckingError::NoSuchFieldFound {
                             location: values[k].0,
                             name: *k,
-                        });
+                        }
+                        .to_error());
                     }
                 }
 
@@ -764,7 +750,8 @@ fn typecheck_expression<'arena>(
                         return Err(TypecheckingError::MissingField {
                             location: *location,
                             name: *key,
-                        });
+                        }
+                        .to_error());
                     };
                     let (expr_typ, expr_lit) = typecheck_expression(
                         context,
@@ -779,7 +766,8 @@ fn typecheck_expression<'arena>(
                             expected: typ.clone(),
                             found: expr_typ,
                             location: *loc,
-                        });
+                        }
+                        .to_error());
                     }
                     elements.push(expr_lit);
                 }
@@ -800,9 +788,13 @@ fn typecheck_expression<'arena>(
                     location,
                     &mut Vec::new(),
                 )
-                .map_err(|_| TypecheckingError::CannotFindValue(*location, path.clone()))?;
+                .map_err(|_| {
+                    TypecheckingError::CannotFindValue(*location, path.clone()).to_error()
+                })?;
                 let ModuleScopeValue::Struct(struct_id) = value else {
-                    return Err(TypecheckingError::CannotFindValue(*location, path.clone()));
+                    return Err(
+                        TypecheckingError::CannotFindValue(*location, path.clone()).to_error()
+                    );
                 };
                 let structure = &context.structs.read()[struct_id.cast()];
                 // ensure there are no excessive values in the struct initialization
@@ -811,7 +803,8 @@ fn typecheck_expression<'arena>(
                         return Err(TypecheckingError::NoSuchFieldFound {
                             location: values[k].0,
                             name: *k,
-                        });
+                        }
+                        .to_error());
                     }
                 }
 
@@ -821,7 +814,8 @@ fn typecheck_expression<'arena>(
                         return Err(TypecheckingError::MissingField {
                             location: *location,
                             name: *key,
-                        });
+                        }
+                        .to_error());
                     };
                     let (expr_typ, expr_lit) = typecheck_expression(
                         context,
@@ -836,7 +830,8 @@ fn typecheck_expression<'arena>(
                             expected: typ.clone(),
                             found: expr_typ,
                             location: *loc,
-                        });
+                        }
+                        .to_error());
                     }
                     elements.push(expr_lit);
                 }
@@ -879,7 +874,9 @@ fn typecheck_expression<'arena>(
                     location,
                     &mut Vec::new(),
                 )
-                .map_err(|_| TypecheckingError::CannotFindValue(*location, path.clone()))?;
+                .map_err(|_| {
+                    TypecheckingError::CannotFindValue(*location, path.clone()).to_error()
+                })?;
                 match value {
                     ModuleScopeValue::Function(id) => {
                         let reader = &context.functions.read()[id.cast()];
@@ -892,7 +889,8 @@ fn typecheck_expression<'arena>(
                                 *location,
                                 reader.0.generics.len(),
                                 generics.len(),
-                            ));
+                            )
+                            .to_error());
                         }
                         // TODO: Bounds check
                         let mut generic_types = Vec::with_capacity(generics.len());
@@ -901,7 +899,8 @@ fn typecheck_expression<'arena>(
                             if reader.0.generics[i].sized && !ty.is_sized() {
                                 return Err(TypecheckingError::UnsizedForSizedGeneric(
                                     *location, ty,
-                                ));
+                                )
+                                .to_error());
                             }
                             generic_types.push(ty);
                         }
@@ -950,14 +949,17 @@ fn typecheck_expression<'arena>(
                         if !generics.is_empty() {
                             return Err(TypecheckingError::UnexpectedGenerics {
                                 location: *location,
-                            });
+                            }
+                            .to_error());
                         }
                         Ok((
                             context.statics.read()[id.cast()].type_.clone(),
                             TypedLiteral::Static(id.cast()),
                         ))
                     }
-                    _ => Err(TypecheckingError::CannotFindValue(*location, path.clone())),
+                    _ => {
+                        Err(TypecheckingError::CannotFindValue(*location, path.clone()).to_error())
+                    }
                 }
             }
             LiteralValue::BakedAnonymousFunction(fn_id) => {
@@ -1002,8 +1004,9 @@ fn typecheck_expression<'arena>(
                 .ok_or_else(|| {
                     TypecheckingError::AsmNonNumericType(
                         *loc,
-                        name.unwrap(), /* see comment above as to why this is fine */
+                        name.unwrap(), // see comment above as to why this is fine
                     )
+                    .to_error()
                 })?;
             let mut typed_inputs = Vec::with_capacity(inputs.len());
             for (span, name) in inputs {
@@ -1011,13 +1014,15 @@ fn typecheck_expression<'arena>(
                     return Err(TypecheckingError::CannotFindValue(
                         *span,
                         Path::new(*name, *span, Vec::new()),
-                    ));
+                    )
+                    .to_error());
                 };
                 if !entry_ty.is_asm_primitive() {
                     return Err(TypecheckingError::AsmNonNumericTypeResolved(
                         *span,
                         entry_ty.clone(),
-                    ));
+                    )
+                    .to_error());
                 }
                 typed_inputs.push(id);
             }
@@ -1054,26 +1059,26 @@ fn typecheck_expression<'arena>(
                 UnaryOp::Plus if typ.is_int_like() => {
                     tc_res!(unary scope, exprs; Pos(*loc, right_side, typ))
                 }
-                UnaryOp::Plus => Err(TypecheckingError::CannotPos(*loc, typ)),
+                UnaryOp::Plus => Err(TypecheckingError::CannotPos(*loc, typ).to_error()),
                 UnaryOp::Minus if (typ.is_int_like() && !typ.is_unsigned()) || typ.is_float() => {
                     tc_res!(unary scope, exprs; Neg(*loc, right_side, typ))
                 }
-                UnaryOp::Minus => Err(TypecheckingError::CannotNeg(*loc, typ)),
+                UnaryOp::Minus => Err(TypecheckingError::CannotNeg(*loc, typ).to_error()),
                 UnaryOp::LogicalNot if matches!(typ, Type::PrimitiveBool(0)) => {
                     tc_res!(unary scope, exprs; LNot(*loc, right_side, typ))
                 }
-                UnaryOp::LogicalNot => Err(TypecheckingError::CannotLNot(*loc, typ)),
+                UnaryOp::LogicalNot => Err(TypecheckingError::CannotLNot(*loc, typ).to_error()),
                 UnaryOp::BitwiseNot
                     if typ.is_int_like() || matches!(typ, Type::PrimitiveBool(0)) =>
                 {
                     tc_res!(unary scope, exprs; BNot(*loc, right_side, typ))
                 }
-                UnaryOp::BitwiseNot => Err(TypecheckingError::CannotBNot(*loc, typ)),
+                UnaryOp::BitwiseNot => Err(TypecheckingError::CannotBNot(*loc, typ).to_error()),
                 UnaryOp::Dereference => match typ.deref() {
                     Ok(typ) => {
                         tc_res!(unary scope, exprs; Dereference(*loc, right_side, typ))
                     }
-                    Err(typ) => Err(TypecheckingError::CannotDeref(*loc, typ)),
+                    Err(typ) => Err(TypecheckingError::CannotDeref(*loc, typ).to_error()),
                 },
                 UnaryOp::Reference => unreachable!(),
             }
@@ -1102,7 +1107,9 @@ fn typecheck_expression<'arena>(
                     TypeSuggestion::Number(NumberType::Usize),
                 )?;
                 if !typ_right.is_int_like() || !typ_right.is_unsigned() {
-                    return Err(TypecheckingError::CannotShiftByNonUInt(*span, typ_right));
+                    return Err(
+                        TypecheckingError::CannotShiftByNonUInt(*span, typ_right).to_error()
+                    );
                 }
 
                 return match operator {
@@ -1113,8 +1120,8 @@ fn typecheck_expression<'arena>(
                         tc_res!(binary scope, exprs; RShift(*span, left_side, right_side, typ))
                     }
 
-                    BinaryOp::LShift => Err(TypecheckingError::CannotShl(*span, typ)),
-                    BinaryOp::RShift => Err(TypecheckingError::CannotShr(*span, typ)),
+                    BinaryOp::LShift => Err(TypecheckingError::CannotShl(*span, typ).to_error()),
+                    BinaryOp::RShift => Err(TypecheckingError::CannotShr(*span, typ).to_error()),
                     _ => unreachable!(),
                 };
             }
@@ -1129,7 +1136,7 @@ fn typecheck_expression<'arena>(
                 TypeSuggestion::from_type(&typ_left),
             )?;
             if typ_left != typ_right {
-                return Err(TypecheckingError::LhsNotRhs(*span, typ_left, typ_right));
+                return Err(TypecheckingError::LhsNotRhs(*span, typ_left, typ_right).to_error());
             }
             let typ = typ_left;
             let loc = *span;
@@ -1183,22 +1190,24 @@ fn typecheck_expression<'arena>(
                     tc_res!(binary scope, exprs; Neq(loc, left_side, right_side, Type::PrimitiveBool(0)))
                 }
 
-                BinaryOp::Plus => Err(TypecheckingError::CannotAdd(loc, typ)),
-                BinaryOp::Minus => Err(TypecheckingError::CannotSub(loc, typ)),
-                BinaryOp::Multiply => Err(TypecheckingError::CannotMul(loc, typ)),
-                BinaryOp::Divide => Err(TypecheckingError::CannotDiv(loc, typ)),
-                BinaryOp::Modulo => Err(TypecheckingError::CannotMod(loc, typ)),
-                BinaryOp::BitwiseAnd => Err(TypecheckingError::CannotBAnd(loc, typ)),
-                BinaryOp::BitwiseOr => Err(TypecheckingError::CannotBOr(loc, typ)),
-                BinaryOp::BitwiseXor => Err(TypecheckingError::CannotBXor(loc, typ)),
-                BinaryOp::LogicalOr => Err(TypecheckingError::CannotLOr(loc, typ)),
-                BinaryOp::LogicalAnd => Err(TypecheckingError::CannotLAnd(loc, typ)),
+                BinaryOp::Plus => Err(TypecheckingError::CannotAdd(loc, typ).to_error()),
+                BinaryOp::Minus => Err(TypecheckingError::CannotSub(loc, typ).to_error()),
+                BinaryOp::Multiply => Err(TypecheckingError::CannotMul(loc, typ).to_error()),
+                BinaryOp::Divide => Err(TypecheckingError::CannotDiv(loc, typ).to_error()),
+                BinaryOp::Modulo => Err(TypecheckingError::CannotMod(loc, typ).to_error()),
+                BinaryOp::BitwiseAnd => Err(TypecheckingError::CannotBAnd(loc, typ).to_error()),
+                BinaryOp::BitwiseOr => Err(TypecheckingError::CannotBOr(loc, typ).to_error()),
+                BinaryOp::BitwiseXor => Err(TypecheckingError::CannotBXor(loc, typ).to_error()),
+                BinaryOp::LogicalOr => Err(TypecheckingError::CannotLOr(loc, typ).to_error()),
+                BinaryOp::LogicalAnd => Err(TypecheckingError::CannotLAnd(loc, typ).to_error()),
                 BinaryOp::GreaterThan
                 | BinaryOp::GreaterThanEq
                 | BinaryOp::LessThan
-                | BinaryOp::LessThanEq => Err(TypecheckingError::CannotCompare(loc, typ)),
+                | BinaryOp::LessThanEq => {
+                    Err(TypecheckingError::CannotCompare(loc, typ).to_error())
+                }
                 BinaryOp::Equals | BinaryOp::NotEquals => {
-                    Err(TypecheckingError::CannotEq(loc, typ))
+                    Err(TypecheckingError::CannotEq(loc, typ).to_error())
                 }
                 BinaryOp::RShift | BinaryOp::LShift => unreachable!(),
             }
@@ -1227,18 +1236,21 @@ fn typecheck_expression<'arena>(
             let Type::Function(function_type, _) = typ else {
                 return Err(TypecheckingError::TypeIsNotAFunction {
                     location: identifier.span(),
-                });
+                }
+                .to_error());
             };
             let mut typed_arguments = Vec::with_capacity(function_type.arguments.len());
             if arguments.len() < function_type.arguments.len() {
                 return Err(TypecheckingError::MissingArguments {
                     location: identifier.span(),
-                });
+                }
+                .to_error());
             }
             if arguments.len() > function_type.arguments.len() && !has_vararg {
                 return Err(TypecheckingError::TooManyArguments {
                     location: arguments[function_type.arguments.len().saturating_sub(1)].span(),
-                });
+                }
+                .to_error());
             }
             for (i, arg) in arguments.iter().enumerate() {
                 let (typ, expr) = typecheck_expression(
@@ -1262,7 +1274,8 @@ fn typecheck_expression<'arena>(
                         expected: function_type.arguments[i].clone(),
                         found: typ,
                         location: arguments[i].span(),
-                    });
+                    }
+                    .to_error());
                 }
                 typed_arguments.push(expr);
             }
@@ -1323,9 +1336,9 @@ fn typecheck_expression<'arena>(
                         exprs,
                         TypeSuggestion::Unknown,
                     )?;
-                    let typ = typ
-                        .deref()
-                        .map_err(|typ| TypecheckingError::CannotDeref(right_side.span(), typ))?;
+                    let typ = typ.deref().map_err(|typ| {
+                        TypecheckingError::CannotDeref(right_side.span(), typ).to_error()
+                    })?;
 
                     (typ, lhs)
                 }
@@ -1362,7 +1375,8 @@ fn typecheck_expression<'arena>(
                     expected: typ_lhs,
                     found: typ_rhs,
                     location: *span,
-                });
+                }
+                .to_error());
             }
             exprs.push(TypecheckedExpression::StoreAssignment(*span, lhs, rhs));
             Ok((Type::PrimitiveVoid(0), TypedLiteral::Void))
@@ -1387,7 +1401,8 @@ fn typecheck_expression<'arena>(
                     expected: typ.clone(),
                     found: typ_rhs.clone(),
                     location: right_side.span(),
-                });
+                }
+                .to_error());
             }
 
             unimplemented!("lang-items");
@@ -1414,7 +1429,7 @@ fn typecheck_cast<'arena>(
     lhs: TypedLiteral<'arena>,
     loc: Span<'arena>,
     context: &TypecheckingContext<'arena>,
-) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     if typ == new_typ {
         return Ok((new_typ, lhs));
     }
@@ -1470,7 +1485,8 @@ fn typecheck_cast<'arena>(
                     loc,
                     typ,
                     traits.iter().map(|v| trait_reader[*v].name).collect(),
-                ));
+                )
+                .to_error());
             }
             let id = scope.push(new_typ.clone());
             exprs.push(TypecheckedExpression::AttachVtable(
@@ -1586,7 +1602,7 @@ fn typecheck_cast<'arena>(
             exprs.push(TypecheckedExpression::IntCast(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
-        _ => Err(TypecheckingError::DisallowedCast(loc, typ, new_typ)),
+        _ => Err(TypecheckingError::DisallowedCast(loc, typ, new_typ).to_error()),
     }
 }
 
@@ -1602,7 +1618,7 @@ fn typecheck_dyn_membercall<'arena>(
     lhs_loc: Span<'arena>,
     trait_refs: Vec<(StoreKey<TypedTrait<'arena>>, InternedStr<'arena>)>,
     num_references: u8,
-) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     let trait_reader = context.traits.read();
     let mut offset = 0;
     let (mut arg_typs, return_ty, trait_name) = 'out: {
@@ -1622,16 +1638,17 @@ fn typecheck_dyn_membercall<'arena>(
                 trait_refs,
                 num_references,
             },
-        ));
+        )
+        .to_error());
     };
     drop(trait_reader);
 
     match &arg_typs[0].1 {
         Type::PrimitiveSelf(_) => {}
         _ => {
-            return Err(TypecheckingError::InvalidDynTypeFunc(
-                lhs_loc, *ident, trait_name,
-            ))
+            return Err(
+                TypecheckingError::InvalidDynTypeFunc(lhs_loc, *ident, trait_name).to_error(),
+            )
         }
     }
     if matches!(return_ty, Type::PrimitiveSelf(_))
@@ -1640,9 +1657,7 @@ fn typecheck_dyn_membercall<'arena>(
             .skip(1)
             .any(|v| matches!(v.1, Type::PrimitiveSelf(_)))
     {
-        return Err(TypecheckingError::InvalidDynTypeFunc(
-            lhs_loc, *ident, trait_name,
-        ));
+        return Err(TypecheckingError::InvalidDynTypeFunc(lhs_loc, *ident, trait_name).to_error());
     }
 
     let mut typ = Type::DynType {
@@ -1661,12 +1676,13 @@ fn typecheck_dyn_membercall<'arena>(
     typed_args.push(lhs);
 
     if args.len() < arg_typs.len() - 1 {
-        return Err(TypecheckingError::MissingArguments { location: lhs_loc });
+        return Err(TypecheckingError::MissingArguments { location: lhs_loc }.to_error());
     }
     if args.len() > arg_typs.len() - 1 {
         return Err(TypecheckingError::TooManyArguments {
             location: args[arg_typs.len() - 1].span(),
-        });
+        }
+        .to_error());
     }
 
     for i in 0..args.len() {
@@ -1683,7 +1699,8 @@ fn typecheck_dyn_membercall<'arena>(
                 expected: arg_typs.remove(i + 1).1,
                 found: typ,
                 location: args[i].span(),
-            });
+            }
+            .to_error());
         }
         typed_args.push(lit);
     }
@@ -1708,7 +1725,7 @@ fn typecheck_membercall<'arena>(
     lhs: &Expression<'arena>,
     ident: &InternedStr<'arena>,
     args: &[Expression<'arena>],
-) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     let (mut typ_lhs, mut typed_literal_lhs) =
         typecheck_take_ref(context, module, scope, lhs, exprs, TypeSuggestion::Unknown)?;
     match typ_lhs {
@@ -1785,11 +1802,9 @@ fn typecheck_membercall<'arena>(
         });
     drop(struct_reader);
     let Some(function_id) = function_id else {
-        return Err(TypecheckingError::CannotFindFunctionOnType(
-            lhs.span(),
-            *ident,
-            typ_lhs,
-        ));
+        return Err(
+            TypecheckingError::CannotFindFunctionOnType(lhs.span(), *ident, typ_lhs).to_error(),
+        );
     };
 
     let function: &(_, _) = &function_reader[function_id];
@@ -1800,11 +1815,9 @@ fn typecheck_membercall<'arena>(
         .map(|v| v.1.clone().without_ref())
         != Some(typ_lhs.clone().without_ref())
     {
-        return Err(TypecheckingError::NonMemberFunction(
-            function.0.span,
-            *ident,
-            typ_lhs,
-        ));
+        return Err(
+            TypecheckingError::NonMemberFunction(function.0.span, *ident, typ_lhs).to_error(),
+        );
     }
     let arg_refcount = function.0.arguments[0].1.refcount();
     while typ_lhs.refcount() != arg_refcount {
@@ -1831,12 +1844,14 @@ fn typecheck_membercall<'arena>(
     if args.len() < function.0.arguments.len() - 1 {
         return Err(TypecheckingError::MissingArguments {
             location: lhs.span(),
-        });
+        }
+        .to_error());
     }
     if args.len() > function.0.arguments.len() - 1 {
         return Err(TypecheckingError::TooManyArguments {
             location: args[function.0.arguments.len() - 1].span(),
-        });
+        }
+        .to_error());
     }
     for (i, (_, arg)) in function.0.arguments.iter().skip(1).enumerate() {
         let (typ, expr) = typecheck_expression(
@@ -1852,7 +1867,8 @@ fn typecheck_membercall<'arena>(
                 expected: function.0.arguments[i + 1].1.clone(),
                 found: typ,
                 location: args[i].span(),
-            });
+            }
+            .to_error());
         }
         typed_arguments.push(expr);
     }
@@ -1880,7 +1896,7 @@ fn typecheck_take_ref<'arena>(
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypecheckedExpression<'arena>>,
     type_suggestion: TypeSuggestion<'arena>,
-) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     match expression {
         //&*_1 => _1
         Expression::Unary {
@@ -1918,7 +1934,7 @@ fn ref_resolve_indexing<'arena>(
     exprs: &mut Vec<TypecheckedExpression<'arena>>,
     type_suggestion: TypeSuggestion<'arena>,
     increase_ref: bool,
-) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     match expression {
         Expression::MemberAccess {
             left_side,
@@ -1974,11 +1990,16 @@ fn ref_resolve_indexing<'arena>(
                                     expression.span(),
                                     typ_lhs,
                                     *element_name,
-                                ))
+                                )
+                                .to_error())
                             }
                         }
                     }
-                    _ => return Err(TypecheckingError::AccessNonStructValue(*span, typ_lhs)),
+                    _ => {
+                        return Err(
+                            TypecheckingError::AccessNonStructValue(*span, typ_lhs).to_error()
+                        )
+                    }
                 };
             }
             Ok((typ_lhs, typed_literal_lhs))
@@ -2016,22 +2037,24 @@ fn ref_resolve_indexing<'arena>(
                 Type::UnsizedArray { typ, .. } => *typ,
                 Type::Tuple { elements, .. } => match offset {
                     OffsetValue::Dynamic(_) => {
-                        return Err(TypecheckingError::TupleDynamicIndex(expression.span()))
+                        return Err(
+                            TypecheckingError::TupleDynamicIndex(expression.span()).to_error()
+                        )
                     }
                     OffsetValue::Static(idx) if idx >= elements.len() => {
                         return Err(TypecheckingError::TupleIndexOutOfBounds(
                             expression.span(),
                             elements.len(),
                             idx,
-                        ))
+                        )
+                        .to_error())
                     }
                     OffsetValue::Static(idx) => elements[idx].clone(),
                 },
                 _ => {
-                    return Err(TypecheckingError::IndexNonArrayElem(
-                        expression.span(),
-                        typ_lhs,
-                    ))
+                    return Err(
+                        TypecheckingError::IndexNonArrayElem(expression.span(), typ_lhs).to_error(),
+                    )
                 }
             };
 
@@ -2133,7 +2156,7 @@ fn indexing_resolve_rhs<'arena>(
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypecheckedExpression<'arena>>,
-) -> Result<OffsetValue, TypecheckingError<'arena>> {
+) -> Result<OffsetValue, Diagnostic<'arena>> {
     let (typ, rhs) = typecheck_expression(
         context,
         module,
@@ -2147,7 +2170,8 @@ fn indexing_resolve_rhs<'arena>(
             expected: Type::PrimitiveUSize(0),
             found: typ,
             location: expression.span(),
-        });
+        }
+        .to_error());
     }
     match rhs {
         TypedLiteral::Dynamic(v) => Ok(OffsetValue::Dynamic(v)),
@@ -2189,7 +2213,7 @@ fn copy_resolve_indexing<'arena>(
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypecheckedExpression<'arena>>,
     type_suggestion: TypeSuggestion<'arena>,
-) -> Result<(Type<'arena>, TypedLiteral<'arena>), TypecheckingError<'arena>> {
+) -> Result<(Type<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     match expression {
         Expression::Indexing {
             left_side,
@@ -2209,21 +2233,24 @@ fn copy_resolve_indexing<'arena>(
                 typ,
                 Type::UnsizedArray { .. } | Type::SizedArray { .. } | Type::Tuple { .. }
             ) {
-                return Err(TypecheckingError::IndexNonArrayElem(expression.span(), typ));
+                return Err(TypecheckingError::IndexNonArrayElem(expression.span(), typ).to_error());
             }
             if typ.refcount() == 0 {
                 let new_typ = match typ.clone() {
                     Type::SizedArray { typ, .. } => *typ,
                     Type::Tuple { elements, .. } => match offset {
                         OffsetValue::Dynamic(_) => {
-                            return Err(TypecheckingError::TupleDynamicIndex(expression.span()))
+                            return Err(
+                                TypecheckingError::TupleDynamicIndex(expression.span()).to_error()
+                            )
                         }
                         OffsetValue::Static(v) if v >= elements.len() => {
                             return Err(TypecheckingError::TupleIndexOutOfBounds(
                                 expression.span(),
                                 elements.len(),
                                 v,
-                            ))
+                            )
+                            .to_error())
                         }
                         OffsetValue::Static(v) => elements[v].clone(),
                     },
@@ -2341,11 +2368,16 @@ fn copy_resolve_indexing<'arena>(
                                     expression.span(),
                                     typ_lhs.without_ref(),
                                     *element_name,
-                                ))
+                                )
+                                .to_error())
                             }
                         }
                     }
-                    _ => return Err(TypecheckingError::AccessNonStructValue(*span, typ_lhs)),
+                    _ => {
+                        return Err(
+                            TypecheckingError::AccessNonStructValue(*span, typ_lhs).to_error()
+                        )
+                    }
                 };
                 if !needs_deref {
                     let new_id = scope.push(typ_lhs.clone());

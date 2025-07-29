@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fmt::Write,
     io::{StderrLock, StdoutLock, Write as _},
+    ops::Deref,
     sync::Arc,
 };
 
@@ -45,6 +46,72 @@ impl Write for StdoutWriter {
             panic!("Failed to write to stdout while trying to emit diagnostics: {e}");
         }
         Ok(())
+    }
+}
+
+impl<'arena> IntoIterator for Diagnostics<'arena> {
+    type Item = Diagnostic<'arena>;
+
+    type IntoIter = <Vec<Diagnostic<'arena>> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+#[derive(Default)]
+pub struct Diagnostics<'arena>(Vec<Diagnostic<'arena>>);
+
+impl<'arena> Deref for Diagnostics<'arena> {
+    type Target = [Diagnostic<'arena>];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'arena> From<Diagnostic<'arena>> for Diagnostics<'arena> {
+    fn from(value: Diagnostic<'arena>) -> Self {
+        Self(vec![value])
+    }
+}
+
+impl<'arena> From<Vec<Diagnostic<'arena>>> for Diagnostics<'arena> {
+    fn from(value: Vec<Diagnostic<'arena>>) -> Self {
+        Self(value)
+    }
+}
+
+impl<'arena> Diagnostics<'arena> {
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Diagnostic<'arena>> {
+        self.0.iter()
+    }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Diagnostic<'arena>> {
+        self.0.iter_mut()
+    }
+    pub fn add(&mut self, diagnostic: Diagnostic<'arena>) -> &mut Diagnostic<'arena> {
+        self.0.push(diagnostic);
+        self.0.last_mut().unwrap()
+    }
+    pub fn add_err(&mut self, diagnostic: impl ErrorData + 'arena) -> &mut Diagnostic<'arena> {
+        self.add(Diagnostic::new(diagnostic, Severity::Error))
+    }
+    pub fn add_warn(&mut self, diagnostic: impl ErrorData + 'arena) -> &mut Diagnostic<'arena> {
+        self.add(Diagnostic::new(diagnostic, Severity::Warn))
+    }
+    pub fn extend(&mut self, other: impl IntoIterator<Item = Diagnostic<'arena>>) {
+        self.0.extend(other);
     }
 }
 

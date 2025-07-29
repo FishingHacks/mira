@@ -17,7 +17,9 @@ pub fn derive_display(input: TokenStream) -> TokenStream {
         error_code,
         primary_label,
         secondary_label,
-        secondary_labels
+        secondary_labels,
+        no_arena_lifetime,
+        is_warning,
     )
 )]
 pub fn derive_error_data(input: TokenStream) -> TokenStream {

@@ -47,7 +47,7 @@ impl<'arena> TokenStream<'arena> {
         self.0
             .first()
             .filter(|v| v.typ == expected)
-            .ok_or(ParsingError::ExpectedArbitrary {
+            .ok_or(ParsingError::ExpectedToktype {
                 loc: self.1,
                 expected,
                 found: TokenType::Eof,
@@ -210,10 +210,10 @@ impl<'arena> TokenStream<'arena> {
         if (self.0.len() == 1 && self.0[0].typ == TokenType::Eof) || self.0.is_empty() {
             Ok(())
         } else {
-            Err(ParsingError::ExpectedArbitrary {
+            Err(ParsingError::Expected {
                 loc: self.0[0].span,
                 expected: TokenType::Eof,
-                found: self.0[0].typ,
+                found: self.0[0],
             })
         }
     }

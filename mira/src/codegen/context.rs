@@ -220,20 +220,20 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         let buffer = self
             .machine
             .write_to_memory_buffer(&self.module, FileType::Assembly)
-            .map_err(CodegenError::LLVMNative)?;
+            .map_err(CodegenError::from)?;
         writer
             .write_all(buffer.as_slice())
-            .map_err(CodegenError::IO)
+            .map_err(CodegenError::WriteAssemblyError)
     }
 
     pub fn write_object(&self, writer: &mut dyn Write) -> Result<(), CodegenError> {
         let buffer = self
             .machine
             .write_to_memory_buffer(&self.module, FileType::Object)
-            .map_err(CodegenError::LLVMNative)?;
+            .map_err(CodegenError::from)?;
         writer
             .write_all(buffer.as_slice())
-            .map_err(CodegenError::IO)
+            .map_err(CodegenError::WriteObjectError)
     }
 
     pub fn new(
@@ -255,7 +255,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             RelocMode::PIC,
             CodeModel::Default,
         ) else {
-            return Err(CodegenError::UnknownTriple(triple));
+            return Err(CodegenError::unknown_triple(triple));
         };
         let module = context.create_module(module);
         module.set_triple(&triple);

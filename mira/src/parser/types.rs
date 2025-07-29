@@ -224,7 +224,7 @@ impl<'arena> TypeRef<'arena> {
                         if !parser.match_tok(TokenType::Comma) {
                             return Err(ParsingError::ExpectedFunctionArgument {
                                 loc: parser.peek().span,
-                                found: parser.peek().typ,
+                                found: parser.peek(),
                             });
                         }
 

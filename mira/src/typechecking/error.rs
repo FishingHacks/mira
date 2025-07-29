@@ -1,33 +1,19 @@
-use thiserror::Error;
-
 use crate::{
     error::FunctionList,
-    lang_items::{LangItemAssignmentError, LangItemError},
     parser::{Path, PathWithoutGenerics},
 };
+use mira_macros::ErrorData;
 use mira_spans::{interner::InternedStr, Span};
 
 use super::{types::Type, ScopeKind};
 
-impl<'arena> From<LangItemAssignmentError<'arena>> for TypecheckingError<'arena> {
-    fn from(value: LangItemAssignmentError<'arena>) -> Self {
-        Self::LangItemAssignment(value)
-    }
-}
-impl<'arena> From<LangItemError<'arena>> for TypecheckingError<'arena> {
-    fn from(value: LangItemError<'arena>) -> Self {
-        Self::LangItemError(value)
-    }
-}
-
-#[derive(Clone, Debug, Error)]
+#[derive(Clone, Debug, ErrorData)]
 pub enum TypecheckingError<'arena> {
-    #[error("{0:?}")]
-    LangItemError(LangItemError<'arena>),
-    #[error("{0:?}")]
-    LangItemAssignment(LangItemAssignmentError<'arena>),
-    #[error("{0:?}: Expected a sized type, but got an unsized one")]
-    UnsizedForSizedGeneric(Span<'arena>, Type<'arena>),
+    #[error("Expected a sized type, but got {_1}")]
+    UnsizedForSizedGeneric(
+        #[primary_label("expected a sized type")] Span<'arena>,
+        Type<'arena>,
+    ),
     // NOTE: This is due to each ABI handling how to return values differently. LLVM doesn't handle
     // this for us, but, as far as i can tell, it's fine if we return structs from non-extern
     // functions as that should never produce incorrect behavior. IF how ever, it turns out to,
@@ -36,171 +22,312 @@ pub enum TypecheckingError<'arena> {
     //
     // For further references: Zig's implementation of if something needs to be passed as an sret:
     // https://github.com/ziglang/zig/blob/master/src/codegen/llvm.zig#L12021
-    #[error(
-        "{0:?}: Extern functions can as of now only return primitive values and thin pointers"
-    )]
-    InvalidExternReturnType(Span<'arena>),
-    #[error("{0:?}: Unsized Type {1} is not a return type")]
-    UnsizedReturnType(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Unsized Type {1} is not a valid argument")]
-    UnsizedArgument(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Function {1} on trait {2} is not valid for &dyn {2} types")]
-    InvalidDynTypeFunc(Span<'arena>, InternedStr<'arena>, InternedStr<'arena>),
-    #[error("{0:?}: Cannot find trait {1}")]
-    CannotFindTrait(Span<'arena>, PathWithoutGenerics<'arena>),
-    #[error("{0:?}: Expected {1} generics, but found {2}")]
-    MismatchingGenericCount(Span<'arena>, usize, usize),
-    #[error("{0:?}: The size of {1} needs to be known at compiletime")]
-    NonSizedType(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Intrinsics accepts only integers, supplied: {1}")]
-    IntOnlyIntrinsic(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Assembly instructions can only accept numeric types (i_, u_, f_ and bool). Specified Type: `{1}`")]
-    AsmNonNumericTypeResolved(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Assembly instructions can only accept numeric types (i_, u_, f_ and bool). Specified Type: `{1}`")]
-    AsmNonNumericType(Span<'arena>, InternedStr<'arena>),
-    #[error("{0:?}: Tuple only has {1} fields, but tried to get field {2}")]
-    TupleIndexOutOfBounds(Span<'arena>, usize, usize),
-    #[error("{0:?}: Cannot index a tuple with a dynamic value")]
-    TupleDynamicIndex(Span<'arena>),
-    #[error("{0:?}: Cannot infer type for anonymous struct")]
-    CannotInferAnonStructType(Span<'arena>),
-    #[error("{0:?}: Statics can only have literal values")]
-    StaticsNeedToBeLiteral(Span<'arena>),
-    #[error(
-        "{0:?}: Cannot infer array type. Use `[] as [<type>;0]` to explicitly specify the expected array type"
-    )]
-    CannotInferArrayType(Span<'arena>),
-    #[error("{0:?}: Function `{1}` of type `{2}` is not a method as it doesn't have the signature (Self, ...) or (&Self, ...)")]
-    NonMemberFunction(Span<'arena>, InternedStr<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot find function `{1}` on type `{2}`")]
-    CannotFindFunctionOnType(Span<'arena>, InternedStr<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot find value `{1}`")]
-    CannotFindValue(Span<'arena>, Path<'arena>),
-    #[error("{0:?}: Tried to access a member of a non-struct value `{1}`")]
-    AccessNonStructValue(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Tried to index into non-array type `{1}`")]
-    IndexNonArrayElem(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Could not find field `{2}` on `{1}`")]
-    FieldNotFound(Span<'arena>, Type<'arena>, InternedStr<'arena>),
-    #[error("{0:?}: Invalid cast (lhs: `{1}`, rhs: `{2}`)")]
-    DisallowedCast(Span<'arena>, Type<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot assign to this expression")]
-    CannotAssign(Span<'arena>),
-    #[error("{0:?}: Cannot shift by a non-uint value (found `{1}`)")]
-    CannotShiftByNonUInt(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot add `{1}`")]
-    CannotAdd(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot subtract `{1}`")]
-    CannotSub(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot multiply `{1}`")]
-    CannotMul(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot divide `{1}`")]
-    CannotDiv(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot take the remainder of `{1}`")]
-    CannotMod(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot binary and `{1}`")]
-    CannotBAnd(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot binary or `{1}`")]
-    CannotBOr(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot xor `{1}`")]
-    CannotBXor(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot and `{1}`")]
-    CannotLAnd(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot or `{1}`")]
-    CannotLOr(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot compare `{1}`")]
-    CannotCompare(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot compare the equality of `{1}`")]
-    CannotEq(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot shift `{1}` left")]
-    CannotShl(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot shift `{1}` right")]
-    CannotShr(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Expected both sides of the expression to be the same, lhs: `{1}`, rhs: `{2}`")]
-    LhsNotRhs(Span<'arena>, Type<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot negate a `{1}`")]
-    CannotNeg(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot use unary `+` on a `{1}`")]
-    CannotPos(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot not a `{1}`")]
-    CannotLNot(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: Cannot invert a `{1}`")]
-    CannotBNot(Span<'arena>, Type<'arena>),
-    #[error("{0:?}: cannot dereference a `{1}`")]
-    CannotDeref(Span<'arena>, Type<'arena>),
-    #[error("{location:?}: could not find export `{name}`")]
+    #[error("Extern functions can as of now only return primitive values or thin pointers")]
+    InvalidExternReturnType(
+        #[primary_label("external function returns a fat pointer or non-primitive")] Span<'arena>,
+    ),
+    #[error("Unsized Type {_1} is not a return type")]
+    UnsizedReturnType(
+        #[primary_label("type has to be sized")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Unsized Type {_1} is not a valid argument")]
+    #[note("Try using `&{_1}`")]
+    UnsizedArgument(
+        #[primary_label("type has to be sized")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Function {_1} on trait {_2} is not valid for &dyn {_2} types")]
+    InvalidDynTypeFunc(
+        #[primary_label("dyn-incompatible trait")] Span<'arena>,
+        InternedStr<'arena>,
+        InternedStr<'arena>,
+    ),
+    #[error("Cannot find trait {_1}")]
+    CannotFindTrait(
+        #[primary_label("Cannot find trait")] Span<'arena>,
+        PathWithoutGenerics<'arena>,
+    ),
+    #[error("Expected {_1} generics, but found {_2}")]
+    MismatchingGenericCount(
+        #[primary_label("expected {} generics", if _2 < _1 { "more" } else { "less" })]
+        Span<'arena>,
+        usize,
+        usize,
+    ),
+    #[error("The size of {_1} needs to be known at compiletime")]
+    #[note("Try using `&{_1}`")]
+    NonSizedType(
+        #[primary_label("the size needs to be known")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("This Intrinsic accepts only integers, but got: {_1}")]
+    IntOnlyIntrinsic(#[primary_label("")] Span<'arena>, Type<'arena>),
+    #[error("Inline assembly only accepts numeric types (i_, u_, f_ and bool), but got `{_1}`")]
+    AsmNonNumericTypeResolved(
+        #[primary_label("expected a numeric type")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Inline assembly only accepts numeric types (i_, u_, f_ and bool), but got `{_1}`")]
+    AsmNonNumericType(
+        #[primary_label("expected a numeric type")] Span<'arena>,
+        InternedStr<'arena>,
+    ),
+    #[error("No field `{_2}` on a tuple with {_1} fields")]
+    TupleIndexOutOfBounds(#[primary_label("unknown field")] Span<'arena>, usize, usize),
+    #[error("Cannot index into a tuple with a non-static literal")]
+    TupleDynamicIndex(
+        #[primary_label("tried to index a tuple with something other than a number")] Span<'arena>,
+    ),
+    #[error("Cannot infer type for anonymous struct")]
+    #[note("Use `<struct> {{}}` instead")]
+    CannotInferAnonStructType(#[primary_label("Cannot infer type")] Span<'arena>),
+    #[error("Statics can only have literal values")]
+    StaticsNeedToBeLiteral(#[primary_label("statics have to be literal values")] Span<'arena>),
+    #[error("Cannot infer the array's item type.")]
+    #[note("Try using `[] as [<type>;0]`")]
+    CannotInferArrayType(#[primary_label("cannot infer type")] Span<'arena>),
+    #[error("Function `{_1}` of type `{_2}` is not a method as it doesn't have the signature (Self, ...) or (&Self, ...)")]
+    NonMemberFunction(
+        #[primary_label("Cannot find method `{_1}`")] Span<'arena>,
+        InternedStr<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot find function `{_1}` on type `{_2}`")]
+    CannotFindFunctionOnType(
+        #[primary_label("No function named `{_1}` is associated with `{_2}`")] Span<'arena>,
+        InternedStr<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot find value `{_1}` in this scope")]
+    CannotFindValue(
+        #[primary_label("not found in this scope")] Span<'arena>,
+        Path<'arena>,
+    ),
+    #[error("No such field on `{_1}`")]
+    AccessNonStructValue(
+        #[primary_label("no such field found")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Tried to index into value of type `{_1}`")]
+    IndexNonArrayElem(
+        #[primary_label("Cannot index into this value")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Could not find field `{_2}` on `{_1}`")]
+    FieldNotFound(
+        #[primary_label("no such field found")] Span<'arena>,
+        Type<'arena>,
+        InternedStr<'arena>,
+    ),
+    #[error("Invalid cast `{_1}` -> `{_2}`")]
+    DisallowedCast(
+        #[primary_label("invalid cast")] Span<'arena>,
+        Type<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot assign to this expression")]
+    CannotAssign(#[primary_label("invalid assignment")] Span<'arena>),
+    #[error("Cannot shift by a non-uint value (found `{_1}`)")]
+    CannotShiftByNonUInt(
+        #[primary_label("invalid value for bit-shifting")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot add `{_1}`")]
+    CannotAdd(#[primary_label("cannot add")] Span<'arena>, Type<'arena>),
+    #[error("Cannot subtract `{_1}`")]
+    CannotSub(
+        #[primary_label("cannot subtract")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot multiply `{_1}`")]
+    CannotMul(
+        #[primary_label("cannot multiple")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot divide `{_1}`")]
+    CannotDiv(#[primary_label("cannot divide")] Span<'arena>, Type<'arena>),
+    #[error("Cannot take the remainder of `{_1}`")]
+    CannotMod(
+        #[primary_label("cannot take the remainder")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot binary and `{_1}`")]
+    CannotBAnd(
+        #[primary_label("cannot binary and")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot binary or `{_1}`")]
+    CannotBOr(
+        #[primary_label("cannot binary or")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot xor `{_1}`")]
+    CannotBXor(
+        #[primary_label("cannot binary xor")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot and `{_1}`")]
+    CannotLAnd(
+        #[primary_label("cannot logically and")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot or `{_1}`")]
+    CannotLOr(
+        #[primary_label("cannot logically or")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot compare `{_1}`")]
+    CannotCompare(
+        #[primary_label("cannot compare")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot compare the equality of `{_1}`")]
+    CannotEq(#[primary_label("cannot equate")] Span<'arena>, Type<'arena>),
+    #[error("Cannot shift `{_1}` left")]
+    CannotShl(
+        #[primary_label("cannot leftshit")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot shift `{_1}` right")]
+    CannotShr(
+        #[primary_label("cannot right shift")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Expected both sides of the expression to be the same, lhs: `{_1}`, rhs: `{_2}`")]
+    LhsNotRhs(
+        #[primary_label("the left and right side don't match")] Span<'arena>,
+        Type<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot negate a `{_1}`")]
+    CannotNeg(#[primary_label("cannot negate")] Span<'arena>, Type<'arena>),
+    #[error("Cannot use unary `+` on a `{_1}`")]
+    CannotPos(
+        #[primary_label("cannot use unary `+`")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("Cannot not a `{_1}`")]
+    CannotLNot(#[primary_label("cannot not")] Span<'arena>, Type<'arena>),
+    #[error("Cannot invert a `{_1}`")]
+    CannotBNot(#[primary_label("cannot invert")] Span<'arena>, Type<'arena>),
+    #[error("cannot dereference a `{_1}`")]
+    CannotDeref(
+        #[primary_label("cannot dereference")] Span<'arena>,
+        Type<'arena>,
+    ),
+    #[error("could not find export `{name}`")]
     ExportNotFound {
+        #[primary_label("No such export found")]
         location: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{location:?}: cyclic dependency detected")]
-    CyclicDependency { location: Span<'arena> },
-    #[error("{location:?}: Unbound identifier `{name}`")]
+    #[error("cyclic dependency detected")]
+    CyclicDependency {
+        #[primary_label("cyclic dependency")]
+        location: Span<'arena>,
+    },
+    #[error("Unbound identifier `{name}`")]
     UnboundIdent {
+        #[primary_label("unbound identifier")]
         location: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{location:?}: Expected a {expected:?}, but found a {found:?}")]
+    // TODO: implement Display for ScopeKind
+    #[error("Expected a {expected:?}, but found a {found:?}")]
     MismatchingScopeType {
+        #[primary_label("")]
         location: Span<'arena>,
         expected: ScopeKind,
         found: ScopeKind,
     },
-    #[error("{location:?}: Recursive type detected")]
-    RecursiveTypeDetected { location: Span<'arena> },
-    #[error("{location:?}: Body does not always return")]
-    BodyDoesNotAlwaysReturn { location: Span<'arena> },
-    #[error("{location:?}: Expected {expected}, but found {found}")]
+    #[error("Recursive type detected")]
+    RecursiveTypeDetected {
+        #[primary_label("recursive type")]
+        location: Span<'arena>,
+    },
+    #[error("The function does not always return but is also not void")]
+    BodyDoesNotAlwaysReturn {
+        #[primary_label("Function sometimes returns void")]
+        location: Span<'arena>,
+    },
+    #[error("Expected {expected}, but found {found}")]
     MismatchingType {
+        #[primary_label("types don't match")]
+        location: Span<'arena>,
         expected: Type<'arena>,
         found: Type<'arena>,
-        location: Span<'arena>,
     },
-    #[error("{location:?}: Function pointers can't have generics")]
-    GenericFunctionPointer { location: Span<'arena> },
-    #[error("{location:?}: `{name}` is not a struct type")]
+    #[error("`{name}` is not a struct type")]
     IdentifierIsNotStruct {
+        #[primary_label("Tried to construct a non-struct type as a struct")]
         location: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{location:?}: no such field named `{name}` found!")]
+    #[error("no such field named `{name}` found!")]
     NoSuchFieldFound {
+        #[primary_label("no such field found")]
         location: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{location:?}: missing field `{name}`")]
+    #[error("missing field `{name}`")]
     MissingField {
+        #[primary_label("missing `{name}`")]
         location: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{location:?}: Expected a function")]
-    TypeIsNotAFunction { location: Span<'arena> },
-    #[error("{location:?}: Function misses arguments")]
-    MissingArguments { location: Span<'arena> },
-    #[error("{location:?}: Function expects no more arguments")]
-    TooManyArguments { location: Span<'arena> },
-    #[error("{location:?}: Did not expected a generic here.")]
-    UnexpectedGenerics { location: Span<'arena> },
-    #[error("{location:?}: `{name}` is not a member of the trait.")]
+    #[error("Expected a function")]
+    TypeIsNotAFunction {
+        #[primary_label("expected a function")]
+        location: Span<'arena>,
+    },
+    #[error("Function misses arguments")]
+    MissingArguments {
+        #[primary_label("too little arguments supplied")]
+        location: Span<'arena>,
+    },
+    #[error("Function expects no more arguments")]
+    TooManyArguments {
+        #[primary_label("Last expected argument")]
+        location: Span<'arena>,
+    },
+    #[error("A module cannot have generics")]
+    UnexpectedGenerics {
+        #[primary_label("generics not allowed")]
+        location: Span<'arena>,
+    },
+    #[error("`{name}` is not a member of the trait.")]
     IsNotTraitMember {
+        #[primary_label("No such method exists on the trait")]
         location: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{location:?}: missing trait item `{name}`")]
+    #[error("missing trait item `{name}`")]
     MissingTraitItem {
+        #[primary_label("Missing implementation for trait item")]
         location: Span<'arena>,
         name: InternedStr<'arena>,
     },
-    #[error("{0:?}: Type {1} is expected to implement the traits {2:?}")]
-    MismatchingTraits(Span<'arena>, Type<'arena>, Vec<InternedStr<'arena>>),
-    #[error("{location:?}: Expected {}, but found {}", FunctionList(.expected), FunctionList(.found))]
+    #[error("Type {_1} is expected to implement the traits {_2:?}")]
+    MismatchingTraits(
+        #[primary_label("Trait is missing dependency traits")] Span<'arena>,
+        Type<'arena>,
+        Vec<InternedStr<'arena>>,
+    ),
+    #[error(
+        "Expected {}, but found {}",
+        FunctionList(expected),
+        FunctionList(found)
+    )]
     MismatchingArguments {
+        #[primary_label("Mismatching arguments")]
         location: Span<'arena>,
         expected: Vec<Type<'arena>>,
         found: Vec<Type<'arena>>,
     },
-    #[error("{location:?}: Expected fn(...) -> {expected} but fund fn(...) -> {found}")]
+    #[error("Expected fn(...) -> {expected} but fund fn(...) -> {found}")]
     MismatchingReturnType {
+        #[primary_label("Mismatching return type")]
         location: Span<'arena>,
         expected: Type<'arena>,
         found: Type<'arena>,

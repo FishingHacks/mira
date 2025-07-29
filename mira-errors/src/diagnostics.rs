@@ -87,7 +87,7 @@ impl<'a> Formatter<'a> {
     }
 }
 
-pub trait ErrorData: Send {
+pub trait ErrorData: Send + Sync {
     fn message<'ctx>(
         &'ctx self,
         ctx: FormattingCtx<'ctx>,
@@ -113,7 +113,7 @@ pub trait ErrorData: Send {
     }
 }
 
-impl<T: AsRef<str> + Send + ?Sized> ErrorData for T {
+impl<T: AsRef<str> + Send + Sync + ?Sized> ErrorData for T {
     fn message<'ctx>(
         &'ctx self,
         _: FormattingCtx<'ctx>,

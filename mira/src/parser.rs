@@ -105,18 +105,19 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         false
     }
 
-    fn peek(&self) -> &Token<'arena> {
+    fn peek(&self) -> Token<'arena> {
         if self.is_at_end() {
-            return &self.tokens[self.tokens.len() - 1]; // eof
+            return self.tokens[self.tokens.len() - 1]; // eof
         }
 
-        &self.tokens[self.current]
+        self.tokens[self.current]
     }
 
-    fn peekpeek(&self) -> &Token<'arena> {
+    fn peekpeek(&self) -> Token<'arena> {
         self.tokens
             .get(self.current + 1)
-            .unwrap_or(&self.tokens[self.tokens.len() - 1])
+            .copied()
+            .unwrap_or(self.tokens[self.tokens.len() - 1])
     }
 
     fn check(&self, typ: TokenType) -> bool {
@@ -134,19 +135,19 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         &self.tokens[self.current - 1]
     }
 
-    fn last(&self) -> &Token<'arena> {
+    fn last(&self) -> Token<'arena> {
         if self.current < 2 {
-            &self.tokens[0]
+            self.tokens[0]
         } else {
-            &self.tokens[self.current - 2]
+            self.tokens[self.current - 2]
         }
     }
 
-    fn current(&self) -> &Token<'arena> {
+    fn current(&self) -> Token<'arena> {
         if self.current < 1 {
-            &self.tokens[0]
+            self.tokens[0]
         } else {
-            &self.tokens[self.current - 1]
+            self.tokens[self.current - 1]
         }
     }
 
@@ -170,10 +171,10 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         if self.check(token_type) {
             Ok(self.advance())
         } else {
-            Err(ParsingError::ExpectedArbitrary {
+            Err(ParsingError::Expected {
                 loc: self.peek().span,
                 expected: token_type,
-                found: self.peek().typ,
+                found: self.peek(),
             })
         }
     }

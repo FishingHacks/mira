@@ -17,7 +17,7 @@ use mira::{
         SingleModuleResolver,
     },
     target::{Target, NATIVE_TARGET},
-    Arena, ModuleResolver,
+    Arena, ModuleResolver, Output, UnicodePrinter,
 };
 
 use crate::libfinder;
@@ -236,27 +236,34 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
         })
     });
 
-    let arena = Arena::new();
-    let ctx = GlobalContext::new(&arena);
-    let ctx = ctx.share();
-    let exec_path = match run_full_compilation_pipeline(ctx, opts) {
-        Err(e) => {
-            println!("Failed to compile:");
-            for e in e.iter() {
-                println!("{e}");
+    let exec_path = {
+        let arena = Arena::new();
+        let ctx = GlobalContext::new(&arena);
+        let s_ctx = ctx.share();
+        let mut res = run_full_compilation_pipeline(s_ctx, opts);
+        let path = match &mut res {
+            Err(e) => {
+                println!("Failed to compile:");
+                let mut fmt =
+                    s_ctx.make_diagnostic_formatter(UnicodePrinter::new(), Output::Stderr);
+                for e in std::mem::take(e) {
+                    fmt.display_diagnostic(e)
+                        .expect("failed to display diagnostic");
+                }
+                if let Some(v) = tmp_obj_path {
+                    _ = std::fs::remove_file(v);
+                }
+                return Ok(());
             }
-            drop(e);
-            if let Some(v) = tmp_obj_path {
-                _ = std::fs::remove_file(v);
+            _ if !args.run => return Ok(()),
+            Ok(None) => {
+                println!("could not find executable despite run being specified.. this is a bug, please report it");
+                return Ok(());
             }
-            return Ok(());
-        }
-        _ if !args.run => return Ok(()),
-        Ok(None) => {
-            println!("could not find executable despite run being specified.. this is a bug, please report it");
-            return Ok(());
-        }
-        Ok(Some(exec_path)) => exec_path,
+            Ok(Some(exec_path)) => std::mem::take(exec_path),
+        };
+        drop(res);
+        path
     };
 
     let mut cmd = Command::new(&exec_path);

@@ -1,5 +1,6 @@
-use std::{fmt::Debug, sync::OnceLock};
+use std::{fmt::Debug, io::IsTerminal, sync::OnceLock};
 
+use mira_errors::{DiagnosticFormatter, Output, StyledPrinter, Styles};
 use parking_lot::Mutex;
 
 use mira_spans::{
@@ -69,5 +70,19 @@ impl<'arena> SharedContext<'arena> {
             .set(source_map)
             .map_err(|_| ())
             .expect("source map should not yet be initialized")
+    }
+
+    pub fn make_diagnostic_formatter<P: StyledPrinter>(
+        &self,
+        printer: P,
+        output: Output,
+    ) -> DiagnosticFormatter<'_, P> {
+        let styles = match std::env::var("MIRA_COLOR").ok().as_deref() {
+            Some("0" | "none" | "no") => Styles::NO_COLORS,
+            Some("1" | "yes") => Styles::DEFAULT,
+            _ if std::io::stdout().is_terminal() => Styles::DEFAULT,
+            _ => Styles::NO_COLORS,
+        };
+        DiagnosticFormatter::new(self.source_map(), output, printer, styles)
     }
 }

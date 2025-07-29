@@ -17,7 +17,7 @@ use super::{
     types::{Generic, TypeRef},
     Expression, Parser,
 };
-use mira_spans::{interner::InternedStr, ResolvedPath, Span};
+use mira_spans::{interner::InternedStr, ResolvedPath, Span, SpanData};
 
 #[derive(Clone, Debug)]
 pub enum BakableFunction<'arena> {
@@ -441,9 +441,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
 
         if !self.current_annotations.is_empty() {
-            errors.push(ParsingError::ExpectedStatement {
-                loc: self.peek().span,
-            });
+            errors.push(ParsingError::ExpectedStatement(self.peek().span));
         }
 
         (statements, errors)
@@ -458,9 +456,7 @@ impl<'arena> Parser<'_, 'arena> {
                 return Ok(statement);
             }
         }
-        Err(ParsingError::ExpectedStatement {
-            loc: self.peek().span,
-        })
+        Err(ParsingError::ExpectedStatement(self.peek().span))
     }
 
     pub fn parse_statement_part(
@@ -493,9 +489,7 @@ impl<'arena> Parser<'_, 'arena> {
             )
         {
             self.bail();
-            return Err(ParsingError::ExpectedAnnotationStatement {
-                loc: self.peek().span,
-            });
+            return Err(ParsingError::ExpectedAnnotationStatement(self.peek().span));
         }
 
         let maybe_statement = match self.peek().typ {
@@ -537,17 +531,13 @@ impl<'arena> Parser<'_, 'arena> {
             }
             TokenType::Extern => self.parse_external().map(Some),
             TokenType::Eof => {
-                return Err(ParsingError::ExpectedStatement {
-                    loc: self.peek().span,
-                });
+                return Err(ParsingError::ExpectedStatement(self.peek().span));
             }
             TokenType::Use => self.parse_use().map(|_| None),
             TokenType::Export => self.parse_export().map(Some),
             TokenType::Pub => self.parse_pub().map(Some),
             _ if is_global => {
-                return Err(ParsingError::ExpressionAtTopLevel {
-                    loc: self.peek().span,
-                });
+                return Err(ParsingError::ExpressionAtTopLevel(self.peek().span));
             }
             _ => self.parse_expression_stmt().map(Some),
         }?;
@@ -785,7 +775,7 @@ impl<'arena> Parser<'_, 'arena> {
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
                         loc: self.peek().span,
-                        found: self.peek().typ,
+                        found: self.peek(),
                     });
                 }
 
@@ -1200,10 +1190,18 @@ impl<'arena> Parser<'_, 'arena> {
         loop {
             match self.peek().typ {
                 TokenType::Eof => {
-                    return Err(ParsingError::ExpectedArbitrary {
+                    return Err(ParsingError::Expected {
                         loc: self.peek().span,
                         expected: TokenType::ParenRight,
-                        found: TokenType::Eof,
+                        found: Token::new(
+                            TokenType::Eof,
+                            None,
+                            self.ctx.intern_span(SpanData::new(
+                                self.file.end_pos(),
+                                1,
+                                self.file.id,
+                            )),
+                        ),
                     })
                 }
                 TokenType::ParenRight if deepness == 0 => {
@@ -1335,7 +1333,7 @@ impl<'arena> Parser<'_, 'arena> {
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
                         loc: self.peek().span,
-                        found: self.peek().typ,
+                        found: self.peek(),
                     });
                 }
 

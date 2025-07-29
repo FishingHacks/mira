@@ -13,7 +13,6 @@ use crate::{libfinder, VER};
 use clap::{Args, ValueEnum};
 use mira::context::GlobalContext;
 use mira::module_resolution::SingleModuleResolver;
-use mira::Arena;
 use mira::{
     codegen::CodegenConfig,
     linking::{run_full_compilation_pipeline, FullCompilationOptions},
@@ -22,6 +21,7 @@ use mira::{
     },
     target::{Target, NATIVE_TARGET},
 };
+use mira::{Arena, Output, UnicodePrinter};
 
 use super::about::print_about;
 
@@ -415,15 +415,22 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         .codegen_opts
         .optimizations_of(CodegenConfig::new_release_safe());
 
-    if let Err(e) =
-        run_full_compilation_pipeline(GlobalContext::new(&Arena::new()).share(), compilation_opts)
     {
-        println!("Failed to compile:");
-        for e in e.iter() {
-            println!("{e}");
+        let arena = Arena::new();
+        let ctx = GlobalContext::new(&arena);
+        let s_ctx = ctx.share();
+        let mut res = run_full_compilation_pipeline(s_ctx, compilation_opts);
+        if let Err(e) = &mut res {
+            println!("Failed to compile:");
+
+            let mut fmt = s_ctx.make_diagnostic_formatter(UnicodePrinter::new(), Output::Stderr);
+            for e in std::mem::take(e) {
+                fmt.display_diagnostic(e)
+                    .expect("failed to display diagnostic");
+            }
+            return;
         }
-        drop(e);
-        return;
+        drop(res);
     }
 
     if !run {

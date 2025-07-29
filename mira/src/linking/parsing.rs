@@ -1,11 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crossbeam::channel::{bounded, Sender};
+use mira_errors::Diagnostics;
 use parking_lot::RwLock;
 
 use crate::{
     context::SharedContext,
-    error::{MiraError, ParsingError, ProgramFormingError, TokenizationError},
+    error::{IoReadError, ParsingError, ProgramFormingError, TokenizationError},
     module::{Module, ModuleContext},
     parser::ParserQueueEntry,
     progress_bar::{ProgressBar, ProgressItemRef},
@@ -17,13 +18,6 @@ use mira_spans::{BytePos, SourceFile, SourceMap, SpanData};
 
 use super::print_progress_bar;
 
-enum ParsingErrors<'arena> {
-    Tokenization(TokenizationError<'arena>),
-    Parsing(ParsingError<'arena>),
-    ProgramForming(ProgramFormingError<'arena>),
-    IO(std::io::Error),
-}
-
 #[allow(clippy::too_many_arguments)]
 fn parse_single<'arena>(
     ctx: SharedContext<'arena>,
@@ -32,7 +26,7 @@ fn parse_single<'arena>(
     progress_bar: Arc<RwLock<ProgressBar>>,
     parsing_item: ProgressItemRef,
     finish_sender: Sender<()>,
-    errors: Arc<RwLock<Vec<ParsingErrors<'arena>>>>,
+    errors: Arc<RwLock<Diagnostics<'arena>>>,
     parsing_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
     source_map: &SourceMap,
     module_context: Arc<ModuleContext<'arena>>,
@@ -71,7 +65,7 @@ fn parse_single<'arena>(
     if let Err(errs) = tokenizer.scan_tokens() {
         errors
             .write()
-            .extend(errs.into_iter().map(ParsingErrors::Tokenization));
+            .extend(errs.into_iter().map(TokenizationError::to_error));
     }
 
     {
@@ -98,7 +92,7 @@ fn parse_single<'arena>(
     let (statements, parsing_errors) = current_parser.parse_all();
     errors
         .write()
-        .extend(parsing_errors.into_iter().map(ParsingErrors::Parsing));
+        .extend(parsing_errors.into_iter().map(ParsingError::to_error));
 
     // +-----------------+
     // | Program Forming |
@@ -121,7 +115,7 @@ fn parse_single<'arena>(
     if let Err(errs) = module.push_all(statements, key, &module_context) {
         errors
             .write()
-            .extend(errs.into_iter().map(ParsingErrors::ProgramForming));
+            .extend(errs.into_iter().map(ProgramFormingError::to_error));
     }
     module_context.modules.write()[key] = module;
     progress_bar.write().remove_item(item);
@@ -143,8 +137,8 @@ pub fn parse_all<'arena>(
     source_map: &SourceMap,
     progress_bar: Arc<RwLock<ProgressBar>>,
     parsing_item: ProgressItemRef,
-) -> Result<Arc<ModuleContext<'arena>>, Vec<MiraError<'arena>>> {
-    let errors = Arc::new(RwLock::new(Vec::new()));
+) -> Result<Arc<ModuleContext<'arena>>, Diagnostics<'arena>> {
+    let errors = Arc::new(RwLock::new(Diagnostics::new()));
     let module_context = Arc::new(ModuleContext::default());
     let parsing_queue = Arc::new(RwLock::new(Vec::new()));
     let (finish_sender, finish_receiver) = bounded::<()>(1);
@@ -186,10 +180,10 @@ pub fn parse_all<'arena>(
             .write()
             .insert_reserved(key, Module::new(HashMap::new(), file.clone(), root.clone()));
 
-        let source = match source_map.load_file(file, root) {
+        let source = match source_map.load_file(file.clone(), root) {
             Ok(v) => v,
             Err(e) => {
-                errors.write().push(ParsingErrors::IO(e));
+                errors.write().add_err(IoReadError(file.to_path_buf(), e));
                 break 'outer_loop;
             }
         };
@@ -239,14 +233,6 @@ pub fn parse_all<'arena>(
     } else {
         Err(Arc::into_inner(errors)
             .expect("more than one reference to errors")
-            .into_inner()
-            .into_iter()
-            .map(|v| match v {
-                ParsingErrors::Tokenization(inner) => MiraError::Tokenization { inner },
-                ParsingErrors::Parsing(inner) => MiraError::Parsing { inner },
-                ParsingErrors::ProgramForming(inner) => MiraError::ProgramForming { inner },
-                ParsingErrors::IO(inner) => MiraError::IO { inner },
-            })
-            .collect())
+            .into_inner())
     }
 }

@@ -959,7 +959,7 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::PlusAssign,
             TokenType::MinusAssign,
         ]) {
-            let mut operator = *self.current();
+            let mut operator = self.current();
             let right = self.factor()?;
             let span = expr
                 .span()
@@ -1130,7 +1130,7 @@ impl<'arena> Parser<'_, 'arena> {
                         if self.advance().typ != TokenType::Comma {
                             return Err(ParsingError::ExpectedFunctionArgument {
                                 loc: self.current().span,
-                                found: self.current().typ,
+                                found: self.current(),
                             });
                         }
                     }
@@ -1403,9 +1403,9 @@ impl<'arena> Parser<'_, 'arena> {
                     match self.current().literal {
                         Some(Literal::String(ref v)) => *v,
                         _ => {
-                            return Some(Err(ParsingError::InvalidTokenization {
-                                loc: self.current().span,
-                            }))
+                            return Some(Err(ParsingError::InvalidTokenization(
+                                self.current().span,
+                            )))
                         }
                     }
                 };
