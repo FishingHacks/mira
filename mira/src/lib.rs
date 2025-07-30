@@ -3,7 +3,7 @@
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
-pub(crate) mod annotations;
+pub mod annotations;
 mod builtin_macros;
 pub mod codegen;
 pub mod error;
@@ -21,7 +21,7 @@ pub mod context;
 pub mod optimizations;
 pub mod progress_bar;
 pub mod slab;
-pub(crate) mod store;
+pub mod store;
 pub(crate) mod threadpool;
 pub use mira_errors::{AsciiPrinter, Output, UnicodePrinter};
 pub use mira_spans::interner::symbols;

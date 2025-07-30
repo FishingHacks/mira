@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
 };
 
-use mira_errors::Diagnostic;
+pub use mira_errors::{Diagnostic, Diagnostics};
 use mira_macros::ErrorData;
 
 use crate::{
