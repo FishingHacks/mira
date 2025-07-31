@@ -220,7 +220,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     }
                     Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
                     Ok(_) => {
-                        errors.add_unbound_ident(loc, name);
+                        errors.add_unbound_ident(loc, name.symbol());
                         continue;
                     }
                 };
@@ -229,8 +229,10 @@ impl<'arena> TypecheckingContext<'arena> {
             if typed_trait.functions.len() != implementation.len() {
                 for (name, func_id) in &implementation {
                     if !typed_trait.functions.iter().any(|(v, ..)| v == name) {
-                        errors
-                            .add_is_not_trait_member(function_reader[func_id.cast()].0.span, *name);
+                        errors.add_is_not_trait_member(
+                            function_reader[func_id.cast()].0.span,
+                            name.symbol(),
+                        );
                     }
                 }
             }
@@ -238,7 +240,7 @@ impl<'arena> TypecheckingContext<'arena> {
             let mut trait_impl = Vec::new();
             for (name, args, return_type, ..) in &typed_trait.functions {
                 let Some(&func_id) = implementation.get(name) else {
-                    errors.add_missing_trait_item(loc, *name);
+                    errors.add_missing_trait_item(loc, name.symbol());
                     continue;
                 };
 
@@ -352,7 +354,7 @@ impl<'arena> TypecheckingContext<'arena> {
                                 .0
                                 .pop()
                                 .expect("a path has to have at least one element")
-                                .0,
+                                .symbol(),
                         );
                     }
                     Err(e) => _ = errors.add(e),

@@ -6,7 +6,7 @@ use std::{
 use crate::{
     error::ParsingError, module::Function, store::StoreKey, symbols, tokenizer::TokenType,
 };
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{interner::Symbol, Ident, Span};
 
 use super::{expression::PathWithoutGenerics, Annotations, Parser, Path};
 
@@ -197,8 +197,7 @@ impl<'arena> TypeRef<'arena> {
                 return Ok(Self::Reference {
                     num_references,
                     type_name: Path::new(
-                        symbols::Types::NeverType,
-                        parser.current().span,
+                        Ident::new(symbols::Types::NeverType, parser.current().span),
                         Vec::new(),
                     ),
                     span: parser.span_from(span),
@@ -417,22 +416,22 @@ impl PartialEq for TypeRef<'_> {
     }
 }
 
-pub type Implementation<'arena> = HashMap<InternedStr<'arena>, StoreKey<Function<'arena>>>;
+pub type Implementation<'arena> = HashMap<Symbol<'arena>, StoreKey<Function<'arena>>>;
 
 #[derive(Debug)]
 pub struct Struct<'arena> {
     pub span: Span<'arena>,
-    pub name: InternedStr<'arena>,
-    pub fields: Vec<(InternedStr<'arena>, TypeRef<'arena>)>,
+    pub name: Symbol<'arena>,
+    pub fields: Vec<(Symbol<'arena>, TypeRef<'arena>)>,
     pub generics: Vec<Generic<'arena>>,
     pub global_impl: Implementation<'arena>,
-    pub trait_impls: Vec<(InternedStr<'arena>, Implementation<'arena>)>,
+    pub trait_impls: Vec<(Symbol<'arena>, Implementation<'arena>)>,
     pub annotations: Annotations<'arena>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Generic<'arena> {
-    pub name: InternedStr<'arena>,
+    pub name: Ident<'arena>,
     pub bounds: Vec<(PathWithoutGenerics<'arena>, Span<'arena>)>,
     pub sized: bool,
 }

@@ -8,11 +8,11 @@ use crate::{
     error::ParsingError,
     module::{Function, Module, ModuleContext},
     store::StoreKey,
-    tokenizer::{Literal, NumberType, TokenType},
+    tokenizer::{NumberType, TokenType},
 };
 use mira_spans::{
-    interner::{InternedStr, SpanInterner},
-    Span,
+    interner::{SpanInterner, Symbol},
+    Ident, Span,
 };
 
 use super::{
@@ -23,7 +23,7 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path<'arena> {
-    pub entries: Vec<(InternedStr<'arena>, Span<'arena>, Vec<TypeRef<'arena>>)>,
+    pub entries: Vec<(Ident<'arena>, Vec<TypeRef<'arena>>)>,
     pub span: Span<'arena>,
 }
 
@@ -35,13 +35,13 @@ impl Display for Path<'_> {
             }
 
             Display::fmt(&self.entries[i].0, f)?;
-            if !self.entries[i].2.is_empty() {
+            if !self.entries[i].1.is_empty() {
                 f.write_char('<')?;
-                for type_idx in 0..self.entries[i].2.len() {
+                for type_idx in 0..self.entries[i].1.len() {
                     if type_idx != 0 {
                         f.write_str(", ")?;
                     }
-                    Display::fmt(&self.entries[i].2[type_idx], f)?;
+                    Display::fmt(&self.entries[i].1[type_idx], f)?;
                 }
                 f.write_char('>')?;
             }
@@ -51,15 +51,10 @@ impl Display for Path<'_> {
 }
 
 impl<'arena> Path<'arena> {
-    pub fn push(
-        &mut self,
-        name: InternedStr<'arena>,
-        span: Span<'arena>,
-        generics: Vec<TypeRef<'arena>>,
-    ) {
-        self.entries.push((name, span, generics));
+    pub fn push(&mut self, name: Ident<'arena>, generics: Vec<TypeRef<'arena>>) {
+        self.entries.push((name, generics));
     }
-    pub fn pop(&mut self) -> Option<(InternedStr<'arena>, Span<'arena>, Vec<TypeRef<'arena>>)> {
+    pub fn pop(&mut self) -> Option<(Ident<'arena>, Vec<TypeRef<'arena>>)> {
         // ensure this is at least 1 element
         if self.entries.len() > 1 {
             self.entries.pop()
@@ -67,14 +62,10 @@ impl<'arena> Path<'arena> {
             None
         }
     }
-    pub fn new(
-        entry: InternedStr<'arena>,
-        span: Span<'arena>,
-        generics: Vec<TypeRef<'arena>>,
-    ) -> Self {
+    pub fn new(entry: Ident<'arena>, generics: Vec<TypeRef<'arena>>) -> Self {
         Self {
-            entries: vec![(entry, span, generics)],
-            span,
+            entries: vec![(entry, generics)],
+            span: entry.span(),
         }
     }
 
@@ -94,29 +85,30 @@ impl<'arena> Path<'arena> {
     }
     pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'arena>) {
         self.span = self.entries[0]
-            .1
-            .combine_with(self.entries[1..].iter().map(|v| v.1), span_interner);
+            .0
+            .span()
+            .combine_with(self.entries[1..].iter().map(|v| v.0.span()), span_interner);
     }
 
     pub fn parse<'a>(parser: &mut Parser<'a, 'arena>) -> Result<Self, ParsingError<'arena>> {
-        let (name, span) = parser.expect_identifier_span()?;
+        let name = parser.expect_identifier()?;
         let generics = if parser.match_tok(TokenType::LessThan) {
             Self::parse_generics(parser)?
         } else {
             Default::default()
         };
 
-        let mut path = Self::new(name, span, generics);
+        let mut path = Self::new(name, generics);
 
         while parser.match_tok(TokenType::NamespaceAccess) {
-            let (subpath, span) = parser.expect_identifier_span()?;
+            let subpath = parser.expect_identifier()?;
             let generics = if parser.match_tok(TokenType::LessThan) {
                 Self::parse_generics(parser)?
             } else {
                 Default::default()
             };
 
-            path.push(subpath, span, generics);
+            path.push(subpath, generics);
         }
         path.readjust_self_span(parser.ctx.span_interner());
 
@@ -126,47 +118,46 @@ impl<'arena> Path<'arena> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathWithoutGenerics<'arena> {
-    pub entries: Vec<InternedStr<'arena>>,
-    pub spans: Vec<Span<'arena>>,
+    pub entries: Vec<Ident<'arena>>,
     pub span: Span<'arena>,
 }
 
 impl<'arena> PathWithoutGenerics<'arena> {
-    pub fn push(&mut self, name: InternedStr<'arena>, span: Span<'arena>) {
+    pub fn push(&mut self, name: Ident<'arena>) {
         self.entries.push(name);
-        self.spans.push(span);
     }
-    pub fn pop(&mut self) -> Option<(InternedStr<'arena>, Span<'arena>)> {
+    pub fn pop(&mut self) -> Option<Ident<'arena>> {
         // ensure this is at least 1 element
         if self.entries.len() > 1 {
-            Some((self.entries.pop()?, self.spans.pop()?))
+            self.entries.pop()
         } else {
             None
         }
     }
-    pub fn new(entry: (InternedStr<'arena>, Span<'arena>)) -> Self {
+    pub fn new(entry: Ident<'arena>) -> Self {
         Self {
-            span: entry.1,
-            entries: vec![entry.0],
-            spans: vec![entry.1],
+            span: entry.span(),
+            entries: vec![entry],
         }
     }
     pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'arena>) {
-        self.span = self.spans[0].combine_with(self.spans[1..].iter().copied(), span_interner);
+        self.span = self.entries[0]
+            .span()
+            .combine_with(self.entries[1..].iter().map(Ident::span), span_interner);
     }
     pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
-        let mut path = Self::new(parser.expect_identifier_span()?);
+        let mut path = Self::new(parser.expect_identifier()?);
 
         while parser.match_tok(TokenType::NamespaceAccess) {
-            let (name, span) = parser.expect_identifier_span()?;
-            path.push(name, span);
+            let name = parser.expect_identifier()?;
+            path.push(name);
         }
 
         path.readjust_self_span(parser.ctx.span_interner());
         Ok(path)
     }
 
-    pub fn as_slice(&self) -> &[InternedStr<'arena>] {
+    pub fn as_slice(&self) -> &[Ident<'arena>] {
         &self.entries
     }
 }
@@ -191,13 +182,13 @@ pub enum ArrayLiteral<'arena> {
 
 #[derive(Debug, Clone)]
 pub enum LiteralValue<'arena> {
-    String(InternedStr<'arena>),
+    String(Symbol<'arena>),
     Array(ArrayLiteral<'arena>),
     Struct(
-        HashMap<InternedStr<'arena>, (Span<'arena>, Expression<'arena>)>,
+        HashMap<Ident<'arena>, (Span<'arena>, Expression<'arena>)>,
         Path<'arena>,
     ),
-    AnonymousStruct(HashMap<InternedStr<'arena>, (Span<'arena>, Expression<'arena>)>),
+    AnonymousStruct(HashMap<Ident<'arena>, (Span<'arena>, Expression<'arena>)>),
     Tuple(Vec<(Span<'arena>, Expression<'arena>)>),
     Float(f64, NumberType),
     SInt(i64, NumberType),
@@ -359,7 +350,7 @@ pub enum Expression<'arena> {
         span: Span<'arena>,
     },
     MemberCall {
-        identifier: InternedStr<'arena>,
+        identifier: Ident<'arena>,
         lhs: Box<Expression<'arena>>,
         arguments: Vec<Expression<'arena>>,
         span: Span<'arena>,
@@ -371,7 +362,7 @@ pub enum Expression<'arena> {
     },
     MemberAccess {
         left_side: Box<Expression<'arena>>,
-        index: Vec<InternedStr<'arena>>,
+        index: Vec<Ident<'arena>>,
         span: Span<'arena>,
     },
     Assignment {
@@ -396,7 +387,7 @@ pub enum Expression<'arena> {
         volatile: bool,
         output: TypeRef<'arena>,
         registers: String, // input + output + clobber
-        inputs: Vec<(Span<'arena>, InternedStr<'arena>)>,
+        inputs: Vec<(Span<'arena>, Ident<'arena>)>,
     },
 }
 
@@ -557,7 +548,7 @@ impl<'arena> Expression<'arena> {
         Self::Literal(LiteralValue::Bool(value), loc)
     }
 
-    pub fn string(value: InternedStr<'arena>, span: Span<'arena>) -> Self {
+    pub fn string(value: Symbol<'arena>, span: Span<'arena>) -> Self {
         Self::Literal(LiteralValue::String(value), span)
     }
 
@@ -689,10 +680,9 @@ macro_rules! assign_set {
 }
 
 struct AsmBinding<'arena> {
-    name: InternedStr<'arena>,
-    bound: InternedStr<'arena>,
-    type_or_name: InternedStr<'arena>,
-    type_span: Span<'arena>,
+    name: Symbol<'arena>,
+    bound: Symbol<'arena>,
+    type_or_name: Ident<'arena>,
 }
 
 // asm expression
@@ -700,20 +690,18 @@ impl<'arena> Parser<'_, 'arena> {
     /// Parses [<.0>] "<.1>" (<.2>)
     fn parse_asm_binding(&mut self) -> Result<AsmBinding<'arena>, ParsingError<'arena>> {
         self.expect_tok(TokenType::BracketLeft)?;
-        let name = self.expect_identifier()?;
+        let name = self.expect_identifier()?.symbol();
         self.expect_tok(TokenType::BracketRight)?;
         let bound = self
             .expect_tok(TokenType::StringLiteral)?
             .string_literal()?;
         self.expect_tok(TokenType::ParenLeft)?;
         let type_ = self.expect_identifier()?;
-        let type_span = self.last().span;
         self.expect_tok(TokenType::ParenRight)?;
         Ok(AsmBinding {
             name,
             bound,
             type_or_name: type_,
-            type_span,
         })
     }
 
@@ -774,11 +762,7 @@ impl<'arena> Parser<'_, 'arena> {
                 registers.push_str(&asm_binding.bound);
                 output = TypeRef::Reference {
                     num_references: 0,
-                    type_name: Path::new(
-                        asm_binding.type_or_name,
-                        asm_binding.type_span,
-                        Vec::new(),
-                    ),
+                    type_name: Path::new(asm_binding.type_or_name, Vec::new()),
                     span: loc,
                 }
             };
@@ -1371,10 +1355,7 @@ impl<'arena> Parser<'_, 'arena> {
     fn try_object(
         &mut self,
     ) -> Option<
-        Result<
-            HashMap<InternedStr<'arena>, (Span<'arena>, Expression<'arena>)>,
-            ParsingError<'arena>,
-        >,
+        Result<HashMap<Ident<'arena>, (Span<'arena>, Expression<'arena>)>, ParsingError<'arena>>,
     > {
         if self.match_tok(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
@@ -1394,20 +1375,9 @@ impl<'arena> Parser<'_, 'arena> {
                 }
 
                 // parse key : value
-                let key = if !self.match_tok(TokenType::IdentifierLiteral) {
-                    return Some(Err(ParsingError::ExpectedIdentifier {
-                        loc: self.peek().span,
-                        found: self.peek().typ,
-                    }));
-                } else {
-                    match self.current().literal {
-                        Some(Literal::String(ref v)) => *v,
-                        _ => {
-                            return Some(Err(ParsingError::InvalidTokenization(
-                                self.current().span,
-                            )))
-                        }
-                    }
+                let key = match self.expect_identifier() {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
                 };
                 let location = self.current().span;
 

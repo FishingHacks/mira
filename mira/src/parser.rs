@@ -12,7 +12,7 @@ use crate::{
 pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
-use mira_spans::{interner::InternedStr, SourceFile, SourceMap, Span};
+use mira_spans::{Ident, SourceFile, SourceMap, Span};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, Struct, TypeRef, RESERVED_TYPE_NAMES};
 mod expression;
@@ -39,11 +39,11 @@ pub struct Parser<'a, 'arena> {
     /// a map of idents => imports. if the size of the vec is 0, the identifier refers to the
     /// module itself. otherwise, it refers to something in it.
     pub imports: HashMap<
-        InternedStr<'arena>,
+        Ident<'arena>,
         (
             Span<'arena>,
             StoreKey<Module<'arena>>,
-            Vec<InternedStr<'arena>>,
+            PathWithoutGenerics<'arena>,
         ),
     >,
     source_map: &'a SourceMap,

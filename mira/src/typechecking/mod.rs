@@ -1,7 +1,7 @@
 use mira_errors::{Diagnostic, Diagnostics};
 use parking_lot::RwLock;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Debug,
     hash::{Hash, Hasher},
     path::Path,
@@ -22,7 +22,7 @@ use crate::{
     parser::{Trait, TypeRef},
     store::{AssociatedStore, Store, StoreKey},
 };
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{interner::Symbol, Ident, Span};
 
 mod error;
 pub mod expression;
@@ -37,15 +37,15 @@ pub use types::Type;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedGeneric<'arena> {
-    pub name: InternedStr<'arena>,
+    pub name: Ident<'arena>,
     pub sized: bool,
     pub bounds: Vec<StoreKey<TypedTrait<'arena>>>,
 }
 
 #[derive(Debug)]
 pub struct TypecheckedFunctionContract<'arena> {
-    pub name: Option<InternedStr<'arena>>,
-    pub arguments: Vec<(InternedStr<'arena>, Type<'arena>)>,
+    pub name: Option<Ident<'arena>>,
+    pub arguments: Vec<(Ident<'arena>, Type<'arena>)>,
     pub return_type: Type<'arena>,
     pub annotations: Annotations<'arena>,
     pub span: Span<'arena>,
@@ -68,10 +68,10 @@ impl Hash for TypecheckedFunctionContract<'_> {
 #[derive(Debug)]
 #[allow(clippy::type_complexity)]
 pub struct TypedTrait<'arena> {
-    pub name: InternedStr<'arena>,
+    pub name: Ident<'arena>,
     pub functions: Vec<(
-        InternedStr<'arena>,
-        Vec<(InternedStr<'arena>, Type<'arena>)>,
+        Ident<'arena>,
+        Vec<(Ident<'arena>, Type<'arena>)>,
         Type<'arena>,
         Annotations<'arena>,
         Span<'arena>,
@@ -84,10 +84,10 @@ pub struct TypedTrait<'arena> {
 
 #[derive(Debug)]
 pub struct TypedStruct<'arena> {
-    pub name: InternedStr<'arena>,
-    pub elements: Vec<(InternedStr<'arena>, Type<'arena>)>,
+    pub name: Ident<'arena>,
+    pub elements: Vec<(Ident<'arena>, Type<'arena>)>,
     pub span: Span<'arena>,
-    pub global_impl: HashMap<InternedStr<'arena>, StoreKey<TypedFunction<'arena>>>,
+    pub global_impl: HashMap<Ident<'arena>, StoreKey<TypedFunction<'arena>>>,
     pub trait_impl: HashMap<StoreKey<TypedTrait<'arena>>, Vec<StoreKey<TypedFunction<'arena>>>>,
     pub annotations: Annotations<'arena>,
     pub module_id: StoreKey<TypecheckedModule<'arena>>,
@@ -153,8 +153,8 @@ pub struct TypecheckingContext<'arena> {
 }
 
 pub struct TypecheckedModule<'arena> {
-    scope: HashMap<InternedStr<'arena>, ModuleScopeValue<'arena>>,
-    exports: HashMap<InternedStr<'arena>, InternedStr<'arena>>,
+    scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
+    exports: HashMap<Ident<'arena>, Ident<'arena>>,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
     pub assembly: Vec<(Span<'arena>, String)>,
@@ -195,7 +195,7 @@ impl<'arena> TypecheckingContext<'arena> {
             structs.insert(
                 key,
                 TypedStruct {
-                    name: InternedStr::EMPTY,
+                    name: Ident::EMPTY,
                     elements: Vec::new(),
                     span: structs_reader[key].span,
                     global_impl: HashMap::new(),
@@ -261,7 +261,7 @@ impl<'arena> TypecheckingContext<'arena> {
             traits.insert(
                 key,
                 TypedTrait {
-                    name: InternedStr::EMPTY,
+                    name: Ident::EMPTY,
                     functions: Vec::new(),
                     location: traits_reader[key].span,
                     module_id: StoreKey::undefined(),
@@ -314,9 +314,9 @@ impl<'arena> TypecheckingContext<'arena> {
                 match resolve_import(
                     &context,
                     *module_id,
-                    path,
+                    &path.entries,
                     location,
-                    &mut vec![(key, InternedStr::EMPTY)],
+                    &mut vec![(key, Symbol::EMPTY)],
                 ) {
                     Err(e) => _ = errors.add(e),
                     Ok(k) => {
@@ -353,7 +353,7 @@ impl<'arena> TypecheckingContext<'arena> {
                         module_id,
                         trait_name.as_slice(),
                         loc,
-                        &mut Vec::new(),
+                        &mut HashSet::new(),
                     );
                     let Ok(ModuleScopeValue::Trait(id)) = v else {
                         return Err(
@@ -389,7 +389,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 type_name,
                 span: loc,
             } => {
-                if type_name.entries.len() == 1 && type_name.entries[0].2.is_empty() {
+                if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
                     if let Some((id, generic)) = generics
                         .iter()
                         .enumerate()
@@ -416,7 +416,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     }
                 }
 
-                match typed_resolve_import(self, module_id, &path, loc, &mut Vec::new())? {
+                match typed_resolve_import(self, module_id, &path, loc, &mut HashSet::new())? {
                     ModuleScopeValue::Struct(id) => Ok(Type::Struct {
                         struct_id: id.cast(),
                         name: self.structs.read()[id.cast()].name,
@@ -504,7 +504,10 @@ impl<'arena> TypecheckingContext<'arena> {
                     Err(e) => _ = errors.add(e),
                     Ok(ModuleScopeValue::Trait(trait_id)) => bounds.push(trait_id.cast()),
                     Ok(_) => {
-                        errors.add_unbound_ident(*loc, bound.entries[bound.entries.len() - 1]);
+                        errors.add_unbound_ident(
+                            *loc,
+                            bound.entries[bound.entries.len() - 1].symbol(),
+                        );
                     }
                 }
             }
@@ -609,10 +612,10 @@ impl<'arena> TypecheckingContext<'arena> {
                 }
 
                 // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
-                if type_name.entries.len() == 1 && type_name.entries[0].2.is_empty() {
-                    let name = &type_name.entries[0].0;
+                if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
+                    let name = type_name.entries[0].0;
                     if let Some((generic_id, generic)) =
-                        generics.iter().enumerate().find(|(_, v)| v.name == *name)
+                        generics.iter().enumerate().find(|(_, v)| v.name == name)
                     {
                         return Some(Type::Generic {
                             name: generic.name,
@@ -627,7 +630,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 let Ok(value) =
                     resolve_import(&context, module.cast(), &path, loc, &mut Vec::new())
                 else {
-                    errors.add_unbound_ident(*loc, path[path.len() - 1]);
+                    errors.add_unbound_ident(*loc, path[path.len() - 1].symbol());
                     return None;
                 };
 
@@ -712,23 +715,20 @@ impl<'arena> TypecheckingContext<'arena> {
 fn typed_resolve_import<'arena>(
     context: &TypecheckingContext<'arena>,
     module: StoreKey<TypecheckedModule<'arena>>,
-    import: &[InternedStr<'arena>],
+    import: &[Ident<'arena>],
     location: &Span<'arena>,
-    already_included: &mut Vec<(StoreKey<TypecheckedModule<'arena>>, InternedStr<'arena>)>,
+    already_included: &mut HashSet<(StoreKey<TypecheckedModule<'arena>>, Symbol<'arena>)>,
 ) -> Result<ModuleScopeValue<'arena>, Diagnostic<'arena>> {
     if import.is_empty() {
         return Ok(ModuleScopeValue::Module(module.cast()));
     }
-    if already_included
-        .iter()
-        .any(|(mod_id, imp)| module.eq(mod_id) && import[0].eq(imp))
-    {
+    if already_included.contains(&(module, import[0].symbol())) {
         return Err(TypecheckingError::CyclicDependency {
             location: *location,
         }
         .to_error());
     }
-    already_included.push((module, import[0]));
+    already_included.insert((module, import[0].symbol()));
 
     let reader = context.modules.read();
     let ident = match reader[module.cast()].exports.get(&import[0]) {
@@ -736,7 +736,7 @@ fn typed_resolve_import<'arena>(
         None if already_included.len() < 2 /* this is the module it was imported from */ => &import[0],
         None => return Err(TypecheckingError::ExportNotFound {
             location: *location,
-            name: import[0],
+            name: import[0].symbol(),
         }.to_error()),
     };
 
@@ -753,13 +753,13 @@ fn typed_resolve_import<'arena>(
                     }
                     return Err(TypecheckingError::ExportNotFound {
                         location: *location,
-                        name: import[2],
+                        name: import[2].symbol(),
                     }
                     .to_error());
                 } else {
                     return Err(TypecheckingError::ExportNotFound {
                         location: reader[id.cast()].span,
-                        name: import[1],
+                        name: import[1].symbol(),
                     }
                     .to_error());
                 }
@@ -771,7 +771,7 @@ fn typed_resolve_import<'arena>(
             | ModuleScopeValue::Static(_) => {
                 return Err(TypecheckingError::ExportNotFound {
                     location: *location,
-                    name: import[1],
+                    name: import[1].symbol(),
                 }
                 .to_error())
             }
@@ -779,7 +779,7 @@ fn typed_resolve_import<'arena>(
     }
     Err(TypecheckingError::ExportNotFound {
         location: *location,
-        name: import[0],
+        name: import[0].symbol(),
     }
     .to_error())
 }
@@ -788,23 +788,23 @@ fn typed_resolve_import<'arena>(
 fn resolve_import<'arena>(
     context: &ModuleContext<'arena>,
     module: StoreKey<Module<'arena>>,
-    import: &[InternedStr<'arena>],
+    import: &[Ident<'arena>],
     location: &Span<'arena>,
-    already_included: &mut Vec<(StoreKey<Module<'arena>>, InternedStr<'arena>)>,
+    already_included: &mut Vec<(StoreKey<Module<'arena>>, Symbol<'arena>)>,
 ) -> Result<ModuleScopeValue<'arena>, Diagnostic<'arena>> {
     if import.is_empty() {
         return Ok(ModuleScopeValue::Module(module));
     }
     if already_included
         .iter()
-        .any(|(mod_id, imp)| module.eq(mod_id) && import[0].eq(imp))
+        .any(|(mod_id, imp)| module.eq(mod_id) && import[0].symbol().eq(imp))
     {
         return Err(TypecheckingError::CyclicDependency {
             location: *location,
         }
         .to_error());
     }
-    already_included.push((module, import[0]));
+    already_included.push((module, import[0].symbol()));
 
     let reader = context.modules.read();
     let ident = match reader[module].exports.get(&import[0]) {
@@ -812,12 +812,18 @@ fn resolve_import<'arena>(
         None if already_included.len() < 2 /* this is the module it was imported from */ => &import[0],
         None => return Err(TypecheckingError::ExportNotFound {
             location: *location,
-            name: import[0],
+            name: import[0].symbol(),
         }.to_error()),
     };
 
     if let Some((sub_location, module, path)) = reader[module].imports.get(ident) {
-        let value = resolve_import(context, *module, path, sub_location, already_included)?;
+        let value = resolve_import(
+            context,
+            *module,
+            &path.entries,
+            sub_location,
+            already_included,
+        )?;
         if import.len() < 2 {
             return Ok(value);
         }
@@ -834,13 +840,13 @@ fn resolve_import<'arena>(
                     }
                     return Err(TypecheckingError::ExportNotFound {
                         location: context.functions.read()[function_id].0.span,
-                        name: import[2],
+                        name: import[2].symbol(),
                     }
                     .to_error());
                 } else {
                     return Err(TypecheckingError::ExportNotFound {
                         location: reader[id].span,
-                        name: import[1],
+                        name: import[1].symbol(),
                     }
                     .to_error());
                 }
@@ -851,7 +857,7 @@ fn resolve_import<'arena>(
             | ModuleScopeValue::Static(_) => {
                 return Err(TypecheckingError::ExportNotFound {
                     location: *location,
-                    name: import[1],
+                    name: import[1].symbol(),
                 }
                 .to_error())
             }
@@ -870,13 +876,13 @@ fn resolve_import<'arena>(
                     }
                     return Err(TypecheckingError::ExportNotFound {
                         location: *location,
-                        name: import[2],
+                        name: import[2].symbol(),
                     }
                     .to_error());
                 } else {
                     return Err(TypecheckingError::ExportNotFound {
                         location: reader[id].span,
-                        name: import[1],
+                        name: import[1].symbol(),
                     }
                     .to_error());
                 }
@@ -888,7 +894,7 @@ fn resolve_import<'arena>(
             | ModuleScopeValue::Static(_) => {
                 return Err(TypecheckingError::ExportNotFound {
                     location: *location,
-                    name: import[1],
+                    name: import[1].symbol(),
                 }
                 .to_error())
             }
@@ -896,7 +902,7 @@ fn resolve_import<'arena>(
     }
     Err(TypecheckingError::ExportNotFound {
         location: *location,
-        name: import[0],
+        name: import[0].symbol(),
     }
     .to_error())
 }

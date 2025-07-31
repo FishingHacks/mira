@@ -2,7 +2,7 @@ use crate::{
     error::ParsingError,
     tokenizer::{Literal, NumberType, Token, TokenType},
 };
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{interner::Symbol, Span};
 
 enum LiteralType {
     String,
@@ -96,7 +96,7 @@ impl<'arena> TokenStream<'arena> {
 
     pub fn expect_identifier(
         &mut self,
-    ) -> Result<(InternedStr<'arena>, Span<'_>), ParsingError<'arena>> {
+    ) -> Result<(Symbol<'arena>, Span<'_>), ParsingError<'arena>> {
         self.expect_literal(TokenType::IdentifierLiteral, LiteralType::String)
             .map(|v| match &v.literal {
                 Some(Literal::String(lit)) => (*lit, v.span),
@@ -107,7 +107,7 @@ impl<'arena> TokenStream<'arena> {
     /// Expects and removes a token. Only removes if the token matches the expected token.
     pub fn expect_remove_identifier(
         &mut self,
-    ) -> Result<(InternedStr<'arena>, Span<'arena>), ParsingError<'arena>> {
+    ) -> Result<(Symbol<'arena>, Span<'arena>), ParsingError<'arena>> {
         self.expect_remove_literal(TokenType::IdentifierLiteral, LiteralType::String)
             .map(|v| match v.literal {
                 Some(Literal::String(lit)) => (lit, v.span),
@@ -117,7 +117,7 @@ impl<'arena> TokenStream<'arena> {
 
     pub fn expect_string(
         &mut self,
-    ) -> Result<(InternedStr<'arena>, Span<'arena>), ParsingError<'arena>> {
+    ) -> Result<(Symbol<'arena>, Span<'arena>), ParsingError<'arena>> {
         self.expect_literal(TokenType::StringLiteral, LiteralType::String)
             .map(|v| match &v.literal {
                 Some(Literal::String(lit)) => (*lit, v.span),
@@ -128,7 +128,7 @@ impl<'arena> TokenStream<'arena> {
     /// Expects and removes a token. Only removes if the token matches the expected token.
     pub fn expect_remove_string(
         &mut self,
-    ) -> Result<(InternedStr<'arena>, Span<'arena>), ParsingError<'arena>> {
+    ) -> Result<(Symbol<'arena>, Span<'arena>), ParsingError<'arena>> {
         self.expect_remove_literal(TokenType::StringLiteral, LiteralType::String)
             .map(|v| match v.literal {
                 Some(Literal::String(lit)) => (lit, v.span),

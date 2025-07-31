@@ -456,7 +456,7 @@ impl Builder {
             } => Node::nodes([
                 self.generate_annotations(annotations),
                 Node::static_text("for ("),
-                self.ident(**var_name),
+                self.ident(var_name),
                 Node::static_text(" in "),
                 self.make_expression(iterator),
                 Node::static_text(") "),
@@ -498,7 +498,7 @@ impl Builder {
             Statement::Var(name, expression, None, _, annotations) => Node::nodes([
                 self.generate_annotations(annotations),
                 Node::static_text("let "),
-                self.ident(**name),
+                self.ident(name),
                 Node::static_text(" = "),
                 self.make_expression(expression),
                 Node::static_text(";"),
@@ -506,7 +506,7 @@ impl Builder {
             Statement::Var(name, expression, Some(type_ref), _, annotations) => Node::nodes([
                 self.generate_annotations(annotations),
                 Node::static_text("let "),
-                self.ident(**name),
+                self.ident(name),
                 Node::static_text(": "),
                 self.type_(type_ref),
                 Node::static_text(" = "),
@@ -570,26 +570,18 @@ impl Builder {
                     )
                 }
             }
-            Statement::Struct {
-                name,
-                elements,
-                span,
-                global_impl,
-                impls,
-                generics,
-                annotations,
-            } => todo!(),
+            Statement::Struct { .. } => todo!(),
             Statement::Trait(_) => todo!(),
             Statement::Export(left, right, _) if left == right => Node::nodes([
                 Node::static_text("export "),
-                Node::text(**left),
+                Node::text(&**left),
                 Node::static_text(";"),
             ]),
             Statement::Export(left, right, _) => Node::nodes([
                 Node::static_text("export "),
-                Node::text(**left),
+                Node::text(&**left),
                 Node::static_text(" as "),
-                Node::text(**right),
+                Node::text(&**right),
                 Node::static_text(";"),
             ]),
             Statement::ModuleAsm(_, s) => {
@@ -680,7 +672,7 @@ impl Builder {
                         struct_nodes.push(Node::static_text(","));
                         struct_nodes.push(Node::SpaceOrLine);
                     }
-                    struct_nodes.push(Node::text(**name));
+                    struct_nodes.push(Node::text(&**name));
                     struct_nodes.push(Node::static_text(": "));
                     struct_nodes.push(self.make_expression(v));
                 }
@@ -699,7 +691,7 @@ impl Builder {
                         struct_nodes.push(Node::static_text(","));
                         struct_nodes.push(Node::SpaceOrLine);
                     }
-                    struct_nodes.push(Node::text(**name));
+                    struct_nodes.push(Node::text(&**name));
                     struct_nodes.push(Node::static_text(": "));
                     struct_nodes.push(self.make_expression(v));
                 }
@@ -936,11 +928,11 @@ impl Builder {
     fn path(&self, path: &MPath) -> Node {
         let mut nodes = vec![];
 
-        for (name, _, generics) in &path.entries {
+        for (name, generics) in &path.entries {
             if !nodes.is_empty() {
                 nodes.push(Node::static_text("::"));
             }
-            nodes.push(Node::text(**name));
+            nodes.push(Node::text(&**name));
             if !generics.is_empty() {
                 nodes.push(self.generate_list_like(
                     ANGLE_BRACKETS.clone(),
@@ -959,7 +951,7 @@ impl Builder {
             if !nodes.is_empty() {
                 nodes.push(Node::static_text("::"));
             }
-            nodes.push(Node::text(**name));
+            nodes.push(Node::text(&**name));
         }
         Node::nodes(nodes)
     }
@@ -1126,8 +1118,8 @@ fn is_void(ty: &TypeRef) -> bool {
             type_name,
             ..
         } if type_name.entries.len() == 1
-            && type_name.entries[0].2.is_empty()
-            && &**type_name.entries[0].0 == "void" =>
+            && type_name.entries[0].1.is_empty()
+            && &*type_name.entries[0].0 == "void" =>
         {
             true
         }

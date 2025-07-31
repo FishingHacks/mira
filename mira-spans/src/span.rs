@@ -51,6 +51,16 @@ impl Display for SpanWithFile {
 }
 
 impl<'arena> Span<'arena> {
+    /// span wioth file id 0, len of 0 at position 0
+    pub const DUMMY: Span<'arena> = Span {
+        inner: 1,
+        _data: PhantomData,
+    };
+
+    pub fn is_dummy(&self) -> bool {
+        self.inner == 1
+    }
+
     pub fn new(data: SpanData, interner: &SpanInterner<'arena>) -> Self {
         // file is only 16 bit and length only 15 bit
         if data.file.0 <= u16::MAX as u32 && data.len <= 0x7fff {

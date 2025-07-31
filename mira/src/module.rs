@@ -4,10 +4,13 @@ use std::{collections::HashMap, fmt::Debug, path::Path, sync::Arc};
 use crate::{
     annotations::Annotations,
     error::ProgramFormingError,
-    parser::{Expression, FunctionContract, Generic, LiteralValue, Statement, Trait, TypeRef},
+    parser::{
+        Expression, FunctionContract, Generic, LiteralValue, PathWithoutGenerics, Statement, Trait,
+        TypeRef,
+    },
     store::{Store, StoreKey},
 };
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{Ident, Span};
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum ModuleScopeValue<'arena> {
@@ -21,13 +24,13 @@ pub enum ModuleScopeValue<'arena> {
 
 #[derive(Debug)]
 pub struct BakedStruct<'arena> {
-    pub name: InternedStr<'arena>,
-    pub elements: Vec<(InternedStr<'arena>, TypeRef<'arena>)>,
+    pub name: Ident<'arena>,
+    pub elements: Vec<(Ident<'arena>, TypeRef<'arena>)>,
     pub span: Span<'arena>,
-    pub global_impl: HashMap<InternedStr<'arena>, StoreKey<Function<'arena>>>,
+    pub global_impl: HashMap<Ident<'arena>, StoreKey<Function<'arena>>>,
     pub impls: Vec<(
-        InternedStr<'arena>,
-        HashMap<InternedStr<'arena>, StoreKey<Function<'arena>>>,
+        Ident<'arena>,
+        HashMap<Ident<'arena>, StoreKey<Function<'arena>>>,
         Span<'arena>,
     )>,
     pub annotations: Annotations<'arena>,
@@ -75,16 +78,16 @@ impl Debug for ModuleContext<'_> {
 }
 
 pub struct Module<'arena> {
-    pub scope: HashMap<InternedStr<'arena>, ModuleScopeValue<'arena>>,
+    pub scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
     pub imports: HashMap<
-        InternedStr<'arena>,
+        Ident<'arena>,
         (
             Span<'arena>,
             StoreKey<Module<'arena>>,
-            Vec<InternedStr<'arena>>,
+            PathWithoutGenerics<'arena>,
         ),
     >,
-    pub exports: HashMap<InternedStr<'arena>, InternedStr<'arena>>,
+    pub exports: HashMap<Ident<'arena>, Ident<'arena>>,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
     pub assembly: Vec<(Span<'arena>, String)>,
@@ -103,11 +106,11 @@ impl Debug for Module<'_> {
 impl<'arena> Module<'arena> {
     pub fn new(
         imports: HashMap<
-            InternedStr<'arena>,
+            Ident<'arena>,
             (
                 Span<'arena>,
                 StoreKey<Module<'arena>>,
-                Vec<InternedStr<'arena>>,
+                PathWithoutGenerics<'arena>,
             ),
         >,
         path: Arc<Path>,
@@ -184,7 +187,7 @@ impl<'arena> Module<'arena> {
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         contract.span,
-                        name,
+                        name.symbol(),
                     ));
                 }
 
@@ -198,7 +201,7 @@ impl<'arena> Module<'arena> {
                 {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         r#trait.span,
-                        r#trait.name,
+                        r#trait.name.symbol(),
                     ));
                 }
 
@@ -217,7 +220,10 @@ impl<'arena> Module<'arena> {
                 generics,
             } => {
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
-                    return Err(ProgramFormingError::IdentAlreadyDefined(span, name));
+                    return Err(ProgramFormingError::IdentAlreadyDefined(
+                        span,
+                        name.symbol(),
+                    ));
                 }
 
                 let mut baked_global_impl = HashMap::new();
@@ -256,7 +262,10 @@ impl<'arena> Module<'arena> {
             }
             Statement::Var(name, expr, Some(typ), span, annotations) => {
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
-                    return Err(ProgramFormingError::IdentAlreadyDefined(span, name));
+                    return Err(ProgramFormingError::IdentAlreadyDefined(
+                        span,
+                        name.symbol(),
+                    ));
                 }
 
                 let Expression::Literal(value, _) = expr else {
@@ -276,7 +285,7 @@ impl<'arena> Module<'arena> {
                 if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         contract.span,
-                        name,
+                        name.symbol(),
                     ));
                 }
 
@@ -290,7 +299,7 @@ impl<'arena> Module<'arena> {
             }
             Statement::Export(key, exported_key, span) => {
                 if !self.scope.contains_key(&key) && !self.imports.contains_key(&key) {
-                    return Err(ProgramFormingError::IdentNotDefined(span, key));
+                    return Err(ProgramFormingError::IdentNotDefined(span, key.symbol()));
                 }
                 self.exports.insert(exported_key, key);
             }

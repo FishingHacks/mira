@@ -15,9 +15,9 @@ use crate::{
 
 use super::{
     types::{Generic, TypeRef},
-    Expression, Parser,
+    Expression, Parser, PathWithoutGenerics,
 };
-use mira_spans::{interner::InternedStr, ResolvedPath, Span, SpanData};
+use mira_spans::{Ident, ResolvedPath, Span, SpanData};
 
 #[derive(Clone, Debug)]
 pub enum BakableFunction<'arena> {
@@ -27,9 +27,9 @@ pub enum BakableFunction<'arena> {
 
 #[derive(Clone, Debug)]
 pub struct Trait<'arena> {
-    pub name: InternedStr<'arena>,
+    pub name: Ident<'arena>,
     pub functions: Vec<(
-        InternedStr<'arena>,
+        Ident<'arena>,
         Vec<Argument<'arena>>,
         TypeRef<'arena>,
         Annotations<'arena>,
@@ -88,7 +88,7 @@ pub enum Statement<'arena> {
     },
     For {
         iterator: Expression<'arena>,
-        var_name: InternedStr<'arena>,
+        var_name: Ident<'arena>,
         child: Box<Statement<'arena>>,
         span: Span<'arena>,
         annotations: Annotations<'arena>,
@@ -96,7 +96,7 @@ pub enum Statement<'arena> {
     Return(Option<Expression<'arena>>, Span<'arena>),
     Block(Box<[Statement<'arena>]>, Span<'arena>, Annotations<'arena>),
     Var(
-        InternedStr<'arena>,
+        Ident<'arena>,
         Expression<'arena>,
         Option<TypeRef<'arena>>,
         Span<'arena>,
@@ -114,14 +114,14 @@ pub enum Statement<'arena> {
         Span<'arena>,
     ),
     Struct {
-        name: InternedStr<'arena>,
-        elements: Vec<(InternedStr<'arena>, TypeRef<'arena>)>,
+        name: Ident<'arena>,
+        elements: Vec<(Ident<'arena>, TypeRef<'arena>)>,
         span: Span<'arena>,
-        global_impl: HashMap<InternedStr<'arena>, (FunctionContract<'arena>, Statement<'arena>)>,
+        global_impl: HashMap<Ident<'arena>, (FunctionContract<'arena>, Statement<'arena>)>,
         #[allow(clippy::type_complexity)]
         impls: Vec<(
-            InternedStr<'arena>,
-            HashMap<InternedStr<'arena>, (FunctionContract<'arena>, Statement<'arena>)>,
+            Ident<'arena>,
+            HashMap<Ident<'arena>, (FunctionContract<'arena>, Statement<'arena>)>,
             Span<'arena>,
         )>,
         generics: Vec<Generic<'arena>>,
@@ -129,7 +129,7 @@ pub enum Statement<'arena> {
     },
     Trait(Trait<'arena>),
     /// key (the name of the thing in the module), export key (the name during import), location
-    Export(InternedStr<'arena>, InternedStr<'arena>, Span<'arena>),
+    Export(Ident<'arena>, Ident<'arena>, Span<'arena>),
     ModuleAsm(Span<'arena>, String),
 
     BakedFunction(StoreKey<Function<'arena>>, Span<'arena>),
@@ -575,7 +575,7 @@ impl<'arena> Parser<'_, 'arena> {
                 })
             }
         };
-        let (symbol, symbol_span) = match &stmt {
+        let (ident, symbol_span) = match &stmt {
             Statement::Function(c, ..) | Statement::ExternalFunction(c, ..) => (
                 c.name.expect("global functions should always have a name"),
                 c.span,
@@ -597,7 +597,7 @@ impl<'arena> Parser<'_, 'arena> {
             self.current + 1,
             Token {
                 typ: TokenType::IdentifierLiteral,
-                literal: Some(Literal::String(symbol)),
+                literal: Some(Literal::String(ident.symbol())),
                 span: symbol_span,
             },
         );
@@ -697,7 +697,8 @@ impl<'arena> Parser<'_, 'arena> {
 
         if self.match_tok(TokenType::As) {
             let name = self.expect_identifier()?;
-            self.imports.insert(name, (span, module_key, Vec::new()));
+            self.imports
+                .insert(name, (span, module_key, PathWithoutGenerics::new(name)));
             self.consume_semicolon()?;
             return Ok(());
         }
@@ -716,7 +717,7 @@ impl<'arena> Parser<'_, 'arena> {
                 }
                 is_first = false;
 
-                let import_name = self.parse_path_no_generics()?;
+                let import_name = PathWithoutGenerics::parse(self)?;
 
                 if self.match_tok(TokenType::As) {
                     let alias_name = self.expect_identifier()?;
@@ -724,7 +725,7 @@ impl<'arena> Parser<'_, 'arena> {
                         .insert(alias_name, (span, module_key, import_name));
                 } else {
                     self.imports.insert(
-                        import_name[import_name.len() - 1],
+                        import_name.entries[import_name.entries.len() - 1],
                         (span, module_key, import_name),
                     );
                 }
@@ -733,7 +734,7 @@ impl<'arena> Parser<'_, 'arena> {
             return Ok(());
         }
 
-        let import_name = self.parse_path_no_generics()?;
+        let import_name = PathWithoutGenerics::parse(self)?;
 
         if self.match_tok(TokenType::As) {
             let alias_name = self.expect_identifier()?;
@@ -744,7 +745,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
 
         self.imports.insert(
-            import_name[import_name.len() - 1],
+            import_name.entries[import_name.entries.len() - 1],
             (self.span_from(span), module_key, import_name),
         );
         self.consume_semicolon()?;
@@ -755,7 +756,7 @@ impl<'arena> Parser<'_, 'arena> {
         &mut self,
     ) -> Result<
         (
-            InternedStr<'arena>,
+            Ident<'arena>,
             Vec<Argument<'arena>>,
             TypeRef<'arena>,
             Annotations<'arena>,
@@ -836,16 +837,6 @@ impl<'arena> Parser<'_, 'arena> {
             annotations,
             module: self.key,
         }))
-    }
-
-    fn parse_path_no_generics(&mut self) -> Result<Vec<InternedStr<'arena>>, ParsingError<'arena>> {
-        let mut path = vec![self.expect_identifier()?];
-
-        while self.match_tok(TokenType::NamespaceAccess) {
-            path.push(self.expect_identifier()?);
-        }
-
-        Ok(path)
     }
 
     fn parse_expression_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
@@ -1049,7 +1040,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
 
         let mut global_impl =
-            HashMap::<InternedStr<'arena>, (FunctionContract<'arena>, Statement<'arena>)>::new();
+            HashMap::<Ident<'arena>, (FunctionContract<'arena>, Statement<'arena>)>::new();
         let mut impls = Vec::new();
 
         if self.current().typ == TokenType::Semicolon {
@@ -1069,7 +1060,7 @@ impl<'arena> Parser<'_, 'arena> {
                         if let Some(other_func) = global_impl.get(&name) {
                             return Err(ParsingError::FunctionAlreadyDefined {
                                 loc: func.0.span,
-                                name,
+                                name: name.symbol(),
                                 first_func_loc: other_func.0.span,
                             });
                         }
@@ -1077,9 +1068,9 @@ impl<'arena> Parser<'_, 'arena> {
                     }
                     TokenType::Impl => {
                         let loc = self.advance().span;
-                        let trait_name: InternedStr = self.expect_identifier()?;
+                        let trait_name = self.expect_identifier()?;
                         let mut current_impl = HashMap::<
-                            InternedStr<'arena>,
+                            Ident<'arena>,
                             (FunctionContract<'arena>, Statement<'arena>),
                         >::new();
 
@@ -1102,7 +1093,7 @@ impl<'arena> Parser<'_, 'arena> {
                             if let Some(other_func) = current_impl.get(&name) {
                                 return Err(ParsingError::FunctionAlreadyDefined {
                                     loc: func.0.span,
-                                    name,
+                                    name: name.symbol(),
                                     first_func_loc: other_func.0.span,
                                 });
                             }
@@ -1132,26 +1123,14 @@ impl<'arena> Parser<'_, 'arena> {
         })
     }
 
-    pub fn expect_identifier_span(
-        &mut self,
-    ) -> Result<(InternedStr<'arena>, Span<'arena>), ParsingError<'arena>> {
+    pub fn expect_identifier(&mut self) -> Result<Ident<'arena>, ParsingError<'arena>> {
         if !self.match_tok(TokenType::IdentifierLiteral) {
             return Err(ParsingError::ExpectedIdentifier {
                 loc: self.peek().span,
                 found: self.peek().typ,
             });
         }
-        Ok((self.current().string_literal()?, self.current().span))
-    }
-
-    pub fn expect_identifier(&mut self) -> Result<InternedStr<'arena>, ParsingError<'arena>> {
-        if !self.match_tok(TokenType::IdentifierLiteral) {
-            return Err(ParsingError::ExpectedIdentifier {
-                loc: self.peek().span,
-                found: self.peek().typ,
-            });
-        }
-        self.current().string_literal()
+        Ok(self.current().into())
     }
     pub fn parse_annotation(&mut self) -> Result<(), ParsingError<'arena>> {
         let span = self.peek().span;
@@ -1222,12 +1201,12 @@ impl<'arena> Parser<'_, 'arena> {
 
 #[derive(Debug, Clone)]
 pub struct Argument<'arena> {
-    pub name: InternedStr<'arena>,
+    pub name: Ident<'arena>,
     pub typ: TypeRef<'arena>,
 }
 
 impl<'arena> Argument<'arena> {
-    pub fn new(typ: TypeRef<'arena>, name: InternedStr<'arena>) -> Self {
+    pub fn new(typ: TypeRef<'arena>, name: Ident<'arena>) -> Self {
         Self { name, typ }
     }
 }
@@ -1242,7 +1221,7 @@ impl Display for Argument<'_> {
 
 #[derive(Clone, Debug)]
 pub struct FunctionContract<'arena> {
-    pub name: Option<InternedStr<'arena>>,
+    pub name: Option<Ident<'arena>>,
     pub arguments: Vec<Argument<'arena>>,
     pub return_type: TypeRef<'arena>,
     pub span: Span<'arena>,

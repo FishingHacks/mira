@@ -46,7 +46,7 @@ use crate::{
         TypedTrait,
     },
 };
-use mira_spans::interner::InternedStr;
+use mira_spans::interner::Symbol;
 
 #[derive(Clone, Copy)]
 pub(super) struct DefaultTypes<'ctx> {
@@ -84,7 +84,7 @@ pub struct CodegenContext<'ctx, 'arena> {
     pub(super) external_functions: ExternalFunctionsStore<'ctx, 'arena>,
     pub(super) structs: StructsStore<'ctx, 'arena>,
     pub(super) statics: StaticsStore<'ctx, 'arena>,
-    pub(super) string_map: HashMap<InternedStr<'arena>, GlobalValue<'ctx>>,
+    pub(super) string_map: HashMap<Symbol<'arena>, GlobalValue<'ctx>>,
     pub(super) debug_ctx: DebugContext<'ctx, 'arena>,
     pub(super) intrinsics: LLVMIntrinsics,
     pub(super) vtables:
@@ -444,11 +444,9 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             {
                 name.as_str()
             } else {
-                contract
+                &contract
                     .name
-                    .as_ref()
                     .expect("external functions should always have a name")
-                    .to_str()
             };
 
             let func = module.add_function(name, fn_typ, None);
@@ -696,7 +694,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                 scope,
                 contract.span,
                 arg,
-                *name,
+                name.symbol(),
                 function_ctx.current_block,
                 contract.module_id,
                 &structs_reader,
@@ -732,7 +730,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 fn collect_data<'arena>(
     ctx: &TypecheckingContext<'arena>,
 ) -> (
-    HashSet<InternedStr<'arena>>,
+    HashSet<Symbol<'arena>>,
     HashSet<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
 ) {
     let function_reader = ctx.functions.read();
@@ -758,7 +756,7 @@ fn collect_data<'arena>(
 
 fn collect_strings_for_expressions<'arena>(
     exprs: &[TypecheckedExpression<'arena>],
-    strings: &mut HashSet<InternedStr<'arena>>,
+    strings: &mut HashSet<Symbol<'arena>>,
     vtables: &mut HashSet<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
 ) {
     for expr in exprs {
@@ -858,7 +856,7 @@ fn collect_strings_for_expressions<'arena>(
 }
 fn collect_strings_for_typed_literal<'arena>(
     lit: &TypedLiteral<'arena>,
-    strings: &mut HashSet<InternedStr<'arena>>,
+    strings: &mut HashSet<Symbol<'arena>>,
 ) {
     match lit {
         TypedLiteral::String(global_str) => _ = strings.insert(*global_str),

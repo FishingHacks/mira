@@ -3,7 +3,7 @@ use crate::{
     parser::{Path, PathWithoutGenerics},
 };
 use mira_macros::ErrorData;
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{interner::Symbol, Span};
 
 use super::{types::Type, ScopeKind};
 
@@ -40,8 +40,8 @@ pub enum TypecheckingError<'arena> {
     #[error("Function {_1} on trait {_2} is not valid for &dyn {_2} types")]
     InvalidDynTypeFunc(
         #[primary_label("dyn-incompatible trait")] Span<'arena>,
-        InternedStr<'arena>,
-        InternedStr<'arena>,
+        Symbol<'arena>,
+        Symbol<'arena>,
     ),
     #[error("Cannot find trait {_1}")]
     CannotFindTrait(
@@ -71,7 +71,7 @@ pub enum TypecheckingError<'arena> {
     #[error("Inline assembly only accepts numeric types (i_, u_, f_ and bool), but got `{_1}`")]
     AsmNonNumericType(
         #[primary_label("expected a numeric type")] Span<'arena>,
-        InternedStr<'arena>,
+        Symbol<'arena>,
     ),
     #[error("No field `{_2}` on a tuple with {_1} fields")]
     TupleIndexOutOfBounds(#[primary_label("unknown field")] Span<'arena>, usize, usize),
@@ -90,13 +90,13 @@ pub enum TypecheckingError<'arena> {
     #[error("Function `{_1}` of type `{_2}` is not a method as it doesn't have the signature (Self, ...) or (&Self, ...)")]
     NonMemberFunction(
         #[primary_label("Cannot find method `{_1}`")] Span<'arena>,
-        InternedStr<'arena>,
+        Symbol<'arena>,
         Type<'arena>,
     ),
     #[error("Cannot find function `{_1}` on type `{_2}`")]
     CannotFindFunctionOnType(
         #[primary_label("No function named `{_1}` is associated with `{_2}`")] Span<'arena>,
-        InternedStr<'arena>,
+        Symbol<'arena>,
         Type<'arena>,
     ),
     #[error("Cannot find value `{_1}` in this scope")]
@@ -118,7 +118,7 @@ pub enum TypecheckingError<'arena> {
     FieldNotFound(
         #[primary_label("no such field found")] Span<'arena>,
         Type<'arena>,
-        InternedStr<'arena>,
+        Symbol<'arena>,
     ),
     #[error("Invalid cast `{_1}` -> `{_2}`")]
     DisallowedCast(
@@ -220,7 +220,7 @@ pub enum TypecheckingError<'arena> {
     ExportNotFound {
         #[primary_label("No such export found")]
         location: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("cyclic dependency detected")]
     CyclicDependency {
@@ -231,7 +231,7 @@ pub enum TypecheckingError<'arena> {
     UnboundIdent {
         #[primary_label("unbound identifier")]
         location: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     // TODO: implement Display for ScopeKind
     #[error("Expected a {expected:?}, but found a {found:?}")]
@@ -262,19 +262,19 @@ pub enum TypecheckingError<'arena> {
     IdentifierIsNotStruct {
         #[primary_label("Tried to construct a non-struct type as a struct")]
         location: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("no such field named `{name}` found!")]
     NoSuchFieldFound {
         #[primary_label("no such field found")]
         location: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("missing field `{name}`")]
     MissingField {
         #[primary_label("missing `{name}`")]
         location: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("Expected a function")]
     TypeIsNotAFunction {
@@ -300,19 +300,19 @@ pub enum TypecheckingError<'arena> {
     IsNotTraitMember {
         #[primary_label("No such method exists on the trait")]
         location: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("missing trait item `{name}`")]
     MissingTraitItem {
         #[primary_label("Missing implementation for trait item")]
         location: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("Type {_1} is expected to implement the traits {_2:?}")]
     MismatchingTraits(
         #[primary_label("Trait is missing dependency traits")] Span<'arena>,
         Type<'arena>,
-        Vec<InternedStr<'arena>>,
+        Vec<Symbol<'arena>>,
     ),
     #[error(
         "Expected {}, but found {}",

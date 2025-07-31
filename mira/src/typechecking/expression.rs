@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{annotations::Annotations, store::StoreKey, typechecking::types::FunctionType};
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{interner::Symbol, Span};
 
 use super::{
     intrinsics::Intrinsic,
@@ -21,7 +21,7 @@ pub enum TypedLiteral<'arena> {
     Function(StoreKey<TypedFunction<'arena>>, Vec<Type<'arena>>),
     ExternalFunction(StoreKey<TypedExternalFunction<'arena>>),
     Static(StoreKey<TypedStatic<'arena>>),
-    String(InternedStr<'arena>),
+    String(Symbol<'arena>),
     Array(Type<'arena>, Vec<TypedLiteral<'arena>>),
     ArrayInit(Type<'arena>, Box<TypedLiteral<'arena>>, usize),
     Struct(StoreKey<TypedStruct<'arena>>, Vec<TypedLiteral<'arena>>),
@@ -430,12 +430,7 @@ pub enum TypecheckedExpression<'arena> {
     DynCall(Span<'arena>, ScopeValueId, Vec<TypedLiteral<'arena>>, u32),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
     Literal(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
-    DeclareVariable(
-        Span<'arena>,
-        ScopeValueId,
-        Type<'arena>,
-        InternedStr<'arena>,
-    ),
+    DeclareVariable(Span<'arena>, ScopeValueId, Type<'arena>, Symbol<'arena>),
     Empty(Span<'arena>),
     Unreachable(Span<'arena>),
     // ### CASTS ###

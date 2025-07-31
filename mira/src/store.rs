@@ -124,6 +124,10 @@ impl<T> Store<T> {
         self.values.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
     pub fn index_value_iter(&self) -> impl Iterator<Item = (StoreKey<T>, &T)> {
         self.values.iter().map(|(a, b)| (*a, b))
     }
@@ -252,6 +256,10 @@ impl<T, O: ?Sized> AssociatedStore<T, O> {
 
     pub fn len(&self) -> usize {
         self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
     }
 
     fn cast_key_ref(k: &StoreKey<O>) -> &StoreKey<T> {

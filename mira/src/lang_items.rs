@@ -11,7 +11,7 @@ use crate::{
     typechecking::{Type, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
 };
 use mira_macros::ErrorData;
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{interner::Symbol, Span};
 
 #[derive(Clone, Debug)]
 pub struct LangItemAnnotation(String);
@@ -54,11 +54,11 @@ impl Display for LangItemAnnotation {
 }
 
 struct LangItemTrait<'arena> {
-    funcs: Vec<(InternedStr<'arena>, LangItemFunction<'arena>)>,
+    funcs: Vec<(Symbol<'arena>, LangItemFunction<'arena>)>,
 }
 struct LangItemStruct<'arena> {
-    funcs: Vec<(InternedStr<'arena>, LangItemFunction<'arena>)>,
-    fields: Vec<(InternedStr<'arena>, Type<'arena>)>,
+    funcs: Vec<(Symbol<'arena>, LangItemFunction<'arena>)>,
+    fields: Vec<(Symbol<'arena>, Type<'arena>)>,
     traits: Vec<StoreKey<TypedTrait<'arena>>>,
     generics: Vec<(bool, Vec<StoreKey<TypedTrait<'arena>>>)>,
 }
@@ -211,7 +211,7 @@ pub enum LangItemAssignmentError<'arena> {
     ),
 }
 
-struct GenericList<'a, 'arena>(&'a [InternedStr<'arena>]);
+struct GenericList<'a, 'arena>(&'a [Symbol<'arena>]);
 impl Display for GenericList<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for i in 0..self.0.len() {
@@ -233,14 +233,14 @@ pub enum LangItemError<'arena> {
     },
     #[error("Static lang-item `{langitem}` is missing trait-implementation `{name}`")]
     StaticIsMissingTrait {
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
         langitem: &'static str,
     },
     #[error("Static lang-item `{langitem}` is a primitive, who are not supported")]
     StaticIsPrimitive { langitem: &'static str },
     #[error("Struct lang-item `{langitem}` is missing field `{name}` of type `{ty}`")]
     StructMissingElement {
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
         ty: Type<'arena>,
         langitem: &'static str,
     },
@@ -248,57 +248,57 @@ pub enum LangItemError<'arena> {
         "Struct lang-item `{langitem}`'s field `{name}` is expected to be {expected} but {found}"
     )]
     StructMismatchingField {
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
         expected: Type<'arena>,
         found: Type<'arena>,
         langitem: &'static str,
     },
     #[error("Struct lang-item `{langitem}`'s field `{name}` is not expected to be there")]
     StructUnexpectedField {
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
         langitem: &'static str,
     },
     #[error("Struct lang-item `{lang_item}` is missing function `{function}`")]
     StructMissingFunction {
         lang_item: &'static str,
-        function: InternedStr<'arena>,
+        function: Symbol<'arena>,
     },
     #[error("Struct lang-item `{lang_item}` is missing the trait `{trait_name}`")]
     StructMissingTrait {
         lang_item: &'static str,
-        trait_name: InternedStr<'arena>,
+        trait_name: Symbol<'arena>,
     },
     #[error("Trait lang-item `{lang_item}` is missing function `{function}`")]
     TraitMissingFunction {
         lang_item: &'static str,
-        function: InternedStr<'arena>,
+        function: Symbol<'arena>,
     },
     #[error("Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(expected), FunctionList(found))]
     TraitMismatchingArguments {
         expected: Vec<Type<'arena>>,
         found: Vec<Type<'arena>>,
-        function: InternedStr<'arena>,
+        function: Symbol<'arena>,
         lang_item: &'static str,
     },
     #[error("Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}")]
     TraitMismatchingReturnType {
         expected: Type<'arena>,
         found: Type<'arena>,
-        function: InternedStr<'arena>,
+        function: Symbol<'arena>,
         lang_item: &'static str,
     },
     #[error("Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(expected), FunctionList(found))]
     StructMismatchingArguments {
         expected: Vec<Type<'arena>>,
         found: Vec<Type<'arena>>,
-        function: InternedStr<'arena>,
+        function: Symbol<'arena>,
         lang_item: &'static str,
     },
     #[error("Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}")]
     StructMismatchingReturnType {
         expected: Type<'arena>,
         found: Type<'arena>,
-        function: InternedStr<'arena>,
+        function: Symbol<'arena>,
         lang_item: &'static str,
     },
     #[error(
@@ -306,14 +306,14 @@ pub enum LangItemError<'arena> {
     )]
     StructGenericSizingIncompatability {
         lang_item: &'static str,
-        generic: InternedStr<'arena>,
+        generic: Symbol<'arena>,
     },
     #[error("Struct lang-item `{lang_item}`s generic `{generic}` doesn't match, expected {}, but found {}", GenericList(expected), GenericList(found))]
     StructGenericMismatch {
         lang_item: &'static str,
-        generic: InternedStr<'arena>,
-        expected: Vec<InternedStr<'arena>>,
-        found: Vec<InternedStr<'arena>>,
+        generic: Symbol<'arena>,
+        expected: Vec<Symbol<'arena>>,
+        found: Vec<Symbol<'arena>>,
     },
     #[error(
         "Struct lang-item `{lang_item}` misses generic with bounds {}",
@@ -321,12 +321,12 @@ pub enum LangItemError<'arena> {
     )]
     StructMissesGeneric {
         lang_item: &'static str,
-        generic: Vec<InternedStr<'arena>>,
+        generic: Vec<Symbol<'arena>>,
     },
     #[error("Struct lang-item `{lang_item}` has an unexpected generic `{generic}`")]
     StructUnexpectedGeneric {
         lang_item: &'static str,
-        generic: InternedStr<'arena>,
+        generic: Symbol<'arena>,
     },
     #[error(
         "Function lang-item `{lang_item}` has a mismatching signature. Expected: {}, but found {}",
@@ -347,7 +347,7 @@ pub enum LangItemError<'arena> {
     #[error("Trait lang-item `{lang_item}` has an unexpected function `{function}`")]
     TraitExcessiveFunction {
         lang_item: &'static str,
-        function: InternedStr<'arena>,
+        function: Symbol<'arena>,
     },
 }
 
@@ -621,22 +621,38 @@ fn does_struct_match<'arena>(
         match structure_b.generics.get(i) {
             Some(generic) => {
                 if bounds.1 != generic.bounds {
-                    let expected = bounds.1.iter().map(|v| trait_reader[*v].name).collect();
+                    let expected = bounds
+                        .1
+                        .iter()
+                        .map(|v| trait_reader[*v].name.symbol())
+                        .collect();
                     let found = generic
                         .bounds
                         .iter()
-                        .map(|v| trait_reader[*v].name)
+                        .map(|v| trait_reader[*v].name.symbol())
                         .collect();
-                    errors.add_struct_generic_mismatch(lang_item, generic.name, expected, found);
+                    errors.add_struct_generic_mismatch(
+                        lang_item,
+                        generic.name.symbol(),
+                        expected,
+                        found,
+                    );
                 }
                 if !bounds.0 && generic.sized {
-                    errors.add_struct_generic_sizing_incompatability(lang_item, generic.name);
+                    errors.add_struct_generic_sizing_incompatability(
+                        lang_item,
+                        generic.name.symbol(),
+                    );
                 }
             }
             None => {
                 errors.add_struct_misses_generic(
                     lang_item,
-                    bounds.1.iter().map(|v| trait_reader[*v].name).collect(),
+                    bounds
+                        .1
+                        .iter()
+                        .map(|v| trait_reader[*v].name.symbol())
+                        .collect(),
                 );
             }
         }
@@ -645,8 +661,7 @@ fn does_struct_match<'arena>(
         .generics
         .iter()
         .skip(structure_a.generics.len())
-        .map(|v| &v.name)
-        .cloned()
+        .map(|v| v.name.symbol())
     {
         errors.add_struct_unexpected_generic(lang_item, generic);
     }
@@ -655,7 +670,7 @@ fn does_struct_match<'arena>(
         match structure_b
             .elements
             .iter()
-            .find(|(v, _)| *v == *element_name)
+            .find(|(v, _)| v.symbol() == *element_name)
         {
             Some(v) if v.1 == *element_type => {}
             Some((_, other_type)) => {
@@ -672,17 +687,18 @@ fn does_struct_match<'arena>(
         }
     }
 
-    for (element_name, _) in structure_b
-        .elements
-        .iter()
-        .filter(|(v, _)| !structure_a.fields.iter().any(|(name, _)| *name == *v))
-    {
-        errors.add_struct_unexpected_field(*element_name, lang_item);
+    for (element_name, _) in structure_b.elements.iter().filter(|(v, _)| {
+        !structure_a
+            .fields
+            .iter()
+            .any(|(name, _)| *name == v.symbol())
+    }) {
+        errors.add_struct_unexpected_field(element_name.symbol(), lang_item);
     }
 
     for trait_id in structure_a.traits.iter().copied() {
         if !structure_b.trait_impl.contains_key(&trait_id) {
-            errors.add_struct_missing_trait(lang_item, trait_reader[trait_id].name);
+            errors.add_struct_missing_trait(lang_item, trait_reader[trait_id].name.symbol());
         }
     }
     drop(trait_reader);
@@ -737,7 +753,10 @@ fn does_static_match<'arena>(
             for trait_id in traits.iter().copied() {
                 if !trait_refs.iter().any(|(v, _)| *v == trait_id) {
                     matches = false;
-                    errors.add_static_is_missing_trait(trait_reader[trait_id].name, lang_item);
+                    errors.add_static_is_missing_trait(
+                        trait_reader[trait_id].name.symbol(),
+                        lang_item,
+                    );
                 }
             }
             matches
@@ -748,7 +767,10 @@ fn does_static_match<'arena>(
             for trait_id in traits {
                 if !struct_traits.contains_key(trait_id) {
                     matches = false;
-                    errors.add_static_is_missing_trait(trait_reader[*trait_id].name, lang_item);
+                    errors.add_static_is_missing_trait(
+                        trait_reader[*trait_id].name.symbol(),
+                        lang_item,
+                    );
                 }
             }
             matches
@@ -772,7 +794,7 @@ fn does_trait_match<'arena>(
         let Some((_, func_args_b, func_return_b, ..)) = trait_b
             .functions
             .iter()
-            .find(|(name, ..)| func_name == name)
+            .find(|(name, ..)| *func_name == name.symbol())
         else {
             traits_match = false;
             errors.add_trait_missing_function(lang_item, *func_name);
@@ -808,9 +830,13 @@ fn does_trait_match<'arena>(
     }
 
     for (func_name, ..) in trait_b.functions.iter() {
-        if !trait_a.funcs.iter().any(|(name, ..)| name == func_name) {
+        if !trait_a
+            .funcs
+            .iter()
+            .any(|(name, ..)| *name == func_name.symbol())
+        {
             traits_match = false;
-            errors.add_trait_excessive_function(lang_item, *func_name);
+            errors.add_trait_excessive_function(lang_item, func_name.symbol());
         }
     }
 

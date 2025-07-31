@@ -11,7 +11,7 @@ use crate::{
     tokenizer::{Token, TokenType},
     typechecking::Type,
 };
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{interner::Symbol, Span};
 
 #[derive(ErrorData)]
 #[error("couldn't write `{}`: {_1}", _0.display())]
@@ -85,7 +85,7 @@ pub enum ParsingError<'arena> {
     CannotResolveModule {
         #[primary_label("cannot find module `{name}`")]
         loc: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error(
         "Expected one of `let`, `fn`, `extern`, `struct`, `use`, or `trait`, but found {typ:?}"
@@ -100,38 +100,38 @@ pub enum ParsingError<'arena> {
     OutputNotStartingWithEqual {
         #[primary_label("Register isn't starting with an `=`")]
         loc: Span<'arena>,
-        output: InternedStr<'arena>,
+        output: Symbol<'arena>,
     },
     #[error("Input register cannot start with `=` or `~`")]
     #[note("Try using {:?}", &input[1..])]
     InputStartingWithInvalidChar {
         #[primary_label("Register is starting with either `=` or `~`")]
         loc: Span<'arena>,
-        input: InternedStr<'arena>,
+        input: Symbol<'arena>,
     },
     #[error("A bound register with name `{name}` was already defined")]
     DuplicateAsmReplacer {
         #[primary_label("redefinition here")]
         loc: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("Attribute `{name}` cannot be applied to functions")]
     InvalidFunctionAttribute {
         #[primary_label("attribute applied here")]
         loc: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("{name} is an invalid intrinsic")]
     InvalidIntrinsic {
         #[primary_label("no such intrinsic")]
         loc: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("invalid calling convention: found `{name}`")]
     InvalidCallConv {
         #[primary_label("invalid calling convention")]
         loc: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
     },
     #[error("Expected a type, but found `{found}`")]
     ExpectedType {
@@ -199,7 +199,7 @@ pub enum ParsingError<'arena> {
     FunctionAlreadyDefined {
         #[primary_label("redefinition here")]
         loc: Span<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
         #[primary_label("`{name}` was originally defined here")]
         first_func_loc: Span<'arena>,
     },
@@ -293,12 +293,12 @@ pub enum ProgramFormingError<'arena> {
     #[error("cannot find value `{_1}` in this scope")]
     IdentNotDefined(
         #[primary_label("export defined here")] Span<'arena>,
-        InternedStr<'arena>,
+        Symbol<'arena>,
     ),
     #[error("the name `{_1}` is defined multiple times")]
     IdentAlreadyDefined(
         #[primary_label("`{_1}` redefined here")] Span<'arena>,
-        InternedStr<'arena>,
+        Symbol<'arena>,
     ),
 }
 

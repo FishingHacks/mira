@@ -25,7 +25,7 @@ use inkwell::{
     values::PointerValue,
     AddressSpace,
 };
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{interner::Symbol, Span};
 
 use super::{
     context::DefaultTypes,
@@ -60,7 +60,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         scope: DIScope<'ctx>,
         loc: Span<'arena>,
         typ: &Type<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
         module: StoreKey<TypecheckedModule<'arena>>,
         structs: &Store<TypedStruct<'arena>>,
@@ -88,7 +88,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         scope: DIScope<'ctx>,
         loc: Span<'arena>,
         typ: &Type<'arena>,
-        name: InternedStr<'arena>,
+        name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
         module: StoreKey<TypecheckedModule<'arena>>,
         structs: &Store<TypedStruct<'arena>>,
@@ -230,7 +230,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 .create_subroutine_type(module.1, return_ty, &args, flags);
 
             let mangled_name = mangle_function(tc_ctx, key);
-            let name = func.0.name.as_deref().copied().unwrap_or(ANON_FN_NAME);
+            let name = func.0.name.as_deref().unwrap_or(ANON_FN_NAME);
 
             let line = func
                 .0
@@ -274,7 +274,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 .create_subroutine_type(module.1, return_ty, &args, flags);
 
             let mangled_name = mangle_external_function(tc_ctx, key);
-            let name = func.0.name.as_deref().copied().unwrap_or(ANON_FN_NAME);
+            let name = func.0.name.as_deref().unwrap_or(ANON_FN_NAME);
             let line = func
                 .0
                 .span

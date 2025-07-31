@@ -4,12 +4,12 @@ use mira_errors::{DiagnosticFormatter, Output, StyledPrinter, Styles};
 use parking_lot::Mutex;
 
 use mira_spans::{
-    interner::{InternedStr, SpanInterner, StringInterner},
+    interner::{SpanInterner, Symbol, SymbolInterner},
     Arena, SourceMap, Span, SpanData,
 };
 
 pub struct GlobalContext<'arena> {
-    string_interner: Mutex<StringInterner<'arena>>,
+    string_interner: Mutex<SymbolInterner<'arena>>,
     span_interner: SpanInterner<'arena>,
     source_map: OnceLock<SourceMap>,
 }
@@ -23,7 +23,7 @@ impl Debug for GlobalContext<'_> {
 impl<'arena> GlobalContext<'arena> {
     pub fn new(arena: &'arena Arena) -> Self {
         Self {
-            string_interner: StringInterner::new(arena).into(),
+            string_interner: SymbolInterner::new(arena).into(),
             span_interner: SpanInterner::new(arena),
             source_map: OnceLock::new(),
         }
@@ -45,7 +45,7 @@ impl<'arena> GlobalContext<'arena> {
 pub struct SharedContext<'arena>(&'arena GlobalContext<'arena>);
 
 impl<'arena> SharedContext<'arena> {
-    pub fn intern_str(self, s: &str) -> InternedStr<'arena> {
+    pub fn intern_str(self, s: &str) -> Symbol<'arena> {
         self.0.string_interner.lock().intern(s)
     }
 

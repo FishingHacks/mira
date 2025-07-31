@@ -14,7 +14,7 @@ use crate::{
     },
 };
 pub use inkwell::context::Context as InkwellContext;
-use mira_spans::interner::InternedStr;
+use mira_spans::interner::Symbol;
 pub mod mangling;
 pub use context::{CodegenConfig, CodegenContext, Optimizations};
 pub use error::CodegenError;
@@ -100,7 +100,7 @@ pub struct FunctionCodegenContext<'ctx, 'arena, 'cg> {
     external_functions: &'cg ExternalFunctionsStore<'ctx, 'arena>,
     structs: &'cg StructsStore<'ctx, 'arena>,
     statics: &'cg StaticsStore<'ctx, 'arena>,
-    string_map: &'cg HashMap<InternedStr<'arena>, GlobalValue<'ctx>>,
+    string_map: &'cg HashMap<Symbol<'arena>, GlobalValue<'ctx>>,
     vtables: &'cg HashMap<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
     debug_ctx: &'cg mut DebugContext<'ctx, 'arena>,
     machine: &'cg TargetMachine,
@@ -353,7 +353,7 @@ impl<'ctx, 'arena> TypedLiteral<'arena> {
         statics: &StaticsStore<'ctx, 'arena>,
         functions: &FunctionsStore<'ctx, 'arena>,
         ext_functions: &ExternalFunctionsStore<'ctx, 'arena>,
-        string_map: &HashMap<InternedStr, GlobalValue<'ctx>>,
+        string_map: &HashMap<Symbol, GlobalValue<'ctx>>,
         ctx: &'ctx Context,
     ) -> BasicValueEnum<'ctx> {
         match self {

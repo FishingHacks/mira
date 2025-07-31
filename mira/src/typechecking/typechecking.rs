@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use crate::{
     module::{ModuleContext, ModuleScopeValue},
@@ -9,7 +12,7 @@ use crate::{
     typechecking::typed_resolve_import,
 };
 use mira_errors::{Diagnostic, Diagnostics};
-use mira_spans::{interner::InternedStr, Span};
+use mira_spans::{Ident, Span};
 
 use super::{
     expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
@@ -27,14 +30,14 @@ pub struct ScopeTypeMetadata {
 
 #[derive(Default)]
 pub struct Scopes<'arena> {
-    entries: Vec<HashMap<InternedStr<'arena>, ScopeValueId>>,
+    entries: Vec<HashMap<Ident<'arena>, ScopeValueId>>,
     values: Vec<(Type<'arena>, ScopeTypeMetadata)>,
 }
 
 impl<'arena> Scopes<'arena> {
     pub fn get(
         &self,
-        key: InternedStr<'arena>,
+        key: Ident<'arena>,
     ) -> Option<(&(Type<'arena>, ScopeTypeMetadata), ScopeValueId)> {
         let len = self.entries.len();
         for i in 1..=len {
@@ -51,18 +54,14 @@ impl<'arena> Scopes<'arena> {
 
     pub fn insert_value(
         &mut self,
-        key: InternedStr<'arena>,
+        key: Ident<'arena>,
         value: Type<'arena>,
     ) -> (ScopeValueId, Option<ScopeValueId>) {
         let id = self.push(value);
         (id, self.insert(key, id))
     }
 
-    pub fn insert(
-        &mut self,
-        key: InternedStr<'arena>,
-        value: ScopeValueId,
-    ) -> Option<ScopeValueId> {
+    pub fn insert(&mut self, key: Ident<'arena>, value: ScopeValueId) -> Option<ScopeValueId> {
         if self.entries.is_empty() {
             self.push_scope();
         }
@@ -497,7 +496,10 @@ fn typecheck_statement<'arena>(
             };
             scope.insert(*name, id);
             exprs.push(TypecheckedExpression::DeclareVariable(
-                *location, id, typ, *name,
+                *location,
+                id,
+                typ,
+                name.symbol(),
             ));
             scope.make_stack_allocated(id);
             Ok(false)
@@ -738,7 +740,7 @@ fn typecheck_expression<'arena>(
                     if !structure.elements.iter().any(|v| v.0 == *k) {
                         return Err(TypecheckingError::NoSuchFieldFound {
                             location: values[k].0,
-                            name: *k,
+                            name: k.symbol(),
                         }
                         .to_error());
                     }
@@ -749,7 +751,7 @@ fn typecheck_expression<'arena>(
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
                             location: *location,
-                            name: *key,
+                            name: key.symbol(),
                         }
                         .to_error());
                     };
@@ -786,7 +788,7 @@ fn typecheck_expression<'arena>(
                     module,
                     &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
                     location,
-                    &mut Vec::new(),
+                    &mut HashSet::new(),
                 )
                 .map_err(|_| {
                     TypecheckingError::CannotFindValue(*location, path.clone()).to_error()
@@ -802,7 +804,7 @@ fn typecheck_expression<'arena>(
                     if !structure.elements.iter().any(|v| v.0 == *k) {
                         return Err(TypecheckingError::NoSuchFieldFound {
                             location: values[k].0,
-                            name: *k,
+                            name: k.symbol(),
                         }
                         .to_error());
                     }
@@ -813,7 +815,7 @@ fn typecheck_expression<'arena>(
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
                             location: *location,
-                            name: *key,
+                            name: key.symbol(),
                         }
                         .to_error());
                     };
@@ -857,7 +859,7 @@ fn typecheck_expression<'arena>(
             )),
             LiteralValue::Bool(v) => Ok((Type::PrimitiveBool(0), TypedLiteral::Bool(*v))),
             LiteralValue::Dynamic(path) => {
-                if path.entries.len() == 1 && path.entries[0].2.is_empty() {
+                if path.entries.len() == 1 && path.entries[0].1.is_empty() {
                     if let Some(((typ, _), id)) = scope.get(path.entries[0].0) {
                         return Ok((typ.clone(), TypedLiteral::Dynamic(id)));
                     }
@@ -872,7 +874,7 @@ fn typecheck_expression<'arena>(
                     module,
                     &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
                     location,
-                    &mut Vec::new(),
+                    &mut HashSet::new(),
                 )
                 .map_err(|_| {
                     TypecheckingError::CannotFindValue(*location, path.clone()).to_error()
@@ -1004,7 +1006,7 @@ fn typecheck_expression<'arena>(
                 .ok_or_else(|| {
                     TypecheckingError::AsmNonNumericType(
                         *loc,
-                        name.unwrap(), // see comment above as to why this is fine
+                        name.unwrap().symbol(), // see comment above as to why this is fine
                     )
                     .to_error()
                 })?;
@@ -1013,7 +1015,7 @@ fn typecheck_expression<'arena>(
                 let Some(((entry_ty, _), id)) = scope.get(*name) else {
                     return Err(TypecheckingError::CannotFindValue(
                         *span,
-                        Path::new(*name, *span, Vec::new()),
+                        Path::new(*name, Vec::new()),
                     )
                     .to_error());
                 };
@@ -1484,7 +1486,10 @@ fn typecheck_cast<'arena>(
                 return Err(TypecheckingError::MismatchingTraits(
                     loc,
                     typ,
-                    traits.iter().map(|v| trait_reader[*v].name).collect(),
+                    traits
+                        .iter()
+                        .map(|v| trait_reader[*v].name.symbol())
+                        .collect(),
                 )
                 .to_error());
             }
@@ -1612,11 +1617,11 @@ fn typecheck_dyn_membercall<'arena>(
     scope: &mut Scopes<'arena>,
     module: StoreKey<TypecheckedModule<'arena>>,
     exprs: &mut Vec<TypecheckedExpression<'arena>>,
-    ident: &InternedStr<'arena>,
+    ident: &Ident<'arena>,
     args: &[Expression<'arena>],
     lhs: TypedLiteral<'arena>,
     lhs_loc: Span<'arena>,
-    trait_refs: Vec<(StoreKey<TypedTrait<'arena>>, InternedStr<'arena>)>,
+    trait_refs: Vec<(StoreKey<TypedTrait<'arena>>, Ident<'arena>)>,
     num_references: u8,
 ) -> Result<(Type<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     let trait_reader = context.traits.read();
@@ -1633,7 +1638,7 @@ fn typecheck_dyn_membercall<'arena>(
 
         return Err(TypecheckingError::CannotFindFunctionOnType(
             lhs_loc,
-            *ident,
+            ident.symbol(),
             Type::DynType {
                 trait_refs,
                 num_references,
@@ -1646,9 +1651,12 @@ fn typecheck_dyn_membercall<'arena>(
     match &arg_typs[0].1 {
         Type::PrimitiveSelf(_) => {}
         _ => {
-            return Err(
-                TypecheckingError::InvalidDynTypeFunc(lhs_loc, *ident, trait_name).to_error(),
+            return Err(TypecheckingError::InvalidDynTypeFunc(
+                lhs_loc,
+                ident.symbol(),
+                trait_name.symbol(),
             )
+            .to_error())
         }
     }
     if matches!(return_ty, Type::PrimitiveSelf(_))
@@ -1657,7 +1665,12 @@ fn typecheck_dyn_membercall<'arena>(
             .skip(1)
             .any(|v| matches!(v.1, Type::PrimitiveSelf(_)))
     {
-        return Err(TypecheckingError::InvalidDynTypeFunc(lhs_loc, *ident, trait_name).to_error());
+        return Err(TypecheckingError::InvalidDynTypeFunc(
+            lhs_loc,
+            ident.symbol(),
+            trait_name.symbol(),
+        )
+        .to_error());
     }
 
     let mut typ = Type::DynType {
@@ -1723,7 +1736,7 @@ fn typecheck_membercall<'arena>(
     scope: &mut Scopes<'arena>,
     exprs: &mut Vec<TypecheckedExpression<'arena>>,
     lhs: &Expression<'arena>,
-    ident: &InternedStr<'arena>,
+    ident: &Ident<'arena>,
     args: &[Expression<'arena>],
 ) -> Result<(Type<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     let (mut typ_lhs, mut typed_literal_lhs) =
@@ -1802,9 +1815,12 @@ fn typecheck_membercall<'arena>(
         });
     drop(struct_reader);
     let Some(function_id) = function_id else {
-        return Err(
-            TypecheckingError::CannotFindFunctionOnType(lhs.span(), *ident, typ_lhs).to_error(),
-        );
+        return Err(TypecheckingError::CannotFindFunctionOnType(
+            lhs.span(),
+            ident.symbol(),
+            typ_lhs,
+        )
+        .to_error());
     };
 
     let function: &(_, _) = &function_reader[function_id];
@@ -1816,7 +1832,8 @@ fn typecheck_membercall<'arena>(
         != Some(typ_lhs.clone().without_ref())
     {
         return Err(
-            TypecheckingError::NonMemberFunction(function.0.span, *ident, typ_lhs).to_error(),
+            TypecheckingError::NonMemberFunction(function.0.span, ident.symbol(), typ_lhs)
+                .to_error(),
         );
     }
     let arg_refcount = function.0.arguments[0].1.refcount();
@@ -1989,7 +2006,7 @@ fn ref_resolve_indexing<'arena>(
                                 return Err(TypecheckingError::FieldNotFound(
                                     expression.span(),
                                     typ_lhs,
-                                    *element_name,
+                                    element_name.symbol(),
                                 )
                                 .to_error())
                             }
@@ -2367,7 +2384,7 @@ fn copy_resolve_indexing<'arena>(
                                 return Err(TypecheckingError::FieldNotFound(
                                     expression.span(),
                                     typ_lhs.without_ref(),
-                                    *element_name,
+                                    element_name.symbol(),
                                 )
                                 .to_error())
                             }

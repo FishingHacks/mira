@@ -1,4 +1,4 @@
-use mira_spans::{BytePos, SourceFile, SourceMap, Span, SpanData};
+use mira_spans::{BytePos, Ident, SourceFile, SourceMap, Span, SpanData};
 use parking_lot::RwLock;
 use std::{
     fmt::{Debug, Display},
@@ -13,7 +13,7 @@ use crate::{
     parser::{LiteralValue, Parser, ParserQueueEntry},
     store::{Store, StoreKey},
 };
-use mira_spans::interner::InternedStr;
+use mira_spans::interner::Symbol;
 
 macro_rules! token_type {
     ($($key:ident $(=$value:literal)?),* $(,)?) => {
@@ -173,7 +173,7 @@ pub enum Literal<'arena> {
     Float(f64, NumberType),
     SInt(i64, NumberType),
     UInt(u64, NumberType),
-    String(InternedStr<'arena>),
+    String(Symbol<'arena>),
     Bool(bool),
 }
 
@@ -182,6 +182,16 @@ pub struct Token<'arena> {
     pub typ: TokenType,
     pub literal: Option<Literal<'arena>>,
     pub span: Span<'arena>,
+}
+
+impl<'arena> From<Token<'arena>> for Ident<'arena> {
+    fn from(value: Token<'arena>) -> Self {
+        assert_eq!(value.typ, TokenType::IdentifierLiteral);
+        let Some(Literal::String(s)) = value.literal else {
+            unreachable!("expected value.literal to be Some(Literal::String(_))")
+        };
+        Self::new(s, value.span)
+    }
 }
 
 impl Display for TokenType {
@@ -258,7 +268,7 @@ impl<'arena> Token<'arena> {
             TokenType::VoidLiteral => Some(LiteralValue::Void),
             TokenType::IdentifierLiteral => match self.literal {
                 Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(
-                    crate::parser::Path::new(*v, self.span, Vec::new()),
+                    crate::parser::Path::new(Ident::new(*v, self.span), Vec::new()),
                 )),
                 _ => None,
             },
@@ -273,7 +283,7 @@ impl<'arena> Token<'arena> {
         }
     }
 
-    pub fn string_literal(&self) -> Result<InternedStr<'arena>, ParsingError<'arena>> {
+    pub fn string_literal(&self) -> Result<Symbol<'arena>, ParsingError<'arena>> {
         match &self.literal {
             Some(Literal::String(v)) => Ok(*v),
             _ => Err(ParsingError::InvalidTokenization(self.span)),
@@ -929,7 +939,7 @@ impl<'arena> Tokenizer<'arena> {
     fn do_macro(
         &mut self,
         loc: Span<'arena>,
-        name: &InternedStr<'arena>,
+        name: &Symbol<'arena>,
     ) -> Result<Vec<Token<'arena>>, TokenizationError<'arena>> {
         let start = loc.get_span_data().pos.to_usize();
 
@@ -1046,7 +1056,7 @@ mod test {
     use std::path::Path;
 
     use crate::context::GlobalContext;
-    use mira_spans::{interner::StringInterner, Arena};
+    use mira_spans::{interner::SymbolInterner, Arena};
 
     use super::*;
 
@@ -1159,7 +1169,7 @@ mod test {
     #[test]
     fn test_strings() {
         let arena = Arena::new();
-        let mut interner = StringInterner::new(&arena);
+        let mut interner = SymbolInterner::new(&arena);
         assert_token_eq(
             r#"
 "a b c";
@@ -1182,7 +1192,7 @@ mod test {
     #[test]
     fn test_idents() {
         let arena = Arena::new();
-        let mut interner = StringInterner::new(&arena);
+        let mut interner = SymbolInterner::new(&arena);
         assert_token_eq(
             "jkhdfgkjhdf",
             &[tok!(interner, IdentifierLiteral, jkhdfgkjhdf)],

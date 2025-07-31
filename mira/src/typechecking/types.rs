@@ -6,7 +6,7 @@ use std::{
 
 use crate::store::{Store, StoreKey};
 use crate::{parser::TypeRef, tokenizer::NumberType};
-use mira_spans::interner::InternedStr;
+use mira_spans::Ident;
 
 use super::{TypecheckingContext, TypedStruct, TypedTrait};
 
@@ -19,12 +19,12 @@ pub struct FunctionType<'arena> {
 #[derive(Clone, Debug, Eq)]
 pub enum Type<'arena> {
     DynType {
-        trait_refs: Vec<(StoreKey<TypedTrait<'arena>>, InternedStr<'arena>)>,
+        trait_refs: Vec<(StoreKey<TypedTrait<'arena>>, Ident<'arena>)>,
         num_references: u8,
     },
     Struct {
         struct_id: StoreKey<TypedStruct<'arena>>,
-        name: InternedStr<'arena>,
+        name: Ident<'arena>,
         num_references: u8,
     },
     UnsizedArray {
@@ -65,7 +65,7 @@ pub enum Type<'arena> {
     PrimitiveSelf(u8),
 
     Generic {
-        name: InternedStr<'arena>,
+        name: Ident<'arena>,
         num_references: u8,
         generic_id: u8,
         bounds: Vec<StoreKey<TypedTrait<'arena>>>,
@@ -134,8 +134,8 @@ pub fn resolve_primitive_type<'arena>(typ: &TypeRef<'arena>) -> Option<Type<'are
             num_references,
             type_name,
             span: _,
-        } if type_name.entries.len() == 1 && type_name.entries[0].2.is_empty() => {
-            match type_name.entries[0].0.to_str() {
+        } if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() => {
+            match &*type_name.entries[0].0 {
                 "!" => Some(Type::PrimitiveNever),
                 "void" => Some(Type::PrimitiveVoid(*num_references)),
                 "i8" => Some(Type::PrimitiveI8(*num_references)),

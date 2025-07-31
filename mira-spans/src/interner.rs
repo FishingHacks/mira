@@ -104,13 +104,13 @@ macro_rules! extra_traits {
 }
 
 interner!(
-    StringInterner,
-    InternedStr,
+    SymbolInterner,
+    Symbol,
     str,
     |arena, s| arena.alloc_str(s),
     symbols::ALL_SYMBOLS
 );
-extra_traits!(for InternedStr impl debug, display);
+extra_traits!(for Symbol impl debug, display);
 
 mod span {
     use crate::arena::Arena;
@@ -137,8 +137,8 @@ impl<'arena> SpanInterner<'arena> {
     }
 }
 
-impl<'arena> InternedStr<'arena> {
-    pub const EMPTY: InternedStr<'static> = symbols::EMPTY_SYM;
+impl<'arena> Symbol<'arena> {
+    pub const EMPTY: Symbol<'static> = symbols::EMPTY_SYM;
 
     pub fn to_str(self) -> &'arena str {
         self.0
@@ -148,15 +148,15 @@ impl<'arena> InternedStr<'arena> {
 macro_rules! symbols {
     ($( $category:ident { $($sym:ident $(= $value:expr)?),* $(,)? } ),* $(,)?) => {
         pub mod symbols {
-        use super::InternedStr;
-        pub const EMPTY_SYM: InternedStr<'static> = InternedStr("");
+        use super::Symbol;
+        pub const EMPTY_SYM: Symbol<'static> = Symbol("");
 
         $(#[allow(non_upper_case_globals, non_snake_case)] pub mod $category {
-            use super::InternedStr;
-            $(pub const $sym: InternedStr<'static> = InternedStr(symbols!(value $sym $(= $value)?));)*
+            use super::Symbol;
+            $(pub const $sym: Symbol<'static> = Symbol(symbols!(value $sym $(= $value)?));)*
         })*
 
-        pub(super) const ALL_SYMBOLS: &[InternedStr<'static>] = &[EMPTY_SYM, $($($category::$sym),*),*];
+        pub(super) const ALL_SYMBOLS: &[Symbol<'static>] = &[EMPTY_SYM, $($($category::$sym),*),*];
         }
     };
 
