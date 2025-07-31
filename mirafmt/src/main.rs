@@ -1,24 +1,54 @@
 use mira::{
-    Arena, AsciiPrinter, Output,
+    Arena, AsciiPrinter, ModuleResolver, Output,
     annotations::Annotations,
     context::{GlobalContext, SharedContext},
     module::Module,
-    parser::{FunctionContract, Path as MPath, PathWithoutGenerics, Statement, TypeRef},
+    parser::{
+        ArrayLiteral, BinaryOp, Expression, FunctionContract, LiteralValue, Path as MPath,
+        PathWithoutGenerics, Statement, TypeRef, UnaryOp,
+    },
     store::Store,
     tokenizer::Tokenizer,
 };
 use mira_errors::{DiagnosticFormatter, Diagnostics, Styles};
 use mira_macros::ErrorData;
-use mira_spans::SourceMap;
+use mira_spans::{ImportData, ResolvedPath, SourceMap};
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
     io::{Read, stdin},
     ops::{BitOr, BitOrAssign},
-    os::linux::raw::stat,
     path::Path,
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
+
+struct EmptyResolver;
+
+static ROOT_DIR: LazyLock<Arc<Path>> = LazyLock::new(|| Path::new("/nonexistent").into());
+static PATH: LazyLock<Arc<Path>> = LazyLock::new(|| Path::new("/nonexistent/file.mr").into());
+
+impl ModuleResolver for EmptyResolver {
+    fn resolve_relative(&self, _: ImportData) -> Option<ResolvedPath> {
+        Some(ResolvedPath {
+            root_dir: ROOT_DIR.clone(),
+            file: PATH.clone(),
+        })
+    }
+
+    fn resolve_absolute(&self, _: ImportData) -> Option<ResolvedPath> {
+        Some(ResolvedPath {
+            root_dir: ROOT_DIR.clone(),
+            file: PATH.clone(),
+        })
+    }
+
+    fn resolve_module(&self, _: ImportData, _: &str) -> Option<ResolvedPath> {
+        Some(ResolvedPath {
+            root_dir: ROOT_DIR.clone(),
+            file: PATH.clone(),
+        })
+    }
+}
 
 fn main() {
     let arena = Arena::new();
@@ -39,7 +69,9 @@ fn main() {
 }
 
 fn _main<'arena>(ctx: SharedContext<'arena>) -> Result<(), Diagnostics<'arena>> {
-    ctx.init_source_map(SourceMap::new([].into()));
+    ctx.init_source_map(SourceMap::new(
+        [Box::new(EmptyResolver) as Box<dyn ModuleResolver>].into(),
+    ));
     let mut errs = Diagnostics::new();
     let mut buf = String::new();
     if let Err(e) = stdin().read_to_string(&mut buf) {
@@ -235,7 +267,11 @@ impl Generator {
                 self.indents += 1;
                 self.buf.push_str(INDENT);
                 nodes.iter().for_each(|n| self.node(n, wrapping));
-                self.indents -= 1;
+                if self.indents == 0 {
+                    self.pending_indents = self.pending_indents.wrapping_sub(1)
+                } else {
+                    self.indents -= 1;
+                }
             }
             Node::IndentNext(nodes) if wrapping.enabled() => {
                 self.pending_indents += 1;
@@ -366,52 +402,123 @@ impl Builder {
             Statement::If {
                 condition,
                 if_stmt,
-                else_stmt,
-                span,
+                else_stmt: None,
                 annotations,
-            } => todo!(),
+                ..
+            } => Node::group(
+                self.next_id(),
+                [
+                    self.generate_annotations(annotations),
+                    Node::static_text("if ("),
+                    self.make_expression(condition),
+                    Node::static_text(") "),
+                    self.generate_statement(if_stmt),
+                ],
+            ),
+            Statement::If {
+                condition,
+                if_stmt,
+                else_stmt: Some(else_stmt),
+                annotations,
+                ..
+            } => Node::group(
+                self.next_id(),
+                [
+                    self.generate_annotations(annotations),
+                    Node::static_text("if ("),
+                    self.make_expression(condition),
+                    Node::static_text(")"),
+                    Node::SpaceOrLine,
+                    self.generate_statement(if_stmt),
+                    Node::SpaceOrLine,
+                    Node::static_text("else "),
+                    self.generate_statement(else_stmt),
+                ],
+            ),
             Statement::While {
                 condition,
                 child,
-                span,
                 annotations,
-            } => todo!(),
+                ..
+            } => Node::nodes([
+                self.generate_annotations(annotations),
+                Node::static_text("while ("),
+                self.make_expression(condition),
+                Node::static_text(") "),
+                self.generate_statement(child),
+            ]),
             Statement::For {
                 iterator,
                 var_name,
                 child,
-                span,
                 annotations,
-            } => todo!(),
+                ..
+            } => Node::nodes([
+                self.generate_annotations(annotations),
+                Node::static_text("for ("),
+                self.ident(**var_name),
+                Node::static_text(" in "),
+                self.make_expression(iterator),
+                Node::static_text(") "),
+                self.generate_statement(child),
+            ]),
             Statement::Return(None, _) => Node::static_text("return;"),
-            Statement::Return(expression, _) => todo!(),
+            Statement::Return(Some(expression), _) => Node::nodes([
+                Node::static_text("return "),
+                self.make_expression(expression),
+                Node::static_text(";"),
+            ]),
             Statement::Block(statements, _, annotations) => {
                 if statements.is_empty() {
-                    return Node::group(
-                        self.next_id(),
-                        [
-                            self.generate_annotations(annotations),
-                            Node::static_text("{}"),
-                        ],
-                    );
+                    return Node::nodes([
+                        self.generate_annotations(annotations),
+                        Node::static_text("{}"),
+                    ]);
                 }
-                Node::group(
-                    self.next_id(),
-                    [
-                        Node::static_text("{"),
-                        Node::HardLine,
-                        Node::indent(
-                            statements
-                                .iter()
-                                .map(|v| Node::nodes([self.generate_statement(v), Node::HardLine]))
-                                .collect::<Box<[_]>>(),
-                        ),
-                        Node::static_text("}"),
-                    ],
-                )
+                Node::nodes([
+                    Node::static_text("{"),
+                    Node::SpaceOrLine,
+                    Node::indent(
+                        statements
+                            .iter()
+                            .enumerate()
+                            .map(|(i, v)| {
+                                if i != statements.len() - 1 {
+                                    Node::nodes([self.generate_statement(v), Node::SpaceOrLine])
+                                } else {
+                                    self.generate_statement(v)
+                                }
+                            })
+                            .collect::<Box<[_]>>(),
+                    ),
+                    Node::SpaceOrLine,
+                    Node::static_text("}"),
+                ])
             }
-            Statement::Var(interned_str, expression, type_ref, span, annotations) => todo!(),
-            Statement::Expression(expression) => todo!(),
+            Statement::Var(name, expression, None, _, annotations) => Node::nodes([
+                self.generate_annotations(annotations),
+                Node::static_text("let "),
+                self.ident(**name),
+                Node::static_text(" = "),
+                self.make_expression(expression),
+                Node::static_text(";"),
+            ]),
+            Statement::Var(name, expression, Some(type_ref), _, annotations) => Node::nodes([
+                self.generate_annotations(annotations),
+                Node::static_text("let "),
+                self.ident(**name),
+                Node::static_text(": "),
+                self.type_(type_ref),
+                Node::static_text(" = "),
+                self.make_expression(expression),
+                Node::static_text(";"),
+            ]),
+            Statement::Expression(expression) => {
+                let mut nodes = Vec::new();
+                self.generate_expr(expression, &mut nodes);
+                nodes.push(Node::static_text(";"));
+                Node::indent_next(nodes)
+            }
             Statement::Function(function_contract, statement, _) => {
                 if matches!(&**statement, Statement::Expression(_)) {
                     Node::group(
@@ -433,7 +540,36 @@ impl Builder {
                     )
                 }
             }
-            Statement::ExternalFunction(function_contract, statement, span) => todo!(),
+            Statement::ExternalFunction(function_contract, statement, _) => {
+                let Some(statement) = statement else {
+                    return Node::group(
+                        self.next_id(),
+                        [
+                            self.generate_func(function_contract),
+                            Node::static_text(";"),
+                        ],
+                    );
+                };
+                if matches!(&**statement, Statement::Expression(_)) {
+                    Node::group(
+                        self.next_id(),
+                        [
+                            self.generate_func(function_contract),
+                            Node::static_text(" = "),
+                            self.generate_statement(statement),
+                        ],
+                    )
+                } else {
+                    Node::group(
+                        self.next_id(),
+                        [
+                            self.generate_func(function_contract),
+                            Node::static_text(" "),
+                            self.generate_statement(statement),
+                        ],
+                    )
+                }
+            }
             Statement::Struct {
                 name,
                 elements,
@@ -480,6 +616,252 @@ impl Builder {
             | Statement::BakedStruct(..)
             | Statement::BakedStatic(..)
             | Statement::BakedTrait(..) => unreachable!(),
+        }
+    }
+
+    fn make_expression(&self, expr: &Expression) -> Node {
+        let mut nodes = Vec::new();
+        self.generate_expr(expr, &mut nodes);
+        Node::indent_next(nodes)
+    }
+
+    fn generate_expr(&self, expr: &Expression, nodes: &mut Vec<Node>) {
+        match expr {
+            Expression::Literal(LiteralValue::String(s), _) => nodes.push(self.string(s)),
+            Expression::Literal(LiteralValue::Dynamic(ident), _) => nodes.push(self.path(ident)),
+            Expression::Literal(LiteralValue::Bool(true), _) => {
+                nodes.push(Node::static_text("true"))
+            }
+            Expression::Literal(LiteralValue::Bool(false), _) => {
+                nodes.push(Node::static_text("false"))
+            }
+            Expression::Literal(LiteralValue::Void, _) => nodes.push(Node::static_text("void")),
+            Expression::Literal(LiteralValue::SInt(v, t), _) => {
+                nodes.push(Node::text(format!("{v}{t}")))
+            }
+            Expression::Literal(LiteralValue::UInt(v, t), _) => {
+                nodes.push(Node::text(format!("{v}{t}")))
+            }
+            Expression::Literal(LiteralValue::Float(v, t), _) => {
+                nodes.push(Node::text(format!("{v}{t}")))
+            }
+            Expression::Literal(LiteralValue::Tuple(elems), _) => {
+                nodes.push(self.generate_list_like(
+                    TUPLE.clone(),
+                    COMMA.clone(),
+                    elems.iter().map(|(_, v)| self.make_expression(v)),
+                ));
+            }
+            Expression::Literal(
+                LiteralValue::Array(ArrayLiteral::CopyInitialized(elem, num)),
+                _,
+            ) => {
+                nodes.push(Node::static_text("["));
+                self.generate_expr(elem, nodes);
+                nodes.push(Node::StaticText("; "));
+                nodes.push(Node::text(format!("{num}")));
+                nodes.push(Node::static_text("]"));
+            }
+            Expression::Literal(LiteralValue::Array(ArrayLiteral::Values(elems)), _) => {
+                nodes.push(self.generate_list_like(
+                    BRACKETS.clone(),
+                    COMMA.clone(),
+                    elems.iter().map(|v| self.make_expression(v)),
+                ));
+            }
+            Expression::Literal(LiteralValue::Struct(inits, name), _) => {
+                let id = self.next_id();
+                let mut struct_nodes = Vec::new();
+                struct_nodes.push(self.path(name));
+                struct_nodes.push(Node::static_text(" {"));
+                struct_nodes.push(Node::SpaceOrLine);
+                for (i, (name, (_, v))) in inits.iter().enumerate() {
+                    if i != 0 {
+                        struct_nodes.push(Node::static_text(","));
+                        struct_nodes.push(Node::SpaceOrLine);
+                    }
+                    struct_nodes.push(Node::text(**name));
+                    struct_nodes.push(Node::static_text(": "));
+                    struct_nodes.push(self.make_expression(v));
+                }
+                struct_nodes.push(Node::if_wrap(id, Node::static_text(","), Node::Empty));
+                struct_nodes.push(Node::SpaceOrLine);
+                struct_nodes.push(Node::static_text("}"));
+                nodes.push(Node::group(id, struct_nodes));
+            }
+            Expression::Literal(LiteralValue::AnonymousStruct(inits), _) => {
+                let id = self.next_id();
+                let mut struct_nodes = Vec::new();
+                struct_nodes.push(Node::static_text(".{"));
+                struct_nodes.push(Node::SpaceOrLine);
+                for (i, (name, (_, v))) in inits.iter().enumerate() {
+                    if i != 0 {
+                        struct_nodes.push(Node::static_text(","));
+                        struct_nodes.push(Node::SpaceOrLine);
+                    }
+                    struct_nodes.push(Node::text(**name));
+                    struct_nodes.push(Node::static_text(": "));
+                    struct_nodes.push(self.make_expression(v));
+                }
+                struct_nodes.push(Node::if_wrap(id, Node::static_text(","), Node::Empty));
+                struct_nodes.push(Node::SpaceOrLine);
+                struct_nodes.push(Node::static_text("}"));
+                nodes.push(Node::group(id, struct_nodes));
+            }
+            Expression::Literal(LiteralValue::AnonymousFunction(contract, statement), _) => {
+                if matches!(&**statement, Statement::Expression(_)) {
+                    nodes.push(Node::group(
+                        self.next_id(),
+                        [
+                            self.generate_func(contract),
+                            Node::static_text(" = "),
+                            self.generate_statement(statement),
+                        ],
+                    ));
+                } else {
+                    nodes.push(Node::group(
+                        self.next_id(),
+                        [
+                            self.generate_func(contract),
+                            Node::static_text(" "),
+                            self.generate_statement(statement),
+                        ],
+                    ));
+                }
+            }
+            Expression::Literal(LiteralValue::BakedAnonymousFunction(_), _) => unreachable!(),
+            Expression::Unary {
+                operator,
+                right_side,
+                ..
+            } => {
+                match operator {
+                    UnaryOp::Plus => nodes.push(Node::static_text("+")),
+                    UnaryOp::Minus => nodes.push(Node::static_text("-")),
+                    UnaryOp::BitwiseNot => nodes.push(Node::static_text("~")),
+                    UnaryOp::LogicalNot => nodes.push(Node::static_text("!")),
+                    UnaryOp::Reference => nodes.push(Node::static_text("&")),
+                    UnaryOp::Dereference => nodes.push(Node::static_text("*")),
+                }
+                self.generate_expr(right_side, nodes);
+            }
+            // TODO: change parsing to not desugar +=
+            Expression::Binary {
+                operator,
+                right_side,
+                left_side,
+                ..
+            } => {
+                self.generate_expr(left_side, nodes);
+                nodes.push(Node::static_text(" "));
+                match operator {
+                    BinaryOp::Plus => nodes.push(Node::static_text("+")),
+                    BinaryOp::Minus => nodes.push(Node::static_text("-")),
+                    BinaryOp::Divide => nodes.push(Node::static_text("/")),
+                    BinaryOp::Multiply => nodes.push(Node::static_text("*")),
+                    BinaryOp::Modulo => nodes.push(Node::static_text("%")),
+                    BinaryOp::LessThan => nodes.push(Node::static_text("<")),
+                    BinaryOp::LessThanEq => nodes.push(Node::static_text("<=")),
+                    BinaryOp::GreaterThan => nodes.push(Node::static_text(">")),
+                    BinaryOp::GreaterThanEq => nodes.push(Node::static_text(">=")),
+                    BinaryOp::LShift => nodes.push(Node::static_text("<<")),
+                    BinaryOp::RShift => nodes.push(Node::static_text(">>")),
+                    BinaryOp::LogicalAnd => nodes.push(Node::static_text("&&")),
+                    BinaryOp::LogicalOr => nodes.push(Node::static_text("||")),
+                    BinaryOp::BitwiseAnd => nodes.push(Node::static_text("&")),
+                    BinaryOp::BitwiseOr => nodes.push(Node::static_text("|")),
+                    BinaryOp::BitwiseXor => nodes.push(Node::static_text("^")),
+                    BinaryOp::Equals => nodes.push(Node::static_text("==")),
+                    BinaryOp::NotEquals => nodes.push(Node::static_text("!=")),
+                }
+                nodes.push(Node::static_text(" "));
+                self.generate_expr(right_side, nodes);
+            }
+            Expression::FunctionCall {
+                identifier,
+                arguments,
+                ..
+            } => {
+                self.generate_expr(identifier, nodes);
+                nodes.push(self.generate_list_like(
+                    PARENS.clone(),
+                    COMMA.clone(),
+                    arguments.iter().map(|v| self.make_expression(v)),
+                ));
+            }
+            Expression::MemberCall {
+                identifier,
+                lhs,
+                arguments,
+                ..
+            } => {
+                self.generate_expr(lhs, nodes);
+                nodes.push(Node::static_text("."));
+                nodes.push(self.ident(identifier));
+                nodes.push(self.generate_list_like(
+                    PARENS.clone(),
+                    COMMA.clone(),
+                    arguments.iter().map(|v| self.make_expression(v)),
+                ));
+            }
+            Expression::Indexing {
+                left_side,
+                right_side,
+                ..
+            } => {
+                self.generate_expr(left_side, nodes);
+                nodes.push(Node::group(
+                    self.next_id(),
+                    [
+                        Node::static_text("["),
+                        self.make_expression(right_side),
+                        Node::static_text("]"),
+                    ],
+                ));
+            }
+            Expression::MemberAccess {
+                left_side, index, ..
+            } => {
+                self.generate_expr(left_side, nodes);
+                for index in index {
+                    nodes.push(Node::static_text("."));
+                    nodes.push(self.ident(index));
+                }
+            }
+            Expression::Assignment {
+                left_side,
+                right_side,
+                ..
+            } => {
+                self.generate_expr(left_side, nodes);
+                nodes.push(Node::static_text(" = "));
+                nodes.push(self.make_expression(right_side));
+            }
+            Expression::Range {
+                left_side,
+                right_side,
+                inclusive,
+                ..
+            } => {
+                self.generate_expr(left_side, nodes);
+                if *inclusive {
+                    nodes.push(Node::static_text("..="))
+                } else {
+                    nodes.push(Node::static_text(".."))
+                }
+                self.generate_expr(right_side, nodes);
+            }
+            Expression::TypeCast {
+                left_side,
+                new_type,
+                ..
+            } => {
+                self.generate_expr(left_side, nodes);
+                nodes.push(Node::static_text(" as "));
+                nodes.push(self.type_(new_type));
+            }
+            // TODO: change parsing to include more asm info
+            Expression::Asm { .. } => todo!(),
         }
     }
 
@@ -761,6 +1143,8 @@ impl Default for Builder {
 
 const ANGLE_BRACKETS: (Node, Node) = (Node::static_text("<"), Node::static_text(">"));
 const PARENS: (Node, Node) = (Node::static_text("("), Node::static_text(")"));
+const BRACKETS: (Node, Node) = (Node::static_text("["), Node::static_text("]"));
+const TUPLE: (Node, Node) = (Node::static_text(".["), Node::static_text("]"));
 const COMMA: Node = Node::static_text(",");
 
 const INDENT: &str = "    ";
