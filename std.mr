@@ -1,4 +1,7 @@
-use "std"::{cstrlen, print_u64_hex};
+use "std"::cstrlen;
+use "std"::print_u64_hex;
+use "std"::cstrlen;
+use "std"::print_u64_hex;
 use "std/os"::write;
 
 pub fn main(argc: usize, argv: &&u8) {

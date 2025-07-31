@@ -1,5 +1,10 @@
-use "./clone_copy.mr"::{Clone, Copy};
+use "./clone_copy.mr"::Clone;
+use "./clone_copy.mr"::Copy;
 use "./os.mr"::write;
+use "./langitems.mr"::print_u64;
+use "./langitems.mr"::print_i64;
+use "./panic.mr"::panic;
+
 export Clone;
 export Copy;
 
@@ -19,8 +24,6 @@ pub fn cstrlen(cstr: &u8) -> usize {
     }
     return len;
 }
-use "./langitems.mr"::{print_u64, print_i64};
-use "./panic.mr"::panic;
 export print_u64;
 export print_i64;
 export panic;

@@ -1,4 +1,6 @@
-use "./lib.mr"::{print_str, print_char, print_newline};
+use "./lib.mr"::print_str;
+use "./lib.mr"::print_char;
+use "./lib.mr"::print_newline;
 use "./intrinsics.mr"::get_metadata;
 
 pub fn print_u64(val: u64) {
