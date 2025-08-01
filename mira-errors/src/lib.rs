@@ -378,6 +378,7 @@ mod test {
     }
 
     #[test]
+    #[ignore = "this is not a unit test, but rather an easy way to do a 'main' function in a library :3"]
     fn test() {
         let arena = Arena::new();
         let interner = SpanInterner::new(&arena);
