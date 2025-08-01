@@ -11,13 +11,9 @@ use clap::{Args, ValueEnum};
 use mira::{
     codegen::CodegenConfig,
     context::GlobalContext,
-    linking::{run_full_compilation_pipeline, FullCompilationOptions},
-    module_resolution::{
-        AbsoluteResolver, BasicModuleResolver, RelativeResolver, SingleFileModuleResolver,
-        SingleModuleResolver,
-    },
+    linking::{run_full_compilation_pipeline, FullCompilationOptions, LibraryTree},
     target::{Target, NATIVE_TARGET},
-    Arena, ModuleResolver, Output, UnicodePrinter,
+    Arena, Output, UnicodePrinter,
 };
 
 use crate::libfinder;
@@ -84,11 +80,6 @@ pub struct CompileArgs {
     /// The file to emit the object (.o) file to
     #[arg(long)]
     emit_obj: Option<PathBuf>,
-    #[arg(long = "package", short)]
-    /// Specify paths to directories you want to be able to have available as modules that you can
-    /// access without having to specify a relative path. Directories in `.mira/modules` are
-    /// automatically included.
-    packages: Vec<PathBuf>,
     /// The path to the linker script used by the linker
     #[arg(long, short = 'l')]
     linker_script: Option<PathBuf>,
@@ -142,36 +133,17 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
         args.without_extension = false;
     }
 
-    let mut resolvers: Vec<Box<dyn ModuleResolver>> = vec![
-        Box::new(RelativeResolver),
-        Box::new(AbsoluteResolver),
-        Box::new(SingleModuleResolver("std".into(), libmirastd.into())),
-        Box::new(SingleFileModuleResolver::new(
-            "\0__root",
-            file.clone(),
-            None,
-        )),
-        Box::new(BasicModuleResolver(vec![
-            ".mira/modules/$name",
-            ".mira/modules/$name/src",
-        ])),
-    ];
-
-    for package in args.packages {
-        let Some(filename) = package.file_name() else {
-            println!(
-                "Failed to get the directory name for package {}",
-                package.display()
-            );
-            return Ok(());
-        };
-        resolvers.push(Box::new(SingleModuleResolver(
-            filename.to_string_lossy().into_owned(),
-            package.into(),
-        )));
-    }
-
-    let mut opts = FullCompilationOptions::new(file, root_directory.into(), resolvers.into());
+    let mut libtree = LibraryTree::new();
+    let stdlib_main_file = libmirastd.join("lib.mr").into();
+    let libstd = libtree
+        .build_library(libmirastd.into(), stdlib_main_file)
+        .build();
+    let mainlib = libtree
+        .build_library(root_directory.into(), file)
+        .with_dependency("std", libstd)
+        .build();
+    libtree.main_library(mainlib);
+    let mut opts = FullCompilationOptions::new(libtree);
     opts.set_target(args.target)
         .set_codegen_opts(
             args.opt
@@ -181,7 +153,6 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
         .set_verbose_printing(args.verbose)
         .shared_object(args.shared)
         .set_additional_linker_args(&args.linker_args)
-        .always_include_file(Some("std/prelude.mr".into()))
         .add_extension_to_exe = !args.without_extension;
     opts.exec_path = args.out_file;
     if let Some(path) = &args.emit_ir {

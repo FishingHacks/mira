@@ -37,6 +37,7 @@ macro_rules! intrinsics {
 }
 
 intrinsics! {
+    CallMain => call_main, // () -> void, calls the main function
     Drop => drop, // <T>(v: T), equivalent to drop_in_place(&v)
     DropInPlace => drop_in_place, // <unsized T>(v: &T), equivalent to Drop::drop(v)
     Forget => forget, // <T>(v: T), causes the value to not be dropped
@@ -88,6 +89,7 @@ impl Intrinsic {
             Intrinsic::Breakpoint
             | Intrinsic::Trap
             | Intrinsic::Unreachable
+            | Intrinsic::CallMain
             | Intrinsic::ReturnAddress => 0,
             _ => 1,
         }
@@ -153,6 +155,7 @@ impl Intrinsic {
             // - genericless intrinsics -
             // --------------------------
             Intrinsic::Unreachable
+            | Intrinsic::CallMain
             | Intrinsic::Breakpoint
             | Intrinsic::Trap
             | Intrinsic::ReturnAddress => Ok(()),

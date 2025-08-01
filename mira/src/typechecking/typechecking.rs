@@ -514,7 +514,9 @@ fn typecheck_statement<'arena>(
         )
         .map_err(|e| _ = errs.add(e))
         .map(|(typ, _)| matches!(typ, Type::PrimitiveNever)),
-        Statement::BakedFunction(..)
+        Statement::Use { .. }
+        | Statement::Mod { .. }
+        | Statement::BakedFunction(..)
         | Statement::Function(..)
         | Statement::ExternalFunction(..)
         | Statement::BakedStruct(..)

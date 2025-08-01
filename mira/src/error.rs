@@ -196,6 +196,14 @@ pub enum ParsingError<'arena> {
         keyword: &'static str,
     },
     #[error("Redefinition of name `{name}`")]
+    ItemAlreadyDefined {
+        #[primary_label("redefinition here")]
+        loc: Span<'arena>,
+        name: Symbol<'arena>,
+        #[primary_label("`{name}` was originally defined here")]
+        first: Span<'arena>,
+    },
+    #[error("Redefinition of name `{name}`")]
     FunctionAlreadyDefined {
         #[primary_label("redefinition here")]
         loc: Span<'arena>,
@@ -228,6 +236,20 @@ pub enum ParsingError<'arena> {
         loc: Span<'arena>,
         name: String,
     },
+    #[error("`{_0}` is not a valid module name")]
+    #[note(
+        "Filenames cannot contain `.`, `\\0`, `<`, `>`, `:`, `\"`, `/`, `\\`, `|`, `?` or `*`."
+    )]
+    InvalidFileNameErr(
+        Symbol<'arena>,
+        #[primary_label("this character is not allowed")] Span<'arena>,
+    ),
+    #[error("Could not find module `{_0}`")]
+    #[note("to create the module `{_0}`, create file `{0}/{_0}.mr` or `{0}/{_0}/mod.mr`", _2.display())]
+    #[note(
+    "if there is a `mod {_0}` elsewhere in the package, import it with `use crate::...` instead"
+)]
+    FileNotFoundErr(Symbol<'arena>, #[primary_label("")] Span<'arena>, PathBuf),
 }
 
 #[derive(ErrorData, Debug)]

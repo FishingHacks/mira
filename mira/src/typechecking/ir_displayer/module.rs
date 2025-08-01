@@ -31,13 +31,9 @@ impl ModuleDisplay<'_> {
         if !self.0.exports.is_empty() {
             f.write_str("\nexports:")?;
             f.push_indent();
-            for (name, exported_name) in self.0.exports.iter() {
+            for name in self.0.exports.iter() {
                 f.write_char('\n')?;
                 f.write_value(name)?;
-                if *name != *exported_name {
-                    f.write_str(" as ")?;
-                    f.write_value(exported_name)?;
-                }
                 if let Some(value) = self.0.scope.get(name) {
                     f.write_str(" (")?;
                     fmt_module_scope_value(value, f)?;

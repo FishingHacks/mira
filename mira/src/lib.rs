@@ -25,4 +25,4 @@ pub mod store;
 pub(crate) mod threadpool;
 pub use mira_errors::{AsciiPrinter, Output, UnicodePrinter};
 pub use mira_spans::interner::symbols;
-pub use mira_spans::{Arena, ModuleResolver};
+pub use mira_spans::Arena;

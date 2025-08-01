@@ -12,13 +12,10 @@ use std::{
 use crate::{libfinder, VER};
 use clap::{Args, ValueEnum};
 use mira::context::GlobalContext;
-use mira::module_resolution::SingleModuleResolver;
+use mira::linking::LibraryTree;
 use mira::{
     codegen::CodegenConfig,
     linking::{run_full_compilation_pipeline, FullCompilationOptions},
-    module_resolution::{
-        AbsoluteResolver, BasicModuleResolver, RelativeResolver, SingleFileModuleResolver,
-    },
     target::{Target, NATIVE_TARGET},
 };
 use mira::{Arena, Output, UnicodePrinter};
@@ -57,7 +54,7 @@ pub fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
         // pub fn main(argc: usize, argv: &&u8) {
         //     "Hello, World".println();
         // }
-        Ok("pub fn main(argc: usize, argv: &&u8) {\n    \"Hello, World\".println();\n}".into())
+        Ok("pub fn main() {\n    \"Hello, World\".println();\n}".into())
     })?;
 
     let mut repl = Repl::<Data>::new(
@@ -128,6 +125,7 @@ pub fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
             file,
             editor_path,
             editor_mode,
+            std_main_file: libmirastd.join("lib.mr").into(),
             libmirastd: libmirastd.into(),
         },
         buf,
@@ -194,6 +192,7 @@ struct Data {
     editor_path: Option<PathBuf>,
     editor_mode: bool,
     libmirastd: Arc<Path>,
+    std_main_file: Arc<Path>,
 }
 
 fn parse_opts(args: &str) -> Vec<String> {
@@ -380,29 +379,21 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         obj_file = Some(path.to_path_buf());
     }
 
-    let mut compilation_opts = FullCompilationOptions::new(
-        repl.data.file.clone(),
-        repl.data.current_dir.clone(),
-        Box::new([
-            Box::new(RelativeResolver),
-            Box::new(AbsoluteResolver),
-            Box::new(SingleModuleResolver(
-                "std".into(),
-                repl.data.libmirastd.clone(),
-            )),
-            Box::new(SingleFileModuleResolver::new(
-                "\0__root",
-                repl.data.file.clone(),
-                None,
-            )),
-            Box::new(BasicModuleResolver(vec![
-                ".mira/modules/$name",
-                ".mira/modules/$name/src",
-            ])),
-        ]),
-    );
+    let mut libtree = LibraryTree::new();
+    let libstd = libtree
+        .build_library(
+            repl.data.libmirastd.clone(),
+            repl.data.std_main_file.clone(),
+        )
+        .build();
+    let mainlib = libtree
+        .build_library(repl.data.current_dir.clone(), repl.data.file.clone())
+        .with_source(repl.buf.clone().into())
+        .with_dependency("std", libstd)
+        .build();
+    libtree.main_library(mainlib);
+    let mut compilation_opts = FullCompilationOptions::new(libtree);
     compilation_opts
-        .with_source(Some(&repl.buf))
         .set_binary_path(exec_file.clone(), false)
         .set_object_path(obj_file)
         .set_additional_linker_args(&opts)
@@ -411,7 +402,6 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         .llvm_ir_writer(llvm_ir_writer)
         .llvm_bc_writer(llvm_bc_writer)
         .asm_writer(asm_writer)
-        .always_include_file(Some("std/prelude.mr".into()))
         .codegen_opts
         .optimizations_of(CodegenConfig::new_release_safe());
 

@@ -1,17 +1,17 @@
-use std::{fmt::Debug, io::IsTerminal, sync::OnceLock};
+use std::{fmt::Debug, io::IsTerminal};
 
 use mira_errors::{DiagnosticFormatter, Output, StyledPrinter, Styles};
 use parking_lot::Mutex;
 
 use mira_spans::{
-    interner::{SpanInterner, Symbol, SymbolInterner},
-    Arena, SourceMap, Span, SpanData,
+    interner::{SpanInterner, SymbolInterner},
+    Arena, SourceMap, Span, SpanData, Symbol,
 };
 
 pub struct GlobalContext<'arena> {
     string_interner: Mutex<SymbolInterner<'arena>>,
     span_interner: SpanInterner<'arena>,
-    source_map: OnceLock<SourceMap>,
+    source_map: SourceMap,
 }
 
 impl Debug for GlobalContext<'_> {
@@ -25,15 +25,8 @@ impl<'arena> GlobalContext<'arena> {
         Self {
             string_interner: SymbolInterner::new(arena).into(),
             span_interner: SpanInterner::new(arena),
-            source_map: OnceLock::new(),
+            source_map: SourceMap::new(),
         }
-    }
-
-    pub fn init_source_map(&self, source_map: SourceMap) {
-        self.source_map
-            .set(source_map)
-            .map_err(|_| ())
-            .expect("source map should not yet be initialized")
     }
 
     pub fn share(&'arena self) -> SharedContext<'arena> {
@@ -58,18 +51,7 @@ impl<'arena> SharedContext<'arena> {
     }
 
     pub fn source_map(&self) -> &SourceMap {
-        self.0
-            .source_map
-            .get()
-            .expect("source map should have been initialized")
-    }
-
-    pub fn init_source_map(self, source_map: SourceMap) {
-        self.0
-            .source_map
-            .set(source_map)
-            .map_err(|_| ())
-            .expect("source map should not yet be initialized")
+        &self.0.source_map
     }
 
     pub fn make_diagnostic_formatter<P: StyledPrinter>(

@@ -1,7 +1,7 @@
-use "./lib.mr"::print_str;
-use "./lib.mr"::print_char;
-use "./lib.mr"::print_newline;
-use "./intrinsics.mr"::get_metadata;
+use crate::print_str;
+use crate::print_char;
+use crate::print_newline;
+use crate::intrinsics::get_metadata;
 
 pub fn print_u64(val: u64) {
     if (val == 0) {

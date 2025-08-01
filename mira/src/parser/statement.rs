@@ -6,18 +6,22 @@ use std::{
 use crate::{
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
-    module::{BakedStruct, ExternalFunction, Function, Module, ModuleContext, Static},
-    parser::{module_resolution::resolve_module, ParserQueueEntry},
+    module::{
+        BakedStruct, ExternalFunction, Function, Import, Module, ModuleContext, ModuleScopeValue,
+        Static,
+    },
+    parser::ParserQueueEntry,
     store::StoreKey,
     symbols,
-    tokenizer::{Literal, Token, TokenType},
+    tokenizer::{Token, TokenType},
 };
 
 use super::{
+    module_resolution,
     types::{Generic, TypeRef},
     Expression, Parser, PathWithoutGenerics,
 };
-use mira_spans::{Ident, ResolvedPath, Span, SpanData};
+use mira_spans::{Ident, Span, SpanData};
 
 #[derive(Clone, Debug)]
 pub enum BakableFunction<'arena> {
@@ -132,6 +136,18 @@ pub enum Statement<'arena> {
     Export(Ident<'arena>, Ident<'arena>, Span<'arena>),
     ModuleAsm(Span<'arena>, String),
 
+    Use {
+        span: Span<'arena>,
+        path: PathWithoutGenerics<'arena>,
+        alias: Option<Ident<'arena>>,
+        public: bool,
+    },
+    Mod {
+        span: Span<'arena>,
+        name: Ident<'arena>,
+        public: bool,
+    },
+
     BakedFunction(StoreKey<Function<'arena>>, Span<'arena>),
     BakedExternalFunction(StoreKey<ExternalFunction<'arena>>, Span<'arena>),
     BakedStruct(StoreKey<BakedStruct<'arena>>, Span<'arena>),
@@ -159,6 +175,8 @@ impl<'arena> Statement<'arena> {
             | Self::BakedStatic(_, span)
             | Self::BakedTrait(_, span)
             | Self::Trait(Trait { span, .. })
+            | Self::Use { span, .. }
+            | Self::Mod { span, .. }
             | Self::While { span, .. } => *span,
         }
     }
@@ -182,6 +200,8 @@ impl<'arena> Statement<'arena> {
             Self::ExternalFunction(..) => {
                 unreachable!("external function in a non-top-level scope")
             }
+            Self::Use { .. } => unreachable!("use in a non-top-level scope"),
+            Self::Mod { .. } => unreachable!("mod in a non-top-level scope"),
             Self::Struct { .. } => unreachable!("struct in a non-top-level scope"),
             Self::Function(..) => unreachable!("function in a non-top-level scope"),
             Self::Block(statements, ..) => statements
@@ -360,6 +380,31 @@ impl Display for Statement<'_> {
                 }
                 f.write_str(");")
             }
+            Self::Use {
+                path,
+                alias,
+                public,
+                ..
+            } => {
+                if *public {
+                    f.write_str("pub ")?;
+                }
+                f.write_str("use ")?;
+                Display::fmt(path, f)?;
+                if let Some(alias) = alias {
+                    f.write_str(" as ")?;
+                    f.write_str(alias)?;
+                }
+                f.write_char(';')
+            }
+            Self::Mod { name, public, .. } => {
+                if *public {
+                    f.write_str("pub ")?;
+                }
+                f.write_str("mod ")?;
+                f.write_str(name)?;
+                f.write_char(';')
+            }
         }
     }
 }
@@ -497,6 +542,7 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Fn if !is_global => invalid_kw!("function"),
             TokenType::Struct if !is_global => invalid_kw!("struct definition"),
             TokenType::Use if !is_global => invalid_kw!("use"),
+            TokenType::Mod if !is_global => invalid_kw!("mod"),
             TokenType::Export if !is_global => invalid_kw!("export"),
             TokenType::Trait if !is_global => invalid_kw!("trait"),
             TokenType::Pub if !is_global => invalid_kw!("pub"),
@@ -533,7 +579,8 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Eof => {
                 return Err(ParsingError::ExpectedStatement(self.peek().span));
             }
-            TokenType::Use => self.parse_use().map(|_| None),
+            TokenType::Use => self.parse_use(false).map(Some),
+            TokenType::Mod => self.parse_mod(false).map(Some),
             TokenType::Export => self.parse_export().map(Some),
             TokenType::Pub => self.parse_pub().map(Some),
             _ if is_global => {
@@ -553,7 +600,7 @@ impl<'arena> Parser<'_, 'arena> {
     }
 
     fn parse_pub(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let span = self.advance().span;
+        self.advance();
         let stmt = match self.peek().typ {
             TokenType::Fn => self
                 .parse_callable(false)
@@ -568,6 +615,8 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Struct => self.parse_struct()?,
             TokenType::Extern => self.parse_external()?,
             TokenType::Trait => self.parse_trait()?,
+            TokenType::Use => return self.parse_use(true),
+            TokenType::Mod => return self.parse_mod(true),
             _ => {
                 return Err(ParsingError::ExpectedElementForPub {
                     loc: self.peek().span,
@@ -575,40 +624,16 @@ impl<'arena> Parser<'_, 'arena> {
                 })
             }
         };
-        let (ident, symbol_span) = match &stmt {
-            Statement::Function(c, ..) | Statement::ExternalFunction(c, ..) => (
-                c.name.expect("global functions should always have a name"),
-                c.span,
-            ),
-            Statement::Trait(Trait { name, span, .. })
-            | Statement::Var(name, .., span, _)
-            | Statement::Struct { name, span, .. } => (*name, *span),
+        let ident = match &stmt {
+            Statement::Function(c, ..) | Statement::ExternalFunction(c, ..) => {
+                c.name.expect("global functions should always have a name")
+            }
+            Statement::Trait(Trait { name, .. })
+            | Statement::Var(name, ..)
+            | Statement::Struct { name, .. } => *name,
             _ => unreachable!(),
         };
-        self.tokens.insert(
-            self.current,
-            Token {
-                typ: TokenType::Export,
-                literal: None,
-                span,
-            },
-        );
-        self.tokens.insert(
-            self.current + 1,
-            Token {
-                typ: TokenType::IdentifierLiteral,
-                literal: Some(Literal::String(ident.symbol())),
-                span: symbol_span,
-            },
-        );
-        self.tokens.insert(
-            self.current + 2,
-            Token {
-                typ: TokenType::Semicolon,
-                literal: None,
-                span,
-            },
-        );
+        self.add_export(ident)?;
 
         Ok(stmt)
     }
@@ -653,103 +678,74 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(Statement::Export(name, exported_name, self.span_from(span)))
     }
 
-    fn parse_use(&mut self) -> Result<(), ParsingError<'arena>> {
+    fn parse_mod(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let span = self.advance().span;
-        let name = self
-            .expect_tok(TokenType::StringLiteral)?
-            .string_literal()?;
-        let ResolvedPath { root_dir, file } = resolve_module(
-            &name,
-            self.file
-                .path
-                .parent()
-                .expect("file should have a parent directory"),
-            self.file.package_root.clone(),
+        let name = self.expect_identifier()?;
+        let semicolon_span = self.expect_tok(TokenType::Semicolon)?.span;
+
+        let file = module_resolution::resolve_module(
+            self.ctx.span_interner(),
+            name,
+            &self.file,
+            self.ctx.source_map(),
             span,
-            self.source_map,
-        )
-        .ok_or(ParsingError::CannotResolveModule { loc: span, name })?;
+            semicolon_span,
+        )?;
+        let reserved_key = self.modules.write().reserve_key();
+        self.parser_queue.write().push(ParserQueueEntry {
+            file,
+            package: self.file.package,
+            reserved_key,
+            loaded_file: None,
+        });
+        if public {
+            self.add_export(name)?
+        }
+        let span = span.combine_with([semicolon_span, name.span()], self.ctx.span_interner());
+        self.add_import(
+            name,
+            span,
+            Import::Resolved(ModuleScopeValue::Module(reserved_key)),
+        )?;
+        Ok(Statement::Mod { span, name, public })
+    }
 
-        let module_key = self
-            .modules
-            .read()
-            .index_value_iter()
-            .find(|v| v.1.path == file)
-            .map(|v| v.0);
-        let module_key = match module_key {
-            Some(v) => v,
-            None => {
-                let reserved_key = self.modules.write().reserve_key();
-                self.parser_queue.write().push(ParserQueueEntry {
-                    file,
-                    root_dir,
-                    reserved_key,
-                });
-                reserved_key
-            }
-        };
-
+    fn parse_use(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
+        let span = self.advance().span;
+        let path = PathWithoutGenerics::parse(self)?;
         if self.match_tok(TokenType::Semicolon) {
-            _ = self.consume_semicolon(); // it doesn't matter if this fails because we already got
-                                          // at least a single semicolon
-            return Ok(());
-        }
-
-        if self.match_tok(TokenType::As) {
-            let name = self.expect_identifier()?;
-            self.imports
-                .insert(name, (span, module_key, PathWithoutGenerics::new(name)));
-            self.consume_semicolon()?;
-            return Ok(());
-        }
-
-        self.expect_tok(TokenType::NamespaceAccess)?;
-
-        if self.match_tok(TokenType::CurlyLeft) {
-            let mut is_first = true;
-            while !self.match_tok(TokenType::CurlyRight) {
-                if !is_first {
-                    self.expect_tok(TokenType::Comma)?;
-
-                    if self.match_tok(TokenType::CurlyRight) {
-                        break;
-                    }
-                }
-                is_first = false;
-
-                let import_name = PathWithoutGenerics::parse(self)?;
-
-                if self.match_tok(TokenType::As) {
-                    let alias_name = self.expect_identifier()?;
-                    self.imports
-                        .insert(alias_name, (span, module_key, import_name));
-                } else {
-                    self.imports.insert(
-                        import_name.entries[import_name.entries.len() - 1],
-                        (span, module_key, import_name),
-                    );
-                }
+            let span = self
+                .current()
+                .span
+                .combine_with([span], self.ctx.span_interner());
+            let alias = path.entries[path.entries.len() - 1];
+            if public {
+                self.add_export(alias)?;
             }
-            self.consume_semicolon()?;
-            return Ok(());
+            self.add_import(alias, span, Import::Unresolved(path.clone()))?;
+            return Ok(Statement::Use {
+                span,
+                path,
+                alias: None,
+                public,
+            });
         }
-
-        let import_name = PathWithoutGenerics::parse(self)?;
-
-        if self.match_tok(TokenType::As) {
-            let alias_name = self.expect_identifier()?;
-            self.imports
-                .insert(alias_name, (self.span_from(span), module_key, import_name));
-            self.consume_semicolon()?;
-            return Ok(());
+        self.expect_tok(TokenType::As)?;
+        let alias = self.expect_identifier()?;
+        let span = self
+            .expect_tok(TokenType::Semicolon)?
+            .span
+            .combine_with([span], self.ctx.span_interner());
+        if public {
+            self.add_export(alias)?;
         }
-
-        self.imports.insert(
-            import_name.entries[import_name.entries.len() - 1],
-            (self.span_from(span), module_key, import_name),
-        );
-        self.consume_semicolon()?;
-        Ok(())
+        self.add_import(alias, span, Import::Unresolved(path.clone()))?;
+        Ok(Statement::Use {
+            alias: Some(alias),
+            path,
+            public,
+            span,
+        })
     }
 
     fn parse_trait_fn(

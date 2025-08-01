@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use mira_errors::Diagnostics;
 
@@ -213,7 +216,7 @@ impl<'arena> TypecheckingContext<'arena> {
 
         for (name, implementation, loc) in trait_impl {
             let trait_id =
-                match resolve_import(context, module.cast(), &[name], &loc, &mut Vec::new()) {
+                match resolve_import(context, module.cast(), &[name], loc, &mut HashSet::new()) {
                     Err(e) => {
                         errors.add(e);
                         continue;
@@ -343,8 +346,8 @@ impl<'arena> TypecheckingContext<'arena> {
                     context,
                     module_id,
                     bound.0.as_slice(),
-                    &bound.1,
-                    &mut Vec::new(),
+                    bound.1,
+                    &mut HashSet::new(),
                 ) {
                     Ok(ModuleScopeValue::Trait(v)) => bounds.push(v.cast()),
                     Ok(_) => {

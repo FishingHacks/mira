@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use crossbeam::channel::{bounded, Sender};
 use mira_errors::Diagnostics;
@@ -10,27 +10,25 @@ use crate::{
     module::{Module, ModuleContext},
     parser::ParserQueueEntry,
     progress_bar::{ProgressBar, ProgressItemRef},
-    store::StoreKey,
+    store::{Store, StoreKey},
     threadpool::ThreadPool,
-    tokenizer::{Literal, Token, TokenType, Tokenizer},
+    tokenizer::Tokenizer,
 };
-use mira_spans::{BytePos, SourceFile, SourceMap, SpanData};
+use mira_spans::{PackageId, SourceFile};
 
 use super::print_progress_bar;
 
 #[allow(clippy::too_many_arguments)]
 fn parse_single<'arena>(
-    ctx: SharedContext<'arena>,
     file: Arc<SourceFile>,
-    always_include: Option<String>,
     progress_bar: Arc<RwLock<ProgressBar>>,
     parsing_item: ProgressItemRef,
     finish_sender: Sender<()>,
     errors: Arc<RwLock<Diagnostics<'arena>>>,
     parsing_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
-    source_map: &SourceMap,
     module_context: Arc<ModuleContext<'arena>>,
     key: StoreKey<Module<'arena>>,
+    package: PackageId,
 ) {
     // +--------------+
     // | Tokenization |
@@ -40,27 +38,7 @@ fn parse_single<'arena>(
         format!("Tokenizing {}", file.path.display()).into_boxed_str(),
     );
     print_progress_bar(&progress_bar);
-    let mut tokenizer = Tokenizer::new(ctx, file.clone());
-
-    // default includes ("prelude")
-    let span = ctx.intern_span(SpanData::new(BytePos::from_u32(0), 0, file.id));
-    if let Some(path) = always_include {
-        tokenizer.push_token(Token {
-            typ: TokenType::Use,
-            literal: None,
-            span,
-        });
-        tokenizer.push_token(Token {
-            typ: TokenType::StringLiteral,
-            literal: Some(Literal::String(ctx.intern_str(&path))),
-            span,
-        });
-        tokenizer.push_token(Token {
-            typ: TokenType::Semicolon,
-            literal: None,
-            span,
-        });
-    }
+    let mut tokenizer = Tokenizer::new(module_context.ctx, file.clone());
 
     if let Err(errs) = tokenizer.scan_tokens() {
         errors
@@ -81,12 +59,8 @@ fn parse_single<'arena>(
     // +---------+
     // | Parsing |
     // +---------+
-    let mut current_parser = tokenizer.to_parser(
-        parsing_queue.clone(),
-        &module_context.modules,
-        source_map,
-        key,
-    );
+    let mut current_parser =
+        tokenizer.to_parser(parsing_queue.clone(), &module_context.modules, key);
     current_parser.file = file.clone();
 
     let (statements, parsing_errors) = current_parser.parse_all();
@@ -102,13 +76,15 @@ fn parse_single<'arena>(
         writer.remove_item(item);
         item = writer.add_child_item(
             parsing_item,
-            format!("Parsing {}", file.path.display()).into_boxed_str(),
+            format!("Processing {}", file.path.display()).into_boxed_str(),
         );
     }
     print_progress_bar(&progress_bar);
 
     let mut module = Module::new(
         current_parser.imports,
+        current_parser.exports,
+        package,
         current_parser.file.path.clone(),
         current_parser.file.package_root.clone(),
     );
@@ -117,7 +93,7 @@ fn parse_single<'arena>(
             .write()
             .extend(errs.into_iter().map(ProgramFormingError::to_error));
     }
-    module_context.modules.write()[key] = module;
+    module_context.modules.write().insert_reserved(key, module);
     progress_bar.write().remove_item(item);
     print_progress_bar(&progress_bar);
 
@@ -132,36 +108,35 @@ fn parse_single<'arena>(
 #[allow(clippy::too_many_arguments)]
 pub fn parse_all<'arena>(
     ctx: SharedContext<'arena>,
-    file: Arc<SourceFile>,
-    always_include: Option<String>,
-    source_map: &SourceMap,
     progress_bar: Arc<RwLock<ProgressBar>>,
     parsing_item: ProgressItemRef,
 ) -> Result<Arc<ModuleContext<'arena>>, Diagnostics<'arena>> {
     let errors = Arc::new(RwLock::new(Diagnostics::new()));
-    let module_context = Arc::new(ModuleContext::default());
-    let parsing_queue = Arc::new(RwLock::new(Vec::new()));
+    let mut module_store = Store::new();
+    let files = ctx.source_map().files();
+    let parsing_queue = ctx
+        .source_map()
+        .packages()
+        .iter()
+        .map(|p| {
+            let file = &files[p.root_file.to_inner() as usize];
+            assert_eq!(file.package, p.id);
+            ParserQueueEntry {
+                file: file.path.clone(),
+                package: p.id,
+                reserved_key: module_store.reserve_key(),
+                loaded_file: Some(p.root_file),
+            }
+        })
+        .collect::<Vec<_>>();
+    drop(files);
+    let packages = parsing_queue
+        .iter()
+        .map(|e| (e.package, e.reserved_key))
+        .collect();
+    let module_context = Arc::new(ModuleContext::new(packages, module_store, ctx));
+    let parsing_queue = Arc::new(RwLock::new(parsing_queue));
     let (finish_sender, finish_receiver) = bounded::<()>(1);
-    let root_key = module_context.modules.write().insert(Module::new(
-        HashMap::new(),
-        file.path.clone(),
-        file.package_root.clone(),
-    ));
-
-    parse_single(
-        ctx,
-        file,
-        always_include,
-        progress_bar.clone(),
-        parsing_item,
-        finish_sender.clone(),
-        errors.clone(),
-        parsing_queue.clone(),
-        source_map,
-        module_context.clone(),
-        root_key,
-    );
-    finish_receiver.recv().expect("a sender still exists");
 
     let mut modules_left = 0;
 
@@ -174,18 +149,17 @@ pub fn parse_all<'arena>(
         let entry = parsing_queue.write().remove(0);
         let key = entry.reserved_key;
         let file = entry.file;
-        let root = entry.root_dir;
-        module_context
-            .modules
-            .write()
-            .insert_reserved(key, Module::new(HashMap::new(), file.clone(), root.clone()));
+        let package = entry.package;
 
-        let source = match source_map.load_file(file.clone(), root) {
-            Ok(v) => v,
-            Err(e) => {
-                errors.write().add_err(IoReadError(file.to_path_buf(), e));
-                break 'outer_loop;
-            }
+        let source = match entry.loaded_file {
+            Some(fid) => ctx.source_map().get_file(fid).unwrap(),
+            None => match ctx.source_map().load_file(file.clone(), package) {
+                Ok(v) => v,
+                Err(e) => {
+                    errors.write().add_err(IoReadError(file.to_path_buf(), e));
+                    break 'outer_loop;
+                }
+            },
         };
 
         let progress_bar = progress_bar.clone();
@@ -194,21 +168,17 @@ pub fn parse_all<'arena>(
         let _parsing_queue = parsing_queue.clone();
         let _module_context = module_context.clone();
         modules_left += 1;
-        let thread_ctx = ctx;
-        // TODO: Make sure this *does not* compile
         handle.spawn(move || {
             parse_single(
-                thread_ctx,
                 source,
-                None,
                 progress_bar,
                 parsing_item,
                 finish_sender,
                 errors,
                 _parsing_queue,
-                source_map,
                 _module_context,
                 key,
+                package,
             );
         });
 

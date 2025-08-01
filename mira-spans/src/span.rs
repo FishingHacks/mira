@@ -1,10 +1,14 @@
+use crate::interner::SpanInterner;
+use monotonic::MonotonicVec;
+use parking_lot::{RwLock, RwLockReadGuard};
 use std::{
+    collections::HashMap,
     fmt::{Debug, Display},
     hash::Hash,
     io::{self, ErrorKind, Read},
     marker::PhantomData,
     mem::MaybeUninit,
-    ops::{Add, Index, Range, Sub},
+    ops::{Add, AddAssign, Index, Range, Sub},
     path::Path,
     sync::{Arc, OnceLock},
 };
@@ -201,6 +205,11 @@ impl BytePos {
     }
 }
 
+impl AddAssign<u32> for BytePos {
+    fn add_assign(&mut self, rhs: u32) {
+        self.0 += rhs;
+    }
+}
 impl Add<u32> for BytePos {
     type Output = Self;
 
@@ -232,11 +241,17 @@ pub struct FileId(u32);
 impl FileId {
     #[cfg(test)]
     pub const ZERO: FileId = FileId(0);
+
+    pub fn to_inner(self) -> u32 {
+        self.0
+    }
 }
 
+#[derive(Debug)]
 pub struct SourceFile {
     pub path: Arc<Path>,
     pub package_root: Arc<Path>,
+    pub package: PackageId,
     pub source: Arc<str>,
     lines: OnceLock<Box<[BytePos]>>,
     pub source_len: BytePos,
@@ -246,7 +261,13 @@ pub struct SourceFile {
 impl SourceFile {
     pub const MAX_SIZE: usize = u32::MAX as usize;
 
-    pub fn new(id: FileId, path: Arc<Path>, package_root: Arc<Path>, source: Arc<str>) -> Self {
+    pub fn new(
+        id: FileId,
+        path: Arc<Path>,
+        package_root: Arc<Path>,
+        source: Arc<str>,
+        package: PackageId,
+    ) -> Self {
         assert!(source.len() <= u32::MAX as usize);
         Self {
             package_root,
@@ -255,6 +276,7 @@ impl SourceFile {
             path,
             source,
             id,
+            package,
         }
     }
 
@@ -347,8 +369,46 @@ impl Index<Range<BytePos>> for SourceFile {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PackageId(u32);
+
+impl PackageId {
+    #[cfg(test)]
+    pub const ZERO: PackageId = PackageId(0);
+}
+
+#[derive(Debug)]
+pub struct Package {
+    pub root: Arc<Path>,
+    pub id: PackageId,
+    pub files: RwLock<MonotonicVec<FileId>>,
+    pub root_file: FileId,
+    pub dependencies: HashMap<Arc<str>, PackageId>,
+}
+
+impl Package {
+    pub fn new(
+        root_dir: Arc<Path>,
+        root_file: FileId,
+        id: PackageId,
+        dependencies: HashMap<Arc<str>, PackageId>,
+    ) -> Self {
+        let mut files = MonotonicVec::new();
+        files.push(root_file);
+        Self {
+            root: root_dir,
+            id,
+            files: files.into(),
+            root_file,
+            dependencies,
+        }
+    }
+}
+
 pub trait FileLoader {
+    /// checks that some path exists and is readable
     fn exists(&self, path: &Path) -> bool;
+    /// checks that some path exists, is readable and a directory
     fn is_dir(&self, path: &Path) -> bool;
     fn read_file(&self, path: &Path) -> io::Result<String>;
     fn read_binfile(&self, path: &Path) -> io::Result<Arc<[u8]>>;
@@ -438,32 +498,28 @@ fn read_into_uninit(buf: &mut [MaybeUninit<u8>], reader: &mut impl Read) -> io::
 
 pub struct SourceMap {
     files: RwLock<MonotonicVec<Arc<SourceFile>>>,
+    packages: RwLock<MonotonicVec<Arc<Package>>>,
     file_loader: Box<dyn FileLoader + Send + Sync>,
-    module_resolvers: Box<[Box<dyn ModuleResolver>]>,
+    main_package: OnceLock<PackageId>,
 }
 
 impl SourceMap {
-    pub fn new(module_resolvers: Box<[Box<dyn ModuleResolver>]>) -> Self {
+    pub fn new() -> Self {
         Self {
             files: Default::default(),
+            packages: Default::default(),
             file_loader: Box::new(RealFileLoader),
-            module_resolvers,
+            main_package: OnceLock::new(),
         }
     }
 
-    pub fn new_with(
-        module_resolvers: Box<[Box<dyn ModuleResolver>]>,
-        file_loader: Box<dyn FileLoader + Send + Sync + 'static>,
-    ) -> Self {
+    pub fn new_with(file_loader: Box<dyn FileLoader + Send + Sync + 'static>) -> Self {
         Self {
             files: Default::default(),
+            packages: Default::default(),
             file_loader,
-            module_resolvers,
+            main_package: OnceLock::new(),
         }
-    }
-
-    pub fn module_resolvers(&self) -> &[Box<dyn ModuleResolver>] {
-        &self.module_resolvers
     }
 
     pub fn get_file(&self, file: FileId) -> Option<Arc<SourceFile>> {
@@ -480,27 +536,91 @@ impl SourceMap {
     pub fn new_file(
         &self,
         file: Arc<Path>,
-        package_root: Arc<Path>,
+        package: PackageId,
         source: Arc<str>,
     ) -> Arc<SourceFile> {
         let mut files = self.files.write();
         let id = FileId(files.len() as u32);
-        let file = Arc::new(SourceFile::new(id, file, package_root, source));
+        let packages = self.packages.read();
+        let file = Arc::new(SourceFile::new(
+            id,
+            file,
+            packages[package.0 as usize].root.clone(),
+            source,
+            package,
+        ));
         files.push(file.clone());
+        packages[package.0 as usize].files.write().push(id);
         file
     }
 
-    pub fn load_file(
-        &self,
-        path: Arc<Path>,
-        package_root: Arc<Path>,
-    ) -> io::Result<Arc<SourceFile>> {
+    pub fn load_file(&self, path: Arc<Path>, package: PackageId) -> io::Result<Arc<SourceFile>> {
         let source = self.file_loader.read_file(&path)?.into();
-        Ok(self.new_file(path, package_root, source))
+        Ok(self.new_file(path, package, source))
+    }
+
+    pub fn add_package(
+        &self,
+        root: Arc<Path>,
+        root_file_path: Arc<Path>,
+        root_file_source: Arc<str>,
+        dependencies: HashMap<Arc<str>, PackageId>,
+    ) -> (Arc<Package>, Arc<SourceFile>) {
+        let mut files = self.files.write();
+        let mut packages = self.packages.write();
+        assert!(files.len() <= u32::MAX as usize, "too many files");
+        assert!(packages.len() <= u32::MAX as usize, "too many packages");
+        let file_id = FileId(files.len() as u32);
+        let package_id = PackageId(packages.len() as u32);
+        let file = Arc::new(SourceFile::new(
+            file_id,
+            root_file_path,
+            root.clone(),
+            root_file_source,
+            package_id,
+        ));
+        let package = Arc::new(Package::new(root, file_id, package_id, dependencies));
+        files.push(file.clone());
+        packages.push(package.clone());
+        (package, file)
+    }
+
+    pub fn add_package_load(
+        &self,
+        root: Arc<Path>,
+        root_file_path: Arc<Path>,
+        dependencies: HashMap<Arc<str>, PackageId>,
+    ) -> io::Result<(Arc<Package>, Arc<SourceFile>)> {
+        let source = self.file_loader.read_file(&root_file_path)?.into();
+        Ok(self.add_package(root, root_file_path, source, dependencies))
     }
 
     pub fn files<'a>(&'a self) -> RwLockReadGuard<'a, MonotonicVec<Arc<SourceFile>>> {
         self.files.read()
+    }
+
+    pub fn packages<'a>(&'a self) -> RwLockReadGuard<'a, MonotonicVec<Arc<Package>>> {
+        self.packages.read()
+    }
+
+    pub fn get_package(&self, package: PackageId) -> Arc<Package> {
+        self.packages.read()[package.0 as usize].clone()
+    }
+
+    pub fn set_main_package(&self, main_lib: PackageId) {
+        self.main_package
+            .set(main_lib)
+            .expect("main package has already been set")
+    }
+
+    pub fn main_package(&self) -> PackageId {
+        *self.main_package.get().expect("main package has to be set")
+    }
+}
+
+impl Default for SourceMap {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -532,9 +652,15 @@ impl SourceMap {
 }
 
 mod monotonic {
-    use std::ops::Deref;
+    use std::{fmt::Debug, ops::Deref};
 
     pub struct MonotonicVec<T>(Vec<T>);
+
+    impl<T: Debug> Debug for MonotonicVec<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            Debug::fmt(&self.0, f)
+        }
+    }
 
     impl<T> MonotonicVec<T> {
         pub const fn new() -> Self {
@@ -560,41 +686,6 @@ mod monotonic {
         }
     }
 }
-use monotonic::MonotonicVec;
-use parking_lot::{RwLock, RwLockReadGuard};
-
-pub trait ModuleResolver: 'static + Send + Sync {
-    /// uses starting with ./, will get stripped from `data.import`
-    #[allow(unused_variables)]
-    fn resolve_relative(&self, data: ImportData) -> Option<ResolvedPath> {
-        None
-    }
-    /// uses starting with /, won't get stripped from `data.import`
-    #[allow(unused_variables)]
-    fn resolve_absolute(&self, data: ImportData) -> Option<ResolvedPath> {
-        None
-    }
-    /// uses starting with `<name>/` or just `name`, will get stripped from `data.import` and provided as `module_name`
-    #[allow(unused_variables)]
-    fn resolve_module(&self, data: ImportData, module_name: &str) -> Option<ResolvedPath> {
-        None
-    }
-}
-
-#[derive(Clone)]
-pub struct ImportData<'a, 'arena> {
-    pub root_dir: Arc<Path>,
-    pub current_dir: &'a Path,
-    pub import: &'a str,
-    pub span: Span<'arena>,
-    pub source_map: &'a SourceMap,
-}
-pub struct ResolvedPath {
-    pub root_dir: Arc<Path>,
-    pub file: Arc<Path>,
-}
-
-use crate::interner::SpanInterner;
 
 #[cfg(test)]
 mod test {
@@ -607,7 +698,7 @@ mod test {
             #[test]
             fn $fn() {
                 let src = "aaa\nbbbb\ncccc";
-                let file = SourceFile::new(FileId::ZERO, Path::new("file").into(), Path::new("root").into(), src.into());
+                let file = SourceFile::new(FileId::ZERO, Path::new("file").into(), Path::new("root").into(), src.into(), PackageId::ZERO);
 
                 $(assert_eq!(file.$fn($($value),*), $expected);)*
             }

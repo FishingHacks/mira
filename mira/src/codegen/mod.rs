@@ -2068,6 +2068,16 @@ impl<'arena> TypecheckedExpression<'arena> {
         _ = &generics;
         _ = &args;
         match intrinsic {
+            Intrinsic::CallMain => {
+                let main_fn = ctx
+                    .tc_ctx
+                    .main_function
+                    .get()
+                    .expect("main function has to be set to use intrinsic `call_main`.");
+                let func = ctx.functions[main_fn];
+                ctx.builder.build_call(func, &[], "")?;
+                ctx.push_value(dst, ctx.default_types.empty_struct.const_zero().into());
+            }
             Intrinsic::Unreachable => {
                 ctx.builder.build_unreachable()?;
                 ctx.push_value(dst, ctx.default_types.empty_struct.const_zero().into());

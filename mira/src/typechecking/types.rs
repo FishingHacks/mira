@@ -168,7 +168,10 @@ fn align(value: u64, alignment: u32) -> u64 {
     }
 }
 
-fn values_match(left: &[StoreKey<TypedTrait>], right: &[StoreKey<TypedTrait>]) -> bool {
+fn values_match<'arena>(
+    left: &[StoreKey<TypedTrait<'arena>>],
+    right: &[StoreKey<TypedTrait<'arena>>],
+) -> bool {
     for v in right {
         if !left.contains(v) {
             return false;
@@ -180,8 +183,8 @@ fn values_match(left: &[StoreKey<TypedTrait>], right: &[StoreKey<TypedTrait>]) -
 impl<'arena> Type<'arena> {
     pub fn implements(
         &self,
-        traits: &[StoreKey<TypedTrait>],
-        tc_ctx: &TypecheckingContext,
+        traits: &[StoreKey<TypedTrait<'arena>>],
+        tc_ctx: &TypecheckingContext<'arena>,
     ) -> bool {
         match self {
             Type::DynType {
@@ -208,7 +211,7 @@ impl<'arena> Type<'arena> {
     pub fn struct_offset(
         &self,
         ptr_size: u64,
-        structs: &Store<TypedStruct>,
+        structs: &Store<TypedStruct<'arena>>,
         element: usize,
     ) -> u64 {
         let struct_id = match self {
@@ -229,7 +232,7 @@ impl<'arena> Type<'arena> {
         offset
     }
 
-    pub fn alignment(&self, ptr_size: u64, structs: &Store<TypedStruct>) -> u32 {
+    pub fn alignment(&self, ptr_size: u64, structs: &Store<TypedStruct<'arena>>) -> u32 {
         if self.refcount() > 0 {
             return ptr_size as u32;
         }
@@ -268,7 +271,11 @@ impl<'arena> Type<'arena> {
         }
     }
 
-    pub fn size_and_alignment(&self, ptr_size: u64, structs: &Store<TypedStruct>) -> (u64, u32) {
+    pub fn size_and_alignment(
+        &self,
+        ptr_size: u64,
+        structs: &Store<TypedStruct<'arena>>,
+    ) -> (u64, u32) {
         if self.refcount() > 0 {
             return if self.is_thin_ptr() {
                 (ptr_size, ptr_size as u32)

@@ -22,11 +22,8 @@ fn offset<T>(ptr: &T, by: usize) -> &T = ptr;
 @intrinsic("with_metadata")
 fn with_metadata<T, unsized R>(ptr: &T, data: usize) -> &R {while(true){}}
 
-@intrinsic("volatile_read")
-fn volatile_read<T>(ptr: &T) -> T {while(true){}}
-
-@intrinsic("volatile_write")
-fn volatile_write<T>(ptr: &T, data: T){}
-
 @intrinsic("size_of_val")
-fn size_of_val<unsized T>(ptr: &T) -> usize = 0;
+pub fn size_of_val<unsized T>(ptr: &T) -> usize = 0;
+
+@intrinsic("call_main")
+pub fn call_main() = void;

@@ -1,18 +1,21 @@
 use parking_lot::RwLock;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use crate::{
     annotations::Annotations,
     context::SharedContext,
     error::ParsingError,
-    module::Module,
+    module::{Import, Module},
     store::{Store, StoreKey},
     tokenizer::{Token, TokenType},
 };
 pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
-use mira_spans::{Ident, SourceFile, SourceMap, Span};
+use mira_spans::{FileId, Ident, PackageId, SourceFile, Span};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, Struct, TypeRef, RESERVED_TYPE_NAMES};
 mod expression;
@@ -23,7 +26,8 @@ mod types;
 #[derive(Clone, Debug)]
 pub struct ParserQueueEntry<'arena> {
     pub file: Arc<std::path::Path>,
-    pub root_dir: Arc<std::path::Path>,
+    pub loaded_file: Option<FileId>,
+    pub package: PackageId,
     pub reserved_key: StoreKey<Module<'arena>>,
 }
 
@@ -36,17 +40,10 @@ pub struct Parser<'a, 'arena> {
     current_annotations: Annotations<'arena>,
     pub parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
     pub modules: &'a RwLock<Store<Module<'arena>>>,
-    /// a map of idents => imports. if the size of the vec is 0, the identifier refers to the
-    /// module itself. otherwise, it refers to something in it.
-    pub imports: HashMap<
-        Ident<'arena>,
-        (
-            Span<'arena>,
-            StoreKey<Module<'arena>>,
-            PathWithoutGenerics<'arena>,
-        ),
-    >,
-    source_map: &'a SourceMap,
+    /// all imports
+    pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
+    /// all the `pub _` exports
+    pub exports: HashSet<Ident<'arena>>,
     pub key: StoreKey<Module<'arena>>,
 }
 
@@ -72,7 +69,6 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
         modules: &'a RwLock<Store<Module<'arena>>>,
         file: Arc<SourceFile>,
-        source_map: &'a SourceMap,
         key: StoreKey<Module<'arena>>,
     ) -> Self {
         Self {
@@ -80,13 +76,41 @@ impl<'a, 'arena> Parser<'a, 'arena> {
             tokens,
             current: 0,
             current_annotations: Default::default(),
-            imports: HashMap::new(),
             parser_queue,
             modules,
             file,
-            source_map,
             key,
+            imports: HashMap::new(),
+            exports: HashSet::new(),
         }
+    }
+
+    fn add_export(&mut self, ident: Ident<'arena>) -> Result<(), ParsingError<'arena>> {
+        if !self.exports.insert(ident) {
+            return Err(ParsingError::ItemAlreadyDefined {
+                loc: ident.span(),
+                name: ident.symbol(),
+                first: self.exports.get(&ident).unwrap().span(),
+            });
+        }
+        Ok(())
+    }
+
+    fn add_import(
+        &mut self,
+        ident: Ident<'arena>,
+        span: Span<'arena>,
+        import: Import<'arena>,
+    ) -> Result<(), ParsingError<'arena>> {
+        if let Some((first, _)) = self.imports.get(&ident) {
+            return Err(ParsingError::ItemAlreadyDefined {
+                loc: ident.span(),
+                name: ident.symbol(),
+                first: *first,
+            });
+        }
+        self.imports.insert(ident, (span, import));
+        Ok(())
     }
 
     pub fn add_tokens<I: IntoIterator<Item = Token<'arena>>>(&mut self, tokens: I) {

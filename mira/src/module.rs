@@ -1,8 +1,14 @@
 use parking_lot::RwLock;
-use std::{collections::HashMap, fmt::Debug, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    path::Path,
+    sync::Arc,
+};
 
 use crate::{
     annotations::Annotations,
+    context::SharedContext,
     error::ProgramFormingError,
     parser::{
         Expression, FunctionContract, Generic, LiteralValue, PathWithoutGenerics, Statement, Trait,
@@ -10,7 +16,7 @@ use crate::{
     },
     store::{Store, StoreKey},
 };
-use mira_spans::{Ident, Span};
+use mira_spans::{Ident, PackageId, Span};
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum ModuleScopeValue<'arena> {
@@ -56,14 +62,34 @@ pub type Static<'arena> = (
     Annotations<'arena>,
 );
 
-#[derive(Default)]
 pub struct ModuleContext<'arena> {
+    pub ctx: SharedContext<'arena>,
     pub modules: RwLock<Store<Module<'arena>>>,
+    pub packages: HashMap<PackageId, StoreKey<Module<'arena>>>,
     pub functions: RwLock<Store<Function<'arena>>>,
     pub external_functions: RwLock<Store<ExternalFunction<'arena>>>,
     pub statics: RwLock<Store<Static<'arena>>>, // TODO: const-eval for statics
     pub structs: RwLock<Store<BakedStruct<'arena>>>,
     pub traits: RwLock<Store<Trait<'arena>>>,
+}
+
+impl<'arena> ModuleContext<'arena> {
+    pub fn new(
+        packages: HashMap<PackageId, StoreKey<Module<'arena>>>,
+        modules: Store<Module<'arena>>,
+        ctx: SharedContext<'arena>,
+    ) -> Self {
+        Self {
+            ctx,
+            modules: modules.into(),
+            packages,
+            functions: Default::default(),
+            external_functions: Default::default(),
+            statics: Default::default(),
+            structs: Default::default(),
+            traits: Default::default(),
+        }
+    }
 }
 
 impl Debug for ModuleContext<'_> {
@@ -77,17 +103,17 @@ impl Debug for ModuleContext<'_> {
     }
 }
 
+#[derive(Debug)]
+pub enum Import<'arena> {
+    Unresolved(PathWithoutGenerics<'arena>),
+    Resolved(ModuleScopeValue<'arena>),
+}
+
 pub struct Module<'arena> {
     pub scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
-    pub imports: HashMap<
-        Ident<'arena>,
-        (
-            Span<'arena>,
-            StoreKey<Module<'arena>>,
-            PathWithoutGenerics<'arena>,
-        ),
-    >,
-    pub exports: HashMap<Ident<'arena>, Ident<'arena>>,
+    pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
+    pub exports: HashSet<Ident<'arena>>,
+    pub package: PackageId,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
     pub assembly: Vec<(Span<'arena>, String)>,
@@ -105,23 +131,19 @@ impl Debug for Module<'_> {
 
 impl<'arena> Module<'arena> {
     pub fn new(
-        imports: HashMap<
-            Ident<'arena>,
-            (
-                Span<'arena>,
-                StoreKey<Module<'arena>>,
-                PathWithoutGenerics<'arena>,
-            ),
-        >,
+        imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
+        exports: HashSet<Ident<'arena>>,
+        package: PackageId,
         path: Arc<Path>,
         root: Arc<Path>,
     ) -> Self {
         Self {
             imports,
-            scope: HashMap::new(),
-            exports: HashMap::new(),
+            exports,
             path,
             root,
+            package,
+            scope: HashMap::new(),
             assembly: Vec::new(),
         }
     }
@@ -133,20 +155,12 @@ impl<'arena> Module<'arena> {
         module: StoreKey<Module<'arena>>,
         context: &ModuleContext<'arena>,
     ) -> StoreKey<Function<'arena>> {
-        let key = {
-            let mut writer = context.functions.write();
-            let span = contract.span;
-            writer.insert((
-                contract,
-                Statement::Return(None, span), /* "zeroed" statement */
-                module,
-            ))
-        };
-        // we have to bake the body *after* pushing the function to ensure the function is
-        // typechecked before any of its child elements, such as closures, as we need to evaluate
-        // the function body before the closure to fill in the closures types.
+        let key = context.functions.write().reserve_key();
         body.bake_functions(self, module, context);
-        context.functions.write().get_mut(&key).unwrap().1 = body;
+        context
+            .functions
+            .write()
+            .insert_reserved(key, (contract, body, module));
 
         key
     }
@@ -170,6 +184,10 @@ impl<'arena> Module<'arena> {
         }
     }
 
+    fn is_defined(&self, name: &Ident<'arena>) -> bool {
+        self.scope.contains_key(name) || self.imports.contains_key(name)
+    }
+
     pub fn push_statement(
         &mut self,
         statement: Statement<'arena>,
@@ -184,7 +202,7 @@ impl<'arena> Module<'arena> {
                     ));
                 };
 
-                if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
+                if self.is_defined(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         contract.span,
                         name.symbol(),
@@ -196,9 +214,7 @@ impl<'arena> Module<'arena> {
             }
             Statement::Trait(mut r#trait) => {
                 r#trait.module = module_id;
-                if self.scope.contains_key(&r#trait.name)
-                    || self.imports.contains_key(&r#trait.name)
-                {
+                if self.is_defined(&r#trait.name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         r#trait.span,
                         r#trait.name.symbol(),
@@ -219,7 +235,7 @@ impl<'arena> Module<'arena> {
                 annotations,
                 generics,
             } => {
-                if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
+                if self.is_defined(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         span,
                         name.symbol(),
@@ -261,7 +277,7 @@ impl<'arena> Module<'arena> {
                 return Err(ProgramFormingError::GlobalValueNoType(span))
             }
             Statement::Var(name, expr, Some(typ), span, annotations) => {
-                if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
+                if self.is_defined(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         span,
                         name.symbol(),
@@ -282,7 +298,7 @@ impl<'arena> Module<'arena> {
                     ));
                 };
 
-                if self.scope.contains_key(&name) || self.imports.contains_key(&name) {
+                if self.is_defined(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         contract.span,
                         name.symbol(),
@@ -297,13 +313,9 @@ impl<'arena> Module<'arena> {
                 self.scope
                     .insert(name, ModuleScopeValue::ExternalFunction(key));
             }
-            Statement::Export(key, exported_key, span) => {
-                if !self.scope.contains_key(&key) && !self.imports.contains_key(&key) {
-                    return Err(ProgramFormingError::IdentNotDefined(span, key.symbol()));
-                }
-                self.exports.insert(exported_key, key);
-            }
             Statement::ModuleAsm(span, strn) => self.assembly.push((span, strn)),
+            // these are handled by the parser itself
+            Statement::Use { .. } | Statement::Mod { .. } => {}
             _ => {
                 return Err(ProgramFormingError::NoCodeOutsideOfFunctions(
                     statement.span(),

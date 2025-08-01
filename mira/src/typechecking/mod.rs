@@ -5,7 +5,7 @@ use std::{
     fmt::Debug,
     hash::{Hash, Hasher},
     path::Path,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 use type_resolution::ResolvingState;
 
@@ -17,7 +17,8 @@ use crate::{
     context::SharedContext,
     lang_items::LangItems,
     module::{
-        BakedStruct, ExternalFunction, Function, Module, ModuleContext, ModuleScopeValue, Static,
+        BakedStruct, ExternalFunction, Function, Import, Module, ModuleContext, ModuleScopeValue,
+        Static,
     },
     parser::{Trait, TypeRef},
     store::{AssociatedStore, Store, StoreKey},
@@ -150,11 +151,12 @@ pub struct TypecheckingContext<'arena> {
     pub structs: RwLock<Store<TypedStruct<'arena>>>,
     pub traits: RwLock<Store<TypedTrait<'arena>>>,
     pub lang_items: RwLock<LangItems<'arena>>,
+    pub main_function: OnceLock<StoreKey<TypedFunction<'arena>>>,
 }
 
 pub struct TypecheckedModule<'arena> {
     scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
-    exports: HashMap<Ident<'arena>, Ident<'arena>>,
+    exports: HashSet<Ident<'arena>>,
     pub path: Arc<Path>,
     pub root: Arc<Path>,
     pub assembly: Vec<(Span<'arena>, String)>,
@@ -169,6 +171,29 @@ impl Debug for TypecheckedModule<'_> {
 }
 
 impl<'arena> TypecheckingContext<'arena> {
+    pub fn validate_main_function(
+        &self,
+        ctx: SharedContext<'arena>,
+        module_ctx: &ModuleContext<'arena>,
+    ) -> Result<(), TypecheckingError<'arena>> {
+        let main_package = ctx.source_map().main_package();
+        let module = module_ctx.packages[&main_package];
+        let module = &self.modules.read()[module];
+        let Some(ModuleScopeValue::Function(main_fn)) = module.scope.get("main") else {
+            return Err(TypecheckingError::MainFuncNotFound(module.path.clone()));
+        };
+        let func = &self.functions.read()[main_fn.cast()].0;
+        if !func.arguments.is_empty() || func.return_type != Type::PrimitiveVoid(0) {
+            return Err(TypecheckingError::MainFuncWrongType {
+                func_span: func.span,
+            });
+        }
+        self.main_function
+            .set(main_fn.cast())
+            .expect("validate_main_function called multiple times");
+        Ok(())
+    }
+
     pub fn new(
         ctx: SharedContext<'arena>,
         module_context: Arc<ModuleContext<'arena>>,
@@ -279,6 +304,7 @@ impl<'arena> TypecheckingContext<'arena> {
             external_functions: RwLock::new(external_functions.into()),
             modules: Default::default(),
             lang_items: RwLock::new(LangItems::new(ctx)),
+            main_function: OnceLock::new(),
         });
 
         let mut typechecked_module_writer = me.modules.write();
@@ -310,14 +336,14 @@ impl<'arena> TypecheckingContext<'arena> {
         let mut typechecked_module_writer = self.modules.write();
         let module_reader = context.modules.read();
         for key in module_reader.indices() {
-            for (name, (location, module_id, path)) in module_reader[key].imports.iter() {
-                match resolve_import(
-                    &context,
-                    *module_id,
-                    &path.entries,
-                    location,
-                    &mut vec![(key, Symbol::EMPTY)],
-                ) {
+            for (name, (location, import)) in module_reader[key].imports.iter() {
+                let res = match import {
+                    Import::Unresolved(path) => {
+                        resolve_import(&context, key, &path.entries, *location, &mut HashSet::new())
+                    }
+                    Import::Resolved(module_scope_value) => Ok(*module_scope_value),
+                };
+                match res {
                     Err(e) => _ = errors.add(e),
                     Ok(k) => {
                         typechecked_module_writer[key.cast()].scope.insert(*name, k);
@@ -500,7 +526,13 @@ impl<'arena> TypecheckingContext<'arena> {
             let mut bounds = Vec::new();
 
             for (bound, loc) in &generic.bounds {
-                match resolve_import(&context, module_id, &bound.entries, loc, &mut Vec::new()) {
+                match resolve_import(
+                    &context,
+                    module_id,
+                    &bound.entries,
+                    *loc,
+                    &mut HashSet::new(),
+                ) {
                     Err(e) => _ = errors.add(e),
                     Ok(ModuleScopeValue::Trait(trait_id)) => bounds.push(trait_id.cast()),
                     Ok(_) => {
@@ -628,7 +660,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 }
 
                 let Ok(value) =
-                    resolve_import(&context, module.cast(), &path, loc, &mut Vec::new())
+                    resolve_import(&context, module.cast(), &path, *loc, &mut HashSet::new())
                 else {
                     errors.add_unbound_ident(*loc, path[path.len() - 1].symbol());
                     return None;
@@ -723,10 +755,7 @@ fn typed_resolve_import<'arena>(
         return Ok(ModuleScopeValue::Module(module.cast()));
     }
     if already_included.contains(&(module, import[0].symbol())) {
-        return Err(TypecheckingError::CyclicDependency {
-            location: *location,
-        }
-        .to_error());
+        return Err(TypecheckingError::CyclicDependency(*location).to_error());
     }
     already_included.insert((module, import[0].symbol()));
 
@@ -734,7 +763,7 @@ fn typed_resolve_import<'arena>(
     let ident = match reader[module.cast()].exports.get(&import[0]) {
         Some(ident) => ident,
         None if already_included.len() < 2 /* this is the module it was imported from */ => &import[0],
-        None => return Err(TypecheckingError::ExportNotFound {
+        None => return Err(TypecheckingError::ItemNotFound {
             location: *location,
             name: import[0].symbol(),
         }.to_error()),
@@ -751,13 +780,13 @@ fn typed_resolve_import<'arena>(
                     if import.len() < 3 {
                         return Ok(ModuleScopeValue::Function(function_id.cast()));
                     }
-                    return Err(TypecheckingError::ExportNotFound {
+                    return Err(TypecheckingError::ItemNotFound {
                         location: *location,
                         name: import[2].symbol(),
                     }
                     .to_error());
                 } else {
-                    return Err(TypecheckingError::ExportNotFound {
+                    return Err(TypecheckingError::ItemNotFound {
                         location: reader[id.cast()].span,
                         name: import[1].symbol(),
                     }
@@ -769,7 +798,7 @@ fn typed_resolve_import<'arena>(
             | ModuleScopeValue::ExternalFunction(_)
             | ModuleScopeValue::Trait(_)
             | ModuleScopeValue::Static(_) => {
-                return Err(TypecheckingError::ExportNotFound {
+                return Err(TypecheckingError::ItemNotFound {
                     location: *location,
                     name: import[1].symbol(),
                 }
@@ -777,7 +806,7 @@ fn typed_resolve_import<'arena>(
             }
         }
     }
-    Err(TypecheckingError::ExportNotFound {
+    Err(TypecheckingError::ItemNotFound {
         location: *location,
         name: import[0].symbol(),
     }
@@ -787,124 +816,69 @@ fn typed_resolve_import<'arena>(
 #[allow(clippy::result_large_err)]
 fn resolve_import<'arena>(
     context: &ModuleContext<'arena>,
-    module: StoreKey<Module<'arena>>,
+    current_module: StoreKey<Module<'arena>>,
     import: &[Ident<'arena>],
-    location: &Span<'arena>,
-    already_included: &mut Vec<(StoreKey<Module<'arena>>, Symbol<'arena>)>,
+    location: Span<'arena>,
+    already_included: &mut HashSet<(StoreKey<Module<'arena>>, Symbol<'arena>)>,
 ) -> Result<ModuleScopeValue<'arena>, Diagnostic<'arena>> {
-    if import.is_empty() {
-        return Ok(ModuleScopeValue::Module(module));
+    assert!(!import.is_empty());
+    if !already_included.insert((current_module, import[0].symbol())) {
+        return Err(TypecheckingError::CyclicDependency(location).to_error());
     }
-    if already_included
-        .iter()
-        .any(|(mod_id, imp)| module.eq(mod_id) && import[0].symbol().eq(imp))
+
+    let module_reader = context.modules.read();
+    let package = module_reader[current_module].package;
+    let thing;
+    if &*import[0] == "crate" {
+        thing = ModuleScopeValue::Module(context.packages[&package]);
+    } else if let Some(value) = module_reader[current_module].scope.get(&import[0].symbol()) {
+        thing = *value;
+    } else if let Some((location, import)) = module_reader[current_module]
+        .imports
+        .get(&import[0].symbol())
     {
-        return Err(TypecheckingError::CyclicDependency {
-            location: *location,
+        match import {
+            Import::Unresolved(path) => {
+                thing = resolve_import(
+                    context,
+                    current_module,
+                    &path.entries,
+                    *location,
+                    already_included,
+                )?
+            }
+            Import::Resolved(value) => thing = *value,
+        }
+    } else if let Some(package) = context
+        .ctx
+        .source_map()
+        .get_package(package)
+        .dependencies
+        .get(&*import[0])
+    {
+        thing = ModuleScopeValue::Module(context.packages[package]);
+    } else {
+        return Err(TypecheckingError::ItemNotFound {
+            location,
+            name: import[0].symbol(),
         }
         .to_error());
     }
-    already_included.push((module, import[0].symbol()));
 
-    let reader = context.modules.read();
-    let ident = match reader[module].exports.get(&import[0]) {
-        Some(ident) => ident,
-        None if already_included.len() < 2 /* this is the module it was imported from */ => &import[0],
-        None => return Err(TypecheckingError::ExportNotFound {
-            location: *location,
-            name: import[0].symbol(),
-        }.to_error()),
-    };
-
-    if let Some((sub_location, module, path)) = reader[module].imports.get(ident) {
-        let value = resolve_import(
-            context,
-            *module,
-            &path.entries,
-            sub_location,
-            already_included,
-        )?;
-        if import.len() < 2 {
-            return Ok(value);
+    if import.len() == 1 {
+        return Ok(thing);
+    }
+    match thing {
+        ModuleScopeValue::Module(module) => {
+            resolve_import(context, module, &import[1..], location, already_included)
         }
 
-        match value {
-            ModuleScopeValue::Module(id) => {
-                return resolve_import(context, id, &import[1..], location, already_included)
-            }
-            ModuleScopeValue::Struct(id) => {
-                let reader = context.structs.read();
-                if let Some(function_id) = reader[id].global_impl.get(&import[1]).copied() {
-                    if import.len() < 3 {
-                        return Ok(ModuleScopeValue::Function(function_id));
-                    }
-                    return Err(TypecheckingError::ExportNotFound {
-                        location: context.functions.read()[function_id].0.span,
-                        name: import[2].symbol(),
-                    }
-                    .to_error());
-                } else {
-                    return Err(TypecheckingError::ExportNotFound {
-                        location: reader[id].span,
-                        name: import[1].symbol(),
-                    }
-                    .to_error());
-                }
-            }
-            ModuleScopeValue::Function(_)
-            | ModuleScopeValue::ExternalFunction(_)
-            | ModuleScopeValue::Trait(_)
-            | ModuleScopeValue::Static(_) => {
-                return Err(TypecheckingError::ExportNotFound {
-                    location: *location,
-                    name: import[1].symbol(),
-                }
-                .to_error())
-            }
+        _ => Err(TypecheckingError::ItemNotFound {
+            location: import[1].span(),
+            name: import[1].symbol(),
         }
+        .to_error()),
     }
-    if let Some(value) = reader[module].scope.get(ident).copied() {
-        if import.len() < 2 {
-            return Ok(value);
-        }
-        match value {
-            ModuleScopeValue::Struct(id) => {
-                let reader = context.structs.read();
-                if let Some(function_id) = reader[id].global_impl.get(&import[1]).copied() {
-                    if import.len() < 3 {
-                        return Ok(ModuleScopeValue::Function(function_id));
-                    }
-                    return Err(TypecheckingError::ExportNotFound {
-                        location: *location,
-                        name: import[2].symbol(),
-                    }
-                    .to_error());
-                } else {
-                    return Err(TypecheckingError::ExportNotFound {
-                        location: reader[id].span,
-                        name: import[1].symbol(),
-                    }
-                    .to_error());
-                }
-            }
-            ModuleScopeValue::Module(_) => unreachable!(), // all modules must have been imports
-            ModuleScopeValue::Function(_)
-            | ModuleScopeValue::ExternalFunction(_)
-            | ModuleScopeValue::Trait(_)
-            | ModuleScopeValue::Static(_) => {
-                return Err(TypecheckingError::ExportNotFound {
-                    location: *location,
-                    name: import[1].symbol(),
-                }
-                .to_error())
-            }
-        }
-    }
-    Err(TypecheckingError::ExportNotFound {
-        location: *location,
-        name: import[0].symbol(),
-    }
-    .to_error())
 }
 
 impl From<ModuleScopeValue<'_>> for ScopeKind {

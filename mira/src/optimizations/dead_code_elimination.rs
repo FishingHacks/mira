@@ -31,6 +31,10 @@ pub fn run_dce<'arena>(
         ctx.used_statics.insert(key);
     }
 
+    if let Some(main_fn) = tc_ctx.main_function.get() {
+        ctx.funcs_left.insert(*main_fn);
+    }
+
     for func in used_funcs {
         ctx.funcs_left.insert(*func);
     }

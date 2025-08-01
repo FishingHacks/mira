@@ -1,8 +1,7 @@
 use mira::{
-    Arena, AsciiPrinter, ModuleResolver, Output,
+    Arena, AsciiPrinter, Output,
     annotations::Annotations,
     context::{GlobalContext, SharedContext},
-    module::Module,
     parser::{
         ArrayLiteral, BinaryOp, Expression, FunctionContract, LiteralValue, Path as MPath,
         PathWithoutGenerics, Statement, TypeRef, UnaryOp,
@@ -12,43 +11,14 @@ use mira::{
 };
 use mira_errors::{DiagnosticFormatter, Diagnostics, Styles};
 use mira_macros::ErrorData;
-use mira_spans::{ImportData, ResolvedPath, SourceMap};
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
     io::{Read, stdin},
     ops::{BitOr, BitOrAssign},
     path::Path,
-    sync::{Arc, LazyLock},
+    sync::Arc,
 };
-
-struct EmptyResolver;
-
-static ROOT_DIR: LazyLock<Arc<Path>> = LazyLock::new(|| Path::new("/nonexistent").into());
-static PATH: LazyLock<Arc<Path>> = LazyLock::new(|| Path::new("/nonexistent/file.mr").into());
-
-impl ModuleResolver for EmptyResolver {
-    fn resolve_relative(&self, _: ImportData) -> Option<ResolvedPath> {
-        Some(ResolvedPath {
-            root_dir: ROOT_DIR.clone(),
-            file: PATH.clone(),
-        })
-    }
-
-    fn resolve_absolute(&self, _: ImportData) -> Option<ResolvedPath> {
-        Some(ResolvedPath {
-            root_dir: ROOT_DIR.clone(),
-            file: PATH.clone(),
-        })
-    }
-
-    fn resolve_module(&self, _: ImportData, _: &str) -> Option<ResolvedPath> {
-        Some(ResolvedPath {
-            root_dir: ROOT_DIR.clone(),
-            file: PATH.clone(),
-        })
-    }
-}
 
 fn main() {
     let arena = Arena::new();
@@ -69,18 +39,18 @@ fn main() {
 }
 
 fn _main<'arena>(ctx: SharedContext<'arena>) -> Result<(), Diagnostics<'arena>> {
-    ctx.init_source_map(SourceMap::new(
-        [Box::new(EmptyResolver) as Box<dyn ModuleResolver>].into(),
-    ));
     let mut errs = Diagnostics::new();
     let mut buf = String::new();
     if let Err(e) = stdin().read_to_string(&mut buf) {
         errs.add_stdin_read_error(e);
         return Err(errs);
     }
-    let file =
-        ctx.source_map()
-            .new_file(Path::new("stdin").into(), Path::new("/").into(), buf.into());
+    let (_, file) = ctx.source_map().add_package(
+        Path::new("/dev").into(),
+        Path::new("/dev/stdin").into(),
+        buf.into(),
+        HashMap::new(),
+    );
     let mut tokenizer = Tokenizer::new(ctx, file.clone());
     if tokenizer
         .scan_tokens()
@@ -90,14 +60,9 @@ fn _main<'arena>(ctx: SharedContext<'arena>) -> Result<(), Diagnostics<'arena>> 
         return Err(errs);
     }
     let mut store = Store::new();
-    let key = store.insert(Module::new(
-        HashMap::new(),
-        file.path.clone(),
-        file.package_root.clone(),
-    ));
+    let key = store.reserve_key();
     let modules = Arc::new(store.into());
-    let mut parser =
-        tokenizer.to_parser(Arc::new(Vec::new().into()), &modules, ctx.source_map(), key);
+    let mut parser = tokenizer.to_parser(Arc::new(Vec::new().into()), &modules, key);
     let (statements, parse_errs) = parser.parse_all();
     for err in parse_errs {
         errs.add_err(err);
@@ -608,6 +573,50 @@ impl Builder {
             | Statement::BakedStruct(..)
             | Statement::BakedStatic(..)
             | Statement::BakedTrait(..) => unreachable!(),
+            Statement::Use {
+                path,
+                alias: None,
+                public,
+                ..
+            } => {
+                let public = public
+                    .then(|| Node::static_text("pub "))
+                    .unwrap_or(Node::Empty);
+                Node::nodes([public, Node::static_text("use "), self.path_simple(path)])
+            }
+            Statement::Use {
+                path,
+                alias: Some(alias),
+                public,
+                ..
+            } => {
+                let public = public
+                    .then(|| Node::static_text("pub "))
+                    .unwrap_or(Node::Empty);
+                Node::nodes([
+                    public,
+                    Node::static_text("use "),
+                    self.path_simple(path),
+                    Node::static_text(" as "),
+                    self.ident(alias),
+                ])
+            }
+            Statement::Mod {
+                name,
+                public: false,
+                ..
+            } => Node::nodes([
+                Node::static_text("mod "),
+                self.ident(name),
+                Node::static_text(";"),
+            ]),
+            Statement::Mod {
+                name, public: true, ..
+            } => Node::nodes([
+                Node::static_text("pub mod "),
+                self.ident(name),
+                Node::static_text(";"),
+            ]),
         }
     }
 

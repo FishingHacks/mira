@@ -381,11 +381,12 @@ mod test {
     fn test() {
         let arena = Arena::new();
         let interner = SpanInterner::new(&arena);
-        let source_map = SourceMap::new([].into());
-        let file = source_map.new_file(
-            Path::new("src/main.rs").into(),
+        let source_map = SourceMap::new();
+        let (_, file) = source_map.add_package(
             Path::new("src").into(),
+            Path::new("src/main.rs").into(),
             SOURCE.into(),
+            HashMap::new(),
         );
         let mut emitter = DiagnosticFormatter::new(
             &source_map,

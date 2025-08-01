@@ -1,5 +1,5 @@
-use "\0__root"::main;
-use "./os.mr"::exit;
+use crate::os::exit;
+use crate::intrinsics::call_main;
 
 @callconv(naked)
 extern fn _start() {
@@ -16,7 +16,7 @@ extern fn _start() {
 
 @callconv(c)
 extern fn __mira_main(argc: usize, argv: &&u8) -> ! {
-    main(argc, argv);
+    call_main();
 
     // exit with exit_code 0
     exit(0);

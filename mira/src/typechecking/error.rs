@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     error::FunctionList,
     parser::{Path, PathWithoutGenerics},
@@ -9,6 +11,16 @@ use super::{types::Type, ScopeKind};
 
 #[derive(Clone, Debug, ErrorData)]
 pub enum TypecheckingError<'arena> {
+    #[error("Main function has wrong type")]
+    #[note("consider adding a main function to `{}`", _0.display())]
+    #[note("main function signature: `pub fn main() {{ }}`")]
+    MainFuncNotFound(Arc<std::path::Path>),
+    #[error("Main function has wrong type")]
+    #[note("Expected signature: `fn main()`")]
+    MainFuncWrongType {
+        #[primary_label("")]
+        func_span: Span<'arena>,
+    },
     #[error("Expected a sized type, but got {_1}")]
     UnsizedForSizedGeneric(
         #[primary_label("expected a sized type")] Span<'arena>,
@@ -216,17 +228,14 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("cannot dereference")] Span<'arena>,
         Type<'arena>,
     ),
-    #[error("could not find export `{name}`")]
-    ExportNotFound {
-        #[primary_label("No such export found")]
+    #[error("could not find item `{name}`")]
+    ItemNotFound {
+        #[primary_label("No such item found")]
         location: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("cyclic dependency detected")]
-    CyclicDependency {
-        #[primary_label("cyclic dependency")]
-        location: Span<'arena>,
-    },
+    CyclicDependency(#[primary_label("cyclic dependency")] Span<'arena>),
     #[error("Unbound identifier `{name}`")]
     UnboundIdent {
         #[primary_label("unbound identifier")]

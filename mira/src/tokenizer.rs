@@ -1,4 +1,4 @@
-use mira_spans::{BytePos, Ident, SourceFile, SourceMap, Span, SpanData};
+use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData};
 use parking_lot::RwLock;
 use std::{
     fmt::{Debug, Display},
@@ -83,6 +83,7 @@ token_type! {
     Fn = "fn",
     Extern = "extern",
     Use = "use",
+    Mod = "mod",
     Export = "export",
     If = "if",
     Else = "else",
@@ -1013,6 +1014,7 @@ impl<'arena> Tokenizer<'arena> {
             "impl" => Some(TokenType::Impl),
             "trait" => Some(TokenType::Trait),
             "use" => Some(TokenType::Use),
+            "mod" => Some(TokenType::Mod),
             "export" => Some(TokenType::Export),
             _ => None,
         }
@@ -1036,24 +1038,15 @@ impl<'arena> Tokenizer<'arena> {
         self,
         parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
         modules: &'a RwLock<Store<Module<'arena>>>,
-        source_map: &'a SourceMap,
         key: StoreKey<Module<'arena>>,
     ) -> Parser<'a, 'arena> {
-        Parser::new(
-            self.ctx,
-            self.tokens,
-            parser_queue,
-            modules,
-            self.file,
-            source_map,
-            key,
-        )
+        Parser::new(self.ctx, self.tokens, parser_queue, modules, self.file, key)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::path::Path;
+    use std::{collections::HashMap, path::Path};
 
     use crate::context::GlobalContext;
     use mira_spans::{interner::SymbolInterner, Arena};
@@ -1090,11 +1083,14 @@ mod test {
     ) -> (Vec<Token<'arena>>, Vec<TokenizationError<'arena>>) {
         let mut tokenizer = Tokenizer::new(
             ctx,
-            ctx.source_map().new_file(
-                Path::new("file").into(),
-                Path::new("root").into(),
-                src.into(),
-            ),
+            ctx.source_map()
+                .add_package(
+                    Path::new("root").into(),
+                    Path::new("root/file.mr").into(),
+                    src.into(),
+                    HashMap::new(),
+                )
+                .1,
         );
         let errs = tokenizer.scan_tokens().err().unwrap_or_default();
         check_tokens(tokenizer.get_tokens());
@@ -1104,7 +1100,6 @@ mod test {
     fn assert_token_eq(src: &str, expected_tokens: &[(TokenType, Option<Literal>)]) {
         let arena = Arena::new();
         let ctx = GlobalContext::new(&arena);
-        ctx.init_source_map(SourceMap::new([].into()));
         let eof_token = (TokenType::Eof, None);
         let (tokens, errs) = get_tokens(ctx.share(), src);
         println!("{tokens:?}");
@@ -1125,7 +1120,6 @@ mod test {
             let mut i = 0;
             let arena = Arena::new();
             let ctx = GlobalContext::new(&arena);
-            ctx.init_source_map(SourceMap::new([].into()));
             let (_, errs) = get_tokens(ctx.share(), $str);
             $(
                 if i >= errs.len() {

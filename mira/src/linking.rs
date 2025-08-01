@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     fs::File,
     io::Write,
     path::{Path, PathBuf},
@@ -29,7 +30,6 @@ use crate::{
         TypecheckingContext,
     },
 };
-use mira_spans::{ModuleResolver, SourceMap};
 
 #[derive(Debug)]
 pub enum LinkerInput {
@@ -254,21 +254,109 @@ pub fn search_for_linker(
     None
 }
 
+#[derive(Clone, Debug)]
+pub enum LibraryInput {
+    Path,
+    String(Arc<str>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LibraryId(usize);
+
+#[derive(Default)]
+pub struct LibraryTree {
+    main: Option<LibraryId>,
+    libraries: Vec<Library>,
+    names: HashSet<Arc<str>>,
+}
+
+pub struct LibraryBuilder<'tree> {
+    tree: &'tree mut LibraryTree,
+    root: Arc<Path>,
+    root_file_path: Arc<Path>,
+    input: LibraryInput,
+    dependencies: HashMap<Arc<str>, LibraryId>,
+}
+
+impl<'tree> LibraryBuilder<'tree> {
+    #[must_use]
+    pub fn with_source(mut self, source: Arc<str>) -> Self {
+        self.input = LibraryInput::String(source);
+        self
+    }
+
+    #[must_use]
+    pub fn with_dependency(mut self, name: &str, id: LibraryId) -> Self {
+        self.dependencies.insert(self.tree.intern(name), id);
+        self
+    }
+
+    pub fn add_dependency(&mut self, name: &str, id: LibraryId) -> &mut Self {
+        self.dependencies.insert(self.tree.intern(name), id);
+        self
+    }
+
+    pub fn build(self) -> LibraryId {
+        let id = LibraryId(self.tree.libraries.len());
+        self.tree.libraries.push(Library {
+            root: self.root,
+            root_file_path: self.root_file_path,
+            input: self.input,
+            dependencies: self.dependencies,
+        });
+        id
+    }
+}
+
+impl LibraryTree {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn build_library(
+        &mut self,
+        module_root: Arc<Path>,
+        file_path: Arc<Path>,
+    ) -> LibraryBuilder {
+        LibraryBuilder {
+            tree: self,
+            root: module_root,
+            root_file_path: file_path,
+            input: LibraryInput::Path,
+            dependencies: HashMap::new(),
+        }
+    }
+
+    /// the "main" library, aka the executable/library that's currently being compiled
+    pub fn main_library(&mut self, library: LibraryId) {
+        assert!(
+            self.main.is_none(),
+            "Only one main library can exist at a time"
+        );
+        self.main = Some(library);
+    }
+
+    fn intern(&mut self, s: &str) -> Arc<str> {
+        if let Some(s) = self.names.get(s) {
+            return s.clone();
+        }
+        let s: Arc<str> = s.into();
+        self.names.insert(s.clone());
+        s
+    }
+}
+
+pub struct Library {
+    pub root: Arc<Path>,
+    pub root_file_path: Arc<Path>,
+    pub input: LibraryInput,
+    pub dependencies: HashMap<Arc<str>, LibraryId>,
+}
+
 pub struct FullCompilationOptions<'a> {
-    /// The file the source came from. Used to evaluate relative imports
-    pub file: Arc<Path>,
-    /// The path the import `@root/` points to
-    pub root_directory: Arc<Path>,
-    /// The source that will be parsed, reads `self.file` if None.
-    /// Has to be specified if `self.file` points at a file that does not actually exists
-    /// (e.g. because this is running in a repl)
-    pub source: Option<&'a str>,
-    /// The root file will automatically have `use "<always_include>"::*;` at the top, causing this
-    /// file to be built into each compilation. Use this for the file where you defined your procedure
-    /// that represents the entry point of the executable and calls the main function.
-    pub always_include: Option<String>,
-    /// A list of resolvers to use to resolve imports.
-    pub resolvers: Box<[Box<dyn ModuleResolver>]>,
+    /// the packages in this compilation
+    pub library_tree: LibraryTree,
     /// Set to true if you need a shared object (.so / .dll)
     pub shared_object: bool,
     /// An Optional path to a linker script
@@ -320,17 +408,9 @@ macro_rules! setters {
 
 #[allow(dead_code)]
 impl<'a> FullCompilationOptions<'a> {
-    pub fn new(
-        file: Arc<Path>,
-        root_directory: Arc<Path>,
-        resolvers: Box<[Box<dyn ModuleResolver>]>,
-    ) -> Self {
+    pub fn new(library_tree: LibraryTree) -> Self {
         Self {
-            file,
-            root_directory,
-            source: None,
-            always_include: None,
-            resolvers,
+            library_tree,
             shared_object: false,
             linker_script: None,
             obj_path: None,
@@ -349,11 +429,6 @@ impl<'a> FullCompilationOptions<'a> {
         }
     }
     setters![
-        with_source => source: Option<&'a str>,
-        set_file => file: Arc<Path>,
-        set_root_dir => root_directory: Arc<Path>,
-        always_include_file => always_include: Option<String>,
-        set_module_resolver => resolvers: Box<[Box<dyn ModuleResolver>]>,
         shared_object => shared_object: bool,
         set_linker_script => linker_script: Option<&'a Path>,
         set_object_path => obj_path: Option<PathBuf>,
@@ -368,6 +443,9 @@ impl<'a> FullCompilationOptions<'a> {
         asm_writer => asm_writer: Option<Box<dyn Write>>,
         set_codegen_opts => codegen_opts: CodegenConfig<'a>,
     ];
+    pub fn library_tree(&mut self) -> &mut LibraryTree {
+        &mut self.library_tree
+    }
     /// Set the path of the binary and if to add the target-dependent extension to it
     pub fn set_binary_path(
         &mut self,
@@ -431,26 +509,39 @@ pub fn run_full_compilation_pipeline<'arena>(
         println!("Assuming cpu features: {}", opts.codegen_opts.cpu_features);
     }
 
-    ctx.init_source_map(SourceMap::new(opts.resolvers));
     let source_map = ctx.source_map();
-    let source = match opts.source {
-        Some(v) => source_map.new_file(opts.file.clone(), opts.root_directory, v.into()),
-        None => source_map
-            .load_file(opts.file.clone(), opts.root_directory)
-            .map_err(|e| vec![IoReadError(opts.file.to_path_buf(), e).to_error()])?,
-    };
+    assert!(
+        opts.library_tree.main.is_some(),
+        "No library was selected as the main one"
+    );
+    let main_lib_id = opts.library_tree.main.unwrap();
+    let mut packages = Vec::new();
+
+    for library in opts.library_tree.libraries.into_iter() {
+        let deps = library
+            .dependencies
+            .into_iter()
+            .map(|(k, v)| (k, packages[v.0]))
+            .collect();
+        let (package, _) = match library.input {
+            LibraryInput::Path => source_map
+                .add_package_load(library.root, library.root_file_path.clone(), deps)
+                .map_err(|e| IoReadError(library.root_file_path.to_path_buf(), e).to_error())?,
+            LibraryInput::String(s) => {
+                source_map.add_package(library.root, library.root_file_path, s, deps)
+            }
+        };
+        packages.push(package.id);
+    }
+    let main_lib = packages[main_lib_id.0];
+    drop(packages);
+    drop(opts.library_tree.names);
+    ctx.source_map().set_main_package(main_lib);
 
     let progress_bar = Arc::new(RwLock::new(ProgressBar::new(ProgressBarStyle::Normal)));
     let parser_item = progress_bar.write().add_item("Parsing".into());
 
-    let module_context = parse_all(
-        ctx,
-        source,
-        opts.always_include,
-        source_map,
-        progress_bar.clone(),
-        parser_item,
-    );
+    let module_context = parse_all(ctx, progress_bar.clone(), parser_item);
     progress_bar.write().remove_item(parser_item);
     let typechecking_item = progress_bar.write().add_item("Typechecking".into());
     let type_resolution_item = progress_bar.write().add_item("Type Resolution".into());
@@ -532,6 +623,11 @@ pub fn run_full_compilation_pipeline<'arena>(
     }
 
     progress_bar.write().remove_item(typechecking_item);
+
+    if let Err(err) = typechecking_context.validate_main_function(ctx, &module_context) {
+        errs.add_err(err);
+    }
+
     let dce_item = progress_bar
         .write()
         .add_item("Dead code elimination".into());
@@ -565,8 +661,9 @@ pub fn run_full_compilation_pipeline<'arena>(
 
     let context = Context::create();
 
-    let filename = opts
-        .file
+    let root_file = ctx.source_map().packages()[0].root_file;
+    let file = ctx.source_map().get_file(root_file).unwrap().path.clone();
+    let filename = file
         .file_name()
         .expect("file should have a filename")
         .to_string_lossy();
@@ -574,7 +671,7 @@ pub fn run_full_compilation_pipeline<'arena>(
         &context,
         typechecking_context.clone(),
         &filename,
-        opts.file.clone(),
+        file.clone(),
         opts.codegen_opts,
         ctx,
     )
