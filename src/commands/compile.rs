@@ -50,12 +50,46 @@ impl std::fmt::Display for OptimizationMode {
     }
 }
 
-//┌─┐└┘│├┬┴┼┴┤
-const LONG_HELP_OPTMODE: &str = r#"The Optimization level of the compilation.
+//┌─┐└┘│├┬┴┼┤
+// ┌┬┐ ┌─┐
+// ├┼┤ │ │
+// └┴┘ └─┘
+//
+//┌──────────────┬───────────┬────────────────┐
+//│ Name         │ Opt level │ Runtime Checks │
+//├──────────────┼───────────┼────────────────┤
+//│ Debugger     │    -O0    │      true      │
+//│ Debug        │    -O2    │      true      │
+//│ ReleaseSafe  │    -O3    │      true      │
+//│ ReleaseFast  │    -O3    │      false     │
+//│ ReleaseSmall │    -Os    │      false     │
+//│ ReleaseTiny  │    -Oz    │      false     │
+//└──────────────┴───────────┴────────────────┘
+//┌──────────────┬───────────┬────────────────┐
+//│ Name         │ Opt level │ Runtime Checks │
+//┝━━━━━━━━━━━━━━┿━━━━━━━━━━━┿━━━━━━━━━━━━━━━━┥
+//│ Debugger     │    -O0    │      true      │
+//│ Debug        │    -O2    │      true      │
+//│ ReleaseSafe  │    -O3    │      true      │
+//│ ReleaseFast  │    -O3    │      false     │
+//│ ReleaseSmall │    -Os    │      false     │
+//│ ReleaseTiny  │    -Oz    │      false     │
+//└──────────────┴───────────┴────────────────┘
+//┌──────────────┬───────────┬────────────────┐
+//│ Name         │ Opt level │ Runtime Checks │
+//╞══════════════╪═══════════╪════════════════╡
+//│ Debugger     │    -O0    │      true      │
+//│ Debug        │    -O2    │      true      │
+//│ ReleaseSafe  │    -O3    │      true      │
+//│ ReleaseFast  │    -O3    │      false     │
+//│ ReleaseSmall │    -Os    │      false     │
+//│ ReleaseTiny  │    -Oz    │      false     │
+//└──────────────┴───────────┴────────────────┘
+pub const LONG_HELP_OPTMODE: &str = r#"The Optimization level of the compilation.
 
 ┌──────────────┬───────────┬────────────────┐
 │ Name         │ Opt level │ Runtime Checks │
-├──────────────┼───────────┼────────────────┤
+┝━━━━━━━━━━━━━━┿━━━━━━━━━━━┿━━━━━━━━━━━━━━━━┥
 │ Debugger     │    -O0    │      true      │
 │ Debug        │    -O2    │      true      │
 │ ReleaseSafe  │    -O3    │      true      │
@@ -85,13 +119,16 @@ pub struct CompileArgs {
     linker_script: Option<PathBuf>,
     /// The Optimization level of the compilation.
     ///
-    /// | Name         | Opt level | Runtime Checks |
-    /// | Debugger     |    -O0    |      true      |
-    /// | Debug        |    -O2    |      true      |
-    /// | ReleaseSafe  |    -O3    |      true      |
-    /// | ReleaseFast  |    -O3    |      false     |
-    /// | ReleaseSmall |    -Os    |      false     |
-    /// | ReleaseTiny  |    -Oz    |      false     |
+    /// ┌──────────────┬───────────┬────────────────┐
+    /// │ Name         │ Opt level │ Runtime Checks │
+    /// ┝━━━━━━━━━━━━━━┿━━━━━━━━━━━┿━━━━━━━━━━━━━━━━┥
+    /// │ Debugger     │    -O0    │      true      │
+    /// │ Debug        │    -O2    │      true      │
+    /// │ ReleaseSafe  │    -O3    │      true      │
+    /// │ ReleaseFast  │    -O3    │      false     │
+    /// │ ReleaseSmall │    -Os    │      false     │
+    /// │ ReleaseTiny  │    -Oz    │      false     │
+    /// └──────────────┴───────────┴────────────────┘
     #[arg(long, short = 'o', default_value_t = OptimizationMode::ReleaseSafe, long_help = LONG_HELP_OPTMODE)]
     opt: OptimizationMode,
     /// A String representing the cpu features you want to enable

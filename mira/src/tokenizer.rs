@@ -43,8 +43,6 @@ macro_rules! token_type {
     };
 }
 
-// #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// pub enum TokenType {
 token_type! {
     Let = "let",
     EqualEqual = "==",

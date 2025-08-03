@@ -30,9 +30,9 @@ fn parse_single<'arena>(
     key: StoreKey<Module<'arena>>,
     package: PackageId,
 ) {
-    // +--------------+
-    // | Tokenization |
-    // +--------------+
+    // ┌──────────────┐
+    // │ Tokenization │
+    // └──────────────┘
     let mut item = progress_bar.write().add_child_item(
         parsing_item,
         format!("Tokenizing {}", file.path.display()).into_boxed_str(),
@@ -56,9 +56,9 @@ fn parse_single<'arena>(
     }
     print_progress_bar(&progress_bar);
 
-    // +---------+
-    // | Parsing |
-    // +---------+
+    // ┌─────────┐
+    // │ Parsing │
+    // └─────────┘
     let mut current_parser =
         tokenizer.to_parser(parsing_queue.clone(), &module_context.modules, key);
     current_parser.file = file.clone();
@@ -68,9 +68,9 @@ fn parse_single<'arena>(
         .write()
         .extend(parsing_errors.into_iter().map(ParsingError::to_error));
 
-    // +-----------------+
-    // | Program Forming |
-    // +-----------------+
+    // ┌─────────────────┐
+    // │ Program Forming │
+    // └─────────────────┘
     {
         let mut writer = progress_bar.write();
         writer.remove_item(item);

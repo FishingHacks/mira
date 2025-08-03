@@ -111,9 +111,9 @@ impl Intrinsic {
         }
 
         match self {
-            // -------------------------
-            // - sized-only intrinsics -
-            // -------------------------
+            // ┌───────────────────────┐
+            // │ Sized-only Intrinsics │
+            // └───────────────────────┘
             Intrinsic::Drop
             | Intrinsic::SizeOf
             | Intrinsic::Read
@@ -125,9 +125,9 @@ impl Intrinsic {
                 .is_sized()
                 .then_some(())
                 .ok_or_else(|| TypecheckingError::NonSizedType(loc, generics[0].clone())),
-            // ----------------------
-            // - integer intrinsics -
-            // ----------------------
+            // ┌────────────────────┐
+            // │ Integer Intrinsics │
+            // └────────────────────┘
             Intrinsic::ByteSwap
             | Intrinsic::BitReverse
             | Intrinsic::CountLeadingZeros
@@ -151,17 +151,17 @@ impl Intrinsic {
                 .is_int_like()
                 .then_some(())
                 .ok_or_else(|| TypecheckingError::IntOnlyIntrinsic(loc, generics[0].clone())),
-            // --------------------------
-            // - genericless intrinsics -
-            // --------------------------
+            // ┌────────────────────────┐
+            // │ Genericless Intrinsics │
+            // └────────────────────────┘
             Intrinsic::Unreachable
             | Intrinsic::CallMain
             | Intrinsic::Breakpoint
             | Intrinsic::Trap
             | Intrinsic::ReturnAddress => Ok(()),
-            // ------------------------
-            // - all types intrinsics -
-            // ------------------------
+            // ┌──────────────────────┐
+            // │ All-types Intrinsics │
+            // └──────────────────────┘
             Intrinsic::DropInPlace
             | Intrinsic::SizeOfVal
             | Intrinsic::Offset

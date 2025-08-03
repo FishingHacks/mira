@@ -43,9 +43,9 @@ impl<'arena> TypecheckingContext<'arena> {
             .zip(std::iter::repeat(ResolvingState::Pending))
             .collect::<HashMap<_, _>>();
 
-        // +---------+
-        // | Structs |
-        // +---------+
+        // ┌─────────┐
+        // │ Structs │
+        // └─────────┘
         while let Some(key) = structs_left.keys().next().copied() {
             let struct_reader = context.structs.read();
             let module_id = struct_reader[key].module_id;
@@ -79,9 +79,9 @@ impl<'arena> TypecheckingContext<'arena> {
             }
         }
 
-        // +-----------+
-        // | Functions |
-        // +-----------+
+        // ┌───────────┐
+        // │ Functions │
+        // └───────────┘
         let function_keys = context.functions.read().indices().collect::<Vec<_>>();
         for function_key in function_keys {
             let error_count = errors.len();
@@ -105,9 +105,9 @@ impl<'arena> TypecheckingContext<'arena> {
             }
         }
 
-        // +--------------------+
-        // | External Functions |
-        // +--------------------+
+        // ┌────────────────────┐
+        // │ External Functions │
+        // └────────────────────┘
         let ext_function_keys = context
             .external_functions
             .read()
@@ -135,9 +135,9 @@ impl<'arena> TypecheckingContext<'arena> {
             }
         }
 
-        // +---------+
-        // | Statics |
-        // +---------+
+        // ┌─────────┐
+        // │ Statics │
+        // └─────────┘
         let statics_keys = context.statics.read().indices().collect::<Vec<_>>();
         for static_key in statics_keys {
             let error_count = errors.len();
@@ -160,9 +160,9 @@ impl<'arena> TypecheckingContext<'arena> {
             }
         }
 
-        // +--------+
-        // | Traits |
-        // +--------+
+        // ┌────────┐
+        // │ Traits │
+        // └────────┘
         let trait_keys = context.traits.read().indices().collect::<Vec<_>>();
         for trait_key in trait_keys {
             let error_count = errors.len();
