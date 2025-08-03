@@ -4,9 +4,6 @@ use crate::{
 };
 use mira_spans::{interner::Symbol, Ident, Span};
 
-// this is represented by a vector of tokens. So it's not really a "stream", but i dont know any
-// better name so this will do for now.
-// TODO: Change name to something more sensical
 pub struct TokenStream<'arena> {
     tokens: Vec<Token<'arena>>,
     eof_span: Span<'arena>,
