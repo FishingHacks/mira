@@ -12,6 +12,7 @@ use crate::{
     module::Module,
     parser::{LiteralValue, Parser, ParserQueueEntry},
     store::{Store, StoreKey},
+    tokenstream::TokenStream,
 };
 use mira_spans::interner::Symbol;
 
@@ -1040,7 +1041,18 @@ impl<'arena> Tokenizer<'arena> {
         modules: &'a RwLock<Store<Module<'arena>>>,
         key: StoreKey<Module<'arena>>,
     ) -> Parser<'a, 'arena> {
-        Parser::new(self.ctx, self.tokens, parser_queue, modules, self.file, key)
+        let eof_span = Span::new(
+            SpanData::new(BytePos::from_u32(self.file.len()), 1, self.file.id),
+            self.ctx.span_interner(),
+        );
+        Parser::new(
+            self.ctx,
+            TokenStream::new(self.tokens, eof_span),
+            parser_queue,
+            modules,
+            self.file,
+            key,
+        )
     }
 }
 

@@ -21,7 +21,7 @@ impl Display for ExternAliasAnnotation {
     }
 }
 pub fn parse(mut tokens: TokenStream) -> Result<ExternAliasAnnotation, ParsingError> {
-    let (name, _) = tokens.expect_remove_string()?;
+    let (name, _) = tokens.expect_string()?;
     tokens.finish()?;
     Ok(ExternAliasAnnotation(name.to_string()))
 }

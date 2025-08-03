@@ -21,7 +21,7 @@ impl Display for SectionAnnotation {
     }
 }
 pub fn parse(mut tokens: TokenStream) -> Result<SectionAnnotation, ParsingError> {
-    let (name, _) = tokens.expect_remove_string()?;
+    let (name, _) = tokens.expect_string()?;
     tokens.finish()?;
     Ok(SectionAnnotation(name.to_string()))
 }

@@ -43,14 +43,17 @@ impl Display for CallConvAnnotation {
 }
 
 pub fn parse(mut tokens: TokenStream) -> Result<CallConvAnnotation, ParsingError> {
-    let (name, loc) = tokens.expect_remove_identifier()?;
+    let ident = tokens.expect_identifier()?;
     tokens.finish()?;
-    match name.to_str() {
+    match &*ident {
         "c" | "C" => Ok(CallConvAnnotation::C),
         "naked" | "Naked" => Ok(CallConvAnnotation::Naked),
         "fast" | "Fast" => Ok(CallConvAnnotation::Fast),
         "cold" | "Cold" => Ok(CallConvAnnotation::Cold),
         "inline" | "Inline" => Ok(CallConvAnnotation::Inline),
-        _ => Err(ParsingError::InvalidIntrinsic { loc, name }),
+        _ => Err(ParsingError::InvalidIntrinsic {
+            loc: ident.span(),
+            name: ident.symbol(),
+        }),
     }
 }

@@ -197,7 +197,7 @@ impl Annotation for IntrinsicAnnotation {
 
 impl IntrinsicAnnotation {
     pub fn parse<'arena>(mut tokens: TokenStream<'arena>) -> Result<Self, ParsingError<'arena>> {
-        let (name, loc) = tokens.expect_remove_string()?;
+        let (name, loc) = tokens.expect_string()?;
         let v = Intrinsic::from_str(&name)
             .map(Self)
             .map_err(|_| ParsingError::InvalidIntrinsic { loc, name })?;

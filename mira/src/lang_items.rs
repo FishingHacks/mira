@@ -39,7 +39,7 @@ impl LangItemAnnotation {
     }
 
     pub fn parse(mut tokens: TokenStream) -> Result<Self, ParsingError> {
-        let (item, _) = tokens.expect_remove_string()?;
+        let (item, _) = tokens.expect_string()?;
         tokens.finish()?;
         Ok(LangItemAnnotation(item.to_string()))
     }

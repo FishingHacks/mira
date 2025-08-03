@@ -1,4 +1,5 @@
 use mira_errors::{Diagnostic, Diagnostics};
+use mira_macros::Display;
 use parking_lot::RwLock;
 use std::{
     collections::{HashMap, HashSet},
@@ -893,11 +894,16 @@ impl From<ModuleScopeValue<'_>> for ScopeKind {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Display)]
 pub enum ScopeKind {
+    #[display("trait")]
     Trait,
+    #[display("type")]
     Type,
+    #[display("function")]
     Function,
+    #[display("global variable")]
     Static,
+    #[display("module")]
     Module,
 }

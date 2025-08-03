@@ -36,16 +36,19 @@ pub fn parse(mut tokens: TokenStream) -> Result<FunctionAttr, ParsingError> {
     let mut needs_comma = false;
     while !tokens.is_at_end() {
         if needs_comma {
-            tokens.expect_remove_token(TokenType::Comma)?;
-        } else {
-            needs_comma = true;
+            tokens.expect(TokenType::Comma)?;
         }
-        let (name, loc) = tokens.expect_remove_identifier()?;
-        #[allow(clippy::unit_arg)]
-        match name.to_str() {
+        needs_comma = true;
+        let ident = tokens.expect_identifier()?;
+        match &*ident {
             "hot" => function_attr.hotness = Some(true),
             "cold" => function_attr.hotness = Some(false),
-            _ => return Err(ParsingError::InvalidFunctionAttribute { loc, name }),
+            _ => {
+                return Err(ParsingError::InvalidFunctionAttribute {
+                    loc: ident.span(),
+                    name: ident.symbol(),
+                })
+            }
         }
     }
     Ok(function_attr)

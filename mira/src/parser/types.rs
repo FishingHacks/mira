@@ -176,8 +176,8 @@ impl<'arena> TypeRef<'arena> {
                 let child = Box::new(Self::parse(parser)?);
                 if parser.match_tok(TokenType::Semicolon) {
                     // case [<type>; <amount>]
-                    let (lit, _) = parser.expect_tok(TokenType::UIntLiteral)?.uint_literal()?;
-                    parser.expect_tok(TokenType::BracketRight)?;
+                    let (lit, _) = parser.expect(TokenType::UIntLiteral)?.uint_literal()?;
+                    parser.expect(TokenType::BracketRight)?;
 
                     return Ok(Self::SizedArray {
                         num_references,
@@ -186,7 +186,7 @@ impl<'arena> TypeRef<'arena> {
                         span: parser.span_from(span),
                     });
                 } else {
-                    parser.expect_tok(TokenType::BracketRight)?;
+                    parser.expect(TokenType::BracketRight)?;
                     return Ok(Self::UnsizedArray {
                         num_references,
                         child,
@@ -216,7 +216,7 @@ impl<'arena> TypeRef<'arena> {
                     })
                 };
             } else if parser.match_tok(TokenType::Fn) {
-                parser.expect_tok(TokenType::ParenLeft)?;
+                parser.expect(TokenType::ParenLeft)?;
                 let mut args = Vec::new();
                 while !parser.match_tok(TokenType::ParenRight) {
                     if !args.is_empty() {
@@ -252,7 +252,7 @@ impl<'arena> TypeRef<'arena> {
                 let mut elements = Vec::new();
                 while !parser.match_tok(TokenType::ParenRight) {
                     if !elements.is_empty() {
-                        parser.expect_tok(TokenType::Comma)?;
+                        parser.expect(TokenType::Comma)?;
 
                         if parser.match_tok(TokenType::ParenRight) {
                             break;
@@ -286,7 +286,7 @@ impl<'arena> TypeRef<'arena> {
         num_references: u8,
         loc: Span<'arena>,
     ) -> Result<Self, ParsingError<'arena>> {
-        parser.advance();
+        parser.dismiss();
         let mut traits = vec![];
 
         loop {
@@ -450,7 +450,7 @@ impl<'arena> Generic<'arena> {
         }
         while parser.peek().typ == TokenType::Plus || bounds.is_empty() {
             if !bounds.is_empty() {
-                parser.expect_tok(TokenType::Plus)?;
+                parser.expect(TokenType::Plus)?;
             }
 
             let loc = parser.peek().span;

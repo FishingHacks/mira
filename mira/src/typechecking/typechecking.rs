@@ -896,7 +896,6 @@ fn typecheck_expression<'arena>(
                             )
                             .to_error());
                         }
-                        // TODO: Bounds check
                         let mut generic_types = Vec::with_capacity(generics.len());
                         for (i, typ) in generics.iter().enumerate() {
                             let ty = context.resolve_type(module, typ, &[])?;

@@ -156,12 +156,6 @@ pub enum ParsingError<'arena> {
         loc: Span<'arena>,
         found: TokenType,
     },
-    #[error("Expected one of `,`, or `}}`, but found `{found}`")]
-    ExpectedObjectElement {
-        #[primary_label("Expected one of `,`, or `}}`")]
-        loc: Span<'arena>,
-        found: TokenType,
-    },
     #[error("Expected an expression or `)`, but found `{found}`")]
     ExpectedFunctionArgumentExpression {
         #[primary_label("Expected an expression or `)`")]
@@ -211,8 +205,9 @@ pub enum ParsingError<'arena> {
         #[primary_label("`{name}` was originally defined here")]
         first_func_loc: Span<'arena>,
     },
-    #[error("{loc:?}: Expected {}fn or `}}`, but found {found:?}", if *is_trait_impl { "impl, " } else { "" })]
+    #[error("{loc:?}: Expected one of {}fn or `}}`, but found {found:?}", is_trait_impl.then_some("impl, ").unwrap_or(""))]
     StructImplRegionExpect {
+        #[primary_label("Expected one of {}fn or `}}`", is_trait_impl.then_some("impl, ").unwrap_or(""))]
         loc: Span<'arena>,
         found: TokenType,
         is_trait_impl: bool,

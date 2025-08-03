@@ -242,10 +242,9 @@ pub enum TypecheckingError<'arena> {
         location: Span<'arena>,
         name: Symbol<'arena>,
     },
-    // TODO: implement Display for ScopeKind
-    #[error("Expected a {expected:?}, but found a {found:?}")]
+    #[error("Expected a {expected}, but found a {found}")]
     MismatchingScopeType {
-        #[primary_label("")]
+        #[primary_label("Expected a {expected}")]
         location: Span<'arena>,
         expected: ScopeKind,
         found: ScopeKind,

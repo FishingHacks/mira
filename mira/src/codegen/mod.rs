@@ -1018,7 +1018,6 @@ impl<'arena> TypecheckedExpression<'arena> {
                 // While this is probably not strictly necessary, if we don't follow Clang's lead
                 // here then we may risk tripping LLVM bugs since anything not used by Clang tends
                 // to be buggy and regress often.
-                // TODO: Add this for mips
                 let cpu = ctx.machine.get_cpu();
                 match cpu.to_bytes() {
                     b"x86" | b"x86_64" | b"x86-64" => {
@@ -1027,7 +1026,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         }
                         constraints.push_str("~{dirflag},~{fpsr},~{flags}");
                     }
-                    _ => (),
+                    cpu => unreachable!("unhandled target cpu: {}", String::from_utf8_lossy(cpu)),
                 }
 
                 let asm_fn_ptr = ctx.context.create_inline_asm(
@@ -2249,7 +2248,7 @@ impl<'arena> TypecheckedExpression<'arena> {
             Intrinsic::Read => todo!(),
             Intrinsic::Write => todo!(),
 
-            // TODO: replace these at compile time because they
+            // TODO: replace these before reaching this point.
             Intrinsic::TypeName => todo!(),
         }
         Ok(())

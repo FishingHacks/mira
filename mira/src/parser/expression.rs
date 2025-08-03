@@ -76,7 +76,7 @@ impl<'arena> Path<'arena> {
 
         while !parser.match_tok(TokenType::GreaterThan) {
             if !types.is_empty() {
-                parser.expect_tok(TokenType::Comma)?;
+                parser.expect(TokenType::Comma)?;
             }
 
             types.push(TypeRef::parse(parser)?);
@@ -689,15 +689,13 @@ struct AsmBinding<'arena> {
 impl<'arena> Parser<'_, 'arena> {
     /// Parses [<.0>] "<.1>" (<.2>)
     fn parse_asm_binding(&mut self) -> Result<AsmBinding<'arena>, ParsingError<'arena>> {
-        self.expect_tok(TokenType::BracketLeft)?;
+        self.expect(TokenType::BracketLeft)?;
         let name = self.expect_identifier()?.symbol();
-        self.expect_tok(TokenType::BracketRight)?;
-        let bound = self
-            .expect_tok(TokenType::StringLiteral)?
-            .string_literal()?;
-        self.expect_tok(TokenType::ParenLeft)?;
+        self.expect(TokenType::BracketRight)?;
+        let bound = self.expect(TokenType::StringLiteral)?.string_literal()?;
+        self.expect(TokenType::ParenLeft)?;
         let type_ = self.expect_identifier()?;
-        self.expect_tok(TokenType::ParenRight)?;
+        self.expect(TokenType::ParenRight)?;
         Ok(AsmBinding {
             name,
             bound,
@@ -706,9 +704,9 @@ impl<'arena> Parser<'_, 'arena> {
     }
 
     fn parse_asm(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
-        let span1 = self.advance().span;
+        let span1 = self.eat().span;
         let volatile = self.match_tok(TokenType::Volatile);
-        self.expect_tok(TokenType::ParenLeft)?;
+        self.expect(TokenType::ParenLeft)?;
 
         let mut replacers: Vec<(String, String)> = Vec::new();
         let mut registers = String::new();
@@ -717,14 +715,12 @@ impl<'arena> Parser<'_, 'arena> {
         let mut asm = String::new();
         while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
             if !asm.is_empty() {
-                self.expect_tok(TokenType::Comma)?;
+                self.expect(TokenType::Comma)?;
                 if self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
                     break;
                 }
             }
-            let s = self
-                .expect_tok(TokenType::StringLiteral)?
-                .string_literal()?;
+            let s = self.expect(TokenType::StringLiteral)?.string_literal()?;
             if !asm.is_empty() {
                 asm.push('\n');
             }
@@ -768,13 +764,13 @@ impl<'arena> Parser<'_, 'arena> {
             };
 
             if !self.match_tok(TokenType::Colon) {
-                break 'out self.expect_tok(TokenType::ParenRight)?.span;
+                break 'out self.expect(TokenType::ParenRight)?.span;
             }
 
             // inputs
             while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
                 if !inputs.is_empty() {
-                    self.expect_tok(TokenType::Comma)?;
+                    self.expect(TokenType::Comma)?;
                     if self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
                         break;
                     }
@@ -804,7 +800,7 @@ impl<'arena> Parser<'_, 'arena> {
             }
 
             if self.current().typ != TokenType::Colon {
-                break 'out self.expect_tok(TokenType::ParenRight)?.span;
+                break 'out self.expect(TokenType::ParenRight)?.span;
             }
             if self.match_tok(TokenType::ParenRight) {
                 break 'out self.last().span;
@@ -813,21 +809,17 @@ impl<'arena> Parser<'_, 'arena> {
                 registers.push(',');
             }
             registers.push_str("~{");
-            let register = self
-                .expect_tok(TokenType::StringLiteral)?
-                .string_literal()?;
+            let register = self.expect(TokenType::StringLiteral)?.string_literal()?;
             registers.push_str(&register);
             registers.push('}');
 
             loop {
                 if self.peek().typ == TokenType::ParenRight {
-                    break self.advance().span;
+                    break self.eat().span;
                 }
-                self.expect_tok(TokenType::Comma)?;
+                self.expect(TokenType::Comma)?;
                 registers.push_str(",~{");
-                let register = self
-                    .expect_tok(TokenType::StringLiteral)?
-                    .string_literal()?;
+                let register = self.expect(TokenType::StringLiteral)?.string_literal()?;
                 registers.push_str(&register);
                 registers.push('}');
             }
@@ -866,17 +858,15 @@ impl<'arena> Parser<'_, 'arena> {
                 TokenType::NotEquals => BinaryOp::NotEquals,
                 TokenType::LogicalAnd => BinaryOp::LogicalAnd,
                 TokenType::LogicalOr => BinaryOp::LogicalOr,
-                TokenType::LessThan if self.peekpeek().typ == TokenType::Equal => {
-                    BinaryOp::LessThanEq
-                }
+                TokenType::LessThan if self.peek2().typ == TokenType::Equal => BinaryOp::LessThanEq,
                 TokenType::LessThan => BinaryOp::LessThan,
-                TokenType::GreaterThan if self.peekpeek().typ == TokenType::Equal => {
+                TokenType::GreaterThan if self.peek2().typ == TokenType::Equal => {
                     BinaryOp::GreaterThanEq
                 }
                 TokenType::GreaterThan => BinaryOp::GreaterThan,
                 _ => break,
             };
-            self.advance();
+            self.dismiss();
             let right = self.pipe_operator()?;
             expr = Expression::binary(
                 op,
@@ -971,7 +961,7 @@ impl<'arena> Parser<'_, 'arena> {
         let mut expr = self.unary()?;
 
         loop {
-            let op = match (self.peek().typ, self.peekpeek().typ) {
+            let op = match (self.peek().typ, self.peek2().typ) {
                 (TokenType::Divide, _) => BinaryOp::Divide,
                 (TokenType::Modulo, _) => BinaryOp::Modulo,
                 (TokenType::Asterix, _) => BinaryOp::Multiply,
@@ -982,9 +972,9 @@ impl<'arena> Parser<'_, 'arena> {
                 (TokenType::GreaterThan, TokenType::GreaterThan) => BinaryOp::RShift,
                 _ => break,
             };
-            self.advance();
+            self.dismiss();
             if op == BinaryOp::LShift || op == BinaryOp::RShift {
-                self.advance();
+                self.dismiss();
             }
             let right = self.unary()?;
             let span = expr
@@ -1107,11 +1097,11 @@ impl<'arena> Parser<'_, 'arena> {
                 let mut arguments: Vec<Expression> = vec![];
                 loop {
                     if self.peek().typ == TokenType::ParenRight {
-                        self.advance();
+                        self.dismiss();
                         break;
                     } else if !arguments.is_empty() {
                         // , or ), but ) is alr handled by the thing above
-                        if self.advance().typ != TokenType::Comma {
+                        if self.eat().typ != TokenType::Comma {
                             return Err(ParsingError::ExpectedFunctionArgument {
                                 loc: self.current().span,
                                 found: self.current(),
@@ -1131,7 +1121,7 @@ impl<'arena> Parser<'_, 'arena> {
                     }
                 }
 
-                if self.tokens[self.current.saturating_sub(2)].typ == TokenType::ParenRight {
+                if self.last().typ == TokenType::ParenRight {
                     expr = Expression::FunctionCall {
                         span: self
                             .current()
@@ -1174,7 +1164,7 @@ impl<'arena> Parser<'_, 'arena> {
             } else if self.current().typ == TokenType::BracketLeft {
                 let indexing_expr = self.parse_expression()?;
 
-                self.expect_tok(TokenType::BracketRight)?;
+                self.expect(TokenType::BracketRight)?;
                 expr = Expression::Indexing {
                     span: self
                         .current()
@@ -1211,7 +1201,7 @@ impl<'arena> Parser<'_, 'arena> {
             // .{} / .[] / .()
             let typ = self.peek().typ;
             if typ == TokenType::ParenLeft || typ == TokenType::BracketLeft {
-                self.advance();
+                self.eat();
                 let matching_tok = if typ == TokenType::ParenLeft {
                     TokenType::ParenRight
                 } else {
@@ -1220,7 +1210,7 @@ impl<'arena> Parser<'_, 'arena> {
                 let mut elements = Vec::new();
                 while !self.match_tok(matching_tok) {
                     if !elements.is_empty() {
-                        self.expect_tok(TokenType::Comma)?;
+                        self.expect(TokenType::Comma)?;
 
                         if self.match_tok(matching_tok) {
                             break;
@@ -1268,7 +1258,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
 
         if matches!(self.peek().typ, TokenType::IdentifierLiteral) {
-            let current = self.current;
+            let current = self.pos();
             if let Ok(path) = Path::parse(self) {
                 // StructName { ... };
                 let loc = self.peek().span;
@@ -1281,17 +1271,17 @@ impl<'arena> Parser<'_, 'arena> {
                     return Ok(Expression::Literal(LiteralValue::Dynamic(path), loc));
                 }
             } else {
-                self.current = current;
+                self.set_pos(current);
             }
         }
 
         if let Some(lit) = self.peek().to_literal_value() {
-            return Ok(Expression::Literal(lit, self.advance().span));
+            return Ok(Expression::Literal(lit, self.eat().span));
         }
 
         if self.match_tok(TokenType::ParenLeft) {
             let expr = self.parse_expression()?;
-            self.expect_tok(TokenType::ParenRight)?;
+            self.expect(TokenType::ParenRight)?;
             return Ok(expr);
         }
 
@@ -1309,9 +1299,8 @@ impl<'arena> Parser<'_, 'arena> {
             let mut arr = vec![];
             while !self.match_tok(TokenType::BracketRight) {
                 if arr.len() == 1 && self.match_tok(TokenType::Semicolon) {
-                    let amount =
-                        self.expect_tok(TokenType::UIntLiteral)?.uint_literal()?.0 as usize;
-                    self.expect_tok(TokenType::BracketRight)?;
+                    let amount = self.expect(TokenType::UIntLiteral)?.uint_literal()?.0 as usize;
+                    self.expect(TokenType::BracketRight)?;
                     return Ok(Some(Expression::Literal(
                         LiteralValue::Array(ArrayLiteral::CopyInitialized(
                             Box::new(arr.remove(0)),
@@ -1362,11 +1351,8 @@ impl<'arena> Parser<'_, 'arena> {
             while !self.match_tok(TokenType::CurlyRight) {
                 if !obj.is_empty() {
                     // expect a comma
-                    if !self.match_tok(TokenType::Comma) {
-                        return Some(Err(ParsingError::ExpectedObjectElement {
-                            loc: self.peek().span,
-                            found: self.peek().typ,
-                        }));
+                    if let Err(e) = self.expect_one_of(&[TokenType::CurlyRight, TokenType::Comma]) {
+                        return Some(Err(e));
                     }
                     // in order to allow stuff like [1, 2, 3, ]
                     if self.match_tok(TokenType::CurlyRight) {
@@ -1381,7 +1367,7 @@ impl<'arena> Parser<'_, 'arena> {
                 };
                 let location = self.current().span;
 
-                if let Err(e) = self.expect_tok(TokenType::Colon) {
+                if let Err(e) = self.expect(TokenType::Colon) {
                     return Some(Err(e));
                 }
 
