@@ -841,7 +841,9 @@ impl<'arena> Tokenizer<'arena> {
         while !self.is_at_end() {
             let c = self.advance();
 
-            if is_backslash {
+            if c == '\n' || c == '\r' {
+                return Err(TokenizationError::unclosed_string(self.current_span()));
+            } else if is_backslash {
                 is_backslash = false;
                 s.push(Self::escape_char_to_real_char(c));
             } else if c == '\\' {

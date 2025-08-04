@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     collections::HashMap,
     fmt::Write,
     io::{StderrLock, StdoutLock, Write as _},
@@ -13,11 +14,17 @@ pub mod printers;
 pub use diagnostics::*;
 use printers::Loc;
 pub use printers::{AsciiPrinter, StyledPrinter, Styles, UnicodePrinter};
+#[cfg(test)]
+pub(crate) mod test_errors;
+
+pub trait OutputWriter: Write + Any {}
+
+impl<T: Write + Any> OutputWriter for T {}
 
 pub enum Output {
     Stdout,
     Stderr,
-    Custom(Box<dyn Write + Send + Sync + 'static>),
+    Custom(Box<dyn OutputWriter>),
 }
 
 impl Output {
@@ -26,6 +33,13 @@ impl Output {
             Output::Stdout => f(&mut StdoutWriter(std::io::stdout().lock())),
             Output::Stderr => f(&mut StderrWriter(std::io::stderr().lock())),
             Output::Custom(write) => f(&mut **write),
+        }
+    }
+
+    pub fn downcast_ref<R: 'static>(&self) -> Option<&R> {
+        match self {
+            Output::Stdout | Output::Stderr => None,
+            Output::Custom(output_writer) => <dyn Any>::downcast_ref::<R>(&**output_writer),
         }
     }
 }
@@ -136,6 +150,10 @@ impl<'arena, P: StyledPrinter> DiagnosticFormatter<'arena, P> {
     pub fn unicode(mut self, unicode: bool) -> Self {
         self.unicode = unicode;
         self
+    }
+
+    pub fn get_output(&self) -> &Output {
+        &self.output
     }
 
     pub fn with_output<R>(&mut self, f: impl FnOnce(Formatter) -> R) -> R {

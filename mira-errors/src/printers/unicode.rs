@@ -64,10 +64,10 @@ impl StyledPrinter for UnicodePrinter {
         f.write_str(self.severity_color)?;
         f.display(self.severity)?;
         f.write_str(self.styles.reset_fg)?;
-        f.write_str(": ")?;
         if let Some(code) = error_code {
             f.write_fmt(format_args!("[{code}]"))?;
         }
+        f.write_str(": ")?;
         f.write_fmt(message)?;
         f.write_char('\n')
     }
@@ -186,5 +186,102 @@ impl StyledPrinter for UnicodePrinter {
         f.write_str(": ")?;
         f.write_fmt(args)?;
         f.write_char('\n')
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::HashMap;
+
+    use mira_spans::{Arena, BytePos, FileId, SourceMap, Span, SpanData, interner::SpanInterner};
+
+    use super::*;
+    use crate::{Diagnostic, DiagnosticFormatter, Output, test_errors::*};
+
+    // SAFETY: FileId is repr(transparent) around u32.
+    const ZERO_FILE_ID: FileId = unsafe { std::mem::transmute(0u32) };
+
+    const SOURCE: &str = r#"
+meow :3
+meow nya mwrrrrrp purrrr
+nya mwrrrp purrr mreaow
+"#;
+
+    fn assert_err_eq(diagnostic: Diagnostic<'_>, err: &str) {
+        let sourcemap = SourceMap::new();
+        let (_, file) = sourcemap.add_package(
+            Path::new("/").into(),
+            Path::new("/file.mr").into(),
+            SOURCE.into(),
+            HashMap::new(),
+        );
+        assert_eq!(file.id, ZERO_FILE_ID);
+        let mut formatter = DiagnosticFormatter::new(
+            &sourcemap,
+            Output::Custom(Box::new(String::new())),
+            UnicodePrinter::new(),
+            Styles::NO_COLORS,
+        );
+        formatter.display_diagnostic(diagnostic).unwrap();
+        let lhs = formatter
+            .get_output()
+            .downcast_ref::<String>()
+            .unwrap()
+            .trim();
+        let rhs = err.trim();
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn errors() {
+        let arena = Arena::new();
+        let span_interner = SpanInterner::new(&arena);
+        let span1 = SpanData::new(BytePos::from_u32(12), 3, ZERO_FILE_ID);
+        let span2 = SpanData::new(BytePos::from_u32(23), 7, ZERO_FILE_ID);
+        let span3 = SpanData::new(BytePos::from_u32(10), 23, ZERO_FILE_ID);
+        let span1 = Span::new(span1, &span_interner);
+        let span2 = Span::new(span2, &span_interner);
+        let span3 = Span::new(span3, &span_interner);
+
+        assert_err_eq(
+            Diagnostic::new(ErrorSimple(12), Severity::Error),
+            "error: this is a simple error with 12.",
+        );
+        assert_err_eq(
+            Diagnostic::new(ErrorCode, Severity::Warn),
+            "warning[E1834]: this has an error code",
+        );
+        assert_err_eq(
+            Diagnostic::new(WithNote("this is an error :o"), Severity::Error),
+            r#"error: error with a note
+  note: this is an error :o
+  note: this is an error :o"#,
+        );
+        assert_err_eq(
+            Diagnostic::new(WithSpans(span1, span2), Severity::Warn),
+            r#"warning: spans error
+  ╭──[/file.mr:3:3]
+  │ 
+3 │ meow nya mwrrrrrp purrrr
+  ·    ^^^        ┬──────   
+  ·    │          ╰─ secondary
+  ·    ╰─ primary
+  ╰──"#,
+        );
+        assert_err_eq(
+            Diagnostic::new(ErrorSimple(56), Severity::Error)
+                .with_note("meow note")
+                .with_primary_label(span2, "primary label")
+                .with_secondary_label(span3, "secondary label"),
+            r#"error: this is a simple error with 56.
+  ╭──[/file.mr:3:14]
+  │ 
+3 │ meow nya mwrrrrrp purrrr
+  ·  ┬────────────^^^^^^^───
+  ·  │            ╰─ primary label
+  ·  ╰─ secondary label
+  ╰──
+  note: meow note"#,
+        );
     }
 }

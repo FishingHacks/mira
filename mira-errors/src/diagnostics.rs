@@ -98,7 +98,7 @@ pub trait ErrorData: Send + Sync {
     fn notes<'ctx>(
         &'ctx self,
         ctx: FormattingCtx<'ctx>,
-        mut cb: &mut dyn FnMut(Arguments<'_>) -> std::fmt::Result,
+        cb: &mut dyn FnMut(Arguments<'_>) -> std::fmt::Result,
     ) -> std::fmt::Result {
         Ok(())
     }

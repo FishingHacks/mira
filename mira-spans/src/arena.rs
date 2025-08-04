@@ -143,7 +143,7 @@ impl Default for Arena {
 
 /// Allocations shouldn't be available after the arena is dropped
 /// good code:
-/// ```
+/// ```no_run
 /// use mira_spans::Arena;
 /// let mut arena = Arena::new();
 /// let twelve = arena.alloc(12u8);

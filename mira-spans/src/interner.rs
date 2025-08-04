@@ -172,3 +172,30 @@ symbols!(
     Types { u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, NeverType = "!" },
     Keywords { If, While, For, Pub, As, Else, Asm, Volatile, Impl, Fn, In, Unsized, Struct, Trait },
 );
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn addr(v: Symbol<'_>) -> usize {
+        <*const str>::addr(v.0)
+    }
+
+    #[test]
+    pub fn interner_interns() {
+        let arena = Arena::new();
+        let mut interner = SymbolInterner::new(&arena);
+        let abcd1 = interner.intern("abcd");
+        let abcd2 = interner.intern("abcd");
+        let meow1 = interner.intern("meow");
+        let purr1 = interner.intern("purr");
+        let abcd3 = interner.intern("abcd");
+        let meow2 = interner.intern("meow");
+        let purr2 = interner.intern("purr");
+
+        assert_eq!(addr(abcd1), addr(abcd2));
+        assert_eq!(addr(abcd2), addr(abcd3));
+        assert_eq!(addr(meow1), addr(meow2));
+        assert_eq!(addr(purr1), addr(purr2));
+    }
+}

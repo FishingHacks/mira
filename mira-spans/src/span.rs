@@ -236,6 +236,7 @@ impl Sub for BytePos {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct FileId(u32);
 
 impl FileId {
@@ -370,6 +371,7 @@ impl Index<Range<BytePos>> for SourceFile {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct PackageId(u32);
 
 impl PackageId {
