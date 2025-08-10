@@ -1,10 +1,4 @@
-use std::{
-    borrow::Borrow,
-    collections::HashSet,
-    fmt::{Debug, Display},
-    hash::Hash,
-    ops::Deref,
-};
+use std::fmt::{Debug, Display};
 
 use parking_lot::Mutex;
 
@@ -16,13 +10,13 @@ macro_rules! interner {
         #[derive(Clone, Copy, Eq)]
         pub struct $internee<'arena>(&'arena $ty);
 
-        impl Hash for $internee<'_> {
+        impl std::hash::Hash for $internee<'_> {
             fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
                 self.0.hash(state);
             }
         }
 
-        impl<'arena> Deref for $internee<'arena> {
+        impl<'arena> std::ops::Deref for $internee<'arena> {
             type Target = &'arena $ty;
 
             fn deref(&self) -> &Self::Target {
@@ -32,20 +26,21 @@ macro_rules! interner {
 
         impl<'a> PartialEq<$internee<'a>> for $internee<'a> {
             fn eq(&self, other: &$internee<'a>) -> bool {
+                #[cfg(debug_assertions)]
                 if self.0 == other.0 && !std::ptr::eq(self.0, other.0) {
-                    println!("pointer lies: {:p} {:p}", self.0, other.0)
+                    println!("pointer lies: {:?} {:?} {:p} {:p}", self.0, other.0, self.0, other.0)
                 }
                 std::ptr::eq(self.0, other.0)
             }
         }
 
-        impl<'arena> Borrow<&'arena $ty> for $internee<'arena> {
+        impl<'arena> std::borrow::Borrow<&'arena $ty> for $internee<'arena> {
             fn borrow(&self) -> &&'arena $ty {
                 &self.0
             }
         }
 
-        impl<T> PartialEq<T> for $internee<'_>
+        impl<'arena, T> PartialEq<T> for $internee<'arena>
         where
             $ty: PartialEq<T>,
         {
@@ -56,7 +51,7 @@ macro_rules! interner {
 
         pub struct $interner<'arena> {
             arena: &'arena Arena,
-            values: HashSet<&'arena $ty>,
+            values: std::collections::HashSet<&'arena $ty>,
         }
 
         $(const _: () = $interner::check_default($default_values);)?
@@ -70,25 +65,43 @@ macro_rules! interner {
             }
 
             pub fn new_with(arena: &'arena Arena, custom_values: &[&'arena $ty]) -> Self {
-                let mut values = HashSet::new();
+                let mut values = std::collections::HashSet::new();
                 for v in custom_values {
                     values.insert(*v);
                 }
                 $(for v in $default_values {
-                    values.insert(v.0);
+                    let ptr: &'arena $ty = v.0;
+                    values.insert(ptr);
                 })?
                 Self { arena, values }
             }
 
+            #[allow(dead_code)]
             pub fn intern(&mut self, $value: impl AsRef<$ty>) -> $internee<'arena> {
                 let $value = $value.as_ref();
                 if let Some(v) = self.values.get($value) {
                     return $internee(*v);
                 }
                 let $arena = self.arena;
-                let $value = $blk;
-                assert!(self.values.insert($value));
-                $internee($value)
+                let value = $blk;
+                assert!(self.values.insert(value));
+                $internee(value)
+            }
+        }
+    };
+}
+#[macro_export]
+macro_rules! owned_intern {
+    ($interner:ident, $internee:ident, $ty:ty, |$arena:ident, $value:ident| $blk: expr) => {
+        impl<'arena> $interner<'arena> {
+            pub fn intern_owned(&mut self, $value: $ty) -> $internee<'arena> {
+                if let Some(v) = self.values.get(&$value) {
+                    return $internee(*v);
+                }
+                let $arena = self.arena;
+                let value = $blk;
+                assert!(self.values.insert(value));
+                $internee(value)
             }
         }
     };
@@ -99,14 +112,14 @@ macro_rules! extra_traits {
         $(extra_traits!(internal $trait $internee);)*
     };
     (internal debug $internee:ident) => {
-        impl Debug for $internee<'_> {
+        impl std::fmt::Debug for $internee<'_> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 Debug::fmt(self.0, f)
             }
         }
     };
     (internal display $internee:ident) => {
-        impl Display for $internee<'_> {
+        impl std::fmt::Display for $internee<'_> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 Display::fmt(self.0, f)
             }
@@ -126,12 +139,13 @@ extra_traits!(for Symbol impl debug, display);
 mod span {
     use crate::arena::Arena;
     use crate::span::SpanData;
-    use std::collections::HashSet;
-    use std::{borrow::Borrow, fmt::Debug, hash::Hash, ops::Deref};
+    use std::fmt::Debug;
 
     interner!(InnerSpanInterner, InternedSpan, SpanData, |arena, s| {
         arena.alloc(*s)
     });
+    owned_intern!(InnerSpanInterner, InternedSpan, SpanData, |arena, s| arena
+        .alloc(s));
     extra_traits!(for InternedSpan impl debug);
 }
 use span::InnerSpanInterner;
@@ -144,7 +158,7 @@ impl<'arena> SpanInterner<'arena> {
     }
 
     pub fn intern(&self, span: SpanData) -> InternedSpan<'arena> {
-        self.0.lock().intern(span)
+        self.0.lock().intern_owned(span)
     }
 }
 
@@ -164,10 +178,10 @@ macro_rules! symbols {
 
         $(#[allow(non_upper_case_globals, non_snake_case)] pub mod $category {
             use super::Symbol;
-            $(pub const $sym: Symbol<'static> = Symbol(symbols!(value $sym $(= $value)?));)*
+            $(pub static $sym: Symbol<'static> = Symbol(symbols!(value $sym $(= $value)?));)*
         })*
 
-        pub(super) const ALL_SYMBOLS: &[Symbol<'static>] = &[EMPTY_SYM, $($($category::$sym),*),*];
+        pub(super) static ALL_SYMBOLS: &[Symbol<'static>] = &[EMPTY_SYM, $($($category::$sym),*),*];
         }
     };
 

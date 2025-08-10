@@ -1,5 +1,5 @@
 use parking_lot::Mutex;
-use std::{alloc::Layout, mem::MaybeUninit};
+use std::{alloc::Layout, fmt::Debug, hash::Hash, mem::MaybeUninit, ops::Deref};
 
 const MAX_ALIGNMENT: usize = std::mem::align_of::<u64>();
 const PAGE: usize = 4096;
@@ -63,6 +63,11 @@ impl Arena {
             used_chunks: Vec::new(),
         };
         Self(Mutex::new(inner))
+    }
+
+    pub fn capacity(&self) -> usize {
+        let inner = self.0.lock();
+        inner.chunk.capacity() + inner.used_chunks.iter().map(|v| v.0.len()).sum::<usize>()
     }
 
     fn alloc_raw(&self, layout: Layout) -> *mut u8 {
@@ -138,6 +143,40 @@ impl Arena {
 impl Default for Arena {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ArenaList<'arena, T: 'arena>(&'arena [T]);
+
+impl<'arena, T: 'arena + Copy> ArenaList<'arena, T> {
+    pub fn new(arena: &'arena Arena, entries: &[T]) -> Self {
+        Self(arena.alloc_slice(entries))
+    }
+}
+
+impl<'arena, T: 'arena> Deref for ArenaList<'arena, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &'arena Self::Target {
+        self.0
+    }
+}
+
+impl<T: Eq> Eq for ArenaList<'_, T> {}
+impl<T: Hash> Hash for ArenaList<'_, T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+impl<T: Eq> PartialEq for ArenaList<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(other.0)
+    }
+}
+impl<T: Debug> Debug for ArenaList<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self.0, f)
     }
 }
 

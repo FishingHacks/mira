@@ -9,8 +9,8 @@ use crate::{
     context::SharedContext,
     store::{AssociatedStore, Store, StoreKey},
     typechecking::{
-        intrinsics::IntrinsicAnnotation, Type, TypecheckedModule, TypecheckingContext,
-        TypedExternalFunction, TypedFunction, TypedStruct,
+        default_types, intrinsics::IntrinsicAnnotation, TyKind, TypecheckedModule,
+        TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStruct,
     },
 };
 use inkwell::{
@@ -40,7 +40,7 @@ pub struct DebugContext<'ctx, 'arena> {
     pub(super) modules:
         AssociatedStore<(DINamespace<'ctx>, DIFile<'ctx>), TypecheckedModule<'arena>>,
     default_types: DefaultTypes<'ctx>,
-    type_store: HashMap<Type<'arena>, DIType<'ctx>>,
+    type_store: HashMap<TyKind<'arena>, DIType<'ctx>>,
     context: &'ctx Context,
     pub(super) funcs: AssociatedStore<DISubprogram<'ctx>, TypedFunction<'arena>>,
     pub(super) ext_funcs: AssociatedStore<DISubprogram<'ctx>, TypedExternalFunction<'arena>>,
@@ -59,7 +59,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
         loc: Span<'arena>,
-        typ: &Type<'arena>,
+        typ: &TyKind<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
         module: StoreKey<TypecheckedModule<'arena>>,
@@ -87,7 +87,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
         loc: Span<'arena>,
-        typ: &Type<'arena>,
+        typ: &TyKind<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
         module: StoreKey<TypecheckedModule<'arena>>,
@@ -210,11 +210,9 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 func.0.generics.is_empty(),
                 "function should've been monomorphised by now"
             );
-            let return_ty = (!matches!(
-                func.0.return_type,
-                Type::PrimitiveVoid(0) | Type::PrimitiveNever
-            ))
-            .then(|| me.get_type(&func.0.return_type, &struct_reader));
+            let return_ty = (func.0.return_type != default_types::void
+                && func.0.return_type != default_types::never)
+                .then(|| me.get_type(&func.0.return_type, &struct_reader));
             let args = func
                 .0
                 .arguments
@@ -222,9 +220,11 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 .map(|(_, ty)| me.get_type(ty, &struct_reader))
                 .collect::<Vec<_>>();
             let module = &me.modules[func.0.module_id];
-            let flags = matches!(func.0.return_type, Type::PrimitiveNever)
-                .then_some(DIFlags::NO_RETURN)
-                .unwrap_or_default();
+            let flags = if func.0.return_type == default_types::never {
+                DIFlags::NO_RETURN
+            } else {
+                Default::default()
+            };
             let fn_ty = me
                 .builder
                 .create_subroutine_type(module.1, return_ty, &args, flags);
@@ -254,11 +254,9 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             me.funcs.insert(key, subprogram);
         }
         for (key, func) in ext_func_reader.index_value_iter() {
-            let return_ty = (!matches!(
-                func.0.return_type,
-                Type::PrimitiveVoid(0) | Type::PrimitiveNever
-            ))
-            .then(|| me.get_type(&func.0.return_type, &struct_reader));
+            let return_ty = (func.0.return_type != default_types::void
+                && func.0.return_type != default_types::never)
+                .then(|| me.get_type(&func.0.return_type, &struct_reader));
             let args = func
                 .0
                 .arguments
@@ -266,9 +264,11 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 .map(|(_, ty)| me.get_type(ty, &struct_reader))
                 .collect::<Vec<_>>();
             let module = &me.modules[func.0.module_id];
-            let flags = matches!(func.0.return_type, Type::PrimitiveNever)
-                .then_some(DIFlags::NO_RETURN)
-                .unwrap_or_default();
+            let flags = if func.0.return_type == default_types::never {
+                DIFlags::NO_RETURN
+            } else {
+                Default::default()
+            };
             let fn_ty = me
                 .builder
                 .create_subroutine_type(module.1, return_ty, &args, flags);
@@ -301,7 +301,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
 
     pub fn get_type(
         &mut self,
-        typ: &Type<'arena>,
+        typ: &TyKind<'arena>,
         structs: &Store<TypedStruct<'arena>>,
     ) -> DIType<'ctx> {
         if let Some(v) = self.type_store.get(typ) {
@@ -311,21 +311,23 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         let di_typ = 'out: {
             let name = format!("{typ}");
             match typ {
-                Type::PrimitiveI8(0)
-                | Type::PrimitiveI16(0)
-                | Type::PrimitiveI32(0)
-                | Type::PrimitiveI64(0)
-                | Type::PrimitiveISize(0) => {
+                TyKind::PrimitiveI8(0)
+                | TyKind::PrimitiveI16(0)
+                | TyKind::PrimitiveI32(0)
+                | TyKind::PrimitiveI64(0)
+                | TyKind::PrimitiveISize(0) => {
                     break 'out self
                         .builder
                         .create_basic_type(
                             &name,
                             match typ {
-                                Type::PrimitiveI8(0) => 8,
-                                Type::PrimitiveI16(0) => 16,
-                                Type::PrimitiveI32(0) => 32,
-                                Type::PrimitiveI64(0) => 64,
-                                Type::PrimitiveISize(0) => self.default_types.isize.get_bit_width(),
+                                TyKind::PrimitiveI8(0) => 8,
+                                TyKind::PrimitiveI16(0) => 16,
+                                TyKind::PrimitiveI32(0) => 32,
+                                TyKind::PrimitiveI64(0) => 64,
+                                TyKind::PrimitiveISize(0) => {
+                                    self.default_types.isize.get_bit_width()
+                                }
                                 _ => unreachable!(),
                             } as u64,
                             BasicTypeEncoding::Signed,
@@ -334,21 +336,23 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         .unwrap()
                         .as_type()
                 }
-                Type::PrimitiveU8(0)
-                | Type::PrimitiveU16(0)
-                | Type::PrimitiveU32(0)
-                | Type::PrimitiveU64(0)
-                | Type::PrimitiveUSize(0) => {
+                TyKind::PrimitiveU8(0)
+                | TyKind::PrimitiveU16(0)
+                | TyKind::PrimitiveU32(0)
+                | TyKind::PrimitiveU64(0)
+                | TyKind::PrimitiveUSize(0) => {
                     break 'out self
                         .builder
                         .create_basic_type(
                             &name,
                             match typ {
-                                Type::PrimitiveU8(0) => 8,
-                                Type::PrimitiveU16(0) => 16,
-                                Type::PrimitiveU32(0) => 32,
-                                Type::PrimitiveU64(0) => 64,
-                                Type::PrimitiveUSize(0) => self.default_types.isize.get_bit_width(),
+                                TyKind::PrimitiveU8(0) => 8,
+                                TyKind::PrimitiveU16(0) => 16,
+                                TyKind::PrimitiveU32(0) => 32,
+                                TyKind::PrimitiveU64(0) => 64,
+                                TyKind::PrimitiveUSize(0) => {
+                                    self.default_types.isize.get_bit_width()
+                                }
                                 _ => unreachable!(),
                             } as u64,
                             BasicTypeEncoding::Unsigned,
@@ -357,28 +361,28 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         .unwrap()
                         .as_type()
                 }
-                Type::PrimitiveF32(0) => {
+                TyKind::PrimitiveF32(0) => {
                     break 'out self
                         .builder
                         .create_basic_type("f32", 0, BasicTypeEncoding::Float, DIFlags::PUBLIC)
                         .unwrap()
                         .as_type()
                 }
-                Type::PrimitiveF64(0) => {
+                TyKind::PrimitiveF64(0) => {
                     break 'out self
                         .builder
                         .create_basic_type("f64", 0, BasicTypeEncoding::Float, DIFlags::PUBLIC)
                         .unwrap()
                         .as_type()
                 }
-                Type::PrimitiveBool(0) => {
+                TyKind::PrimitiveBool(0) => {
                     break 'out self
                         .builder
                         .create_basic_type("bool", 0, BasicTypeEncoding::Boolean, DIFlags::PUBLIC)
                         .unwrap()
                         .as_type()
                 }
-                Type::PrimitiveVoid(0) | Type::PrimitiveNever => {
+                TyKind::PrimitiveVoid(0) | TyKind::PrimitiveNever => {
                     break 'out self
                         .builder
                         .create_basic_type("void", 0, BasicTypeEncoding::Unsigned, DIFlags::PUBLIC)
@@ -401,20 +405,20 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             // fat pointer
             } else if typ.refcount() > 0 {
                 let (metadata_type, pointer_type) = match typ {
-                    Type::PrimitiveSelf(_) | Type::Generic { .. } => {
+                    TyKind::PrimitiveSelf(_) | TyKind::Generic { .. } => {
                         unreachable!("generics and self should be resolved by now")
                     }
-                    Type::DynType { .. } => (
-                        self.get_type(&Type::PrimitiveVoid(1), structs),
-                        self.get_type(&Type::PrimitiveVoid(1), structs),
+                    TyKind::DynType { .. } => (
+                        self.get_type(&TyKind::PrimitiveVoid(1), structs),
+                        self.get_type(&TyKind::PrimitiveVoid(1), structs),
                     ),
-                    Type::UnsizedArray { typ, .. } => (
-                        self.get_type(&Type::PrimitiveUSize(0), structs),
-                        self.get_type(&typ.clone().take_ref(), structs),
+                    TyKind::UnsizedArray { typ, .. } => (
+                        self.get_type(&TyKind::PrimitiveUSize(0), structs),
+                        self.get_type(&TyKind::clone(typ).take_ref(), structs),
                     ),
-                    Type::PrimitiveStr(_) => (
-                        self.get_type(&Type::PrimitiveUSize(0), structs),
-                        self.get_type(&Type::PrimitiveU8(1), structs),
+                    TyKind::PrimitiveStr(_) => (
+                        self.get_type(&TyKind::PrimitiveUSize(0), structs),
+                        self.get_type(&TyKind::PrimitiveU8(1), structs),
                     ),
                     v => unreachable!("Type {v} is not a fat pointer"),
                 };
@@ -464,13 +468,13 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             }
 
             match typ {
-                Type::Generic { .. } | Type::PrimitiveSelf(..) => {
+                TyKind::Generic { .. } | TyKind::PrimitiveSelf(..) => {
                     unreachable!("generics and self should be resolved by now")
                 }
-                Type::PrimitiveStr(_) | Type::UnsizedArray { .. } | Type::DynType { .. } => {
+                TyKind::PrimitiveStr(_) | TyKind::UnsizedArray { .. } | TyKind::DynType { .. } => {
                     unreachable!("cannot turn unsized type into a dwarf type")
                 }
-                Type::Struct { struct_id, .. } => {
+                TyKind::Struct { struct_id, .. } => {
                     let structure = &structs[*struct_id];
                     let elements = &structure.elements;
                     let ptr_size = (self.default_types.isize.get_bit_width() / 8) as u64;
@@ -519,7 +523,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         )
                         .as_type()
                 }
-                Type::SizedArray {
+                TyKind::SizedArray {
                     typ: child,
                     number_elements,
                     ..
@@ -539,7 +543,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         )
                         .as_type()
                 }
-                Type::Tuple { elements, .. } => {
+                TyKind::Tuple { elements, .. } => {
                     let (size, alignment) = typ.size_and_alignment(
                         (self.default_types.isize.get_bit_width() / 8) as u64,
                         structs,
@@ -565,8 +569,8 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         )
                         .as_type()
                 }
-                Type::Function(..) => {
-                    let base_type = self.get_type(&Type::PrimitiveVoid(0), structs);
+                TyKind::Function(..) => {
+                    let base_type = self.get_type(&TyKind::PrimitiveVoid(0), structs);
                     self.builder
                         .create_pointer_type(
                             &name,

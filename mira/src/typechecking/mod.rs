@@ -24,7 +24,7 @@ use crate::{
     parser::{Trait, TypeRef},
     store::{AssociatedStore, Store, StoreKey},
 };
-use mira_spans::{interner::Symbol, Ident, Span};
+use mira_spans::{interner::Symbol, ArenaList, Ident, Span};
 
 mod error;
 pub mod expression;
@@ -35,20 +35,20 @@ mod type_resolution;
 pub mod typechecking;
 mod types;
 pub use error::{TypecheckingError, TypecheckingErrorDiagnosticsExt};
-pub use types::Type;
+pub use types::{default_types, Ty, TyKind, TyList, TypeInterner, TypeListInterner};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedGeneric<'arena> {
     pub name: Ident<'arena>,
     pub sized: bool,
-    pub bounds: Vec<StoreKey<TypedTrait<'arena>>>,
+    pub bounds: ArenaList<'arena, StoreKey<TypedTrait<'arena>>>,
 }
 
 #[derive(Debug)]
 pub struct TypecheckedFunctionContract<'arena> {
     pub name: Option<Ident<'arena>>,
-    pub arguments: Vec<(Ident<'arena>, Type<'arena>)>,
-    pub return_type: Type<'arena>,
+    pub arguments: Vec<(Ident<'arena>, Ty<'arena>)>,
+    pub return_type: Ty<'arena>,
     pub annotations: Annotations<'arena>,
     pub span: Span<'arena>,
     pub module_id: StoreKey<TypecheckedModule<'arena>>,
@@ -73,8 +73,8 @@ pub struct TypedTrait<'arena> {
     pub name: Ident<'arena>,
     pub functions: Vec<(
         Ident<'arena>,
-        Vec<(Ident<'arena>, Type<'arena>)>,
-        Type<'arena>,
+        Vec<(Ident<'arena>, Ty<'arena>)>,
+        Ty<'arena>,
         Annotations<'arena>,
         Span<'arena>,
     )>,
@@ -87,7 +87,7 @@ pub struct TypedTrait<'arena> {
 #[derive(Debug)]
 pub struct TypedStruct<'arena> {
     pub name: Ident<'arena>,
-    pub elements: Vec<(Ident<'arena>, Type<'arena>)>,
+    pub elements: Vec<(Ident<'arena>, Ty<'arena>)>,
     pub span: Span<'arena>,
     pub global_impl: HashMap<Ident<'arena>, StoreKey<TypedFunction<'arena>>>,
     pub trait_impl: HashMap<StoreKey<TypedTrait<'arena>>, Vec<StoreKey<TypedFunction<'arena>>>>,
@@ -107,7 +107,7 @@ impl Hash for TypedStruct<'_> {
 
 #[derive(Debug, Clone)]
 pub struct TypedStatic<'arena> {
-    pub type_: Type<'arena>,
+    pub type_: Ty<'arena>,
     /// guaranteed to not be `Dynamic`, `Intrinsic` or `Static`
     pub value: TypedLiteral<'arena>,
     pub module: StoreKey<TypecheckedModule<'arena>>,
@@ -117,7 +117,7 @@ pub struct TypedStatic<'arena> {
 
 impl<'arena> TypedStatic<'arena> {
     pub fn new(
-        type_: Type<'arena>,
+        type_: Ty<'arena>,
         literal: TypedLiteral<'arena>,
         module: StoreKey<TypecheckedModule<'arena>>,
         loc: Span<'arena>,
@@ -153,6 +153,7 @@ pub struct TypecheckingContext<'arena> {
     pub traits: RwLock<Store<TypedTrait<'arena>>>,
     pub lang_items: RwLock<LangItems<'arena>>,
     pub main_function: OnceLock<StoreKey<TypedFunction<'arena>>>,
+    pub ctx: SharedContext<'arena>,
 }
 
 pub struct TypecheckedModule<'arena> {
@@ -184,7 +185,7 @@ impl<'arena> TypecheckingContext<'arena> {
             return Err(TypecheckingError::MainFuncNotFound(module.path.clone()));
         };
         let func = &self.functions.read()[main_fn.cast()].0;
-        if !func.arguments.is_empty() || func.return_type != Type::PrimitiveVoid(0) {
+        if !func.arguments.is_empty() || func.return_type != TyKind::PrimitiveVoid(0) {
             return Err(TypecheckingError::MainFuncWrongType {
                 func_span: func.span,
             });
@@ -238,7 +239,7 @@ impl<'arena> TypecheckingContext<'arena> {
             statics.insert(
                 key,
                 TypedStatic::new(
-                    Type::PrimitiveNever,
+                    default_types::never,
                     TypedLiteral::Void,
                     StoreKey::undefined(),
                     statics_reader[key].3,
@@ -255,7 +256,7 @@ impl<'arena> TypecheckingContext<'arena> {
                         annotations: Annotations::default(),
                         name: None,
                         arguments: Vec::new(),
-                        return_type: Type::PrimitiveNever,
+                        return_type: default_types::never,
                         span: functions_reader[key].0.span,
                         module_id: StoreKey::undefined(),
                         generics: Vec::new(),
@@ -273,7 +274,7 @@ impl<'arena> TypecheckingContext<'arena> {
                         annotations: Annotations::default(),
                         name: None,
                         arguments: Vec::new(),
-                        return_type: Type::PrimitiveNever,
+                        return_type: default_types::never,
                         span: external_functions_reader[key].0.span,
                         module_id: StoreKey::undefined(),
                         generics: Vec::new(),
@@ -298,6 +299,7 @@ impl<'arena> TypecheckingContext<'arena> {
         }
 
         let me = Arc::new(Self {
+            ctx,
             structs: RwLock::new(structs.into()),
             statics: RwLock::new(statics.into()),
             functions: RwLock::new(functions.into()),
@@ -362,8 +364,8 @@ impl<'arena> TypecheckingContext<'arena> {
         module_id: StoreKey<TypecheckedModule<'arena>>,
         typ: &TypeRef<'arena>,
         generics: &[TypedGeneric<'arena>],
-    ) -> Result<Type<'arena>, Diagnostic<'arena>> {
-        if let Some(primitive) = resolve_primitive_type(typ) {
+    ) -> Result<Ty<'arena>, Diagnostic<'arena>> {
+        if let Some(primitive) = resolve_primitive_type(self.ctx, typ) {
             return Ok(primitive);
         }
 
@@ -389,10 +391,11 @@ impl<'arena> TypecheckingContext<'arena> {
                     };
                     trait_refs.push((id.cast(), *trait_name.as_slice().last().unwrap()));
                 }
-                Ok(Type::DynType {
+                let trait_refs = ArenaList::new(self.ctx.arena(), &trait_refs);
+                Ok(self.ctx.intern_ty(TyKind::DynType {
                     trait_refs,
                     num_references: *num_references,
-                })
+                }))
             }
             TypeRef::Function {
                 return_ty,
@@ -405,11 +408,14 @@ impl<'arena> TypecheckingContext<'arena> {
                 for arg in args {
                     arguments.push(self.resolve_type(module_id, arg, generics)?);
                 }
+                let arguments = self.ctx.intern_tylist(&arguments);
                 let function_typ = FunctionType {
                     arguments,
                     return_type,
                 };
-                Ok(Type::Function(function_typ.into(), *num_references))
+                Ok(self
+                    .ctx
+                    .intern_ty(TyKind::Function(function_typ, *num_references)))
             }
             TypeRef::Reference {
                 num_references,
@@ -422,13 +428,13 @@ impl<'arena> TypecheckingContext<'arena> {
                         .enumerate()
                         .find(|(_, v)| v.name == type_name.entries[0].0)
                     {
-                        return Ok(Type::Generic {
+                        return Ok(self.ctx.intern_ty(TyKind::Generic {
                             name: type_name.entries[0].0,
                             generic_id: id as u8,
                             num_references: *num_references,
                             sized: generic.sized,
-                            bounds: generic.bounds.clone(),
-                        });
+                            bounds: generic.bounds,
+                        }));
                     }
                 }
 
@@ -444,11 +450,11 @@ impl<'arena> TypecheckingContext<'arena> {
                 }
 
                 match typed_resolve_import(self, module_id, &path, loc, &mut HashSet::new())? {
-                    ModuleScopeValue::Struct(id) => Ok(Type::Struct {
+                    ModuleScopeValue::Struct(id) => Ok(self.ctx.intern_ty(TyKind::Struct {
                         struct_id: id.cast(),
                         name: self.structs.read()[id.cast()].name,
                         num_references: *num_references,
-                    }),
+                    })),
                     v => Err(TypecheckingError::MismatchingScopeType {
                         location: *loc,
                         expected: ScopeKind::Type,
@@ -462,20 +468,20 @@ impl<'arena> TypecheckingContext<'arena> {
                 num_references,
                 child,
                 span: _,
-            } => Ok(Type::UnsizedArray {
-                typ: Box::new(self.resolve_type(module_id, child, generics)?),
+            } => Ok(self.ctx.intern_ty(TyKind::UnsizedArray {
+                typ: self.resolve_type(module_id, child, generics)?,
                 num_references: *num_references,
-            }),
+            })),
             TypeRef::SizedArray {
                 num_references,
                 child,
                 number_elements,
                 ..
-            } => Ok(Type::SizedArray {
-                typ: Box::new(self.resolve_type(module_id, child, generics)?),
+            } => Ok(self.ctx.intern_ty(TyKind::SizedArray {
+                typ: self.resolve_type(module_id, child, generics)?,
                 num_references: *num_references,
                 number_elements: *number_elements,
-            }),
+            })),
             TypeRef::Tuple {
                 num_references,
                 elements,
@@ -485,10 +491,10 @@ impl<'arena> TypecheckingContext<'arena> {
                 for elem in elements.iter() {
                     typed_elements.push(self.resolve_type(module_id, elem, generics)?);
                 }
-                Ok(Type::Tuple {
+                Ok(self.ctx.intern_ty(TyKind::Tuple {
                     num_references: *num_references,
-                    elements: typed_elements,
-                })
+                    elements: self.ctx.intern_tylist(&typed_elements),
+                }))
             }
         }
     }
@@ -545,6 +551,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 }
             }
 
+            let bounds = ArenaList::new(self.ctx.arena(), &bounds);
             generics.push(TypedGeneric {
                 name: generic.name,
                 sized: generic.sized,
@@ -591,8 +598,8 @@ impl<'arena> TypecheckingContext<'arena> {
         context: Arc<ModuleContext<'arena>>,
         errors: &mut Diagnostics<'arena>,
         left: &mut HashMap<StoreKey<BakedStruct<'arena>>, ResolvingState>,
-    ) -> Option<Type<'arena>> {
-        if let Some(typ) = resolve_primitive_type(typ) {
+    ) -> Option<Ty<'arena>> {
+        if let Some(typ) = resolve_primitive_type(self.ctx, typ) {
             return Some(typ);
         }
         match typ {
@@ -622,13 +629,14 @@ impl<'arena> TypecheckingContext<'arena> {
                         left,
                     )?);
                 }
-                Some(Type::Function(
-                    Arc::new(FunctionType {
+                let arguments = self.ctx.intern_tylist(&arguments);
+                Some(self.ctx.intern_ty(TyKind::Function(
+                    FunctionType {
                         return_type,
                         arguments,
-                    }),
+                    },
                     *num_references,
-                ))
+                )))
             }
             TypeRef::Reference {
                 num_references,
@@ -650,13 +658,13 @@ impl<'arena> TypecheckingContext<'arena> {
                     if let Some((generic_id, generic)) =
                         generics.iter().enumerate().find(|(_, v)| v.name == name)
                     {
-                        return Some(Type::Generic {
+                        return Some(self.ctx.intern_ty(TyKind::Generic {
                             name: generic.name,
                             generic_id: generic_id as u8,
                             num_references: 0,
                             sized: generic.sized,
-                            bounds: generic.bounds.clone(),
-                        });
+                            bounds: generic.bounds,
+                        }));
                     }
                 }
 
@@ -675,11 +683,11 @@ impl<'arena> TypecheckingContext<'arena> {
                 {
                     if !left.contains_key(&id) {
                         let typechecked_struct = &self.structs.read()[id.cast()];
-                        return Some(Type::Struct {
+                        return Some(self.ctx.intern_ty(TyKind::Struct {
                             struct_id: typechecked_struct.id,
                             name: typechecked_struct.name,
                             num_references: *num_references,
-                        });
+                        }));
                     }
                 }
 
@@ -689,11 +697,11 @@ impl<'arena> TypecheckingContext<'arena> {
                     return None;
                 }
                 let typechecked_struct = &self.structs.read()[id.cast()];
-                Some(Type::Struct {
+                Some(self.ctx.intern_ty(TyKind::Struct {
                     struct_id: typechecked_struct.id,
                     num_references: *num_references,
                     name: typechecked_struct.name,
-                })
+                }))
             }
             TypeRef::Void(..) => unreachable!(),
             TypeRef::Never(_) => unreachable!(),
@@ -701,24 +709,26 @@ impl<'arena> TypecheckingContext<'arena> {
                 num_references,
                 child,
                 span: _,
-            } => Some(Type::UnsizedArray {
-                typ: Box::new(self.type_resolution_resolve_type(
-                    child, generics, module, context, errors, left,
-                )?),
+            } => Some(self.ctx.intern_ty(TyKind::UnsizedArray {
+                typ:
+                    self.type_resolution_resolve_type(
+                        child, generics, module, context, errors, left,
+                    )?,
                 num_references: *num_references,
-            }),
+            })),
             TypeRef::SizedArray {
                 num_references,
                 child,
                 number_elements,
                 span: _,
-            } => Some(Type::SizedArray {
-                typ: Box::new(self.type_resolution_resolve_type(
-                    child, generics, module, context, errors, left,
-                )?),
+            } => Some(self.ctx.intern_ty(TyKind::SizedArray {
+                typ:
+                    self.type_resolution_resolve_type(
+                        child, generics, module, context, errors, left,
+                    )?,
                 num_references: *num_references,
                 number_elements: *number_elements,
-            }),
+            })),
             TypeRef::Tuple {
                 num_references,
                 elements,
@@ -735,10 +745,10 @@ impl<'arena> TypecheckingContext<'arena> {
                         left,
                     )?);
                 }
-                Some(Type::Tuple {
-                    elements: typed_elements,
+                Some(self.ctx.intern_ty(TyKind::Tuple {
+                    elements: self.ctx.intern_tylist(&typed_elements),
                     num_references: *num_references,
-                })
+                }))
             }
         }
     }

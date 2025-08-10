@@ -6,7 +6,7 @@ use crate::error::ParsingError;
 use crate::tokenstream::TokenStream;
 use mira_spans::Span;
 
-use super::{Type, TypecheckingError};
+use super::{Ty, TypecheckingError};
 
 macro_rules! intrinsics {
     ($($name:ident => $value:ident),* $(,)? ) => {
@@ -99,7 +99,7 @@ impl Intrinsic {
     pub fn is_valid_for<'arena>(
         &self,
         loc: Span<'arena>,
-        generics: &[Type<'arena>],
+        generics: &[Ty<'arena>],
     ) -> Result<(), TypecheckingError<'arena>> {
         let required_generics = self.generic_count();
         if generics.len() != required_generics {
@@ -124,7 +124,7 @@ impl Intrinsic {
             | Intrinsic::Forget => generics[0]
                 .is_sized()
                 .then_some(())
-                .ok_or_else(|| TypecheckingError::NonSizedType(loc, generics[0].clone())),
+                .ok_or_else(|| TypecheckingError::NonSizedType(loc, generics[0])),
             // ┌────────────────────┐
             // │ Integer Intrinsics │
             // └────────────────────┘
@@ -150,7 +150,7 @@ impl Intrinsic {
             | Intrinsic::UncheckedShr => generics[0]
                 .is_int_like()
                 .then_some(())
-                .ok_or_else(|| TypecheckingError::IntOnlyIntrinsic(loc, generics[0].clone())),
+                .ok_or_else(|| TypecheckingError::IntOnlyIntrinsic(loc, generics[0])),
             // ┌────────────────────────┐
             // │ Genericless Intrinsics │
             // └────────────────────────┘

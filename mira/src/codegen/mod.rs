@@ -2,15 +2,16 @@ use context::{DefaultTypes, ExternalFunctionsStore, FunctionsStore, StaticsStore
 use core::panic;
 use debug_builder::DebugContext;
 use intrinsics::LLVMIntrinsics;
-use std::{borrow::Cow, collections::HashMap};
+use std::collections::HashMap;
 
 use crate::{
     store::StoreKey,
     typechecking::{
+        default_types,
         expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
         intrinsics::Intrinsic,
         typechecking::ScopeTypeMetadata,
-        Type, TypecheckedModule, TypecheckingContext, TypedTrait,
+        Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedTrait,
     },
 };
 pub use inkwell::context::Context as InkwellContext;
@@ -43,7 +44,7 @@ mod intrinsics;
 impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     pub fn make_function_codegen_context<'me>(
         &'me mut self,
-        tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
+        tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
         current_fn: FunctionValue<'ctx>,
         bb: BasicBlock<'ctx>,
     ) -> FunctionCodegenContext<'ctx, 'arena, 'me> {
@@ -89,7 +90,7 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_, '_> {
 
 /// 'cg: codegen
 pub struct FunctionCodegenContext<'ctx, 'arena, 'cg> {
-    tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
+    tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
     tc_ctx: &'cg TypecheckingContext<'arena>,
     _scope: Vec<BasicValueEnum<'ctx>>,
     builder: &'cg Builder<'ctx>,
@@ -101,7 +102,7 @@ pub struct FunctionCodegenContext<'ctx, 'arena, 'cg> {
     structs: &'cg StructsStore<'ctx, 'arena>,
     statics: &'cg StaticsStore<'ctx, 'arena>,
     string_map: &'cg HashMap<Symbol<'arena>, GlobalValue<'ctx>>,
-    vtables: &'cg HashMap<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
+    vtables: &'cg HashMap<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
     debug_ctx: &'cg mut DebugContext<'ctx, 'arena>,
     machine: &'cg TargetMachine,
     intrinsics: &'cg LLVMIntrinsics,
@@ -146,7 +147,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 "",
             )
             .expect("failed to build alloca for a stack allocated value");
-        build_ptr_store(allocated_value, value, &self.tc_scope[id].0, self, false)
+        build_ptr_store(allocated_value, value, self.tc_scope[id].0, self, false)
             .expect("failed to build store to store a basic value into a stack allocated value");
         self._scope.push(allocated_value.into());
     }
@@ -186,7 +187,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
     }
 }
 
-impl<'ctx, 'arena> Type<'arena> {
+impl<'ctx, 'arena> TyKind<'arena> {
     fn to_llvm_basic_type(
         &self,
         default_types: &DefaultTypes<'ctx>,
@@ -202,13 +203,13 @@ impl<'ctx, 'arena> Type<'arena> {
         }
 
         match self {
-            Type::Generic { .. } => unreachable!("generics should be resolved by now"),
-            Type::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
-            Type::PrimitiveStr(_) => panic!("llvm types must be sized, `str` is not"),
-            Type::PrimitiveSelf(_) => unreachable!("Self must be resolved at this point"),
-            Type::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
-            Type::Struct { struct_id, .. } => structs[*struct_id].into(),
-            Type::Tuple { elements, .. } => ctx
+            TyKind::Generic { .. } => unreachable!("generics should be resolved by now"),
+            TyKind::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
+            TyKind::PrimitiveStr(_) => panic!("llvm types must be sized, `str` is not"),
+            TyKind::PrimitiveSelf(_) => unreachable!("Self must be resolved at this point"),
+            TyKind::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
+            TyKind::Struct { struct_id, .. } => structs[*struct_id].into(),
+            TyKind::Tuple { elements, .. } => ctx
                 .struct_type(
                     &elements
                         .iter()
@@ -217,7 +218,7 @@ impl<'ctx, 'arena> Type<'arena> {
                     false,
                 )
                 .into(),
-            Type::SizedArray {
+            TyKind::SizedArray {
                 typ,
                 number_elements,
                 ..
@@ -226,18 +227,18 @@ impl<'ctx, 'arena> Type<'arena> {
                 .array_type(*number_elements as u32)
                 .into(),
             // our function types are always pointers because all function types are pointers in llvm
-            Type::Function(..) => default_types.ptr.into(),
-            Type::PrimitiveNever | Type::PrimitiveVoid(_) => panic!(
+            TyKind::Function(..) => default_types.ptr.into(),
+            TyKind::PrimitiveNever | TyKind::PrimitiveVoid(_) => panic!(
                 "void and never should be ignored as llvm types outside of function return values"
             ),
-            Type::PrimitiveU8(_) | Type::PrimitiveI8(_) => default_types.i8.into(),
-            Type::PrimitiveU16(_) | Type::PrimitiveI16(_) => default_types.i16.into(),
-            Type::PrimitiveU32(_) | Type::PrimitiveI32(_) => default_types.i32.into(),
-            Type::PrimitiveU64(_) | Type::PrimitiveI64(_) => default_types.i64.into(),
-            Type::PrimitiveUSize(_) | Type::PrimitiveISize(_) => default_types.isize.into(),
-            Type::PrimitiveF32(_) => default_types.f32.into(),
-            Type::PrimitiveF64(_) => default_types.f64.into(),
-            Type::PrimitiveBool(_) => default_types.bool.into(),
+            TyKind::PrimitiveU8(_) | TyKind::PrimitiveI8(_) => default_types.i8.into(),
+            TyKind::PrimitiveU16(_) | TyKind::PrimitiveI16(_) => default_types.i16.into(),
+            TyKind::PrimitiveU32(_) | TyKind::PrimitiveI32(_) => default_types.i32.into(),
+            TyKind::PrimitiveU64(_) | TyKind::PrimitiveI64(_) => default_types.i64.into(),
+            TyKind::PrimitiveUSize(_) | TyKind::PrimitiveISize(_) => default_types.isize.into(),
+            TyKind::PrimitiveF32(_) => default_types.f32.into(),
+            TyKind::PrimitiveF64(_) => default_types.f64.into(),
+            TyKind::PrimitiveBool(_) => default_types.bool.into(),
         }
     }
 
@@ -247,7 +248,7 @@ impl<'ctx, 'arena> Type<'arena> {
         structs: &StructsStore<'ctx, 'arena>,
         ctx: &'ctx Context,
     ) -> FunctionType<'ctx> {
-        let Type::Function(v, _) = self else {
+        let TyKind::Function(v, _) = self else {
             unreachable!("`self` is not a function")
         };
         let return_ty = v
@@ -569,32 +570,32 @@ impl<'ctx, 'arena> TypedLiteral<'arena> {
 
 macro_rules! f_s_u {
     ($ctx:expr, $typ: expr, $lhs: expr, $rhs: expr, $sint: ident($($sint_val:expr),*), $uint: ident($($uint_val:expr),*), $float: ident($($float_val:expr),*), $err:literal) => {
-        match $typ {
-            Type::PrimitiveI8(0)
-            | Type::PrimitiveI16(0)
-            | Type::PrimitiveI32(0)
-            | Type::PrimitiveI64(0)
-            | Type::PrimitiveISize(0) => $ctx
+        match **$typ {
+            TyKind::PrimitiveI8(0)
+            | TyKind::PrimitiveI16(0)
+            | TyKind::PrimitiveI32(0)
+            | TyKind::PrimitiveI64(0)
+            | TyKind::PrimitiveISize(0) => $ctx
                 .builder
                 .$sint($($sint_val,)* $lhs.into_int_value(), $rhs.into_int_value(), "")?
                 .into(),
-            Type::PrimitiveU8(0)
-            | Type::PrimitiveU16(0)
-            | Type::PrimitiveU32(0)
-            | Type::PrimitiveU64(0)
-            | Type::PrimitiveUSize(0) => $ctx
+            TyKind::PrimitiveU8(0)
+            | TyKind::PrimitiveU16(0)
+            | TyKind::PrimitiveU32(0)
+            | TyKind::PrimitiveU64(0)
+            | TyKind::PrimitiveUSize(0) => $ctx
                 .builder
                 .$uint($($uint_val,)* $lhs.into_int_value(), $rhs.into_int_value(), "")?
                 .into(),
-            Type::PrimitiveF32(0) | Type::PrimitiveF64(0) => $ctx
+            TyKind::PrimitiveF32(0) | TyKind::PrimitiveF64(0) => $ctx
                 .builder
                 .$float($($float_val,)* $lhs.into_float_value(), $rhs.into_float_value(), "")?
                 .into(),
-            ty => unreachable!(concat!($err, "  -- Type: {}"), ty),
+            _ => unreachable!(concat!($err, "  -- Type: {}"), $typ),
         }
     };
     (with_bool $ctx:expr, $typ: expr, $lhs: expr, $rhs: expr, $sint: ident, $uint: ident, $float: ident, $bool: ident, $err:literal) => {
-        match $typ {
+        match **$typ {
             Type::PrimitiveI8(0)
             | Type::PrimitiveI16(0)
             | Type::PrimitiveI32(0)
@@ -634,11 +635,11 @@ fn make_volatile(v: BasicValueEnum<'_>, volatile: bool) -> BasicValueEnum<'_> {
 
 fn build_deref<'ctx, 'arena>(
     left_side: PointerValue<'ctx>,
-    ty: &Type,
+    ty: &TyKind,
     ctx: &FunctionCodegenContext<'ctx, 'arena, '_>,
     volatile: bool,
 ) -> Result<BasicValueEnum<'ctx>, BuilderError> {
-    if *ty == Type::PrimitiveVoid(0) || *ty == Type::PrimitiveNever {
+    if *ty == TyKind::PrimitiveVoid(0) || *ty == TyKind::PrimitiveNever {
         return Ok(TypedLiteral::Void.fn_ctx_to_basic_value(ctx));
     }
 
@@ -675,14 +676,14 @@ fn build_deref<'ctx, 'arena>(
     }
 
     match ty {
-        Type::Generic { .. } | Type::PrimitiveSelf(_) => {
+        TyKind::Generic { .. } | TyKind::PrimitiveSelf(_) => {
             panic!("{ty:?} should be resolved by now")
         }
-        Type::DynType { .. } | Type::UnsizedArray { .. } | Type::PrimitiveStr(_) => {
+        TyKind::DynType { .. } | TyKind::UnsizedArray { .. } | TyKind::PrimitiveStr(_) => {
             panic!("cannot dereference unsized type {ty:?}")
         }
-        Type::PrimitiveNever => unreachable!(),
-        Type::Struct { struct_id, .. } => {
+        TyKind::PrimitiveNever => unreachable!(),
+        TyKind::Struct { struct_id, .. } => {
             let llvm_structure = ty
                 .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
                 .into_struct_type();
@@ -700,7 +701,7 @@ fn build_deref<'ctx, 'arena>(
             }
             Ok(value.into())
         }
-        Type::Tuple { elements, .. } => {
+        TyKind::Tuple { elements, .. } => {
             let llvm_structure = ty
                 .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
                 .into_struct_type();
@@ -717,7 +718,7 @@ fn build_deref<'ctx, 'arena>(
             }
             Ok(value.into())
         }
-        Type::SizedArray {
+        TyKind::SizedArray {
             typ,
             number_elements,
             ..
@@ -744,21 +745,21 @@ fn build_deref<'ctx, 'arena>(
             }
             Ok(value.into())
         }
-        Type::Function(..)
-        | Type::PrimitiveVoid(_)
-        | Type::PrimitiveI8(_)
-        | Type::PrimitiveI16(_)
-        | Type::PrimitiveI32(_)
-        | Type::PrimitiveI64(_)
-        | Type::PrimitiveISize(_)
-        | Type::PrimitiveU8(_)
-        | Type::PrimitiveU16(_)
-        | Type::PrimitiveU32(_)
-        | Type::PrimitiveU64(_)
-        | Type::PrimitiveUSize(_)
-        | Type::PrimitiveF32(_)
-        | Type::PrimitiveF64(_)
-        | Type::PrimitiveBool(_) => Ok(make_volatile(
+        TyKind::Function(..)
+        | TyKind::PrimitiveVoid(_)
+        | TyKind::PrimitiveI8(_)
+        | TyKind::PrimitiveI16(_)
+        | TyKind::PrimitiveI32(_)
+        | TyKind::PrimitiveI64(_)
+        | TyKind::PrimitiveISize(_)
+        | TyKind::PrimitiveU8(_)
+        | TyKind::PrimitiveU16(_)
+        | TyKind::PrimitiveU32(_)
+        | TyKind::PrimitiveU64(_)
+        | TyKind::PrimitiveUSize(_)
+        | TyKind::PrimitiveF32(_)
+        | TyKind::PrimitiveF64(_)
+        | TyKind::PrimitiveBool(_) => Ok(make_volatile(
             ctx.builder.build_load(
                 ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context),
                 left_side,
@@ -772,7 +773,7 @@ fn build_deref<'ctx, 'arena>(
 fn build_ptr_store<'ctx, 'arena>(
     left_side: PointerValue<'ctx>,
     right_side: BasicValueEnum<'ctx>,
-    ty: &Type<'arena>,
+    ty: Ty<'arena>,
     ctx: &FunctionCodegenContext<'ctx, 'arena, '_>,
     volatile: bool,
 ) -> Result<(), BuilderError> {
@@ -807,15 +808,15 @@ fn build_ptr_store<'ctx, 'arena>(
             return Ok(());
         }
     }
-    match ty {
-        Type::Generic { .. } | Type::PrimitiveSelf(_) => {
+    match &**ty {
+        TyKind::Generic { .. } | TyKind::PrimitiveSelf(_) => {
             panic!("{ty:?} should be resolved by now")
         }
-        Type::UnsizedArray { .. } | Type::DynType { .. } | Type::PrimitiveStr(_) => {
+        TyKind::UnsizedArray { .. } | TyKind::DynType { .. } | TyKind::PrimitiveStr(_) => {
             panic!("cannot store unsized type {ty:?}")
         }
-        Type::PrimitiveNever | Type::PrimitiveVoid(_) => (),
-        Type::Struct { struct_id, .. } => {
+        TyKind::PrimitiveNever | TyKind::PrimitiveVoid(_) => (),
+        TyKind::Struct { struct_id, .. } => {
             let structure = &ctx.tc_ctx.structs.read()[*struct_id];
             let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for (idx, ty) in structure.elements.iter().map(|v| &v.1).enumerate() {
@@ -827,10 +828,10 @@ fn build_ptr_store<'ctx, 'arena>(
                 let ptr = ctx
                     .builder
                     .build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
-                build_ptr_store(ptr, val, ty, ctx, volatile)?;
+                build_ptr_store(ptr, val, *ty, ctx, volatile)?;
             }
         }
-        Type::Tuple { elements, .. } => {
+        TyKind::Tuple { elements, .. } => {
             let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for (idx, ty) in elements.iter().enumerate() {
                 let val = ctx.builder.build_extract_value(
@@ -841,15 +842,15 @@ fn build_ptr_store<'ctx, 'arena>(
                 let ptr = ctx
                     .builder
                     .build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
-                build_ptr_store(ptr, val, ty, ctx, volatile)?;
+                build_ptr_store(ptr, val, *ty, ctx, volatile)?;
             }
         }
-        Type::SizedArray {
-            typ,
+        TyKind::SizedArray {
+            typ: ty,
             number_elements,
             ..
         } => {
-            let llvm_ty = typ.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
+            let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for i in 0..*number_elements {
                 let val =
                     ctx.builder
@@ -862,23 +863,23 @@ fn build_ptr_store<'ctx, 'arena>(
                         "",
                     )
                 }?;
-                build_ptr_store(ptr, val, typ, ctx, volatile)?;
+                build_ptr_store(ptr, val, *ty, ctx, volatile)?;
             }
         }
-        Type::Function(..)
-        | Type::PrimitiveI8(_)
-        | Type::PrimitiveI16(_)
-        | Type::PrimitiveI32(_)
-        | Type::PrimitiveI64(_)
-        | Type::PrimitiveISize(_)
-        | Type::PrimitiveU8(_)
-        | Type::PrimitiveU16(_)
-        | Type::PrimitiveU32(_)
-        | Type::PrimitiveU64(_)
-        | Type::PrimitiveUSize(_)
-        | Type::PrimitiveF32(_)
-        | Type::PrimitiveF64(_)
-        | Type::PrimitiveBool(_) => {
+        TyKind::Function(..)
+        | TyKind::PrimitiveI8(_)
+        | TyKind::PrimitiveI16(_)
+        | TyKind::PrimitiveI32(_)
+        | TyKind::PrimitiveI64(_)
+        | TyKind::PrimitiveISize(_)
+        | TyKind::PrimitiveU8(_)
+        | TyKind::PrimitiveU16(_)
+        | TyKind::PrimitiveU32(_)
+        | TyKind::PrimitiveU64(_)
+        | TyKind::PrimitiveUSize(_)
+        | TyKind::PrimitiveF32(_)
+        | TyKind::PrimitiveF64(_)
+        | TyKind::PrimitiveBool(_) => {
             ctx.builder
                 .build_store(left_side, right_side)?
                 .set_volatile(volatile)
@@ -958,7 +959,7 @@ impl<'arena> TypecheckedExpression<'arena> {
             }
             TypecheckedExpression::Return(_, typed_literal) => {
                 if typed_literal.to_primitive_type(&ctx.tc_scope, ctx.tc_ctx)
-                    == Some(Type::PrimitiveVoid(0))
+                    == Some(default_types::void)
                 {
                     let bb = ctx
                         .builder
@@ -971,11 +972,11 @@ impl<'arena> TypecheckedExpression<'arena> {
                     return ctx.builder.build_return(None).map(|_| ());
                 }
                 match typed_literal {
-                    TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == Type::PrimitiveVoid(0) => {
+                    TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == TyKind::PrimitiveVoid(0) => {
                         ctx.builder.build_return(None)?
                     }
                     TypedLiteral::Static(id)
-                        if ctx.tc_ctx.statics.read()[*id].type_ == Type::PrimitiveVoid(0) =>
+                        if ctx.tc_ctx.statics.read()[*id].type_ == TyKind::PrimitiveVoid(0) =>
                     {
                         ctx.builder.build_return(None)?
                     }
@@ -1004,7 +1005,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                             .into()
                     })
                     .collect::<Vec<_>>();
-                let fn_ty = if matches!(ctx.tc_scope[*dst].0, Type::PrimitiveVoid(0)) {
+                let fn_ty = if ctx.tc_scope[*dst].0 == default_types::void {
                     ctx.context.void_type().fn_type(&input_types, false)
                 } else {
                     ctx.tc_scope[*dst]
@@ -1182,11 +1183,10 @@ impl<'arena> TypecheckedExpression<'arena> {
                     dst.fn_ctx_to_basic_value(ctx).into_pointer_value(),
                     src.fn_ctx_to_basic_value(ctx),
                     if let TypedLiteral::Function(..) | TypedLiteral::ExternalFunction(..) = src {
-                        Cow::Borrowed(&Type::PrimitiveUSize(0))
+                        default_types::usize
                     } else {
                         src.to_type(&ctx.tc_scope, ctx.tc_ctx)
-                    }
-                    .as_ref(),
+                    },
                     ctx,
                     false,
                 )
@@ -1209,10 +1209,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         .iter()
                         .filter(|v| match v {
                             TypedLiteral::Void => false,
-                            TypedLiteral::Dynamic(id) => !matches!(
-                                ctx.tc_scope[*id].0,
-                                Type::PrimitiveNever | Type::PrimitiveVoid(0)
-                            ),
+                            TypedLiteral::Dynamic(id) => ctx.tc_scope[*id].0 != default_types::never && ctx.tc_scope[*id].0 != default_types::void,
                             _ => true,
                         })
                         .map(|v| v.fn_ctx_to_basic_value(ctx).into())
@@ -1344,7 +1341,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 let typ = lhs.to_type(&ctx.tc_scope, ctx.tc_ctx);
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
-                if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
+                if typ.is_int_like() || typ == default_types::bool {
                     ctx.push_value(
                         *dst,
                         ctx.builder
@@ -1362,7 +1359,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
-                if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
+                if typ.is_int_like() || *typ == TyKind::PrimitiveBool(0) {
                     ctx.push_value(
                         *dst,
                         ctx.builder
@@ -1380,7 +1377,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
-                if typ.is_int_like() || *typ == Type::PrimitiveBool(0) {
+                if typ.is_int_like() || *typ == TyKind::PrimitiveBool(0) {
                     ctx.push_value(
                         *dst,
                         ctx.builder
@@ -1554,7 +1551,7 @@ impl<'arena> TypecheckedExpression<'arena> {
             }
             TypecheckedExpression::Reference(_, dst, rhs) => {
                 let value = match rhs {
-                    TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == Type::PrimitiveVoid(0) => ctx.default_types.ptr.const_zero().into(),
+                    TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == TyKind::PrimitiveVoid(0) => ctx.default_types.ptr.const_zero().into(),
                     TypedLiteral::Dynamic(id) if !ctx.tc_scope[*id].1.stack_allocated => panic!("_{id} is not stack allocated (even tho it should have been)"),
                     TypedLiteral::Dynamic(id) => ctx.get_value_ptr(*id).into(),
                     TypedLiteral::Static(id) => ctx.statics[*id].as_basic_value_enum(),
@@ -1614,7 +1611,7 @@ impl<'arena> TypecheckedExpression<'arena> {
             TypecheckedExpression::Offset(_, dst, src, offset) => {
                 let ty = src.to_type(&ctx.tc_scope, ctx.tc_ctx);
                 match ty.as_ref() {
-                    Type::Struct {
+                    TyKind::Struct {
                         struct_id,
                         num_references: 1,
                         ..
@@ -1636,7 +1633,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         ctx.push_value(*dst, value.into());
                         Ok(())
                     }
-                    Type::Tuple {
+                    TyKind::Tuple {
                         num_references: 1, ..
                     } => {
                         let offset = match offset {
@@ -1656,7 +1653,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         ctx.push_value(*dst, value.into());
                         Ok(())
                     }
-                    Type::SizedArray {
+                    TyKind::SizedArray {
                         typ,
                         num_references: 1,
                         ..
@@ -1682,7 +1679,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         ctx.push_value(*dst, value.into());
                         Ok(())
                     }
-                    Type::UnsizedArray {
+                    TyKind::UnsizedArray {
                         typ,
                         num_references: 1,
                         ..
@@ -1781,8 +1778,8 @@ impl<'arena> TypecheckedExpression<'arena> {
                             .into()
                     }))
                     .collect::<Vec<_>>();
-                let fn_ty = match &ctx.tc_scope[*dst].0 {
-                    Type::PrimitiveNever | Type::PrimitiveVoid(0) => {
+                let fn_ty = match &**ctx.tc_scope[*dst].0 {
+                    TyKind::PrimitiveNever | TyKind::PrimitiveVoid(0) => {
                         ctx.context.void_type().fn_type(&param_types, false)
                     }
                     v => v
@@ -1904,7 +1901,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 let dst_ty = &ctx.tc_scope[*dst].0;
                 let src_value = src.fn_ctx_to_basic_value(ctx);
                 // u8 -> bool
-                if src_ty == Type::PrimitiveU8(0) && *dst_ty == Type::PrimitiveBool(0) {
+                if src_ty == TyKind::PrimitiveU8(0) && *dst_ty == TyKind::PrimitiveBool(0) {
                     let value = ctx.builder.build_int_truncate(
                         src_value.into_int_value(),
                         ctx.default_types.bool,
@@ -1914,7 +1911,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     return Ok(());
                 }
                 // bool -> u8
-                if src_ty == Type::PrimitiveBool(0) && *dst_ty == Type::PrimitiveU8(0) {
+                if src_ty == TyKind::PrimitiveBool(0) && *dst_ty == TyKind::PrimitiveU8(0) {
                     let value = ctx.builder.build_int_z_extend(
                         src_value.into_int_value(),
                         ctx.default_types.i8,
@@ -1924,7 +1921,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     return Ok(());
                 }
                 // f32 -> f64
-                if src_ty == Type::PrimitiveF32(0) && *dst_ty == Type::PrimitiveF64(0) {
+                if src_ty == TyKind::PrimitiveF32(0) && *dst_ty == TyKind::PrimitiveF64(0) {
                     let value = ctx.builder.build_float_ext(
                         src_value.into_float_value(),
                         ctx.default_types.f64,
@@ -1934,7 +1931,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     return Ok(());
                 }
                 // f64 -> f32
-                if src_ty == Type::PrimitiveBool(0) && *dst_ty == Type::PrimitiveU8(0) {
+                if src_ty == TyKind::PrimitiveBool(0) && *dst_ty == TyKind::PrimitiveU8(0) {
                     let value = ctx.builder.build_float_trunc(
                         src_value.into_float_value(),
                         ctx.default_types.f32,
@@ -1993,9 +1990,9 @@ impl<'arena> TypecheckedExpression<'arena> {
                     ctx.push_value(*dst, value.into());
                     Ok(())
                 } else {
-                    let ty = match dst_ty {
-                        Type::PrimitiveF32(0) => ctx.default_types.f32,
-                        Type::PrimitiveF64(0) => ctx.default_types.f64,
+                    let ty = match **dst_ty {
+                        TyKind::PrimitiveF32(0) => ctx.default_types.f32,
+                        TyKind::PrimitiveF64(0) => ctx.default_types.f64,
                         _ => unreachable!("not a float type: {:?}", dst_ty),
                     };
                     let value = if src_ty.is_unsigned() {
@@ -2038,10 +2035,10 @@ impl<'arena> TypecheckedExpression<'arena> {
                 .iter()
                 .filter(|v| match v {
                     TypedLiteral::Void => false,
-                    TypedLiteral::Dynamic(id) => !matches!(
-                        ctx.tc_scope[*id].0,
-                        Type::PrimitiveNever | Type::PrimitiveVoid(0)
-                    ),
+                    TypedLiteral::Dynamic(id) => {
+                        ctx.tc_scope[*id].0 != default_types::never
+                            && ctx.tc_scope[*id].0 != default_types::void
+                    }
                     _ => true,
                 })
                 .map(|v| v.fn_ctx_to_basic_value(ctx).into())
@@ -2061,7 +2058,7 @@ impl<'arena> TypecheckedExpression<'arena> {
         dst: usize,
         intrinsic: Intrinsic,
         args: &[TypedLiteral<'arena>],
-        generics: &[Type<'arena>],
+        generics: &[Ty<'arena>],
         ctx: &mut FunctionCodegenContext<'_, 'arena, '_>,
     ) -> Result<(), BuilderError> {
         _ = &generics;
@@ -2160,7 +2157,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 build_ptr_store(
                     args[0].fn_ctx_to_basic_value(ctx).into_pointer_value(),
                     args[1].fn_ctx_to_basic_value(ctx),
-                    &generics[0],
+                    generics[0],
                     ctx,
                     true,
                 )?;
@@ -2172,8 +2169,8 @@ impl<'arena> TypecheckedExpression<'arena> {
                         .0;
                     ctx.push_value(dst, ctx.default_types.isize.const_int(size, false).into());
                 } else {
-                    match &generics[0] {
-                        Type::DynType { .. } => {
+                    match &**generics[0] {
+                        TyKind::DynType { .. } => {
                             let fat_ptr = args[0].fn_ctx_to_basic_value(ctx).into_struct_value();
                             let vtable_ptr_int = ctx
                                 .builder
@@ -2189,7 +2186,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                                     .build_load(ctx.default_types.isize, vtable_ptr, "")?;
                             ctx.push_value(dst, size);
                         }
-                        Type::UnsizedArray { typ, .. } => {
+                        TyKind::UnsizedArray { typ, .. } => {
                             let fat_ptr = args[0].fn_ctx_to_basic_value(ctx).into_struct_value();
                             let len = ctx
                                 .builder
@@ -2205,12 +2202,12 @@ impl<'arena> TypecheckedExpression<'arena> {
                             )?;
                             ctx.push_value(dst, total_size.as_basic_value_enum());
                         }
-                        Type::PrimitiveStr(_) => {
+                        TyKind::PrimitiveStr(_) => {
                             let fat_ptr = args[0].fn_ctx_to_basic_value(ctx).into_struct_value();
                             let size = ctx.builder.build_extract_value(fat_ptr, 1, "")?;
                             ctx.push_value(dst, size);
                         }
-                        Type::Generic { .. } | Type::PrimitiveSelf(_) => {
+                        TyKind::Generic { .. } | TyKind::PrimitiveSelf(_) => {
                             unreachable!("These should've been resolved by now.")
                         }
                         t => unreachable!("{t:?} should be sized"),

@@ -1,29 +1,29 @@
 use std::{
-    borrow::Cow,
     fmt::{Display, Write},
+    ops::BitAnd,
 };
 
 use crate::{annotations::Annotations, store::StoreKey, typechecking::types::FunctionType};
 use mira_spans::{interner::Symbol, Span};
 
 use super::{
+    default_types,
     intrinsics::Intrinsic,
     typechecking::{ScopeTypeMetadata, ScopeValueId},
-    types::Type,
-    TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
-    TypedTrait,
+    Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
+    TypedStruct, TypedTrait,
 };
 
 #[derive(Debug, Clone)]
 pub enum TypedLiteral<'arena> {
     Void,
     Dynamic(ScopeValueId),
-    Function(StoreKey<TypedFunction<'arena>>, Vec<Type<'arena>>),
+    Function(StoreKey<TypedFunction<'arena>>, Vec<Ty<'arena>>),
     ExternalFunction(StoreKey<TypedExternalFunction<'arena>>),
     Static(StoreKey<TypedStatic<'arena>>),
     String(Symbol<'arena>),
-    Array(Type<'arena>, Vec<TypedLiteral<'arena>>),
-    ArrayInit(Type<'arena>, Box<TypedLiteral<'arena>>, usize),
+    Array(Ty<'arena>, Vec<TypedLiteral<'arena>>),
+    ArrayInit(Ty<'arena>, Box<TypedLiteral<'arena>>, usize),
     Struct(StoreKey<TypedStruct<'arena>>, Vec<TypedLiteral<'arena>>),
     Tuple(Vec<TypedLiteral<'arena>>),
     F64(f64),
@@ -39,103 +39,109 @@ pub enum TypedLiteral<'arena> {
     I64(i64),
     ISize(isize),
     Bool(bool),
-    Intrinsic(Intrinsic, Vec<Type<'arena>>),
+    Intrinsic(Intrinsic, Vec<Ty<'arena>>),
 }
 
 impl<'arena> TypedLiteral<'arena> {
     pub fn to_type<'a>(
         &self,
-        scope: &'a [(Type<'arena>, ScopeTypeMetadata)],
+        scope: &'a [(Ty<'arena>, ScopeTypeMetadata)],
         ctx: &TypecheckingContext<'arena>,
-    ) -> Cow<'a, Type<'arena>> {
+    ) -> Ty<'arena> {
         match self {
-            TypedLiteral::Void => Cow::Owned(Type::PrimitiveVoid(0)),
-            TypedLiteral::Dynamic(id) => Cow::Borrowed(&scope[*id].0),
+            TypedLiteral::Void => default_types::void,
+            TypedLiteral::Dynamic(id) => scope[*id].0,
             TypedLiteral::Function(id, _) => {
                 let contract = &ctx.functions.read()[*id].0;
                 let fn_type = FunctionType {
-                    return_type: contract.return_type.clone(),
-                    arguments: contract.arguments.iter().map(|v| v.1.clone()).collect(),
+                    return_type: contract.return_type,
+                    arguments: ctx
+                        .ctx
+                        .intern_tylist(&contract.arguments.iter().map(|v| v.1).collect::<Vec<_>>()),
                 };
-                Cow::Owned(Type::Function(fn_type.into(), 0))
+                ctx.ctx.intern_ty(TyKind::Function(fn_type, 0))
             }
             TypedLiteral::ExternalFunction(id) => {
                 let contract = &ctx.external_functions.read()[*id].0;
                 let fn_type = FunctionType {
-                    return_type: contract.return_type.clone(),
-                    arguments: contract.arguments.iter().map(|v| v.1.clone()).collect(),
+                    return_type: contract.return_type,
+                    arguments: ctx
+                        .ctx
+                        .intern_tylist(&contract.arguments.iter().map(|v| v.1).collect::<Vec<_>>()),
                 };
-                Cow::Owned(Type::Function(fn_type.into(), 0))
+                ctx.ctx.intern_ty(TyKind::Function(fn_type, 0))
             }
-            TypedLiteral::Static(id) => Cow::Owned(ctx.statics.read()[*id].type_.clone()),
-            TypedLiteral::String(_) => Cow::Owned(Type::PrimitiveStr(1)),
-            TypedLiteral::Array(ty, elems) => Cow::Owned(Type::SizedArray {
-                typ: ty.clone().into(),
+            TypedLiteral::Static(id) => ctx.statics.read()[*id].type_,
+            TypedLiteral::String(_) => default_types::str_ref,
+            TypedLiteral::Array(ty, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
+                typ: *ty,
                 num_references: 0,
                 number_elements: elems.len(),
             }),
-            TypedLiteral::ArrayInit(ty, _, elems) => Cow::Owned(Type::SizedArray {
-                typ: ty.clone().into(),
+            TypedLiteral::ArrayInit(ty, _, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
+                typ: *ty,
                 num_references: 0,
                 number_elements: *elems,
             }),
-            TypedLiteral::Struct(struct_id, _) => Cow::Owned(Type::Struct {
+            TypedLiteral::Struct(struct_id, _) => ctx.ctx.intern_ty(TyKind::Struct {
                 struct_id: *struct_id,
                 name: ctx.structs.read()[*struct_id].name,
                 num_references: 0,
             }),
-            TypedLiteral::Tuple(elems) => Cow::Owned(Type::Tuple {
-                elements: elems
-                    .iter()
-                    .map(|v| v.to_type(scope, ctx).into_owned())
-                    .collect(),
+            TypedLiteral::Tuple(elems) => ctx.ctx.intern_ty(TyKind::Tuple {
+                elements: ctx.ctx.intern_tylist(
+                    &elems
+                        .iter()
+                        .map(|v| v.to_type(scope, ctx))
+                        .collect::<Vec<_>>(),
+                ),
                 num_references: 0,
             }),
-            TypedLiteral::F64(_) => Cow::Owned(Type::PrimitiveF64(0)),
-            TypedLiteral::F32(_) => Cow::Owned(Type::PrimitiveF32(0)),
-            TypedLiteral::U8(_) => Cow::Owned(Type::PrimitiveU8(0)),
-            TypedLiteral::U16(_) => Cow::Owned(Type::PrimitiveU16(0)),
-            TypedLiteral::U32(_) => Cow::Owned(Type::PrimitiveU32(0)),
-            TypedLiteral::U64(_) => Cow::Owned(Type::PrimitiveU64(0)),
-            TypedLiteral::USize(_) => Cow::Owned(Type::PrimitiveUSize(0)),
-            TypedLiteral::I8(_) => Cow::Owned(Type::PrimitiveI8(0)),
-            TypedLiteral::I16(_) => Cow::Owned(Type::PrimitiveI16(0)),
-            TypedLiteral::I32(_) => Cow::Owned(Type::PrimitiveI32(0)),
-            TypedLiteral::I64(_) => Cow::Owned(Type::PrimitiveI64(0)),
-            TypedLiteral::ISize(_) => Cow::Owned(Type::PrimitiveISize(0)),
-            TypedLiteral::Bool(_) => Cow::Owned(Type::PrimitiveBool(0)),
+            TypedLiteral::F64(_) => default_types::f64,
+            TypedLiteral::F32(_) => default_types::f32,
+            TypedLiteral::U8(_) => default_types::u8,
+            TypedLiteral::U16(_) => default_types::u16,
+            TypedLiteral::U32(_) => default_types::u32,
+            TypedLiteral::U64(_) => default_types::u64,
+            TypedLiteral::USize(_) => default_types::usize,
+            TypedLiteral::I8(_) => default_types::i8,
+            TypedLiteral::I16(_) => default_types::i16,
+            TypedLiteral::I32(_) => default_types::i32,
+            TypedLiteral::I64(_) => default_types::i64,
+            TypedLiteral::ISize(_) => default_types::isize,
+            TypedLiteral::Bool(_) => default_types::bool,
             TypedLiteral::Intrinsic(..) => panic!("intrinsic is no type"),
         }
     }
 
     pub fn to_primitive_type(
         &self,
-        scope: &[(Type<'arena>, ScopeTypeMetadata)],
+        scope: &[(Ty<'arena>, ScopeTypeMetadata)],
         ctx: &TypecheckingContext<'arena>,
-    ) -> Option<Type<'arena>> {
+    ) -> Option<Ty<'arena>> {
         match self {
-            TypedLiteral::Void => Some(Type::PrimitiveVoid(0)),
-            TypedLiteral::String(_) => Some(Type::PrimitiveStr(1)),
-            TypedLiteral::F64(_) => Some(Type::PrimitiveF64(0)),
-            TypedLiteral::F32(_) => Some(Type::PrimitiveF32(0)),
-            TypedLiteral::U8(_) => Some(Type::PrimitiveU8(0)),
-            TypedLiteral::U16(_) => Some(Type::PrimitiveU16(0)),
-            TypedLiteral::U32(_) => Some(Type::PrimitiveU32(0)),
-            TypedLiteral::U64(_) => Some(Type::PrimitiveU64(0)),
-            TypedLiteral::USize(_) => Some(Type::PrimitiveUSize(0)),
-            TypedLiteral::I8(_) => Some(Type::PrimitiveI8(0)),
-            TypedLiteral::I16(_) => Some(Type::PrimitiveI16(0)),
-            TypedLiteral::I32(_) => Some(Type::PrimitiveI32(0)),
-            TypedLiteral::I64(_) => Some(Type::PrimitiveI64(0)),
-            TypedLiteral::ISize(_) => Some(Type::PrimitiveISize(0)),
-            TypedLiteral::Bool(_) => Some(Type::PrimitiveBool(0)),
+            TypedLiteral::F64(_) => Some(default_types::f64),
+            TypedLiteral::F32(_) => Some(default_types::f32),
+            TypedLiteral::U8(_) => Some(default_types::u8),
+            TypedLiteral::U16(_) => Some(default_types::u16),
+            TypedLiteral::U32(_) => Some(default_types::u32),
+            TypedLiteral::U64(_) => Some(default_types::u64),
+            TypedLiteral::USize(_) => Some(default_types::usize),
+            TypedLiteral::I8(_) => Some(default_types::i8),
+            TypedLiteral::I16(_) => Some(default_types::i16),
+            TypedLiteral::I32(_) => Some(default_types::i32),
+            TypedLiteral::I64(_) => Some(default_types::i64),
+            TypedLiteral::ISize(_) => Some(default_types::isize),
+            TypedLiteral::Bool(_) => Some(default_types::bool),
+            TypedLiteral::String(_) => Some(default_types::str_ref),
+            TypedLiteral::Void => Some(default_types::void),
             TypedLiteral::Dynamic(id) => {
-                let ty = &scope[*id].0;
-                ty.is_primitive().then(|| ty.clone())
+                let ty = scope[*id].0;
+                ty.is_primitive().then_some(ty)
             }
             TypedLiteral::Static(id) => {
-                let ty = &ctx.statics.read()[*id].type_;
-                ty.is_primitive().then(|| ty.clone())
+                let ty = ctx.statics.read()[*id].type_;
+                ty.is_primitive().then_some(ty)
             }
             TypedLiteral::Array(..)
             | TypedLiteral::ArrayInit(..)
@@ -154,7 +160,7 @@ impl<'arena> TypedLiteral<'arena> {
             | TypedLiteral::Tuple(vec) => vec
                 .iter()
                 .map(TypedLiteral::is_entirely_literal)
-                .fold(true, std::ops::BitAnd::bitand),
+                .fold(true, BitAnd::bitand),
             TypedLiteral::ArrayInit(_, elem, amount) => *amount == 0 || elem.is_entirely_literal(),
             TypedLiteral::Static(_) | TypedLiteral::Dynamic(_) | TypedLiteral::Intrinsic(..) => {
                 false
@@ -225,7 +231,7 @@ pub enum TypecheckedExpression<'arena> {
     // _dst = _lhs.._rhs
     Range {
         span: Span<'arena>,
-        typ: Type<'arena>,
+        typ: Ty<'arena>,
         lhs: TypedLiteral<'arena>,
         rhs: TypedLiteral<'arena>,
         inclusive: bool,
@@ -255,7 +261,7 @@ pub enum TypecheckedExpression<'arena> {
         ScopeValueId,
         StoreKey<TypedFunction<'arena>>,
         Vec<TypedLiteral<'arena>>,
-        Vec<Type<'arena>>,
+        Vec<Ty<'arena>>,
     ),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectExternCall(
@@ -270,7 +276,7 @@ pub enum TypecheckedExpression<'arena> {
         ScopeValueId,
         Intrinsic,
         Vec<TypedLiteral<'arena>>,
-        Vec<Type<'arena>>,
+        Vec<Ty<'arena>>,
     ),
     // _1 = +_2
     Pos(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
@@ -430,7 +436,7 @@ pub enum TypecheckedExpression<'arena> {
     DynCall(Span<'arena>, ScopeValueId, Vec<TypedLiteral<'arena>>, u32),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
     Literal(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
-    DeclareVariable(Span<'arena>, ScopeValueId, Type<'arena>, Symbol<'arena>),
+    DeclareVariable(Span<'arena>, ScopeValueId, Ty<'arena>, Symbol<'arena>),
     Empty(Span<'arena>),
     Unreachable(Span<'arena>),
     // ### CASTS ###
@@ -462,7 +468,7 @@ pub enum TypecheckedExpression<'arena> {
         Span<'arena>,
         ScopeValueId,
         TypedLiteral<'arena>,
-        (Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>),
+        (Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>),
     ),
     None,
 }

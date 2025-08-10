@@ -39,11 +39,12 @@ use crate::{
     store::{AssociatedStore, StoreKey},
     target::{Target, NATIVE_TARGET},
     typechecking::{
+        default_types,
         expression::{TypecheckedExpression, TypedLiteral},
         intrinsics::IntrinsicAnnotation,
         typechecking::ScopeTypeMetadata,
-        Type, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
-        TypedTrait,
+        Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
+        TypedStruct, TypedTrait,
     },
 };
 use mira_spans::interner::Symbol;
@@ -87,8 +88,7 @@ pub struct CodegenContext<'ctx, 'arena> {
     pub(super) string_map: HashMap<Symbol<'arena>, GlobalValue<'ctx>>,
     pub(super) debug_ctx: DebugContext<'ctx, 'arena>,
     pub(super) intrinsics: LLVMIntrinsics,
-    pub(super) vtables:
-        HashMap<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
+    pub(super) vtables: HashMap<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
     pub(super) config: CodegenConfig<'ctx>,
 }
 
@@ -317,11 +317,12 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             let fields = structure
                 .elements
                 .iter()
-                .map(|(_, t)| match t {
-                    Type::PrimitiveVoid(0) | Type::PrimitiveNever => {
+                .map(|(_, t)| {
+                    if *t == default_types::void || *t == default_types::never {
                         default_types.i8.array_type(0).into()
+                    } else {
+                        t.to_llvm_basic_type(&default_types, &structs, context)
                     }
-                    t => t.to_llvm_basic_type(&default_types, &structs, context),
                 })
                 .collect::<Vec<_>>();
             assert!(
@@ -352,19 +353,16 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             let param_types = contract
                 .arguments
                 .iter()
-                .filter_map(|(_, t)| match t {
-                    Type::PrimitiveVoid(0) | Type::PrimitiveNever => None,
-                    t => Some(
-                        t.to_llvm_basic_type(&default_types, &structs, context)
-                            .into(),
-                    ),
+                .filter(|(_, t)| (*t != default_types::void && *t != default_types::never))
+                .map(|(_, t)| {
+                    t.to_llvm_basic_type(&default_types, &structs, context)
+                        .into()
                 })
                 .collect::<Vec<_>>();
 
-            let fn_typ = if matches!(
-                contract.return_type,
-                Type::PrimitiveNever | Type::PrimitiveVoid(0)
-            ) {
+            let fn_typ = if contract.return_type == default_types::never
+                || contract.return_type == default_types::void
+            {
                 context.void_type().fn_type(&param_types, false)
             } else {
                 contract
@@ -409,12 +407,11 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             let param_types = contract
                 .arguments
                 .iter()
-                .filter_map(|(_, t)| match t {
-                    Type::PrimitiveVoid(0) | Type::PrimitiveNever => None,
-                    t => Some(
+                .filter_map(|(_, t)| {
+                    (*t != default_types::void && *t != default_types::never).then_some(
                         t.to_llvm_basic_type(&default_types, &structs, context)
                             .into(),
-                    ),
+                    )
                 })
                 .collect::<Vec<_>>();
             if !contract.return_type.is_primitive()
@@ -426,10 +423,9 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             }
             let has_var_args = contract.annotations.has_annotation::<ExternVarArg>();
 
-            let fn_typ = if matches!(
-                contract.return_type,
-                Type::PrimitiveNever | Type::PrimitiveVoid(0)
-            ) {
+            let fn_typ = if contract.return_type == default_types::never
+                || contract.return_type == default_types::void
+            {
                 context.void_type().fn_type(&param_types, has_var_args)
             } else {
                 contract
@@ -550,8 +546,8 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                 )
                 .into()];
             for trait_id in traits.iter() {
-                match &ty {
-                    Type::Struct { struct_id, .. } => {
+                match &**ty {
+                    TyKind::Struct { struct_id, .. } => {
                         for fn_id in struct_reader[struct_id].trait_impl[trait_id]
                             .iter()
                             .copied()
@@ -603,21 +599,21 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     pub fn compile_external_fn(
         &mut self,
         fn_id: StoreKey<TypedExternalFunction<'arena>>,
-        tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
+        tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
     ) -> Result<(), BuilderError> {
         self.internal_compile_fn(fn_id.cast(), tc_scope, true)
     }
     pub fn compile_fn(
         &mut self,
         fn_id: StoreKey<TypedFunction<'arena>>,
-        tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
+        tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
     ) -> Result<(), BuilderError> {
         self.internal_compile_fn(fn_id, tc_scope, false)
     }
     fn internal_compile_fn(
         &mut self,
         fn_id: StoreKey<TypedFunction<'arena>>,
-        tc_scope: Vec<(Type<'arena>, ScopeTypeMetadata)>,
+        tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
         is_external: bool,
     ) -> Result<(), BuilderError> {
         let ext_fn_reader = self.tc_ctx.external_functions.read();
@@ -682,7 +678,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 
         let mut param_idx = 0;
         for (idx, (name, arg)) in contract.arguments.iter().enumerate() {
-            if matches!(arg, Type::PrimitiveVoid(0) | Type::PrimitiveNever) {
+            if *arg == default_types::void || *arg == default_types::never {
                 function_ctx.push_value(idx, void_arg);
             } else {
                 function_ctx.push_value(idx, func.get_nth_param(param_idx).unwrap());
@@ -731,7 +727,7 @@ fn collect_data<'arena>(
     ctx: &TypecheckingContext<'arena>,
 ) -> (
     HashSet<Symbol<'arena>>,
-    HashSet<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
+    HashSet<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
 ) {
     let function_reader = ctx.functions.read();
     let ext_function_reader = ctx.external_functions.read();
@@ -757,7 +753,7 @@ fn collect_data<'arena>(
 fn collect_strings_for_expressions<'arena>(
     exprs: &[TypecheckedExpression<'arena>],
     strings: &mut HashSet<Symbol<'arena>>,
-    vtables: &mut HashSet<(Type<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
+    vtables: &mut HashSet<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
 ) {
     for expr in exprs {
         match expr {
@@ -844,7 +840,7 @@ fn collect_strings_for_expressions<'arena>(
             }
             TypecheckedExpression::AttachVtable(_, _, lit, (ty, traits)) => {
                 collect_strings_for_typed_literal(lit, strings);
-                vtables.insert((ty.clone(), traits.clone()));
+                vtables.insert((*ty, traits.clone()));
             }
             TypecheckedExpression::Empty(_)
             | TypecheckedExpression::Unreachable(_)

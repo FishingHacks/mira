@@ -8,9 +8,14 @@ use mira_spans::{
     Arena, SourceMap, Span, SpanData, Symbol,
 };
 
+use crate::typechecking::{Ty, TyKind, TyList, TypeInterner, TypeListInterner};
+
 pub struct GlobalContext<'arena> {
+    arena: &'arena Arena,
     string_interner: Mutex<SymbolInterner<'arena>>,
     span_interner: SpanInterner<'arena>,
+    type_interner: Mutex<TypeInterner<'arena>>,
+    type_list_interner: Mutex<TypeListInterner<'arena>>,
     source_map: SourceMap,
 }
 
@@ -25,7 +30,10 @@ impl<'arena> GlobalContext<'arena> {
         Self {
             string_interner: SymbolInterner::new(arena).into(),
             span_interner: SpanInterner::new(arena),
+            type_interner: TypeInterner::new(arena).into(),
+            type_list_interner: TypeListInterner::new(arena).into(),
             source_map: SourceMap::new(),
+            arena,
         }
     }
 
@@ -38,12 +46,28 @@ impl<'arena> GlobalContext<'arena> {
 pub struct SharedContext<'arena>(&'arena GlobalContext<'arena>);
 
 impl<'arena> SharedContext<'arena> {
+    pub fn arena(self) -> &'arena Arena {
+        self.0.arena
+    }
+
     pub fn intern_str(self, s: &str) -> Symbol<'arena> {
         self.0.string_interner.lock().intern(s)
     }
 
     pub fn intern_span(self, data: SpanData) -> Span<'arena> {
         Span::new(data, &self.0.span_interner)
+    }
+
+    pub fn intern_ty_ref(self, ty: &TyKind<'arena>) -> Ty<'arena> {
+        self.0.type_interner.lock().intern(ty)
+    }
+
+    pub fn intern_ty(self, ty: TyKind<'arena>) -> Ty<'arena> {
+        self.0.type_interner.lock().intern_owned(ty)
+    }
+
+    pub fn intern_tylist(self, types: &[Ty<'arena>]) -> TyList<'arena> {
+        self.0.type_list_interner.lock().intern(types)
     }
 
     pub fn span_interner(&self) -> &SpanInterner<'arena> {

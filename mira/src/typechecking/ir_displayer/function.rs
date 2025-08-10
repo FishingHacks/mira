@@ -1,8 +1,9 @@
 use crate::{
     store::StoreKey,
     typechecking::{
+        default_types,
         expression::{TypecheckedExpression, TypedLiteral},
-        Type, TypecheckedFunctionContract, TypedFunction,
+        TypecheckedFunctionContract, TypedFunction,
     },
 };
 
@@ -46,7 +47,7 @@ impl FuncDisplay<'_> {
             f.write_value(&arg.1)?;
         }
         f.write_char(')')?;
-        if !matches!(self.0.return_type, Type::PrimitiveVoid(0)) {
+        if self.0.return_type != default_types::void {
             f.write_str(" -> ")?;
             f.write_value(&self.0.return_type)?;
         }

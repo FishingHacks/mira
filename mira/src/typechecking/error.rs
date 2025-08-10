@@ -7,7 +7,7 @@ use crate::{
 use mira_macros::ErrorData;
 use mira_spans::{interner::Symbol, Span};
 
-use super::{types::Type, ScopeKind};
+use super::{ScopeKind, Ty};
 
 #[derive(Clone, Debug, ErrorData)]
 pub enum TypecheckingError<'arena> {
@@ -24,7 +24,7 @@ pub enum TypecheckingError<'arena> {
     #[error("Expected a sized type, but got {_1}")]
     UnsizedForSizedGeneric(
         #[primary_label("expected a sized type")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     // NOTE: This is due to each ABI handling how to return values differently. LLVM doesn't handle
     // this for us, but, as far as i can tell, it's fine if we return structs from non-extern
@@ -41,13 +41,13 @@ pub enum TypecheckingError<'arena> {
     #[error("Unsized Type {_1} is not a return type")]
     UnsizedReturnType(
         #[primary_label("type has to be sized")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Unsized Type {_1} is not a valid argument")]
     #[note("Try using `&{_1}`")]
     UnsizedArgument(
         #[primary_label("type has to be sized")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Function {_1} on trait {_2} is not valid for &dyn {_2} types")]
     InvalidDynTypeFunc(
@@ -71,14 +71,14 @@ pub enum TypecheckingError<'arena> {
     #[note("Try using `&{_1}`")]
     NonSizedType(
         #[primary_label("the size needs to be known")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("This Intrinsic accepts only integers, but got: {_1}")]
-    IntOnlyIntrinsic(#[primary_label("")] Span<'arena>, Type<'arena>),
+    IntOnlyIntrinsic(#[primary_label("")] Span<'arena>, Ty<'arena>),
     #[error("Inline assembly only accepts numeric types (i_, u_, f_ and bool), but got `{_1}`")]
     AsmNonNumericTypeResolved(
         #[primary_label("expected a numeric type")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Inline assembly only accepts numeric types (i_, u_, f_ and bool), but got `{_1}`")]
     AsmNonNumericType(
@@ -103,13 +103,13 @@ pub enum TypecheckingError<'arena> {
     NonMemberFunction(
         #[primary_label("Cannot find method `{_1}`")] Span<'arena>,
         Symbol<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot find function `{_1}` on type `{_2}`")]
     CannotFindFunctionOnType(
         #[primary_label("No function named `{_1}` is associated with `{_2}`")] Span<'arena>,
         Symbol<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot find value `{_1}` in this scope")]
     CannotFindValue(
@@ -119,114 +119,102 @@ pub enum TypecheckingError<'arena> {
     #[error("No such field on `{_1}`")]
     AccessNonStructValue(
         #[primary_label("no such field found")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Tried to index into value of type `{_1}`")]
     IndexNonArrayElem(
         #[primary_label("Cannot index into this value")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Could not find field `{_2}` on `{_1}`")]
     FieldNotFound(
         #[primary_label("no such field found")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
         Symbol<'arena>,
     ),
     #[error("Invalid cast `{_1}` -> `{_2}`")]
     DisallowedCast(
         #[primary_label("invalid cast")] Span<'arena>,
-        Type<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot assign to this expression")]
     CannotAssign(#[primary_label("invalid assignment")] Span<'arena>),
     #[error("Cannot shift by a non-uint value (found `{_1}`)")]
     CannotShiftByNonUInt(
         #[primary_label("invalid value for bit-shifting")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot add `{_1}`")]
-    CannotAdd(#[primary_label("cannot add")] Span<'arena>, Type<'arena>),
+    CannotAdd(#[primary_label("cannot add")] Span<'arena>, Ty<'arena>),
     #[error("Cannot subtract `{_1}`")]
-    CannotSub(
-        #[primary_label("cannot subtract")] Span<'arena>,
-        Type<'arena>,
-    ),
+    CannotSub(#[primary_label("cannot subtract")] Span<'arena>, Ty<'arena>),
     #[error("Cannot multiply `{_1}`")]
-    CannotMul(
-        #[primary_label("cannot multiple")] Span<'arena>,
-        Type<'arena>,
-    ),
+    CannotMul(#[primary_label("cannot multiple")] Span<'arena>, Ty<'arena>),
     #[error("Cannot divide `{_1}`")]
-    CannotDiv(#[primary_label("cannot divide")] Span<'arena>, Type<'arena>),
+    CannotDiv(#[primary_label("cannot divide")] Span<'arena>, Ty<'arena>),
     #[error("Cannot take the remainder of `{_1}`")]
     CannotMod(
         #[primary_label("cannot take the remainder")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot binary and `{_1}`")]
     CannotBAnd(
         #[primary_label("cannot binary and")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot binary or `{_1}`")]
     CannotBOr(
         #[primary_label("cannot binary or")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot xor `{_1}`")]
     CannotBXor(
         #[primary_label("cannot binary xor")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot and `{_1}`")]
     CannotLAnd(
         #[primary_label("cannot logically and")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot or `{_1}`")]
     CannotLOr(
         #[primary_label("cannot logically or")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot compare `{_1}`")]
-    CannotCompare(
-        #[primary_label("cannot compare")] Span<'arena>,
-        Type<'arena>,
-    ),
+    CannotCompare(#[primary_label("cannot compare")] Span<'arena>, Ty<'arena>),
     #[error("Cannot compare the equality of `{_1}`")]
-    CannotEq(#[primary_label("cannot equate")] Span<'arena>, Type<'arena>),
+    CannotEq(#[primary_label("cannot equate")] Span<'arena>, Ty<'arena>),
     #[error("Cannot shift `{_1}` left")]
-    CannotShl(
-        #[primary_label("cannot leftshit")] Span<'arena>,
-        Type<'arena>,
-    ),
+    CannotShl(#[primary_label("cannot leftshit")] Span<'arena>, Ty<'arena>),
     #[error("Cannot shift `{_1}` right")]
     CannotShr(
         #[primary_label("cannot right shift")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Expected both sides of the expression to be the same, lhs: `{_1}`, rhs: `{_2}`")]
     LhsNotRhs(
         #[primary_label("the left and right side don't match")] Span<'arena>,
-        Type<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot negate a `{_1}`")]
-    CannotNeg(#[primary_label("cannot negate")] Span<'arena>, Type<'arena>),
+    CannotNeg(#[primary_label("cannot negate")] Span<'arena>, Ty<'arena>),
     #[error("Cannot use unary `+` on a `{_1}`")]
     CannotPos(
         #[primary_label("cannot use unary `+`")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("Cannot not a `{_1}`")]
-    CannotLNot(#[primary_label("cannot not")] Span<'arena>, Type<'arena>),
+    CannotLNot(#[primary_label("cannot not")] Span<'arena>, Ty<'arena>),
     #[error("Cannot invert a `{_1}`")]
-    CannotBNot(#[primary_label("cannot invert")] Span<'arena>, Type<'arena>),
+    CannotBNot(#[primary_label("cannot invert")] Span<'arena>, Ty<'arena>),
     #[error("cannot dereference a `{_1}`")]
     CannotDeref(
         #[primary_label("cannot dereference")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
     ),
     #[error("could not find item `{name}`")]
     ItemNotFound {
@@ -263,8 +251,8 @@ pub enum TypecheckingError<'arena> {
     MismatchingType {
         #[primary_label("types don't match")]
         location: Span<'arena>,
-        expected: Type<'arena>,
-        found: Type<'arena>,
+        expected: Ty<'arena>,
+        found: Ty<'arena>,
     },
     #[error("`{name}` is not a struct type")]
     IdentifierIsNotStruct {
@@ -319,7 +307,7 @@ pub enum TypecheckingError<'arena> {
     #[error("Type {_1} is expected to implement the traits {_2:?}")]
     MismatchingTraits(
         #[primary_label("Trait is missing dependency traits")] Span<'arena>,
-        Type<'arena>,
+        Ty<'arena>,
         Vec<Symbol<'arena>>,
     ),
     #[error(
@@ -330,14 +318,14 @@ pub enum TypecheckingError<'arena> {
     MismatchingArguments {
         #[primary_label("Mismatching arguments")]
         location: Span<'arena>,
-        expected: Vec<Type<'arena>>,
-        found: Vec<Type<'arena>>,
+        expected: Vec<Ty<'arena>>,
+        found: Vec<Ty<'arena>>,
     },
     #[error("Expected fn(...) -> {expected} but fund fn(...) -> {found}")]
     MismatchingReturnType {
         #[primary_label("Mismatching return type")]
         location: Span<'arena>,
-        expected: Type<'arena>,
-        found: Type<'arena>,
+        expected: Ty<'arena>,
+        found: Ty<'arena>,
     },
 }

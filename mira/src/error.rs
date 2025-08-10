@@ -9,7 +9,7 @@ use mira_macros::ErrorData;
 use crate::{
     annotations::AnnotationReceiver,
     tokenizer::{Token, TokenType},
-    typechecking::Type,
+    typechecking::Ty,
 };
 use mira_spans::{interner::Symbol, Span};
 
@@ -319,7 +319,7 @@ pub enum ProgramFormingError<'arena> {
     ),
 }
 
-pub struct FunctionList<'a>(pub &'a [Type<'a>]);
+pub struct FunctionList<'a>(pub &'a [Ty<'a>]);
 
 impl Display for FunctionList<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

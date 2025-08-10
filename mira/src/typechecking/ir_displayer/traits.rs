@@ -1,4 +1,4 @@
-use crate::typechecking::{Type, TypedTrait};
+use crate::typechecking::{default_types, TypedTrait};
 
 use super::Formatter;
 
@@ -28,7 +28,7 @@ impl TraitDisplay<'_> {
                 f.write_value(ty)?;
             }
             f.write_char(')')?;
-            if !matches!(return_type, Type::PrimitiveVoid(0)) {
+            if *return_type != default_types::void {
                 f.write_str(" -> ")?;
                 f.write_value(return_type)?;
             }

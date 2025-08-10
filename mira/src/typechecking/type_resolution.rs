@@ -4,6 +4,7 @@ use std::{
 };
 
 use mira_errors::Diagnostics;
+use mira_spans::ArenaList;
 
 use crate::{
     lang_items::LangItemAnnotation,
@@ -13,8 +14,11 @@ use crate::{
 };
 
 use super::{
-    expression::TypedLiteral, resolve_import, types::Type, TypecheckedFunctionContract,
-    TypecheckingContext, TypecheckingErrorDiagnosticsExt, TypedGeneric, TypedStatic, TypedTrait,
+    expression::TypedLiteral,
+    resolve_import,
+    types::{default_types, TyKind},
+    TypecheckedFunctionContract, TypecheckingContext, TypecheckingErrorDiagnosticsExt,
+    TypedGeneric, TypedStatic, TypedTrait,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -256,11 +260,11 @@ impl<'arena> TypecheckingContext<'arena> {
                     .zip(args)
                     .all(|((_, typ_a), (_, typ_b))| *typ_a == *typ_b)
                 {
-                    let expected = args.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>();
+                    let expected = args.iter().map(|(_, v)| *v).collect::<Vec<_>>();
                     let found = function_contract
                         .arguments
                         .iter()
-                        .map(|(_, v)| v.clone())
+                        .map(|(_, v)| *v)
                         .collect::<Vec<_>>();
                     errors.add_mismatching_arguments(function_contract.span, expected, found);
                     with_errs = true;
@@ -269,8 +273,8 @@ impl<'arena> TypecheckingContext<'arena> {
                 if *return_type != function_contract.return_type {
                     errors.add_mismatching_return_type(
                         function_contract.span,
-                        return_type.clone(),
-                        function_contract.return_type.clone(),
+                        *return_type,
+                        function_contract.return_type,
                     );
                     with_errs = true
                 }
@@ -304,20 +308,20 @@ impl<'arena> TypecheckingContext<'arena> {
             )
         {
             let contract = &mut function_writer[fn_id].0;
-            if let Type::PrimitiveSelf(num_references) = contract.return_type {
-                contract.return_type = Type::Struct {
+            if let TyKind::PrimitiveSelf(num_references) = **contract.return_type {
+                contract.return_type = self.ctx.intern_ty(TyKind::Struct {
                     struct_id: struct_key.cast(),
                     name: struct_reader[struct_key.cast()].name,
                     num_references,
-                }
+                })
             }
             for t in contract.arguments.iter_mut() {
-                if let Type::PrimitiveSelf(num_references) = t.1 {
-                    t.1 = Type::Struct {
+                if let TyKind::PrimitiveSelf(num_references) = **t.1 {
+                    t.1 = self.ctx.intern_ty(TyKind::Struct {
                         struct_id: struct_key.cast(),
                         name: struct_reader[struct_key.cast()].name,
                         num_references,
-                    }
+                    })
                 }
             }
         }
@@ -366,7 +370,7 @@ impl<'arena> TypecheckingContext<'arena> {
             generics.push(TypedGeneric {
                 name: generic.name,
                 sized: generic.sized,
-                bounds,
+                bounds: ArenaList::new(self.ctx.arena(), &bounds),
             });
         }
         let mut resolved_function_contract = TypecheckedFunctionContract {
@@ -375,7 +379,7 @@ impl<'arena> TypecheckingContext<'arena> {
             span: writer[function_id].0.span,
             annotations: std::mem::take(&mut writer[function_id].0.annotations),
             arguments: Vec::new(),
-            return_type: Type::PrimitiveNever,
+            return_type: default_types::never,
             generics,
         };
         drop(writer);
@@ -432,7 +436,7 @@ impl<'arena> TypecheckingContext<'arena> {
             span: writer[ext_function_id].0.span,
             annotations: std::mem::take(&mut writer[ext_function_id].0.annotations),
             arguments: Vec::new(),
-            return_type: Type::PrimitiveNever,
+            return_type: default_types::never,
             generics: Vec::new(),
         };
         drop(writer);

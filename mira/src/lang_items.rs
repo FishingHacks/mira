@@ -3,12 +3,14 @@ use std::fmt::{Debug, Display, Write};
 
 use crate::context::SharedContext;
 use crate::store::StoreKey;
-use crate::typechecking::{TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct};
+use crate::typechecking::{
+    default_types, Ty, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
+};
 use crate::{
     annotations::{Annotation, AnnotationReceiver, Annotations},
     error::{FunctionList, ParsingError},
     tokenstream::TokenStream,
-    typechecking::{Type, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
+    typechecking::{TyKind, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
 };
 use mira_macros::ErrorData;
 use mira_spans::{interner::Symbol, Span};
@@ -58,18 +60,18 @@ struct LangItemTrait<'arena> {
 }
 struct LangItemStruct<'arena> {
     funcs: Vec<(Symbol<'arena>, LangItemFunction<'arena>)>,
-    fields: Vec<(Symbol<'arena>, Type<'arena>)>,
+    fields: Vec<(Symbol<'arena>, Ty<'arena>)>,
     traits: Vec<StoreKey<TypedTrait<'arena>>>,
     generics: Vec<(bool, Vec<StoreKey<TypedTrait<'arena>>>)>,
 }
 
 struct LangItemFunction<'arena> {
-    args: Vec<Type<'arena>>,
-    return_type: Type<'arena>,
+    args: Vec<Ty<'arena>>,
+    return_type: Ty<'arena>,
 }
 
 impl<'arena> LangItemFunction<'arena> {
-    pub fn new(args: Vec<Type<'arena>>, return_type: Type<'arena>) -> Self {
+    pub fn new(args: Vec<Ty<'arena>>, return_type: Ty<'arena>) -> Self {
         Self { args, return_type }
     }
 }
@@ -241,7 +243,7 @@ pub enum LangItemError<'arena> {
     #[error("Struct lang-item `{langitem}` is missing field `{name}` of type `{ty}`")]
     StructMissingElement {
         name: Symbol<'arena>,
-        ty: Type<'arena>,
+        ty: Ty<'arena>,
         langitem: &'static str,
     },
     #[error(
@@ -249,8 +251,8 @@ pub enum LangItemError<'arena> {
     )]
     StructMismatchingField {
         name: Symbol<'arena>,
-        expected: Type<'arena>,
-        found: Type<'arena>,
+        expected: Ty<'arena>,
+        found: Ty<'arena>,
         langitem: &'static str,
     },
     #[error("Struct lang-item `{langitem}`'s field `{name}` is not expected to be there")]
@@ -275,29 +277,29 @@ pub enum LangItemError<'arena> {
     },
     #[error("Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(expected), FunctionList(found))]
     TraitMismatchingArguments {
-        expected: Vec<Type<'arena>>,
-        found: Vec<Type<'arena>>,
+        expected: Vec<Ty<'arena>>,
+        found: Vec<Ty<'arena>>,
         function: Symbol<'arena>,
         lang_item: &'static str,
     },
     #[error("Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}")]
     TraitMismatchingReturnType {
-        expected: Type<'arena>,
-        found: Type<'arena>,
+        expected: Ty<'arena>,
+        found: Ty<'arena>,
         function: Symbol<'arena>,
         lang_item: &'static str,
     },
     #[error("Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(expected), FunctionList(found))]
     StructMismatchingArguments {
-        expected: Vec<Type<'arena>>,
-        found: Vec<Type<'arena>>,
+        expected: Vec<Ty<'arena>>,
+        found: Vec<Ty<'arena>>,
         function: Symbol<'arena>,
         lang_item: &'static str,
     },
     #[error("Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}")]
     StructMismatchingReturnType {
-        expected: Type<'arena>,
-        found: Type<'arena>,
+        expected: Ty<'arena>,
+        found: Ty<'arena>,
         function: Symbol<'arena>,
         lang_item: &'static str,
     },
@@ -334,14 +336,14 @@ pub enum LangItemError<'arena> {
         FunctionList(found)
     )]
     MismatchingArguments {
-        expected: Vec<Type<'arena>>,
-        found: Vec<Type<'arena>>,
+        expected: Vec<Ty<'arena>>,
+        found: Vec<Ty<'arena>>,
         lang_item: &'static str,
     },
     #[error("Function lang-item `{lang_item}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}")]
     MismatchingReturnType {
-        expected: Type<'arena>,
-        found: Type<'arena>,
+        expected: Ty<'arena>,
+        found: Ty<'arena>,
         lang_item: &'static str,
     },
     #[error("Trait lang-item `{lang_item}` has an unexpected function `{function}`")]
@@ -369,7 +371,7 @@ macro_rules! check_langitem {
     };
     ($lang_item:ident: Static; $self:ident $reader:ident $errors:ident $context:ident) => {
         if let Some(static_id) = $self.$lang_item {
-            $self.$lang_item(|arr| does_static_match(arr, &$reader[static_id].type_, stringify!($lang_item), $errors, $context));
+            $self.$lang_item(|arr| does_static_match(arr, $reader[static_id].type_, stringify!($lang_item), $errors, $context));
         }
     };
     ($lang_item:ident: Struct; $self:ident $reader:ident $errors:ident $context:ident) => {
@@ -501,26 +503,26 @@ impl<'arena> LangItems<'arena> {
                 (
                     self.ctx.intern_str("alloc"),
                     LangItemFunction::new(
-                        vec![Type::PrimitiveSelf(1), Type::PrimitiveUSize(0)],
-                        Type::PrimitiveVoid(1),
+                        vec![default_types::self_ref, default_types::usize],
+                        default_types::void_ref,
                     ),
                 ),
                 (
                     self.ctx.intern_str("free"),
                     LangItemFunction::new(
-                        vec![Type::PrimitiveSelf(1), Type::PrimitiveVoid(1)],
-                        Type::PrimitiveVoid(0),
+                        vec![default_types::self_ref, default_types::void_ref],
+                        default_types::void,
                     ),
                 ),
                 (
                     self.ctx.intern_str("realloc"),
                     LangItemFunction::new(
                         vec![
-                            Type::PrimitiveSelf(1),
-                            Type::PrimitiveVoid(1),
-                            Type::PrimitiveUSize(0),
+                            default_types::self_ref,
+                            default_types::void_ref,
+                            default_types::usize,
                         ],
-                        Type::PrimitiveVoid(1),
+                        default_types::void_ref,
                     ),
                 ),
             ],
@@ -547,7 +549,7 @@ impl<'arena> LangItems<'arena> {
         LangItemTrait {
             funcs: vec![(
                 self.ctx.intern_str("clone"),
-                LangItemFunction::new(vec![Type::PrimitiveSelf(1)], Type::PrimitiveSelf(0)),
+                LangItemFunction::new(vec![default_types::self_ref], default_types::self_),
             )],
         }
     }
@@ -587,11 +589,7 @@ fn does_function_match<'arena>(
     let num_errs = errors.len();
 
     if func_a.return_type != func_b.return_type {
-        errors.add_mismatching_return_type(
-            func_a.return_type.clone(),
-            func_b.return_type.clone(),
-            lang_item,
-        );
+        errors.add_mismatching_return_type(func_a.return_type, func_b.return_type, lang_item);
     }
 
     if !func_a
@@ -620,7 +618,7 @@ fn does_struct_match<'arena>(
     for (i, bounds) in structure_a.generics.iter().enumerate() {
         match structure_b.generics.get(i) {
             Some(generic) => {
-                if bounds.1 != generic.bounds {
+                if *bounds.1 != *generic.bounds {
                     let expected = bounds
                         .1
                         .iter()
@@ -676,13 +674,13 @@ fn does_struct_match<'arena>(
             Some((_, other_type)) => {
                 errors.add_struct_mismatching_field(
                     *element_name,
-                    element_type.clone(),
-                    other_type.clone(),
+                    *element_type,
+                    *other_type,
                     lang_item,
                 );
             }
             None => {
-                errors.add_struct_missing_element(*element_name, element_type.clone(), lang_item);
+                errors.add_struct_missing_element(*element_name, *element_type, lang_item);
             }
         }
     }
@@ -713,8 +711,8 @@ fn does_struct_match<'arena>(
 
         if func_impl.return_type != func.return_type {
             errors.add_struct_mismatching_return_type(
-                func.return_type.clone(),
-                func_impl.return_type.clone(),
+                func.return_type,
+                func_impl.return_type,
                 *fn_name,
                 lang_item,
             );
@@ -741,14 +739,14 @@ fn does_struct_match<'arena>(
 
 fn does_static_match<'arena>(
     traits: &[StoreKey<TypedTrait<'arena>>],
-    typ: &Type<'arena>,
+    typ: Ty<'arena>,
     lang_item: &'static str,
     errors: &mut Diagnostics<'arena>,
     context: &TypecheckingContext<'arena>,
 ) -> bool {
     let trait_reader = context.traits.read();
-    match typ {
-        Type::DynType { trait_refs, .. } => {
+    match &**typ {
+        TyKind::DynType { trait_refs, .. } => {
             let mut matches = true;
             for trait_id in traits.iter().copied() {
                 if !trait_refs.iter().any(|(v, _)| *v == trait_id) {
@@ -761,7 +759,7 @@ fn does_static_match<'arena>(
             }
             matches
         }
-        Type::Struct { struct_id, .. } => {
+        TyKind::Struct { struct_id, .. } => {
             let struct_traits = &context.structs.read()[*struct_id].trait_impl;
             let mut matches = true;
             for trait_id in traits {
@@ -804,8 +802,8 @@ fn does_trait_match<'arena>(
         if func_a.return_type != *func_return_b {
             traits_match = false;
             errors.add_trait_mismatching_return_type(
-                func_a.return_type.clone(),
-                func_return_b.clone(),
+                func_a.return_type,
+                *func_return_b,
                 *func_name,
                 lang_item,
             );
