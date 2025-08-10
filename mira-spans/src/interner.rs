@@ -28,7 +28,7 @@ macro_rules! interner {
             fn eq(&self, other: &$internee<'a>) -> bool {
                 #[cfg(debug_assertions)]
                 if self.0 == other.0 && !std::ptr::eq(self.0, other.0) {
-                    println!("pointer lies: {:?} {:?} {:p} {:p}", self.0, other.0, self.0, other.0)
+                    println!("pointer lies: {:?} {:?} {:p} {:p} (did you maybe forget to add a default value or made the default value or the default values slice `const` instead of `static`?)", self.0, other.0, self.0, other.0)
                 }
                 std::ptr::eq(self.0, other.0)
             }
