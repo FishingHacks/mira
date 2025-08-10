@@ -1061,7 +1061,7 @@ mod test {
     use std::{collections::HashMap, path::Path};
 
     use crate::context::GlobalContext;
-    use mira_spans::{interner::SymbolInterner, Arena};
+    use mira_spans::Arena;
 
     use super::*;
 
@@ -1109,11 +1109,13 @@ mod test {
         (tokenizer.tokens, errs)
     }
 
-    fn assert_token_eq(src: &str, expected_tokens: &[(TokenType, Option<Literal>)]) {
-        let arena = Arena::new();
-        let ctx = GlobalContext::new(&arena);
+    fn assert_token_eq(
+        src: &str,
+        expected_tokens: &[(TokenType, Option<Literal>)],
+        ctx: SharedContext,
+    ) {
         let eof_token = (TokenType::Eof, None);
-        let (tokens, errs) = get_tokens(ctx.share(), src);
+        let (tokens, errs) = get_tokens(ctx, src);
         println!("{tokens:?}");
         assert_eq!(errs.len(), 0, "unexpected errors: {errs:?}");
         assert_eq!(tokens.len(), expected_tokens.len() + 1 /* eof token */);
@@ -1149,17 +1151,17 @@ mod test {
     }
 
     macro_rules! tok {
-        ($interner:expr, IdentifierLiteral, $lit:ident) => {
+        ($ctx:expr, IdentifierLiteral, $lit:ident) => {
             (
                 TokenType::IdentifierLiteral,
-                Some(Literal::String($interner.intern(stringify!($lit)))),
+                Some(Literal::String($ctx.intern_str(stringify!($lit)))),
             )
         };
         ($ty:ident) => {
             (TokenType::$ty, None)
         };
-        ($interner:expr, $ty: ident, $lit:ident($val:expr)) => {
-            (TokenType::$ty, Some(Literal::$lit($interner.intern($val))))
+        ($ctx:expr, $ty: ident, $lit:ident($val:expr)) => {
+            (TokenType::$ty, Some(Literal::$lit($ctx.intern_str($val))))
         };
         ($ty: ident, $lit:ident($val:expr, _)) => {
             (TokenType::$ty, Some(Literal::$lit($val, NumberType::None)))
@@ -1175,7 +1177,8 @@ mod test {
     #[test]
     fn test_strings() {
         let arena = Arena::new();
-        let mut interner = SymbolInterner::new(&arena);
+        let ctx = GlobalContext::new(&arena);
+        let ctx = ctx.share();
         assert_token_eq(
             r#"
 "a b c";
@@ -1183,13 +1186,14 @@ mod test {
 "a\t\3";
             "#,
             &[
-                tok!(interner, StringLiteral, String("a b c")),
+                tok!(ctx, StringLiteral, String("a b c")),
                 tok!(Semicolon),
-                tok!(interner, StringLiteral, String("a\n\n\\t")),
+                tok!(ctx, StringLiteral, String("a\n\n\\t")),
                 tok!(Semicolon),
-                tok!(interner, StringLiteral, String("a\t3")),
+                tok!(ctx, StringLiteral, String("a\t3")),
                 tok!(Semicolon),
             ],
+            ctx,
         );
 
         match_errs!("\"a\nb\nc\";"; TokenizationError::UnclosedString { loc: _ }, TokenizationError::UnclosedString { loc: _ });
@@ -1198,21 +1202,27 @@ mod test {
     #[test]
     fn test_idents() {
         let arena = Arena::new();
-        let mut interner = SymbolInterner::new(&arena);
+        let ctx = GlobalContext::new(&arena);
+        let ctx = ctx.share();
         assert_token_eq(
             "jkhdfgkjhdf",
-            &[tok!(interner, IdentifierLiteral, jkhdfgkjhdf)],
+            &[tok!(ctx, IdentifierLiteral, jkhdfgkjhdf)],
+            ctx,
         );
-        assert_token_eq("_Zn3Meow", &[tok!(interner, IdentifierLiteral, _Zn3Meow)]);
+        assert_token_eq("_Zn3Meow", &[tok!(ctx, IdentifierLiteral, _Zn3Meow)], ctx);
         assert_token_eq(
             "_3$5#12_mow",
-            &[tok!(interner, IdentifierLiteral, String("_3$5#12_mow"))],
+            &[tok!(ctx, IdentifierLiteral, String("_3$5#12_mow"))],
+            ctx,
         );
         match_errs!("1289hjdsjhfgdfg_meow"; TokenizationError::InvalidNumberType(_));
     }
 
     #[test]
     fn test_numbers() {
+        let arena = Arena::new();
+        let ctx = GlobalContext::new(&arena);
+        let ctx = ctx.share();
         assert_token_eq(
             "12; -23; 23.9; -29.3; 0x1; -0x1;",
             &[
@@ -1229,6 +1239,7 @@ mod test {
                 tok!(SIntLiteral, SInt(-0x1, _)),
                 tok!(Semicolon),
             ],
+            ctx,
         );
 
         assert_token_eq(
@@ -1240,6 +1251,7 @@ mod test {
                 tok!(SIntLiteral, SInt(-1, _)),
                 tok!(FloatLiteral, Float(0.2, _)),
             ],
+            ctx,
         );
 
         assert_token_eq(
@@ -1249,6 +1261,7 @@ mod test {
                 tok!(Semicolon),
                 tok!(SIntLiteral, SInt(-(0b101), _)),
             ],
+            ctx,
         );
 
         assert_token_eq(
@@ -1260,6 +1273,7 @@ mod test {
                 tok!(SIntLiteral, SInt(-0b10, _)),
                 tok!(FloatLiteral, Float(0.1, _)),
             ],
+            ctx,
         );
 
         assert_token_eq(
@@ -1269,6 +1283,7 @@ mod test {
                 tok!(Semicolon),
                 tok!(SIntLiteral, SInt(-0o42, _)),
             ],
+            ctx,
         );
 
         assert_token_eq(
@@ -1280,6 +1295,7 @@ mod test {
                 tok!(SIntLiteral, SInt(-0o5, _)),
                 tok!(FloatLiteral, Float(0.76, _)),
             ],
+            ctx,
         );
     }
 }

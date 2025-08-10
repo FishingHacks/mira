@@ -10,9 +10,10 @@ use parking_lot::Mutex;
 
 use crate::{arena::Arena, span::SpanData};
 
+#[macro_export]
 macro_rules! interner {
     ($interner: ident, $internee: ident, $ty: ty, |$arena:ident, $value:ident| $blk: expr $(, $default_values:expr)?) => {
-        #[derive(Clone, Copy, PartialEq, Eq)]
+        #[derive(Clone, Copy, Eq)]
         pub struct $internee<'arena>(&'arena $ty);
 
         impl Hash for $internee<'_> {
@@ -26,6 +27,15 @@ macro_rules! interner {
 
             fn deref(&self) -> &Self::Target {
                 &self.0
+            }
+        }
+
+        impl<'a> PartialEq<$internee<'a>> for $internee<'a> {
+            fn eq(&self, other: &$internee<'a>) -> bool {
+                if self.0 == other.0 && !std::ptr::eq(self.0, other.0) {
+                    println!("pointer lies: {:p} {:p}", self.0, other.0)
+                }
+                std::ptr::eq(self.0, other.0)
             }
         }
 
@@ -83,6 +93,7 @@ macro_rules! interner {
         }
     };
 }
+#[macro_export]
 macro_rules! extra_traits {
     (for $internee:ident impl $($trait:ident),* $(,)?) => {
         $(extra_traits!(internal $trait $internee);)*
@@ -193,6 +204,10 @@ mod test {
         let meow2 = interner.intern("meow");
         let purr2 = interner.intern("purr");
 
+        assert_eq!(abcd1, abcd2);
+        assert_eq!(abcd2, abcd3);
+        assert_eq!(meow1, meow2);
+        assert_eq!(purr1, purr2);
         assert_eq!(addr(abcd1), addr(abcd2));
         assert_eq!(addr(abcd2), addr(abcd3));
         assert_eq!(addr(meow1), addr(meow2));

@@ -1,4 +1,5 @@
 mod arena;
+#[macro_use]
 pub mod interner;
 mod span;
 mod symbol;
