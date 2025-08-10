@@ -23,6 +23,7 @@ pub enum AnnotationReceiver {
     If,
     While,
     For,
+    Module,
 }
 
 impl Display for AnnotationReceiver {
@@ -38,6 +39,7 @@ impl Display for AnnotationReceiver {
             AnnotationReceiver::If => f.write_str("if statement"),
             AnnotationReceiver::While => f.write_str("while statement"),
             AnnotationReceiver::For => f.write_str("for statement"),
+            AnnotationReceiver::Module => f.write_str("module"),
         }
     }
 }

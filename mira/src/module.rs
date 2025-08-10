@@ -2,7 +2,6 @@ use parking_lot::RwLock;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
-    path::Path,
     sync::Arc,
 };
 
@@ -16,7 +15,7 @@ use crate::{
     },
     store::{Store, StoreKey},
 };
-use mira_spans::{Ident, PackageId, Span};
+use mira_spans::{Ident, PackageId, SourceFile, Span};
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum ModuleScopeValue<'arena> {
@@ -113,9 +112,7 @@ pub struct Module<'arena> {
     pub scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
     pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
     pub exports: HashSet<Ident<'arena>>,
-    pub package: PackageId,
-    pub path: Arc<Path>,
-    pub root: Arc<Path>,
+    pub file: Arc<SourceFile>,
     pub assembly: Vec<(Span<'arena>, String)>,
 }
 
@@ -133,16 +130,12 @@ impl<'arena> Module<'arena> {
     pub fn new(
         imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
         exports: HashSet<Ident<'arena>>,
-        package: PackageId,
-        path: Arc<Path>,
-        root: Arc<Path>,
+        file: Arc<SourceFile>,
     ) -> Self {
         Self {
             imports,
             exports,
-            path,
-            root,
-            package,
+            file,
             scope: HashMap::new(),
             assembly: Vec::new(),
         }

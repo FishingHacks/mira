@@ -14,7 +14,7 @@ use crate::{
     threadpool::ThreadPool,
     tokenizer::Tokenizer,
 };
-use mira_spans::{PackageId, SourceFile};
+use mira_spans::SourceFile;
 
 use super::print_progress_bar;
 
@@ -28,7 +28,6 @@ fn parse_single<'arena>(
     parsing_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
     module_context: Arc<ModuleContext<'arena>>,
     key: StoreKey<Module<'arena>>,
-    package: PackageId,
 ) {
     // ┌──────────────┐
     // │ Tokenization │
@@ -84,9 +83,7 @@ fn parse_single<'arena>(
     let mut module = Module::new(
         current_parser.imports,
         current_parser.exports,
-        package,
-        current_parser.file.path.clone(),
-        current_parser.file.package_root.clone(),
+        current_parser.file,
     );
     if let Err(errs) = module.push_all(statements, key, &module_context) {
         errors
@@ -178,7 +175,6 @@ pub fn parse_all<'arena>(
                 _parsing_queue,
                 _module_context,
                 key,
-                package,
             );
         });
 

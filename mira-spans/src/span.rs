@@ -556,8 +556,15 @@ impl SourceMap {
         file
     }
 
+    pub fn load_path(&self, path: &Path) -> io::Result<Arc<str>> {
+        if let Some(f) = self.files.read().iter().find(|v| &*v.path == path) {
+            return Ok(f.source.clone());
+        }
+        self.file_loader.read_file(path).map(Into::into)
+    }
+
     pub fn load_file(&self, path: Arc<Path>, package: PackageId) -> io::Result<Arc<SourceFile>> {
-        let source = self.file_loader.read_file(&path)?.into();
+        let source = self.load_path(&path)?;
         Ok(self.new_file(path, package, source))
     }
 
@@ -593,7 +600,7 @@ impl SourceMap {
         root_file_path: Arc<Path>,
         dependencies: HashMap<Arc<str>, PackageId>,
     ) -> io::Result<(Arc<Package>, Arc<SourceFile>)> {
-        let source = self.file_loader.read_file(&root_file_path)?.into();
+        let source = self.load_path(&root_file_path)?;
         Ok(self.add_package(root, root_file_path, source, dependencies))
     }
 

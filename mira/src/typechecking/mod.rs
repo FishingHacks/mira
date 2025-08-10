@@ -319,8 +319,8 @@ impl<'arena> TypecheckingContext<'arena> {
                 TypecheckedModule {
                     scope,
                     exports: module_reader[key].exports.clone(),
-                    path: module_reader[key].path.clone(),
-                    root: module_reader[key].root.clone(),
+                    path: module_reader[key].file.path.clone(),
+                    root: module_reader[key].file.package_root.clone(),
                     assembly: module_reader[key].assembly.clone(),
                 },
             );
@@ -828,7 +828,7 @@ fn resolve_import<'arena>(
     }
 
     let module_reader = context.modules.read();
-    let package = module_reader[current_module].package;
+    let package = module_reader[current_module].file.package;
     let thing;
     if &*import[0] == "crate" {
         thing = ModuleScopeValue::Module(context.packages[&package]);
