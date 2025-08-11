@@ -26,12 +26,6 @@ impl Hash for Ident<'_> {
     }
 }
 
-impl<'arena> Borrow<str> for Ident<'arena> {
-    fn borrow(&self) -> &'arena str {
-        *self.symbol
-    }
-}
-
 impl<'arena> Borrow<Symbol<'arena>> for Ident<'arena> {
     fn borrow(&self) -> &Symbol<'arena> {
         &self.symbol

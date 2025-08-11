@@ -1,7 +1,7 @@
-use crate::print_str;
-use crate::print_char;
-use crate::print_newline;
-use crate::intrinsics::get_metadata;
+use pkg::print_str;
+use pkg::print_char;
+use pkg::print_newline;
+use pkg::intrinsics::get_metadata;
 
 pub fn print_u64(val: u64) {
     if (val == 0) {

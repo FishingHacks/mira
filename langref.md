@@ -2,29 +2,19 @@
 
 # Mira standard library
 
-The [mira standard library](./std_docs.md) has its own documentation. This will not describe the standard library, but could potentially use it in some cases.
+The [mira standard library](./std_docs.md) has its own documentation. This will not describe the standard library, but uses it in some examples.
 
 # Hello World
 
 ```rs
-use "std"::print_str_newline;
-
-pub fn main(argc: usize, argv: &&u8) {
-    print_str_newline("Hello, World!");
+pub fn main() {
+    "Hello, World!".println();
 }
 ```
 
 ```
 $ mirac compile -r ./hello.mr
 ```
-
-If you have used rust before, this syntax should feel pretty familiar. Note however that unlike in rust, *references* don't have mutability or lifetimes and are more like *c-style pointers*.
-
-You also include paths using strings, not identifiers, due to not having a `mod <module>;` syntax. Rather you can use `use "./file";`.
-
-The use keyword also allows for importing multiple exported items using the familiar `"file"::{a, b, c, ...}` syntax. If you want to just include the module, you can use `"file" as <name>`.
-
-Also note that most primitive types (all integers, bools and strings) have a `.print` and `.println` function, `"Hello, World!".println();` would've had the same output.
 
 # Comments
 
@@ -185,11 +175,11 @@ struct MyStruct {
     fn get_x(self: &Self) -> i32 = self.x;
     fn get_y(self: &Self) -> i32 = self.y;
     fn debug(self: &Self) {
-        print_str("MyStruct { x: ");
-        print_i32(self.get_x());
-        print_str(", y: ");
-        print_i32(self.get_y());
-        print_str(" }\n");
+        "MyStruct { x: ".print();
+        self.get_x().print();
+        ", y: ".print();
+        self.get_y().print();
+        " }".println();
     }
 }
 ```
@@ -201,10 +191,10 @@ Blocks are a container to keep variables and the like in. Variables defined in b
 ```rs
 let x = 12;
 {
-    let x = 13; // note that here x is *redeclared* with the let keyword. An assignment would still assign to the x outside of the scope. This is called shadowing.
-    print_usize(x); // prints 13
+    let x = 13usize; // note that here x is *redeclared* with the let keyword. An assignment would still assign to the x outside of the scope. This is called shadowing.
+    x.print(); // prints 13
 }
-print_usize(x); // prints 12
+x.print(); // prints 12
 ```
 
 # While loops
@@ -215,7 +205,7 @@ A while loop is a very basic loop construct, accepting an expression of type `bo
 fn main(argc: usize, argv: &&u8) {
     let i = 0;
     while (i < argc) {
-        print_str("Argument :3");
+        "Argument :3".println();
         i += 1;
     }
 }
@@ -227,13 +217,13 @@ If is a very basic control flow operation. It accepts a condition and a statemen
 
 ```rs
 fn main(argc: usize, argv: &&u8) {
-    if (argc == 0) print_str_newline("Got no arguments");
-    else if (argc == 1) print_str_newline("Got 1 argument");
-    else if (argc == 2) print_str_newline("Got 2 arguments");
-    else if (argc == 3) print_str_newline("Got 3 arguments");
-    else if (argc == 4) print_str_newline("Got 4 arguments");
-    else if (argc == 5) print_str_newline("Got 5 arguments");
-    else print_str_newline("Got >5 arguments");
+    if (argc == 0) "Got no arguments".println();
+    else if (argc == 1) "Got 1 argument".println();
+    else if (argc == 2) "Got 2 arguments".println();
+    else if (argc == 3) "Got 3 arguments".println();
+    else if (argc == 4) "Got 4 arguments".println();
+    else if (argc == 5) "Got 5 arguments".println();
+    else "Got >5 arguments".println();
 
     if (argc == 0) panic("no args found");
 }
@@ -243,8 +233,10 @@ fn main(argc: usize, argv: &&u8) {
 
 Functions are a unit of behavior. They contain code that will execute when calling them to perform a specific operation. They are introduced using the `fn` keyword, after which their name and generics follow (note: generics are not supported yet). Then come the arguments and finally the return type and either a block or an equal character and a statement that will be returned.
 
+**NOTE: Generics for functions are not supported yet**
+
 ```rs
-// This will not compile
+// note: generics aren't support yet
 fn len<T>(value: &[T]) -> usize = std::intrinsics::metadata(value);
 
 // if the return value is not specified, it's implied to be void. These functions also don't need a return at the end and the statement can be omitted from the return.
@@ -264,21 +256,55 @@ extern fn dlopen(filename: &u8, flags: i32);
 Casts can be done using the as keyword: `<value> as <type>`. There are a number of casts:
 
 - `&str`    -> `&[u8]`   (any pointer)
-- `&str`    -> `&u8`
+- `&str`    -> `&u8`     (any pointer)
 - `&T`      -> `&[T; 1]` (any pointer)
 - `&T`      -> `&dyn _`
 - `&[T; N]` -> `&[T]`
 - `&[T]`    -> `&T`
-- `&void`   -> `&T`         SPECIAL CAST: the reference count of void and T need to be >0, but not the same. You can cast `&void` to `&&i32`.
-- `&T`      -> `&void`      SPECIAL CAST: the reference count of void and T need to be >0, but not the same. You can cast `&&i32` to `&void`.
+- `&void`   -> `&T`       (any pointer)
+- `&T`      -> `&void`    (any pointer)
 - `&void`   -> `usize`
 - `usize`   -> `&void`
-- `fn(_)`   -> `&void`
+- `fn(_)`   -> `&void`    (any pointer)
 
 Note: The suffix (any pointer) means that it does not matter if the value is references as it is a bitcast (e.g. for &T to &[T;1], the size of T == the size of [T;1]. That means that you can do that conversion with &&T to &&[T; 1] as well). This essentially just means that the type you're casting to is the same as the current one with the difference that they're expressed differently in the typesystem.
 
 Alongside this, you can also cast any number to any other number and booleans to u8 and u8 to booleans. Casts will generally be bitcasts for sizes of the same types, truncate in case the new type is smaller, sign extend in case the new type is larger and the original signed and zero extend in case the new type is larger and the original type is unsigned.
 This means that `-1i8 as u8` would result in `255`, not `0`
+
+# Modules
+
+Modules in mira are seperate files, and have to be declare in the "parent" module. Declaration of modules is done by insering `mod <modname>;`.
+The file of the module will live in `<parent module name>/<modname>.mr` or `<parent module name>/<modname>/mod.mr`. This means that `mod mira;` in `src/main.mr` will check `src/mira.mr` and then `src/mira/mod.mr`.
+
+Declaring a module will also automatically put it in scope, meaning if you do `mod mira;`, you can then import things from it through use, for example `use mira::lexer;`.
+In order for other modules to be able to access the module, you have to declare it as public, exposing it under it's name in your module.
+E.g., `pub mod lexer;` in src/mira.mr can be imported from `src/main.mr` through `use mira::lexer;` or in `src/encoder.mr` through `use pkg::mira::lexer;`.
+Note the `pkg`: This is a special module that is available in every module and points to the root module of the package.
+
+Importing dependency is exactly like importing a module, except that all dependencies are implicitly available to each file.
+For example, it is possible to import the `panic` function from the standard library using `use std::panic;`.
+
+Just like modules, it is also possible to declare imports as public, exposing them at the current module. This gives the ability to expose items from child modules, without exposing them directly:
+
+```rs
+src/main.mr
+mod mira;
+
+fn main() {
+    // the `print` function in src/mira/main.mr
+    mira::print();
+}
+
+src/mira.mr
+mod main;
+pub use main::print;
+
+src/mira/main.mr
+pub fn print() {
+    "Heyo".print();
+}
+```
 
 # Assembly
 

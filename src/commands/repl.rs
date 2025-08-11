@@ -1,5 +1,6 @@
 use crate::editor::{get_path, run_editor};
 use crate::repl::Repl;
+use std::time::Instant;
 use std::{
     error::Error,
     io::{ErrorKind, Write},
@@ -230,7 +231,9 @@ fn parse_opts(args: &str) -> Vec<String> {
 fn compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     let _ = std::fs::remove_file("/tmp/mira_executable");
     let _ = std::fs::remove_file("/tmp/mira_object.o");
+    let now = Instant::now();
     _compile_run(rest, repl, run);
+    println!("Compilation took {:?}", now.elapsed());
     let _ = std::fs::remove_file("/tmp/mira_executable");
     let _ = std::fs::remove_file("/tmp/mira_object.o");
 }

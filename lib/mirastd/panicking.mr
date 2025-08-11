@@ -1,6 +1,6 @@
-use crate::print_u64_hex;
-use crate::cstrlen;
-use crate::os::write;
+use pkg::print_u64_hex;
+use pkg::cstrlen;
+use pkg::os::write;
 
 struct unw_cursor { inner: [u64; 127] }
 struct unw_context { inner: [u64; 121] }

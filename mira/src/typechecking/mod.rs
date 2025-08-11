@@ -24,7 +24,10 @@ use crate::{
     parser::{Trait, TypeRef},
     store::{AssociatedStore, Store, StoreKey},
 };
-use mira_spans::{ArenaList, Ident, Span, interner::Symbol};
+use mira_spans::{
+    ArenaList, Ident, Span,
+    interner::{Symbol, symbols},
+};
 
 mod error;
 pub mod expression;
@@ -181,7 +184,9 @@ impl<'arena> TypecheckingContext<'arena> {
         let main_package = ctx.source_map().main_package();
         let module = module_ctx.packages[&main_package];
         let module = &self.modules.read()[module];
-        let Some(ModuleScopeValue::Function(main_fn)) = module.scope.get("main") else {
+        let Some(ModuleScopeValue::Function(main_fn)) =
+            module.scope.get(&symbols::DefaultIdents::main)
+        else {
             return Err(TypecheckingError::MainFuncNotFound(module.path.clone()));
         };
         let func = &self.functions.read()[main_fn.cast()].0;
@@ -852,7 +857,7 @@ fn resolve_import<'arena>(
     let module_reader = context.modules.read();
     let package = module_reader[current_module].file.package;
     let thing;
-    if &*import[0] == "crate" {
+    if &*import[0] == "pkg" {
         thing = ModuleScopeValue::Module(context.packages[&package]);
     } else if let Some(value) = module_reader[current_module].scope.get(&import[0].symbol()) {
         thing = *value;

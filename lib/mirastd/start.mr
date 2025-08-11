@@ -1,5 +1,5 @@
-use crate::os::exit;
-use crate::intrinsics::call_main;
+use pkg::os::exit;
+use pkg::intrinsics::call_main;
 
 @callconv(naked)
 extern fn _start() {

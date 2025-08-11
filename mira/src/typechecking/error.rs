@@ -5,13 +5,13 @@ use crate::{
     parser::{Path, PathWithoutGenerics},
 };
 use mira_macros::ErrorData;
-use mira_spans::{interner::Symbol, Span};
+use mira_spans::{Span, interner::Symbol};
 
 use super::{ScopeKind, Ty};
 
 #[derive(Clone, Debug, ErrorData)]
 pub enum TypecheckingError<'arena> {
-    #[error("Main function has wrong type")]
+    #[error("No main function defined")]
     #[note("consider adding a main function to `{}`", _0.display())]
     #[note("main function signature: `pub fn main() {{ }}`")]
     MainFuncNotFound(Arc<std::path::Path>),
@@ -99,7 +99,9 @@ pub enum TypecheckingError<'arena> {
     #[error("Cannot infer the array's item type.")]
     #[note("Try using `[] as [<type>;0]`")]
     CannotInferArrayType(#[primary_label("cannot infer type")] Span<'arena>),
-    #[error("Function `{_1}` of type `{_2}` is not a method as it doesn't have the signature (Self, ...) or (&Self, ...)")]
+    #[error(
+        "Function `{_1}` of type `{_2}` is not a method as it doesn't have the signature (Self, ...) or (&Self, ...)"
+    )]
     NonMemberFunction(
         #[primary_label("Cannot find method `{_1}`")] Span<'arena>,
         Symbol<'arena>,

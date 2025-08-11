@@ -1,3 +1,0 @@
-fn main(argc: usize, argv: &&u8) {
-    "Hello, World".println();
-}
