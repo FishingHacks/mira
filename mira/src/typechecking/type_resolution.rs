@@ -16,7 +16,7 @@ use crate::{
 use super::{
     expression::TypedLiteral,
     resolve_import,
-    types::{default_types, TyKind},
+    types::{default_types, with_refcount, TyKind},
     TypecheckedFunctionContract, TypecheckingContext, TypecheckingErrorDiagnosticsExt,
     TypedGeneric, TypedStatic, TypedTrait,
 };
@@ -307,21 +307,20 @@ impl<'arena> TypecheckingContext<'arena> {
                     .copied(),
             )
         {
+            let self_ty = self.ctx.intern_ty(TyKind::Struct {
+                struct_id: struct_key.cast(),
+                name: struct_reader[struct_key.cast()].name,
+            });
+
             let contract = &mut function_writer[fn_id].0;
-            if let TyKind::PrimitiveSelf(num_references) = **contract.return_type {
-                contract.return_type = self.ctx.intern_ty(TyKind::Struct {
-                    struct_id: struct_key.cast(),
-                    name: struct_reader[struct_key.cast()].name,
-                    num_references,
-                })
+            let (refcount, ty) = contract.return_type.remove_refs();
+            if ty == default_types::self_ {
+                contract.return_type = with_refcount(self.ctx, self_ty, refcount);
             }
             for t in contract.arguments.iter_mut() {
-                if let TyKind::PrimitiveSelf(num_references) = **t.1 {
-                    t.1 = self.ctx.intern_ty(TyKind::Struct {
-                        struct_id: struct_key.cast(),
-                        name: struct_reader[struct_key.cast()].name,
-                        num_references,
-                    })
+                let (refcount, ty) = t.1.remove_refs();
+                if ty == default_types::self_ {
+                    t.1 = with_refcount(self.ctx, self_ty, refcount);
                 }
             }
         }

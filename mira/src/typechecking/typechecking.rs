@@ -13,12 +13,11 @@ use mira_errors::{Diagnostic, Diagnostics};
 use mira_spans::{ArenaList, Ident, Span};
 
 use super::{
-    default_types,
+    TypecheckedModule, TypecheckingContext, TypecheckingError, TypecheckingErrorDiagnosticsExt,
+    TypedExternalFunction, TypedFunction, TypedStatic, TypedTrait, default_types,
     expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
     intrinsics::IntrinsicAnnotation,
-    types::{FunctionType, Ty, TyKind, TypeSuggestion},
-    TypecheckedModule, TypecheckingContext, TypecheckingError, TypecheckingErrorDiagnosticsExt,
-    TypedExternalFunction, TypedFunction, TypedStatic, TypedTrait,
+    types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
 };
 
 pub type ScopeValueId = usize;
@@ -378,7 +377,7 @@ fn typecheck_statement<'arena>(
             let Ok((condition_ty, cond)) = condition_result else {
                 return Err(());
             };
-            if condition_ty != TyKind::PrimitiveBool(0) {
+            if condition_ty != default_types::bool {
                 errs.add_mismatching_type(*span, default_types::bool, condition_ty);
             }
             let mut always_exits = body_result?;
@@ -662,7 +661,6 @@ fn typecheck_expression<'arena>(
                 Ok((
                     ctx.intern_ty(TyKind::SizedArray {
                         typ,
-                        num_references: 0,
                         number_elements: *amount,
                     }),
                     TypedLiteral::ArrayInit(typ, Box::new(lit), *amount),
@@ -698,7 +696,6 @@ fn typecheck_expression<'arena>(
                 }
                 let arr_typ = ctx.intern_ty(TyKind::SizedArray {
                     typ,
-                    num_references: 0,
                     number_elements: vec.len(),
                 });
                 Ok((arr_typ, TypedLiteral::Array(typ, elements)))
@@ -726,7 +723,6 @@ fn typecheck_expression<'arena>(
                 Ok((
                     ctx.intern_ty(TyKind::Tuple {
                         elements: ctx.intern_tylist(&element_types),
-                        num_references: 0,
                     }),
                     TypedLiteral::Tuple(elements),
                 ))
@@ -781,7 +777,6 @@ fn typecheck_expression<'arena>(
                     ctx.intern_ty(TyKind::Struct {
                         struct_id,
                         name: structure.name,
-                        num_references: 0,
                     }),
                     TypedLiteral::Struct(struct_id, elements),
                 ))
@@ -845,7 +840,6 @@ fn typecheck_expression<'arena>(
                     ctx.intern_ty(TyKind::Struct {
                         struct_id: struct_id.cast(),
                         name: structure.name,
-                        num_references: 0,
                     }),
                     TypedLiteral::Struct(struct_id.cast(), elements),
                 ))
@@ -908,21 +902,16 @@ fn typecheck_expression<'arena>(
                             }
                             generic_types.push(ty);
                         }
-                        for ty in arguments
+                        for argty in arguments
                             .iter_mut()
                             .chain(std::iter::once(&mut return_type))
                         {
-                            if let TyKind::Generic {
-                                generic_id,
-                                num_references,
-                                ..
-                            } = &***ty
-                            {
-                                let generic_typ_refcount =
-                                    generic_types[*generic_id as usize].refcount();
-                                *ty = ctx.intern_ty(
-                                    TyKind::clone(&generic_types[*generic_id as usize])
-                                        .with_num_refs(*num_references + generic_typ_refcount),
+                            let (refcount, ty) = argty.remove_refs();
+                            if let TyKind::Generic { generic_id, .. } = **ty {
+                                *argty = with_refcount(
+                                    ctx,
+                                    generic_types[generic_id as usize],
+                                    refcount,
                                 );
                             }
                         }
@@ -940,7 +929,7 @@ fn typecheck_expression<'arena>(
                             Some(intrinsic) => TypedLiteral::Intrinsic(intrinsic, generic_types),
                             None => TypedLiteral::Function(id.cast(), generic_types),
                         };
-                        Ok((ctx.intern_ty(TyKind::Function(function_ty, 0)), literal))
+                        Ok((ctx.intern_ty(TyKind::Function(function_ty)), literal))
                     }
                     ModuleScopeValue::ExternalFunction(id) => {
                         let reader = &context.external_functions.read()[id.cast()];
@@ -951,7 +940,7 @@ fn typecheck_expression<'arena>(
                             ),
                         };
                         Ok((
-                            ctx.intern_ty(TyKind::Function(function_typ, 0)),
+                            ctx.intern_ty(TyKind::Function(function_typ)),
                             TypedLiteral::ExternalFunction(id.cast()),
                         ))
                     }
@@ -980,7 +969,7 @@ fn typecheck_expression<'arena>(
                         .intern_tylist(&func.arguments.iter().map(|(_, v)| *v).collect::<Vec<_>>()),
                 };
                 Ok((
-                    ctx.intern_ty(TyKind::Function(fn_typ, 0)),
+                    ctx.intern_ty(TyKind::Function(fn_typ)),
                     TypedLiteral::Function(fn_id.cast(), vec![]),
                 ))
             }
@@ -1070,10 +1059,7 @@ fn typecheck_expression<'arena>(
                 }
                 UnaryOp::BitwiseNot => Err(TypecheckingError::CannotBNot(*loc, typ).to_error()),
                 UnaryOp::Dereference => match typ.deref() {
-                    Some(ty) => {
-                        let ty = ctx.intern_ty(ty);
-                        tc_res!(unary scope, exprs; Dereference(*loc, right_side, ty))
-                    }
+                    Some(ty) => tc_res!(unary scope, exprs; Dereference(*loc, right_side, ty)),
                     None => Err(TypecheckingError::CannotDeref(*loc, typ).to_error()),
                 },
                 UnaryOp::Reference => unreachable!(),
@@ -1229,7 +1215,7 @@ fn typecheck_expression<'arena>(
             } else {
                 false
             };
-            let TyKind::Function(function_type, _) = &**typ else {
+            let TyKind::Function(function_type) = &**typ.without_ref() else {
                 return Err(TypecheckingError::TypeIsNotAFunction {
                     location: identifier.span(),
                 }
@@ -1358,7 +1344,6 @@ fn typecheck_expression<'arena>(
                     )
                 }
             };
-            let typ_lhs = ctx.intern_ty(typ_lhs);
             let (typ_rhs, rhs) = typecheck_expression(
                 context,
                 module,
@@ -1433,21 +1418,19 @@ fn typecheck_cast<'arena>(
     }
     let ctx = context.ctx;
 
-    match (&**typ, &**new_typ) {
+    let (ref_self, ty) = typ.remove_refs();
+    let (ref_other, new_ty) = new_typ.remove_refs();
+    match (&**ty, &**new_ty) {
         // &str -> &[u8]
-        (
-            TyKind::PrimitiveStr(ref_self),
-            TyKind::UnsizedArray {
-                typ,
-                num_references: ref_other,
-            },
-        ) if ref_self == ref_other && *typ == default_types::u8 => {
+        (TyKind::PrimitiveStr, TyKind::UnsizedArray { typ })
+            if ref_self == ref_other && ref_self > 0 && *typ == default_types::u8 =>
+        {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::Alias(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // &str -> &u8
-        (TyKind::PrimitiveStr(1), TyKind::PrimitiveU8(1)) => {
+        (TyKind::PrimitiveStr, TyKind::PrimitiveU8) if ref_self == 1 && ref_other == 1 => {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::StripMetadata(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
@@ -1457,27 +1440,22 @@ fn typecheck_cast<'arena>(
             _,
             TyKind::SizedArray {
                 typ: typ_other,
-                num_references: ref_other,
                 number_elements: 1,
             },
-        ) if *ref_other > 0
-            && typ.refcount() >= *ref_other
-            && *typ_other == TyKind::clone(&typ).with_num_refs(typ.refcount() - *ref_other) =>
+        ) if ref_other > 0
+            && ref_self >= ref_other
+            && *typ_other == typ.with_num_refs(ref_self - ref_other, ctx) =>
         {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::Alias(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // &T -> &dyn _
-        (
-            v,
-            TyKind::DynType {
-                trait_refs,
-                num_references: 1,
-            },
-        ) if v.is_thin_ptr() && v.refcount() > 0 => {
+        (_, TyKind::DynType { trait_refs })
+            if ref_self > 0 && ref_other == 1 && typ.is_thin_ptr() =>
+        {
             let traits = trait_refs.iter().map(|v| v.0).collect::<Vec<_>>();
-            let ty = v.clone().deref().expect("v should have a refcount of > 0");
+            let ty = typ.deref().expect("v should have a refcount of > 0");
             if !ty.implements(&traits, context) {
                 let trait_reader = context.traits.read();
                 return Err(TypecheckingError::MismatchingTraits(
@@ -1495,7 +1473,7 @@ fn typecheck_cast<'arena>(
                 loc,
                 id,
                 lhs,
-                (ctx.intern_ty(ty), traits),
+                (ty, traits),
             ));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
@@ -1503,14 +1481,10 @@ fn typecheck_cast<'arena>(
         (
             TyKind::SizedArray {
                 typ,
-                num_references: 1,
                 number_elements,
             },
-            TyKind::UnsizedArray {
-                typ: typ_other,
-                num_references: 1,
-            },
-        ) if typ == typ_other => {
+            TyKind::UnsizedArray { typ: typ_other },
+        ) if typ == typ_other && ref_self == 1 && ref_other == 1 => {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::MakeUnsizedSlice(
                 loc,
@@ -1521,85 +1495,79 @@ fn typecheck_cast<'arena>(
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // (&[T] -> &T)
-        (
-            TyKind::UnsizedArray {
-                typ,
-                num_references: 1,
-            },
-            _,
-        ) if new_typ.refcount() == 1 && new_typ == (***typ).clone().take_ref() => {
+        (TyKind::UnsizedArray { typ }, _)
+            if ref_self == 1 && ref_other == 1 && **new_typ == TyKind::Ref(*typ) =>
+        {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::StripMetadata(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // &&void -> &void
-        (TyKind::PrimitiveVoid(ref_self), TyKind::PrimitiveVoid(1)) if *ref_self > 0 => {
+        (TyKind::PrimitiveVoid, TyKind::PrimitiveVoid) if ref_self > 0 && ref_other == 1 => {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // &void -> usize
-        (TyKind::PrimitiveVoid(1), TyKind::PrimitiveUSize(0)) => {
+        (TyKind::PrimitiveVoid, TyKind::PrimitiveUSize) if ref_self == 1 && ref_other == 0 => {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::PtrToInt(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // usize -> &void
-        (TyKind::PrimitiveUSize(0), TyKind::PrimitiveVoid(1)) => {
+        (TyKind::PrimitiveUSize, TyKind::PrimitiveVoid) if ref_self == 0 && ref_other == 1 => {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::IntToPtr(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // fn to &void
-        (TyKind::Function(_, 0), TyKind::PrimitiveVoid(1)) => {
+        (TyKind::Function(_), TyKind::PrimitiveVoid) if ref_self == 0 && ref_other == 1 => {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // &T to &void
-        (_, TyKind::PrimitiveVoid(ref_other))
-            if *ref_other > 0 && typ.refcount() > 0 && typ.is_thin_ptr() =>
-        {
+        (_, TyKind::PrimitiveVoid) if ref_other > 0 && ref_self > 0 && typ.is_thin_ptr() => {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         // &void to &T
-        (TyKind::PrimitiveVoid(ref_self), _) if *ref_self > 0 && new_typ.is_thin_ptr() => {
+        (TyKind::PrimitiveVoid, _) if ref_self > 0 && ref_other > 0 && new_typ.is_thin_ptr() => {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::Bitcast(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
         }
         (
-            TyKind::PrimitiveU8(0) | TyKind::PrimitiveBool(0),
-            TyKind::PrimitiveU8(0) | TyKind::PrimitiveBool(0),
+            TyKind::PrimitiveU8 | TyKind::PrimitiveBool,
+            TyKind::PrimitiveU8 | TyKind::PrimitiveBool,
         )
         | (
-            TyKind::PrimitiveU8(0)
-            | TyKind::PrimitiveU16(0)
-            | TyKind::PrimitiveU32(0)
-            | TyKind::PrimitiveU64(0)
-            | TyKind::PrimitiveUSize(0)
-            | TyKind::PrimitiveI8(0)
-            | TyKind::PrimitiveI16(0)
-            | TyKind::PrimitiveI32(0)
-            | TyKind::PrimitiveI64(0)
-            | TyKind::PrimitiveISize(0)
-            | TyKind::PrimitiveF32(0)
-            | TyKind::PrimitiveF64(0),
-            TyKind::PrimitiveU8(0)
-            | TyKind::PrimitiveU16(0)
-            | TyKind::PrimitiveU32(0)
-            | TyKind::PrimitiveU64(0)
-            | TyKind::PrimitiveUSize(0)
-            | TyKind::PrimitiveI8(0)
-            | TyKind::PrimitiveI16(0)
-            | TyKind::PrimitiveI32(0)
-            | TyKind::PrimitiveI64(0)
-            | TyKind::PrimitiveISize(0)
-            | TyKind::PrimitiveF32(0)
-            | TyKind::PrimitiveF64(0),
-        ) => {
+            TyKind::PrimitiveU8
+            | TyKind::PrimitiveU16
+            | TyKind::PrimitiveU32
+            | TyKind::PrimitiveU64
+            | TyKind::PrimitiveUSize
+            | TyKind::PrimitiveI8
+            | TyKind::PrimitiveI16
+            | TyKind::PrimitiveI32
+            | TyKind::PrimitiveI64
+            | TyKind::PrimitiveISize
+            | TyKind::PrimitiveF32
+            | TyKind::PrimitiveF64,
+            TyKind::PrimitiveU8
+            | TyKind::PrimitiveU16
+            | TyKind::PrimitiveU32
+            | TyKind::PrimitiveU64
+            | TyKind::PrimitiveUSize
+            | TyKind::PrimitiveI8
+            | TyKind::PrimitiveI16
+            | TyKind::PrimitiveI32
+            | TyKind::PrimitiveI64
+            | TyKind::PrimitiveISize
+            | TyKind::PrimitiveF32
+            | TyKind::PrimitiveF64,
+        ) if ref_self == 0 && ref_other == 0 => {
             let id = scope.push(new_typ);
             exprs.push(TypecheckedExpression::IntCast(loc, id, lhs));
             Ok((new_typ, TypedLiteral::Dynamic(id)))
@@ -1637,31 +1605,25 @@ fn typecheck_dyn_membercall<'arena>(
         return Err(TypecheckingError::CannotFindFunctionOnType(
             lhs_loc,
             ident.symbol(),
-            ctx.intern_ty(TyKind::DynType {
-                trait_refs,
-                num_references,
-            }),
+            ctx.intern_ty(TyKind::DynType { trait_refs }),
         )
         .to_error());
     };
     drop(trait_reader);
 
-    match &**arg_typs[0].1 {
-        TyKind::PrimitiveSelf(_) => {}
-        _ => {
-            return Err(TypecheckingError::InvalidDynTypeFunc(
-                lhs_loc,
-                ident.symbol(),
-                trait_name.symbol(),
-            )
-            .to_error())
-        }
+    if arg_typs[0].1.without_ref() != default_types::self_ {
+        return Err(TypecheckingError::InvalidDynTypeFunc(
+            lhs_loc,
+            ident.symbol(),
+            trait_name.symbol(),
+        )
+        .to_error());
     }
-    if matches!(**return_ty, TyKind::PrimitiveSelf(_))
+    if return_ty.without_ref() == default_types::self_
         || arg_typs
             .iter()
             .skip(1)
-            .any(|v| matches!(**v.1, TyKind::PrimitiveSelf(_)))
+            .any(|v| v.1.without_ref() == default_types::self_)
     {
         return Err(TypecheckingError::InvalidDynTypeFunc(
             lhs_loc,
@@ -1671,14 +1633,12 @@ fn typecheck_dyn_membercall<'arena>(
         .to_error());
     }
 
-    let mut typ = TyKind::DynType {
-        trait_refs,
-        num_references,
-    };
+    let ty = ctx.intern_ty(TyKind::DynType { trait_refs });
+    let mut ty = with_refcount(ctx, ty, num_references);
     let mut lhs = lhs;
-    while typ.refcount() > 1 {
-        typ = typ.deref().expect("dereferencing &_ should never fail");
-        let id = scope.push(ctx.intern_ty_ref(&typ));
+    while ty.refcount() > 1 {
+        ty = ty.deref().expect("dereferencing &_ should never fail");
+        let id = scope.push(ctx.intern_ty_ref(&ty));
         exprs.push(TypecheckedExpression::Dereference(lhs_loc, id, lhs));
         lhs = TypedLiteral::Dynamic(id);
     }
@@ -1708,7 +1668,7 @@ fn typecheck_dyn_membercall<'arena>(
         if ty != arg_typs[i + 1].1 {
             return Err(TypecheckingError::MismatchingType {
                 expected: arg_typs.remove(i + 1).1,
-                found: ctx.intern_ty(typ),
+                found: ty,
                 location: args[i].span(),
             }
             .to_error());
@@ -1739,11 +1699,9 @@ fn typecheck_membercall<'arena>(
 ) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     let (mut typ_lhs, mut typed_literal_lhs) =
         typecheck_take_ref(context, module, scope, lhs, exprs, TypeSuggestion::Unknown)?;
-    match &**typ_lhs {
-        TyKind::DynType {
-            trait_refs,
-            num_references,
-        } if *num_references > 0 => {
+    let lhs_refcount = typ_lhs.refcount();
+    match **typ_lhs.without_ref() {
+        TyKind::DynType { trait_refs } if lhs_refcount > 0 => {
             return typecheck_dyn_membercall(
                 context,
                 scope,
@@ -1753,8 +1711,8 @@ fn typecheck_membercall<'arena>(
                 args,
                 typed_literal_lhs,
                 lhs.span(),
-                *trait_refs,
-                *num_references,
+                trait_refs,
+                lhs_refcount,
             );
         }
         _ => (),
@@ -1764,31 +1722,30 @@ fn typecheck_membercall<'arena>(
     let langitem_reader = context.lang_items.read();
     let struct_reader = context.structs.read();
 
-    let struct_id = match &**typ_lhs {
+    let struct_id = match **typ_lhs.without_ref() {
+        TyKind::Ref(_) | TyKind::Generic { .. } | TyKind::PrimitiveSelf => unreachable!(),
         TyKind::UnsizedArray { .. }
         | TyKind::SizedArray { .. }
         | TyKind::Tuple { .. }
         | TyKind::DynType { .. }
-        | TyKind::Generic { .. }
         | TyKind::Function(..)
-        | TyKind::PrimitiveVoid(..)
-        | TyKind::PrimitiveSelf(..)
+        | TyKind::PrimitiveVoid
         | TyKind::PrimitiveNever => None,
-        TyKind::Struct { struct_id, .. } => Some(*struct_id),
-        TyKind::PrimitiveI8(_) => langitem_reader.i8,
-        TyKind::PrimitiveI16(_) => langitem_reader.i16,
-        TyKind::PrimitiveI32(_) => langitem_reader.i32,
-        TyKind::PrimitiveI64(_) => langitem_reader.i64,
-        TyKind::PrimitiveISize(_) => langitem_reader.isize,
-        TyKind::PrimitiveU8(_) => langitem_reader.u8,
-        TyKind::PrimitiveU16(_) => langitem_reader.u16,
-        TyKind::PrimitiveU32(_) => langitem_reader.u32,
-        TyKind::PrimitiveU64(_) => langitem_reader.u64,
-        TyKind::PrimitiveUSize(_) => langitem_reader.usize,
-        TyKind::PrimitiveF32(_) => langitem_reader.f32,
-        TyKind::PrimitiveF64(_) => langitem_reader.f64,
-        TyKind::PrimitiveStr(_) => langitem_reader.str,
-        TyKind::PrimitiveBool(_) => langitem_reader.bool,
+        TyKind::Struct { struct_id, .. } => Some(struct_id),
+        TyKind::PrimitiveI8 => langitem_reader.i8,
+        TyKind::PrimitiveI16 => langitem_reader.i16,
+        TyKind::PrimitiveI32 => langitem_reader.i32,
+        TyKind::PrimitiveI64 => langitem_reader.i64,
+        TyKind::PrimitiveISize => langitem_reader.isize,
+        TyKind::PrimitiveU8 => langitem_reader.u8,
+        TyKind::PrimitiveU16 => langitem_reader.u16,
+        TyKind::PrimitiveU32 => langitem_reader.u32,
+        TyKind::PrimitiveU64 => langitem_reader.u64,
+        TyKind::PrimitiveUSize => langitem_reader.usize,
+        TyKind::PrimitiveF32 => langitem_reader.f32,
+        TyKind::PrimitiveF64 => langitem_reader.f64,
+        TyKind::PrimitiveStr => langitem_reader.str,
+        TyKind::PrimitiveBool => langitem_reader.bool,
     };
     drop(langitem_reader);
     let structure = struct_id.map(|v| &struct_reader[v.cast()]);
@@ -1822,13 +1779,7 @@ fn typecheck_membercall<'arena>(
     };
 
     let function: &(_, _) = &function_reader[function_id];
-    if function
-        .0
-        .arguments
-        .first()
-        .map(|v| TyKind::clone(&v.1).without_ref())
-        != Some(TyKind::clone(&typ_lhs).without_ref())
-    {
+    if function.0.arguments.first().map(|v| v.1.without_ref()) != Some(typ_lhs.without_ref()) {
         return Err(
             TypecheckingError::NonMemberFunction(function.0.span, ident.symbol(), typ_lhs)
                 .to_error(),
@@ -1837,11 +1788,9 @@ fn typecheck_membercall<'arena>(
     let arg_refcount = function.0.arguments[0].1.refcount();
     while typ_lhs.refcount() != arg_refcount {
         if typ_lhs.refcount() > arg_refcount {
-            typ_lhs = context.ctx.intern_ty(
-                TyKind::clone(&typ_lhs)
-                    .deref()
-                    .expect("you should always be able to deref &_"),
-            );
+            typ_lhs = typ_lhs
+                .deref()
+                .expect("you should always be able to deref &_");
             let new_id = scope.push(typ_lhs);
             exprs.push(TypecheckedExpression::Dereference(
                 lhs.span(),
@@ -1858,7 +1807,7 @@ fn typecheck_membercall<'arena>(
                 lhs.span(),
                 context.ctx,
             );
-            typ_lhs = context.ctx.intern_ty(TyKind::clone(&typ_lhs).take_ref());
+            typ_lhs = typ_lhs.take_ref(context.ctx);
         }
     }
 
@@ -1936,8 +1885,7 @@ fn typecheck_take_ref<'arena>(
                 type_suggestion,
                 true,
             )?;
-            let typ = context.ctx.intern_ty(TyKind::clone(&typ).take_ref());
-            Ok((typ, expr))
+            Ok((typ.take_ref(context.ctx), expr))
         }
     }
 }
@@ -1973,11 +1921,9 @@ fn ref_resolve_indexing<'arena>(
             for element_name in index {
                 while typ_lhs.refcount() > 0 {
                     let old_typ_lhs = typ_lhs;
-                    typ_lhs = context.ctx.intern_ty(
-                        TyKind::clone(&typ_lhs)
-                            .deref()
-                            .expect("&_ should never fail to dereference"),
-                    );
+                    typ_lhs = typ_lhs
+                        .deref()
+                        .expect("&_ should never fail to dereference");
                     let id = scope.push(old_typ_lhs);
                     exprs.push(TypecheckedExpression::Dereference(
                         expression.span(),
@@ -1999,9 +1945,7 @@ fn ref_resolve_indexing<'arena>(
                         {
                             Some((idx, typ)) => {
                                 typ_lhs = *typ;
-                                let new_val = scope.push(
-                                    context.ctx.intern_ty(TyKind::clone(&typ_lhs).take_ref()),
-                                );
+                                let new_val = scope.push(typ_lhs.take_ref(context.ctx));
                                 exprs.push(TypecheckedExpression::Offset(
                                     *span,
                                     new_val,
@@ -2016,14 +1960,14 @@ fn ref_resolve_indexing<'arena>(
                                     typ_lhs,
                                     element_name.symbol(),
                                 )
-                                .to_error())
+                                .to_error());
                             }
                         }
                     }
                     _ => {
                         return Err(
                             TypecheckingError::AccessNonStructValue(*span, typ_lhs).to_error()
-                        )
+                        );
                     }
                 };
             }
@@ -2044,11 +1988,9 @@ fn ref_resolve_indexing<'arena>(
                 false,
             )?;
             while typ_lhs.refcount() > 0 {
-                typ_lhs = context.ctx.intern_ty(
-                    TyKind::clone(&typ_lhs)
-                        .deref()
-                        .expect("&_ should never fail to dereference"),
-                );
+                typ_lhs = typ_lhs
+                    .deref()
+                    .expect("&_ should never fail to dereference");
                 let id = scope.push(typ_lhs);
                 exprs.push(TypecheckedExpression::Dereference(
                     expression.span(),
@@ -2066,7 +2008,7 @@ fn ref_resolve_indexing<'arena>(
                     OffsetValue::Dynamic(_) => {
                         return Err(
                             TypecheckingError::TupleDynamicIndex(expression.span()).to_error()
-                        )
+                        );
                     }
                     OffsetValue::Static(idx) if idx >= elements.len() => {
                         return Err(TypecheckingError::TupleIndexOutOfBounds(
@@ -2074,18 +2016,18 @@ fn ref_resolve_indexing<'arena>(
                             elements.len(),
                             idx,
                         )
-                        .to_error())
+                        .to_error());
                     }
                     OffsetValue::Static(idx) => elements[idx],
                 },
                 _ => {
                     return Err(
                         TypecheckingError::IndexNonArrayElem(expression.span(), typ_lhs).to_error(),
-                    )
+                    );
                 }
             };
 
-            let id = scope.push(context.ctx.intern_ty(TyKind::clone(&typ).take_ref()));
+            let id = scope.push(typ.take_ref(context.ctx));
             exprs.push(TypecheckedExpression::Offset(
                 expression.span(),
                 id,
@@ -2105,17 +2047,14 @@ fn ref_resolve_indexing<'arena>(
             )?;
 
             if let TypeSuggestion::UnsizedArray(_) = type_suggestion {
-                if let TyKind::SizedArray {
-                    num_references: 1,
-                    number_elements,
-                    typ,
-                } = **typ
-                {
-                    let typ = context.ctx.intern_ty(TyKind::UnsizedArray {
+                if let TyKind::Ref(ty) = **typ
+                    && let TyKind::SizedArray {
+                        number_elements,
                         typ,
-                        num_references: 0,
-                    });
-                    let id = scope.push(context.ctx.intern_ty(TyKind::clone(&typ).take_ref()));
+                    } = **ty
+                {
+                    let typ = context.ctx.intern_ty(TyKind::UnsizedArray { typ });
+                    let id = scope.push(typ.take_ref(context.ctx));
                     exprs.push(TypecheckedExpression::MakeUnsizedSlice(
                         expression.span(),
                         id,
@@ -2128,11 +2067,8 @@ fn ref_resolve_indexing<'arena>(
 
             if typ.refcount() > 0 && !increase_ref {
                 return Ok((
-                    context.ctx.intern_ty(
-                        typ.clone()
-                            .deref()
-                            .expect("&_ should never fail to be dereferenced"),
-                    ),
+                    typ.deref()
+                        .expect("&_ should never fail to be dereferenced"),
                     typed_literal,
                 ));
             }
@@ -2142,7 +2078,6 @@ fn ref_resolve_indexing<'arena>(
                     TypeSuggestion::UnsizedArray(_),
                     TyKind::SizedArray {
                         typ,
-                        num_references: 0,
                         number_elements,
                     },
                 ) => {
@@ -2151,18 +2086,14 @@ fn ref_resolve_indexing<'arena>(
                         exprs,
                         context.ctx.intern_ty(TyKind::SizedArray {
                             typ: *typ,
-                            num_references: 0,
                             number_elements: *number_elements,
                         }),
                         typed_literal,
                         expression.span(),
                         context.ctx,
                     );
-                    let typ = context.ctx.intern_ty(TyKind::UnsizedArray {
-                        typ: *typ,
-                        num_references: 0,
-                    });
-                    let id = scope.push(context.ctx.intern_ty(TyKind::clone(&typ).take_ref()));
+                    let typ = context.ctx.intern_ty(TyKind::UnsizedArray { typ: *typ });
+                    let id = scope.push(typ.take_ref(context.ctx));
                     exprs.push(TypecheckedExpression::MakeUnsizedSlice(
                         expression.span(),
                         id,
@@ -2239,7 +2170,7 @@ fn make_reference<'arena>(
         }
     }
 
-    let new_id = scope.push(ctx.intern_ty(<TyKind<'_>>::clone(&typ).take_ref()));
+    let new_id = scope.push(typ.take_ref(ctx));
     expressions.push(TypecheckedExpression::Reference(loc, new_id, typed_literal));
     TypedLiteral::Dynamic(new_id)
 }
@@ -2282,7 +2213,7 @@ fn copy_resolve_indexing<'arena>(
                         OffsetValue::Dynamic(_) => {
                             return Err(
                                 TypecheckingError::TupleDynamicIndex(expression.span()).to_error()
-                            )
+                            );
                         }
                         OffsetValue::Static(v) if v >= elements.len() => {
                             return Err(TypecheckingError::TupleIndexOutOfBounds(
@@ -2290,7 +2221,7 @@ fn copy_resolve_indexing<'arena>(
                                 elements.len(),
                                 v,
                             )
-                            .to_error())
+                            .to_error());
                         }
                         OffsetValue::Static(v) => elements[v],
                     },
@@ -2314,8 +2245,7 @@ fn copy_resolve_indexing<'arena>(
                         }
                         let typed_lit_ref =
                             make_reference(scope, exprs, typ, lhs, expression.span(), ctx);
-                        let offset_id =
-                            scope.push(ctx.intern_ty(TyKind::clone(&new_typ).take_ref()));
+                        let offset_id = scope.push(new_typ.take_ref(ctx));
                         let new_id = scope.push(new_typ);
                         exprs.push(TypecheckedExpression::Offset(
                             expression.span(),
@@ -2336,11 +2266,7 @@ fn copy_resolve_indexing<'arena>(
                 let mut typ = typ;
                 let mut lhs = lhs;
                 while typ.refcount() > 1 {
-                    typ = ctx.intern_ty(
-                        typ.clone()
-                            .deref()
-                            .expect("dereferencing &_ should never fail"),
-                    );
+                    typ = typ.deref().expect("dereferencing &_ should never fail");
                     let new_id = scope.push(typ);
                     exprs.push(TypecheckedExpression::Dereference(
                         expression.span(),
@@ -2353,7 +2279,7 @@ fn copy_resolve_indexing<'arena>(
                     TyKind::UnsizedArray { typ, .. } | TyKind::SizedArray { typ, .. } => typ,
                     _ => unreachable!(),
                 };
-                let offset_id = scope.push(ctx.intern_ty(TyKind::clone(&ty).take_ref()));
+                let offset_id = scope.push(ty.take_ref(ctx));
                 let value_id = scope.push(ty);
                 exprs.push(TypecheckedExpression::Offset(
                     expression.span(),
@@ -2385,12 +2311,7 @@ fn copy_resolve_indexing<'arena>(
             for element_name in index {
                 let needs_deref = typ_lhs.refcount() > 0;
                 while typ_lhs.refcount() > 1 {
-                    typ_lhs = ctx.intern_ty(
-                        typ_lhs
-                            .clone()
-                            .deref()
-                            .expect("dereferencing &_ should never fail"),
-                    );
+                    typ_lhs = typ_lhs.deref().expect("dereferencing &_ should never fail");
                     let new_id = scope.push(typ_lhs);
                     exprs.push(TypecheckedExpression::Dereference(
                         expression.span(),
@@ -2416,17 +2337,17 @@ fn copy_resolve_indexing<'arena>(
                             None => {
                                 return Err(TypecheckingError::FieldNotFound(
                                     expression.span(),
-                                    ctx.intern_ty(TyKind::clone(&typ_lhs).without_ref()),
+                                    typ_lhs.without_ref(),
                                     element_name.symbol(),
                                 )
-                                .to_error())
+                                .to_error());
                             }
                         }
                     }
                     _ => {
                         return Err(
                             TypecheckingError::AccessNonStructValue(*span, typ_lhs).to_error()
-                        )
+                        );
                     }
                 };
                 if !needs_deref {
@@ -2442,7 +2363,7 @@ fn copy_resolve_indexing<'arena>(
                     ));
                     typed_literal_lhs = TypedLiteral::Dynamic(new_id);
                 } else {
-                    let offset_id = scope.push(ctx.intern_ty(TyKind::clone(&typ_lhs).take_ref()));
+                    let offset_id = scope.push(typ_lhs.take_ref(ctx));
                     let deref_id = scope.push(typ_lhs);
                     exprs.push(TypecheckedExpression::Offset(
                         *span,

@@ -13,6 +13,7 @@ use super::{
     mangling::{mangle_function, mangle_static, mangle_string, mangle_struct},
 };
 use inkwell::{
+    AddressSpace, OptimizationLevel,
     attributes::{Attribute, AttributeLoc},
     builder::{Builder, BuilderError},
     context::Context,
@@ -27,7 +28,6 @@ use inkwell::{
     },
     types::{BasicType, FloatType, IntType, PointerType, StructType},
     values::{FunctionValue, GlobalValue},
-    AddressSpace, OptimizationLevel,
 };
 
 use crate::{
@@ -37,14 +37,13 @@ use crate::{
         noinline::Noinline, section::SectionAnnotation,
     },
     store::{AssociatedStore, StoreKey},
-    target::{Target, NATIVE_TARGET},
+    target::{NATIVE_TARGET, Target},
     typechecking::{
-        default_types,
+        Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
+        TypedStruct, TypedTrait, default_types,
         expression::{TypecheckedExpression, TypedLiteral},
         intrinsics::IntrinsicAnnotation,
         typechecking::ScopeTypeMetadata,
-        Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
-        TypedStruct, TypedTrait,
     },
 };
 use mira_spans::interner::Symbol;
@@ -534,17 +533,19 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                 }
             }
             let vtable_ty = context.struct_type(&typs, false);
-            let mut field_values = vec![default_types
-                .isize
-                .const_int(
-                    ty.size_and_alignment(
-                        (default_types.isize.get_bit_width() / 8) as u64,
-                        &struct_reader,
+            let mut field_values = vec![
+                default_types
+                    .isize
+                    .const_int(
+                        ty.size_and_alignment(
+                            (default_types.isize.get_bit_width() / 8) as u64,
+                            &struct_reader,
+                        )
+                        .0,
+                        false,
                     )
-                    .0,
-                    false,
-                )
-                .into()];
+                    .into(),
+            ];
             for trait_id in traits.iter() {
                 match &**ty {
                     TyKind::Struct { struct_id, .. } => {
@@ -689,7 +690,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                 ptr,
                 scope,
                 contract.span,
-                arg,
+                *arg,
                 name.symbol(),
                 function_ctx.current_block,
                 contract.module_id,
@@ -707,7 +708,9 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         drop(function_reader);
         drop(ext_function_reader);
         let Some(insert_block) = function_ctx.builder.get_insert_block() else {
-            unreachable!("builder does not have a basic block to insert into even though it just built a function")
+            unreachable!(
+                "builder does not have a basic block to insert into even though it just built a function"
+            )
         };
         assert!(
             insert_block.get_terminator().is_some(),

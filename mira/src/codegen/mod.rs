@@ -7,11 +7,10 @@ use std::collections::HashMap;
 use crate::{
     store::StoreKey,
     typechecking::{
-        default_types,
+        Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedTrait, default_types,
         expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
         intrinsics::Intrinsic,
         typechecking::ScopeTypeMetadata,
-        Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedTrait,
     },
 };
 pub use inkwell::context::Context as InkwellContext;
@@ -21,6 +20,7 @@ pub use context::{CodegenConfig, CodegenContext, Optimizations};
 pub use error::CodegenError;
 pub use inkwell::support::LLVMString;
 use inkwell::{
+    FloatPredicate, IntPredicate,
     basic_block::BasicBlock,
     builder::{Builder, BuilderError},
     context::Context,
@@ -32,7 +32,6 @@ use inkwell::{
         BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, IntValue,
         PointerValue,
     },
-    FloatPredicate, IntPredicate,
 };
 
 mod context;
@@ -165,7 +164,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
         }
         if self.tc_scope[id].1.stack_allocated {
             let ptr = self._scope[id].into_pointer_value();
-            build_deref(ptr, &self.tc_scope[id].0, self, false)
+            build_deref(ptr, self.tc_scope[id].0, self, false)
                 .expect("failed to build a dereference for a stack allocated value")
         } else {
             self._scope[id]
@@ -194,19 +193,18 @@ impl<'ctx, 'arena> TyKind<'arena> {
         structs: &StructsStore<'ctx, 'arena>,
         ctx: &'ctx Context,
     ) -> BasicTypeEnum<'ctx> {
-        if self.refcount() > 0 {
-            if self.is_thin_ptr() {
-                return default_types.ptr.into();
-            } else {
-                return default_types.fat_ptr.into();
-            }
-        }
-
         match self {
+            TyKind::Ref(t) => {
+                if t.is_sized() {
+                    default_types.ptr.into()
+                } else {
+                    default_types.fat_ptr.into()
+                }
+            }
             TyKind::Generic { .. } => unreachable!("generics should be resolved by now"),
             TyKind::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
-            TyKind::PrimitiveStr(_) => panic!("llvm types must be sized, `str` is not"),
-            TyKind::PrimitiveSelf(_) => unreachable!("Self must be resolved at this point"),
+            TyKind::PrimitiveStr => panic!("llvm types must be sized, `str` is not"),
+            TyKind::PrimitiveSelf => unreachable!("Self must be resolved at this point"),
             TyKind::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
             TyKind::Struct { struct_id, .. } => structs[*struct_id].into(),
             TyKind::Tuple { elements, .. } => ctx
@@ -228,17 +226,17 @@ impl<'ctx, 'arena> TyKind<'arena> {
                 .into(),
             // our function types are always pointers because all function types are pointers in llvm
             TyKind::Function(..) => default_types.ptr.into(),
-            TyKind::PrimitiveNever | TyKind::PrimitiveVoid(_) => panic!(
+            TyKind::PrimitiveNever | TyKind::PrimitiveVoid => panic!(
                 "void and never should be ignored as llvm types outside of function return values"
             ),
-            TyKind::PrimitiveU8(_) | TyKind::PrimitiveI8(_) => default_types.i8.into(),
-            TyKind::PrimitiveU16(_) | TyKind::PrimitiveI16(_) => default_types.i16.into(),
-            TyKind::PrimitiveU32(_) | TyKind::PrimitiveI32(_) => default_types.i32.into(),
-            TyKind::PrimitiveU64(_) | TyKind::PrimitiveI64(_) => default_types.i64.into(),
-            TyKind::PrimitiveUSize(_) | TyKind::PrimitiveISize(_) => default_types.isize.into(),
-            TyKind::PrimitiveF32(_) => default_types.f32.into(),
-            TyKind::PrimitiveF64(_) => default_types.f64.into(),
-            TyKind::PrimitiveBool(_) => default_types.bool.into(),
+            TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => default_types.i8.into(),
+            TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => default_types.i16.into(),
+            TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => default_types.i32.into(),
+            TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => default_types.i64.into(),
+            TyKind::PrimitiveUSize | TyKind::PrimitiveISize => default_types.isize.into(),
+            TyKind::PrimitiveF32 => default_types.f32.into(),
+            TyKind::PrimitiveF64 => default_types.f64.into(),
+            TyKind::PrimitiveBool => default_types.bool.into(),
         }
     }
 
@@ -248,7 +246,7 @@ impl<'ctx, 'arena> TyKind<'arena> {
         structs: &StructsStore<'ctx, 'arena>,
         ctx: &'ctx Context,
     ) -> FunctionType<'ctx> {
-        let TyKind::Function(v, _) = self else {
+        let TyKind::Function(v) = self else {
             unreachable!("`self` is not a function")
         };
         let return_ty = v
@@ -571,23 +569,23 @@ impl<'ctx, 'arena> TypedLiteral<'arena> {
 macro_rules! f_s_u {
     ($ctx:expr, $typ: expr, $lhs: expr, $rhs: expr, $sint: ident($($sint_val:expr),*), $uint: ident($($uint_val:expr),*), $float: ident($($float_val:expr),*), $err:literal) => {
         match **$typ {
-            TyKind::PrimitiveI8(0)
-            | TyKind::PrimitiveI16(0)
-            | TyKind::PrimitiveI32(0)
-            | TyKind::PrimitiveI64(0)
-            | TyKind::PrimitiveISize(0) => $ctx
+            TyKind::PrimitiveI8
+            | TyKind::PrimitiveI16
+            | TyKind::PrimitiveI32
+            | TyKind::PrimitiveI64
+            | TyKind::PrimitiveISize => $ctx
                 .builder
                 .$sint($($sint_val,)* $lhs.into_int_value(), $rhs.into_int_value(), "")?
                 .into(),
-            TyKind::PrimitiveU8(0)
-            | TyKind::PrimitiveU16(0)
-            | TyKind::PrimitiveU32(0)
-            | TyKind::PrimitiveU64(0)
-            | TyKind::PrimitiveUSize(0) => $ctx
+            TyKind::PrimitiveU8
+            | TyKind::PrimitiveU16
+            | TyKind::PrimitiveU32
+            | TyKind::PrimitiveU64
+            | TyKind::PrimitiveUSize => $ctx
                 .builder
                 .$uint($($uint_val,)* $lhs.into_int_value(), $rhs.into_int_value(), "")?
                 .into(),
-            TyKind::PrimitiveF32(0) | TyKind::PrimitiveF64(0) => $ctx
+            TyKind::PrimitiveF32 | TyKind::PrimitiveF64 => $ctx
                 .builder
                 .$float($($float_val,)* $lhs.into_float_value(), $rhs.into_float_value(), "")?
                 .into(),
@@ -635,11 +633,11 @@ fn make_volatile(v: BasicValueEnum<'_>, volatile: bool) -> BasicValueEnum<'_> {
 
 fn build_deref<'ctx, 'arena>(
     left_side: PointerValue<'ctx>,
-    ty: &TyKind,
+    ty: Ty<'arena>,
     ctx: &FunctionCodegenContext<'ctx, 'arena, '_>,
     volatile: bool,
 ) -> Result<BasicValueEnum<'ctx>, BuilderError> {
-    if *ty == TyKind::PrimitiveVoid(0) || *ty == TyKind::PrimitiveNever {
+    if ty == default_types::void || ty == default_types::never {
         return Ok(TypedLiteral::Void.fn_ctx_to_basic_value(ctx));
     }
 
@@ -675,14 +673,14 @@ fn build_deref<'ctx, 'arena>(
         }
     }
 
-    match ty {
-        TyKind::Generic { .. } | TyKind::PrimitiveSelf(_) => {
+    match &**ty {
+        TyKind::Ref(_) | TyKind::PrimitiveNever | TyKind::PrimitiveVoid => unreachable!(),
+        TyKind::Generic { .. } | TyKind::PrimitiveSelf => {
             panic!("{ty:?} should be resolved by now")
         }
-        TyKind::DynType { .. } | TyKind::UnsizedArray { .. } | TyKind::PrimitiveStr(_) => {
+        TyKind::DynType { .. } | TyKind::UnsizedArray { .. } | TyKind::PrimitiveStr => {
             panic!("cannot dereference unsized type {ty:?}")
         }
-        TyKind::PrimitiveNever => unreachable!(),
         TyKind::Struct { struct_id, .. } => {
             let llvm_structure = ty
                 .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
@@ -693,7 +691,7 @@ fn build_deref<'ctx, 'arena>(
                 let offset_val =
                     ctx.builder
                         .build_struct_gep(llvm_structure, left_side, i as u32, "")?;
-                let element_val = build_deref(offset_val, &structure.elements[i].1, ctx, volatile)?;
+                let element_val = build_deref(offset_val, structure.elements[i].1, ctx, volatile)?;
                 value = ctx
                     .builder
                     .build_insert_value(value, element_val, i as u32, "")?
@@ -710,7 +708,7 @@ fn build_deref<'ctx, 'arena>(
                 let offset_val =
                     ctx.builder
                         .build_struct_gep(llvm_structure, left_side, i as u32, "")?;
-                let element_val = build_deref(offset_val, elem, ctx, volatile)?;
+                let element_val = build_deref(offset_val, *elem, ctx, volatile)?;
                 value = ctx
                     .builder
                     .build_insert_value(value, element_val, i as u32, "")?
@@ -746,20 +744,19 @@ fn build_deref<'ctx, 'arena>(
             Ok(value.into())
         }
         TyKind::Function(..)
-        | TyKind::PrimitiveVoid(_)
-        | TyKind::PrimitiveI8(_)
-        | TyKind::PrimitiveI16(_)
-        | TyKind::PrimitiveI32(_)
-        | TyKind::PrimitiveI64(_)
-        | TyKind::PrimitiveISize(_)
-        | TyKind::PrimitiveU8(_)
-        | TyKind::PrimitiveU16(_)
-        | TyKind::PrimitiveU32(_)
-        | TyKind::PrimitiveU64(_)
-        | TyKind::PrimitiveUSize(_)
-        | TyKind::PrimitiveF32(_)
-        | TyKind::PrimitiveF64(_)
-        | TyKind::PrimitiveBool(_) => Ok(make_volatile(
+        | TyKind::PrimitiveI8
+        | TyKind::PrimitiveI16
+        | TyKind::PrimitiveI32
+        | TyKind::PrimitiveI64
+        | TyKind::PrimitiveISize
+        | TyKind::PrimitiveU8
+        | TyKind::PrimitiveU16
+        | TyKind::PrimitiveU32
+        | TyKind::PrimitiveU64
+        | TyKind::PrimitiveUSize
+        | TyKind::PrimitiveF32
+        | TyKind::PrimitiveF64
+        | TyKind::PrimitiveBool => Ok(make_volatile(
             ctx.builder.build_load(
                 ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context),
                 left_side,
@@ -809,13 +806,14 @@ fn build_ptr_store<'ctx, 'arena>(
         }
     }
     match &**ty {
-        TyKind::Generic { .. } | TyKind::PrimitiveSelf(_) => {
+        TyKind::Ref(_) => unreachable!(),
+        TyKind::Generic { .. } | TyKind::PrimitiveSelf => {
             panic!("{ty:?} should be resolved by now")
         }
-        TyKind::UnsizedArray { .. } | TyKind::DynType { .. } | TyKind::PrimitiveStr(_) => {
+        TyKind::UnsizedArray { .. } | TyKind::DynType { .. } | TyKind::PrimitiveStr => {
             panic!("cannot store unsized type {ty:?}")
         }
-        TyKind::PrimitiveNever | TyKind::PrimitiveVoid(_) => (),
+        TyKind::PrimitiveNever | TyKind::PrimitiveVoid => (),
         TyKind::Struct { struct_id, .. } => {
             let structure = &ctx.tc_ctx.structs.read()[*struct_id];
             let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
@@ -867,19 +865,19 @@ fn build_ptr_store<'ctx, 'arena>(
             }
         }
         TyKind::Function(..)
-        | TyKind::PrimitiveI8(_)
-        | TyKind::PrimitiveI16(_)
-        | TyKind::PrimitiveI32(_)
-        | TyKind::PrimitiveI64(_)
-        | TyKind::PrimitiveISize(_)
-        | TyKind::PrimitiveU8(_)
-        | TyKind::PrimitiveU16(_)
-        | TyKind::PrimitiveU32(_)
-        | TyKind::PrimitiveU64(_)
-        | TyKind::PrimitiveUSize(_)
-        | TyKind::PrimitiveF32(_)
-        | TyKind::PrimitiveF64(_)
-        | TyKind::PrimitiveBool(_) => {
+        | TyKind::PrimitiveI8
+        | TyKind::PrimitiveI16
+        | TyKind::PrimitiveI32
+        | TyKind::PrimitiveI64
+        | TyKind::PrimitiveISize
+        | TyKind::PrimitiveU8
+        | TyKind::PrimitiveU16
+        | TyKind::PrimitiveU32
+        | TyKind::PrimitiveU64
+        | TyKind::PrimitiveUSize
+        | TyKind::PrimitiveF32
+        | TyKind::PrimitiveF64
+        | TyKind::PrimitiveBool => {
             ctx.builder
                 .build_store(left_side, right_side)?
                 .set_volatile(volatile)
@@ -949,7 +947,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     ptr,
                     scope,
                     *span,
-                    typ,
+                    *typ,
                     *name,
                     ctx.current_block,
                     module_id,
@@ -966,17 +964,19 @@ impl<'arena> TypecheckedExpression<'arena> {
                         .get_insert_block()
                         .expect("builder needs a basic block to codegen into");
                     if bb.get_terminator().is_some() {
-                        println!("[WARN]: Has a return even tho a terminating instruction was already generated");
+                        println!(
+                            "[WARN]: Has a return even tho a terminating instruction was already generated"
+                        );
                         return Ok(());
                     }
                     return ctx.builder.build_return(None).map(|_| ());
                 }
                 match typed_literal {
-                    TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == TyKind::PrimitiveVoid(0) => {
+                    TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == default_types::void => {
                         ctx.builder.build_return(None)?
                     }
                     TypedLiteral::Static(id)
-                        if ctx.tc_ctx.statics.read()[*id].type_ == TyKind::PrimitiveVoid(0) =>
+                        if ctx.tc_ctx.statics.read()[*id].type_ == default_types::void =>
                     {
                         ctx.builder.build_return(None)?
                     }
@@ -1166,7 +1166,11 @@ impl<'arena> TypecheckedExpression<'arena> {
                         return Ok(());
                     }
                     TypedLiteral::Static(id) => {
-                        let llvm_ty = ctx.tc_ctx.statics.read()[*id].type_.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
+                        let llvm_ty = ctx.tc_ctx.statics.read()[*id].type_.to_llvm_basic_type(
+                            &ctx.default_types,
+                            ctx.structs,
+                            ctx.context,
+                        );
                         let alignment = get_alignment(llvm_ty);
                         ctx.builder.build_memmove(
                             dst.fn_ctx_to_basic_value(ctx).into_pointer_value(),
@@ -1193,11 +1197,23 @@ impl<'arena> TypecheckedExpression<'arena> {
             }
             TypecheckedExpression::Call(_, dst, fn_ptr, args) => {
                 let (fn_ty, fn_ptr) = match fn_ptr {
-                    TypedLiteral::Dynamic(id) => (&ctx.tc_scope[*id].0, ctx.get_value(*id).into_pointer_value()),
-                    TypedLiteral::Static(id) => (&ctx.tc_ctx.statics.read()[*id].type_, ctx.statics[*id].as_pointer_value()),
-                    TypedLiteral::Function(..) => unreachable!("TypedLiteral::Function should have been turned into a DirectCall"),
-                    TypedLiteral::ExternalFunction(_) => unreachable!("TypedLiteral::ExternalFunction should have been turned into a DirectExternCall"),
-                    TypedLiteral::Intrinsic(..) => unreachable!("TypedLiteral::Intrinsic should have been turned into a IntrinsicCall"),
+                    TypedLiteral::Dynamic(id) => (
+                        &ctx.tc_scope[*id].0,
+                        ctx.get_value(*id).into_pointer_value(),
+                    ),
+                    TypedLiteral::Static(id) => (
+                        &ctx.tc_ctx.statics.read()[*id].type_,
+                        ctx.statics[*id].as_pointer_value(),
+                    ),
+                    TypedLiteral::Function(..) => unreachable!(
+                        "TypedLiteral::Function should have been turned into a DirectCall"
+                    ),
+                    TypedLiteral::ExternalFunction(_) => unreachable!(
+                        "TypedLiteral::ExternalFunction should have been turned into a DirectExternCall"
+                    ),
+                    TypedLiteral::Intrinsic(..) => unreachable!(
+                        "TypedLiteral::Intrinsic should have been turned into a IntrinsicCall"
+                    ),
                     _ => unreachable!("{fn_ptr:?} is not callable"),
                 };
                 let llvm_fn_ty =
@@ -1209,7 +1225,10 @@ impl<'arena> TypecheckedExpression<'arena> {
                         .iter()
                         .filter(|v| match v {
                             TypedLiteral::Void => false,
-                            TypedLiteral::Dynamic(id) => ctx.tc_scope[*id].0 != default_types::never && ctx.tc_scope[*id].0 != default_types::void,
+                            TypedLiteral::Dynamic(id) => {
+                                ctx.tc_scope[*id].0 != default_types::never
+                                    && ctx.tc_scope[*id].0 != default_types::void
+                            }
                             _ => true,
                         })
                         .map(|v| v.fn_ctx_to_basic_value(ctx).into())
@@ -1223,10 +1242,18 @@ impl<'arena> TypecheckedExpression<'arena> {
                 );
                 Ok(())
             }
-            TypecheckedExpression::DirectCall(.., generics) if !generics.is_empty() => panic!("functions shouldn't have generics (they should've been taken care of during monomorphization)"),
-            TypecheckedExpression::DirectExternCall(_, dst, func, args) => Self::codegen_directcall(ctx.external_functions[*func], *dst, args, ctx),
-            TypecheckedExpression::DirectCall(_, dst, func, args, _) => Self::codegen_directcall(ctx.functions[*func], *dst, args, ctx),
-            TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, args, generics) => Self::codegen_intrinsic(*dst, *intrinsic, args, generics, ctx),
+            TypecheckedExpression::DirectCall(.., generics) if !generics.is_empty() => panic!(
+                "functions shouldn't have generics (they should've been taken care of during monomorphization)"
+            ),
+            TypecheckedExpression::DirectExternCall(_, dst, func, args) => {
+                Self::codegen_directcall(ctx.external_functions[*func], *dst, args, ctx)
+            }
+            TypecheckedExpression::DirectCall(_, dst, func, args, _) => {
+                Self::codegen_directcall(ctx.functions[*func], *dst, args, ctx)
+            }
+            TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, args, generics) => {
+                Self::codegen_intrinsic(*dst, *intrinsic, args, generics, ctx)
+            }
             TypecheckedExpression::Pos(_, dst, src) => {
                 ctx.push_value(*dst, src.fn_ctx_to_basic_value(ctx));
                 Ok(())
@@ -1359,7 +1386,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
-                if typ.is_int_like() || *typ == TyKind::PrimitiveBool(0) {
+                if typ.is_int_like() || *typ == default_types::bool {
                     ctx.push_value(
                         *dst,
                         ctx.builder
@@ -1377,7 +1404,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 let lhs = lhs.fn_ctx_to_basic_value(ctx);
                 let rhs = rhs.fn_ctx_to_basic_value(ctx);
                 let typ = &ctx.tc_scope[*dst].0;
-                if typ.is_int_like() || *typ == TyKind::PrimitiveBool(0) {
+                if typ.is_int_like() || *typ == default_types::bool {
                     ctx.push_value(
                         *dst,
                         ctx.builder
@@ -1551,11 +1578,17 @@ impl<'arena> TypecheckedExpression<'arena> {
             }
             TypecheckedExpression::Reference(_, dst, rhs) => {
                 let value = match rhs {
-                    TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == TyKind::PrimitiveVoid(0) => ctx.default_types.ptr.const_zero().into(),
-                    TypedLiteral::Dynamic(id) if !ctx.tc_scope[*id].1.stack_allocated => panic!("_{id} is not stack allocated (even tho it should have been)"),
+                    TypedLiteral::Dynamic(id) if ctx.tc_scope[*id].0 == default_types::void => {
+                        ctx.default_types.ptr.const_zero().into()
+                    }
+                    TypedLiteral::Dynamic(id) if !ctx.tc_scope[*id].1.stack_allocated => {
+                        panic!("_{id} is not stack allocated (even tho it should have been)")
+                    }
                     TypedLiteral::Dynamic(id) => ctx.get_value_ptr(*id).into(),
                     TypedLiteral::Static(id) => ctx.statics[*id].as_basic_value_enum(),
-                    _ => panic!("Cannot take a reference to {rhs:?} (the typechecker should have put this into a stack-allocated dynamic)"),
+                    _ => panic!(
+                        "Cannot take a reference to {rhs:?} (the typechecker should have put this into a stack-allocated dynamic)"
+                    ),
                 };
                 ctx.push_value(*dst, value);
                 Ok(())
@@ -1596,7 +1629,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 }
                 let value = build_deref(
                     rhs.fn_ctx_to_basic_value(ctx).into_pointer_value(), // dst = *rhs
-                    &ctx.tc_scope[*dst].0, // we take the type of lhs as it expects the type of the
+                    ctx.tc_scope[*dst].0, // we take the type of lhs as it expects the type of the
                     // value *after* dereferencing as any pointer in llvm is represented as the
                     // same type, &i32 == &&u64 (`ptr`)
                     ctx,
@@ -1609,13 +1642,12 @@ impl<'arena> TypecheckedExpression<'arena> {
             // &[a] <- extractvalue 0 and then i64 n of that
             // &[a; n] <- i64 0 n (for getelementptr [a; n]) or i64 n (for getelementptr a)
             TypecheckedExpression::Offset(_, dst, src, offset) => {
-                let ty = src.to_type(&ctx.tc_scope, ctx.tc_ctx);
-                match ty.as_ref() {
-                    TyKind::Struct {
-                        struct_id,
-                        num_references: 1,
-                        ..
-                    } => {
+                let ty = src
+                    .to_type(&ctx.tc_scope, ctx.tc_ctx)
+                    .deref()
+                    .expect("non-pointer values cannot be offset");
+                match **ty {
+                    TyKind::Struct { struct_id, .. } => {
                         let offset = match offset {
                             OffsetValue::Dynamic(_) => unreachable!("dynamic struct offset"),
                             OffsetValue::Static(v) => {
@@ -1624,7 +1656,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         };
                         let value = unsafe {
                             ctx.builder.build_in_bounds_gep(
-                                ctx.structs[*struct_id],
+                                ctx.structs[struct_id],
                                 src.fn_ctx_to_basic_value(ctx).into_pointer_value(),
                                 &[ctx.default_types.isize.const_int(0, false), offset],
                                 "",
@@ -1633,9 +1665,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         ctx.push_value(*dst, value.into());
                         Ok(())
                     }
-                    TyKind::Tuple {
-                        num_references: 1, ..
-                    } => {
+                    TyKind::Tuple { .. } => {
                         let offset = match offset {
                             OffsetValue::Dynamic(_) => unreachable!("dynamic struct offset"),
                             OffsetValue::Static(v) => {
@@ -1653,11 +1683,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         ctx.push_value(*dst, value.into());
                         Ok(())
                     }
-                    TyKind::SizedArray {
-                        typ,
-                        num_references: 1,
-                        ..
-                    } => {
+                    TyKind::SizedArray { typ, .. } => {
                         let offset = match offset {
                             OffsetValue::Dynamic(id) => ctx.get_value(*id).into_int_value(),
                             OffsetValue::Static(v) => {
@@ -1679,11 +1705,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         ctx.push_value(*dst, value.into());
                         Ok(())
                     }
-                    TyKind::UnsizedArray {
-                        typ,
-                        num_references: 1,
-                        ..
-                    } => {
+                    TyKind::UnsizedArray { typ } => {
                         let offset = match offset {
                             OffsetValue::Dynamic(id) => ctx.get_value(*id).into_int_value(),
                             OffsetValue::Static(v) => {
@@ -1737,7 +1759,9 @@ impl<'arena> TypecheckedExpression<'arena> {
                         )?,
                     );
                 } else {
-                    panic!("offsetnonptr should never be used with a src element that is not an aggregate value")
+                    panic!(
+                        "offsetnonptr should never be used with a src element that is not an aggregate value"
+                    )
                 }
                 Ok(())
             }
@@ -1779,7 +1803,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     }))
                     .collect::<Vec<_>>();
                 let fn_ty = match &**ctx.tc_scope[*dst].0 {
-                    TyKind::PrimitiveNever | TyKind::PrimitiveVoid(0) => {
+                    TyKind::PrimitiveNever | TyKind::PrimitiveVoid => {
                         ctx.context.void_type().fn_type(&param_types, false)
                     }
                     v => v
@@ -1886,7 +1910,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         0,
                         "",
                     )?;
-                    build_deref(pointer_pointer, &ctx.tc_scope[*dst].0, ctx, false)?
+                    build_deref(pointer_pointer, ctx.tc_scope[*dst].0, ctx, false)?
                 } else {
                     ctx.builder
                         .build_extract_value(value.into_struct_value(), 0, "")?
@@ -1901,7 +1925,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 let dst_ty = &ctx.tc_scope[*dst].0;
                 let src_value = src.fn_ctx_to_basic_value(ctx);
                 // u8 -> bool
-                if src_ty == TyKind::PrimitiveU8(0) && *dst_ty == TyKind::PrimitiveBool(0) {
+                if src_ty == default_types::u8 && *dst_ty == default_types::bool {
                     let value = ctx.builder.build_int_truncate(
                         src_value.into_int_value(),
                         ctx.default_types.bool,
@@ -1911,7 +1935,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     return Ok(());
                 }
                 // bool -> u8
-                if src_ty == TyKind::PrimitiveBool(0) && *dst_ty == TyKind::PrimitiveU8(0) {
+                if src_ty == default_types::bool && *dst_ty == default_types::u8 {
                     let value = ctx.builder.build_int_z_extend(
                         src_value.into_int_value(),
                         ctx.default_types.i8,
@@ -1921,7 +1945,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     return Ok(());
                 }
                 // f32 -> f64
-                if src_ty == TyKind::PrimitiveF32(0) && *dst_ty == TyKind::PrimitiveF64(0) {
+                if src_ty == default_types::f32 && *dst_ty == default_types::f64 {
                     let value = ctx.builder.build_float_ext(
                         src_value.into_float_value(),
                         ctx.default_types.f64,
@@ -1931,7 +1955,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                     return Ok(());
                 }
                 // f64 -> f32
-                if src_ty == TyKind::PrimitiveBool(0) && *dst_ty == TyKind::PrimitiveU8(0) {
+                if src_ty == default_types::f64 && *dst_ty == default_types::f32 {
                     let value = ctx.builder.build_float_trunc(
                         src_value.into_float_value(),
                         ctx.default_types.f32,
@@ -1991,8 +2015,8 @@ impl<'arena> TypecheckedExpression<'arena> {
                     Ok(())
                 } else {
                     let ty = match **dst_ty {
-                        TyKind::PrimitiveF32(0) => ctx.default_types.f32,
-                        TyKind::PrimitiveF64(0) => ctx.default_types.f64,
+                        TyKind::PrimitiveF32 => ctx.default_types.f32,
+                        TyKind::PrimitiveF64 => ctx.default_types.f64,
                         _ => unreachable!("not a float type: {:?}", dst_ty),
                     };
                     let value = if src_ty.is_unsigned() {
@@ -2146,7 +2170,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                 assert!(generics[0].is_sized());
                 let value = build_deref(
                     args[0].fn_ctx_to_basic_value(ctx).into_pointer_value(),
-                    &generics[0],
+                    generics[0],
                     ctx,
                     true,
                 )?;
@@ -2202,12 +2226,12 @@ impl<'arena> TypecheckedExpression<'arena> {
                             )?;
                             ctx.push_value(dst, total_size.as_basic_value_enum());
                         }
-                        TyKind::PrimitiveStr(_) => {
+                        TyKind::PrimitiveStr => {
                             let fat_ptr = args[0].fn_ctx_to_basic_value(ctx).into_struct_value();
                             let size = ctx.builder.build_extract_value(fat_ptr, 1, "")?;
                             ctx.push_value(dst, size);
                         }
-                        TyKind::Generic { .. } | TyKind::PrimitiveSelf(_) => {
+                        TyKind::Generic { .. } | TyKind::PrimitiveSelf => {
                             unreachable!("These should've been resolved by now.")
                         }
                         t => unreachable!("{t:?} should be sized"),

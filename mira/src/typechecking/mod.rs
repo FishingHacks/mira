@@ -11,7 +11,7 @@ use std::{
 use type_resolution::ResolvingState;
 
 use expression::{TypecheckedExpression, TypedLiteral};
-use types::{resolve_primitive_type, FunctionType};
+use types::{FunctionType, resolve_primitive_type, with_refcount};
 
 use crate::{
     annotations::Annotations,
@@ -24,7 +24,7 @@ use crate::{
     parser::{Trait, TypeRef},
     store::{AssociatedStore, Store, StoreKey},
 };
-use mira_spans::{interner::Symbol, ArenaList, Ident, Span};
+use mira_spans::{ArenaList, Ident, Span, interner::Symbol};
 
 mod error;
 pub mod expression;
@@ -35,7 +35,7 @@ mod type_resolution;
 pub mod typechecking;
 mod types;
 pub use error::{TypecheckingError, TypecheckingErrorDiagnosticsExt};
-pub use types::{default_types, Ty, TyKind, TyList, TypeInterner, TypeListInterner};
+pub use types::{Ty, TyKind, TyList, TypeInterner, TypeListInterner, default_types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedGeneric<'arena> {
@@ -185,7 +185,7 @@ impl<'arena> TypecheckingContext<'arena> {
             return Err(TypecheckingError::MainFuncNotFound(module.path.clone()));
         };
         let func = &self.functions.read()[main_fn.cast()].0;
-        if !func.arguments.is_empty() || func.return_type != TyKind::PrimitiveVoid(0) {
+        if !func.arguments.is_empty() || func.return_type != default_types::void {
             return Err(TypecheckingError::MainFuncWrongType {
                 func_span: func.span,
             });
@@ -392,10 +392,11 @@ impl<'arena> TypecheckingContext<'arena> {
                     trait_refs.push((id.cast(), *trait_name.as_slice().last().unwrap()));
                 }
                 let trait_refs = ArenaList::new(self.ctx.arena(), &trait_refs);
-                Ok(self.ctx.intern_ty(TyKind::DynType {
-                    trait_refs,
-                    num_references: *num_references,
-                }))
+                Ok(with_refcount(
+                    self.ctx,
+                    self.ctx.intern_ty(TyKind::DynType { trait_refs }),
+                    *num_references,
+                ))
             }
             TypeRef::Function {
                 return_ty,
@@ -413,9 +414,11 @@ impl<'arena> TypecheckingContext<'arena> {
                     arguments,
                     return_type,
                 };
-                Ok(self
-                    .ctx
-                    .intern_ty(TyKind::Function(function_typ, *num_references)))
+                Ok(with_refcount(
+                    self.ctx,
+                    self.ctx.intern_ty(TyKind::Function(function_typ)),
+                    *num_references,
+                ))
             }
             TypeRef::Reference {
                 num_references,
@@ -428,13 +431,13 @@ impl<'arena> TypecheckingContext<'arena> {
                         .enumerate()
                         .find(|(_, v)| v.name == type_name.entries[0].0)
                     {
-                        return Ok(self.ctx.intern_ty(TyKind::Generic {
+                        let ty = self.ctx.intern_ty(TyKind::Generic {
                             name: type_name.entries[0].0,
                             generic_id: id as u8,
-                            num_references: *num_references,
                             sized: generic.sized,
                             bounds: generic.bounds,
-                        }));
+                        });
+                        return Ok(with_refcount(self.ctx, ty, *num_references));
                     }
                 }
 
@@ -450,11 +453,14 @@ impl<'arena> TypecheckingContext<'arena> {
                 }
 
                 match typed_resolve_import(self, module_id, &path, loc, &mut HashSet::new())? {
-                    ModuleScopeValue::Struct(id) => Ok(self.ctx.intern_ty(TyKind::Struct {
-                        struct_id: id.cast(),
-                        name: self.structs.read()[id.cast()].name,
-                        num_references: *num_references,
-                    })),
+                    ModuleScopeValue::Struct(id) => Ok(with_refcount(
+                        self.ctx,
+                        self.ctx.intern_ty(TyKind::Struct {
+                            struct_id: id.cast(),
+                            name: self.structs.read()[id.cast()].name,
+                        }),
+                        *num_references,
+                    )),
                     v => Err(TypecheckingError::MismatchingScopeType {
                         location: *loc,
                         expected: ScopeKind::Type,
@@ -468,20 +474,26 @@ impl<'arena> TypecheckingContext<'arena> {
                 num_references,
                 child,
                 span: _,
-            } => Ok(self.ctx.intern_ty(TyKind::UnsizedArray {
-                typ: self.resolve_type(module_id, child, generics)?,
-                num_references: *num_references,
-            })),
+            } => Ok(with_refcount(
+                self.ctx,
+                self.ctx.intern_ty(TyKind::UnsizedArray {
+                    typ: self.resolve_type(module_id, child, generics)?,
+                }),
+                *num_references,
+            )),
             TypeRef::SizedArray {
                 num_references,
                 child,
                 number_elements,
                 ..
-            } => Ok(self.ctx.intern_ty(TyKind::SizedArray {
-                typ: self.resolve_type(module_id, child, generics)?,
-                num_references: *num_references,
-                number_elements: *number_elements,
-            })),
+            } => Ok(with_refcount(
+                self.ctx,
+                self.ctx.intern_ty(TyKind::SizedArray {
+                    typ: self.resolve_type(module_id, child, generics)?,
+                    number_elements: *number_elements,
+                }),
+                *num_references,
+            )),
             TypeRef::Tuple {
                 num_references,
                 elements,
@@ -491,10 +503,10 @@ impl<'arena> TypecheckingContext<'arena> {
                 for elem in elements.iter() {
                     typed_elements.push(self.resolve_type(module_id, elem, generics)?);
                 }
-                Ok(self.ctx.intern_ty(TyKind::Tuple {
-                    num_references: *num_references,
+                let ty = self.ctx.intern_ty(TyKind::Tuple {
                     elements: self.ctx.intern_tylist(&typed_elements),
-                }))
+                });
+                Ok(with_refcount(self.ctx, ty, *num_references))
             }
         }
     }
@@ -630,13 +642,11 @@ impl<'arena> TypecheckingContext<'arena> {
                     )?);
                 }
                 let arguments = self.ctx.intern_tylist(&arguments);
-                Some(self.ctx.intern_ty(TyKind::Function(
-                    FunctionType {
-                        return_type,
-                        arguments,
-                    },
-                    *num_references,
-                )))
+                let ty = self.ctx.intern_ty(TyKind::Function(FunctionType {
+                    return_type,
+                    arguments,
+                }));
+                Some(with_refcount(self.ctx, ty, *num_references))
             }
             TypeRef::Reference {
                 num_references,
@@ -661,7 +671,6 @@ impl<'arena> TypecheckingContext<'arena> {
                         return Some(self.ctx.intern_ty(TyKind::Generic {
                             name: generic.name,
                             generic_id: generic_id as u8,
-                            num_references: 0,
                             sized: generic.sized,
                             bounds: generic.bounds,
                         }));
@@ -683,11 +692,11 @@ impl<'arena> TypecheckingContext<'arena> {
                 {
                     if !left.contains_key(&id) {
                         let typechecked_struct = &self.structs.read()[id.cast()];
-                        return Some(self.ctx.intern_ty(TyKind::Struct {
+                        let ty = self.ctx.intern_ty(TyKind::Struct {
                             struct_id: typechecked_struct.id,
                             name: typechecked_struct.name,
-                            num_references: *num_references,
-                        }));
+                        });
+                        return Some(with_refcount(self.ctx, ty, *num_references));
                     }
                 }
 
@@ -697,11 +706,11 @@ impl<'arena> TypecheckingContext<'arena> {
                     return None;
                 }
                 let typechecked_struct = &self.structs.read()[id.cast()];
-                Some(self.ctx.intern_ty(TyKind::Struct {
+                let ty = self.ctx.intern_ty(TyKind::Struct {
                     struct_id: typechecked_struct.id,
-                    num_references: *num_references,
                     name: typechecked_struct.name,
-                }))
+                });
+                Some(with_refcount(self.ctx, ty, *num_references))
             }
             TypeRef::Void(..) => unreachable!(),
             TypeRef::Never(_) => unreachable!(),
@@ -709,26 +718,30 @@ impl<'arena> TypecheckingContext<'arena> {
                 num_references,
                 child,
                 span: _,
-            } => Some(self.ctx.intern_ty(TyKind::UnsizedArray {
-                typ:
-                    self.type_resolution_resolve_type(
+            } => Some(with_refcount(
+                self.ctx,
+                self.ctx.intern_ty(TyKind::UnsizedArray {
+                    typ: self.type_resolution_resolve_type(
                         child, generics, module, context, errors, left,
                     )?,
-                num_references: *num_references,
-            })),
+                }),
+                *num_references,
+            )),
             TypeRef::SizedArray {
                 num_references,
                 child,
                 number_elements,
                 span: _,
-            } => Some(self.ctx.intern_ty(TyKind::SizedArray {
-                typ:
-                    self.type_resolution_resolve_type(
+            } => Some(with_refcount(
+                self.ctx,
+                self.ctx.intern_ty(TyKind::SizedArray {
+                    typ: self.type_resolution_resolve_type(
                         child, generics, module, context, errors, left,
                     )?,
-                num_references: *num_references,
-                number_elements: *number_elements,
-            })),
+                    number_elements: *number_elements,
+                }),
+                *num_references,
+            )),
             TypeRef::Tuple {
                 num_references,
                 elements,
@@ -745,10 +758,10 @@ impl<'arena> TypecheckingContext<'arena> {
                         left,
                     )?);
                 }
-                Some(self.ctx.intern_ty(TyKind::Tuple {
+                let ty = self.ctx.intern_ty(TyKind::Tuple {
                     elements: self.ctx.intern_tylist(&typed_elements),
-                    num_references: *num_references,
-                }))
+                });
+                Some(with_refcount(self.ctx, ty, *num_references))
             }
         }
     }
@@ -813,7 +826,7 @@ fn typed_resolve_import<'arena>(
                     location: *location,
                     name: import[1].symbol(),
                 }
-                .to_error())
+                .to_error());
             }
         }
     }

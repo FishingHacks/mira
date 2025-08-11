@@ -1,4 +1,4 @@
-use mira_spans::{extra_traits, interner, owned_intern, Arena, ArenaList};
+use mira_spans::{Arena, ArenaList, extra_traits, interner, owned_intern};
 use std::fmt::{Debug, Display, Write};
 use std::hash::Hash;
 
@@ -15,7 +15,7 @@ pub mod default_types {
 
     macro_rules! tydef {
         ($($name:ident $kind:ident),* $(,)?) => {
-            $(pub static $name: Ty<'static> = Ty(&TyKind::$kind(0));)*
+            $(pub static $name: Ty<'static> = Ty(&TyKind::$kind);)*
         };
     }
 
@@ -40,14 +40,15 @@ pub mod default_types {
 
     pub static never: Ty<'static> = Ty(&TyKind::PrimitiveNever);
 
-    // types used by lang items
-    pub static str_ref: Ty<'static> = Ty(&TyKind::PrimitiveStr(1));
-    pub static self_ref: Ty<'static> = Ty(&TyKind::PrimitiveSelf(1));
-    pub static void_ref: Ty<'static> = Ty(&TyKind::PrimitiveVoid(1));
+    // types used by the compiler
+    pub static str_ref: Ty<'static> = Ty(&TyKind::Ref(str));
+    pub static self_ref: Ty<'static> = Ty(&TyKind::Ref(self_));
+    pub static void_ref: Ty<'static> = Ty(&TyKind::Ref(void));
+    pub static u8_ref: Ty<'static> = Ty(&TyKind::Ref(u8));
 
     pub static ALL: &[Ty<'static>] = &[
         u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, void, never, str_ref, self_ref,
-        void_ref, self_,
+        void_ref, self_, u8_ref,
     ];
 }
 
@@ -81,57 +82,68 @@ impl<'a> AsRef<TyKind<'a>> for &TyKind<'a> {
 pub enum TyKind<'arena> {
     DynType {
         trait_refs: ArenaList<'arena, (StoreKey<TypedTrait<'arena>>, Ident<'arena>)>,
-        num_references: u8,
     },
     Struct {
         struct_id: StoreKey<TypedStruct<'arena>>,
         name: Ident<'arena>,
-        num_references: u8,
     },
     UnsizedArray {
         typ: Ty<'arena>,
-        num_references: u8,
     },
     SizedArray {
         typ: Ty<'arena>,
-        num_references: u8,
         number_elements: usize,
     },
     Tuple {
         elements: TyList<'arena>,
-        num_references: u8,
     },
-    Function(FunctionType<'arena>, u8),
+    Function(FunctionType<'arena>),
 
-    PrimitiveVoid(u8),
+    PrimitiveVoid,
     PrimitiveNever,
 
-    PrimitiveI8(u8),
-    PrimitiveI16(u8),
-    PrimitiveI32(u8),
-    PrimitiveI64(u8),
-    PrimitiveISize(u8),
+    PrimitiveI8,
+    PrimitiveI16,
+    PrimitiveI32,
+    PrimitiveI64,
+    PrimitiveISize,
 
-    PrimitiveU8(u8),
-    PrimitiveU16(u8),
-    PrimitiveU32(u8),
-    PrimitiveU64(u8),
-    PrimitiveUSize(u8),
+    PrimitiveU8,
+    PrimitiveU16,
+    PrimitiveU32,
+    PrimitiveU64,
+    PrimitiveUSize,
 
-    PrimitiveF32(u8),
-    PrimitiveF64(u8),
+    PrimitiveF32,
+    PrimitiveF64,
 
-    PrimitiveStr(u8),
-    PrimitiveBool(u8),
-    PrimitiveSelf(u8),
+    PrimitiveStr,
+    PrimitiveBool,
+    PrimitiveSelf,
+
+    Ref(Ty<'arena>),
 
     Generic {
         name: Ident<'arena>,
-        num_references: u8,
         generic_id: u8,
         bounds: ArenaList<'arena, StoreKey<TypedTrait<'arena>>>,
         sized: bool,
     },
+}
+
+/// wraps the type in the amount of references, adding to the already existing references.
+/// e.g.(u8, 6) -> &&&&&&u8
+/// e.g. (&&u8, 2) -> &&&&u8
+pub fn with_refcount<'arena>(
+    ctx: SharedContext<'arena>,
+    mut ty: Ty<'arena>,
+    mut refcount: u8,
+) -> Ty<'arena> {
+    while refcount > 0 {
+        refcount -= 1;
+        ty = ctx.intern_ty(TyKind::Ref(ty));
+    }
+    ty
 }
 
 pub fn resolve_primitive_type<'arena>(
@@ -141,13 +153,13 @@ pub fn resolve_primitive_type<'arena>(
     match typ {
         TypeRef::Never(_) => Some(default_types::never),
         TypeRef::Void(_, 0) => Some(default_types::void),
-        TypeRef::Void(_, refcount) => Some(ctx.intern_ty(TyKind::PrimitiveVoid(*refcount))),
+        TypeRef::Void(_, refcount) => Some(with_refcount(ctx, default_types::void, *refcount)),
         TypeRef::Reference {
-            num_references: 0,
+            num_references,
             type_name,
             span: _,
         } if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() => {
-            match &*type_name.entries[0].0 {
+            let ty = match &*type_name.entries[0].0 {
                 "!" => Some(default_types::never),
                 "void" => Some(default_types::void),
                 "i8" => Some(default_types::i8),
@@ -166,34 +178,8 @@ pub fn resolve_primitive_type<'arena>(
                 "usize" => Some(default_types::usize),
                 "Self" => Some(default_types::self_),
                 _ => None,
-            }
-        }
-        TypeRef::Reference {
-            num_references,
-            type_name,
-            span: _,
-        } if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() => {
-            match &*type_name.entries[0].0 {
-                "!" => Some(TyKind::PrimitiveNever),
-                "void" => Some(TyKind::PrimitiveVoid(*num_references)),
-                "i8" => Some(TyKind::PrimitiveI8(*num_references)),
-                "i16" => Some(TyKind::PrimitiveI16(*num_references)),
-                "i32" => Some(TyKind::PrimitiveI32(*num_references)),
-                "i64" => Some(TyKind::PrimitiveI64(*num_references)),
-                "u8" => Some(TyKind::PrimitiveU8(*num_references)),
-                "u16" => Some(TyKind::PrimitiveU16(*num_references)),
-                "u32" => Some(TyKind::PrimitiveU32(*num_references)),
-                "u64" => Some(TyKind::PrimitiveU64(*num_references)),
-                "f32" => Some(TyKind::PrimitiveF32(*num_references)),
-                "f64" => Some(TyKind::PrimitiveF64(*num_references)),
-                "bool" => Some(TyKind::PrimitiveBool(*num_references)),
-                "str" => Some(TyKind::PrimitiveStr(*num_references)),
-                "isize" => Some(TyKind::PrimitiveISize(*num_references)),
-                "usize" => Some(TyKind::PrimitiveUSize(*num_references)),
-                "Self" => Some(TyKind::PrimitiveSelf(*num_references)),
-                _ => None,
-            }
-            .map(|ty| ctx.intern_ty(ty))
+            };
+            Some(with_refcount(ctx, ty?, *num_references))
         }
         _ => None,
     }
@@ -219,6 +205,61 @@ fn values_match<'arena>(
     true
 }
 
+impl<'arena> Ty<'arena> {
+    pub fn deref(self) -> Option<Self> {
+        match **self {
+            TyKind::Ref(v) => Some(v),
+            TyKind::PrimitiveNever => Some(self),
+            _ => None,
+        }
+    }
+
+    pub fn without_ref(mut self) -> Self {
+        while let TyKind::Ref(v) = **self {
+            self = v;
+        }
+        self
+    }
+
+    pub fn take_ref(self, ctx: SharedContext<'arena>) -> Self {
+        if self == default_types::never {
+            self
+        } else {
+            ctx.intern_ty(TyKind::Ref(self))
+        }
+    }
+
+    pub fn with_num_refs(mut self, num_refs: u8, ctx: SharedContext<'arena>) -> Self {
+        let refcount = self.refcount();
+        if refcount == num_refs {
+            return self;
+        }
+        if refcount < num_refs {
+            for _ in 0..num_refs - refcount {
+                self = ctx.intern_ty(TyKind::Ref(self));
+            }
+        } else {
+            for _ in 0..refcount - num_refs {
+                self = self.deref().unwrap();
+            }
+        }
+        self
+    }
+
+    /// returns the amount of references removed and the type without references
+    pub fn remove_refs(mut self) -> (u8, Self) {
+        let mut count = 0;
+        while let TyKind::Ref(ty) = **self {
+            count += 1;
+            self = ty;
+        }
+        (count, self)
+    }
+
+    pub fn is_bool(self) -> bool {
+        self == default_types::bool
+    }
+}
 impl<'arena> TyKind<'arena> {
     pub fn implements(
         &self,
@@ -226,15 +267,14 @@ impl<'arena> TyKind<'arena> {
         tc_ctx: &TypecheckingContext<'arena>,
     ) -> bool {
         match self {
-            TyKind::DynType {
-                trait_refs,
-                num_references: 1,
-            } => values_match(&trait_refs.iter().map(|v| v.0).collect::<Vec<_>>(), traits),
-            TyKind::Struct {
-                struct_id,
-                num_references: 0,
-                ..
-            } => values_match(
+            TyKind::Ref(v) => {
+                if let TyKind::DynType { trait_refs } = &***v {
+                    values_match(&trait_refs.iter().map(|v| v.0).collect::<Vec<_>>(), traits)
+                } else {
+                    false
+                }
+            }
+            TyKind::Struct { struct_id, .. } => values_match(
                 &tc_ctx.structs.read()[*struct_id]
                     .trait_impl
                     .keys()
@@ -272,14 +312,11 @@ impl<'arena> TyKind<'arena> {
     }
 
     pub fn alignment(&self, ptr_size: u64, structs: &Store<TypedStruct<'arena>>) -> u32 {
-        if self.refcount() > 0 {
-            return ptr_size as u32;
-        }
-
         match self {
+            TyKind::Ref(_) => ptr_size as u32,
             TyKind::Generic { .. }
-            | TyKind::PrimitiveSelf(..)
-            | TyKind::PrimitiveStr(..)
+            | TyKind::PrimitiveSelf
+            | TyKind::PrimitiveStr
             | TyKind::DynType { .. }
             | TyKind::UnsizedArray { .. } => {
                 unreachable!("generics, self and unsized types don't have an alignment")
@@ -296,15 +333,15 @@ impl<'arena> TyKind<'arena> {
                 .map(|v| v.alignment(ptr_size, structs))
                 .max()
                 .unwrap_or(1),
-            TyKind::PrimitiveVoid(_)
+            TyKind::PrimitiveVoid
             | TyKind::PrimitiveNever
-            | TyKind::PrimitiveBool(_)
-            | TyKind::PrimitiveU8(_)
-            | TyKind::PrimitiveI8(_) => 1,
-            TyKind::PrimitiveU16(_) | TyKind::PrimitiveI16(_) => 2,
-            TyKind::PrimitiveF32(_) | TyKind::PrimitiveU32(_) | TyKind::PrimitiveI32(_) => 4,
-            TyKind::PrimitiveF64(_) | TyKind::PrimitiveU64(_) | TyKind::PrimitiveI64(_) => 8,
-            TyKind::Function(..) | TyKind::PrimitiveUSize(_) | TyKind::PrimitiveISize(_) => {
+            | TyKind::PrimitiveBool
+            | TyKind::PrimitiveU8
+            | TyKind::PrimitiveI8 => 1,
+            TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => 2,
+            TyKind::PrimitiveF32 | TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => 4,
+            TyKind::PrimitiveF64 | TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => 8,
+            TyKind::Function(_) | TyKind::PrimitiveUSize | TyKind::PrimitiveISize => {
                 ptr_size as u32
             }
         }
@@ -315,21 +352,20 @@ impl<'arena> TyKind<'arena> {
         ptr_size: u64,
         structs: &Store<TypedStruct<'arena>>,
     ) -> (u64, u32) {
-        if self.refcount() > 0 {
-            return if self.is_thin_ptr() {
-                (ptr_size, ptr_size as u32)
-            } else {
-                (ptr_size * 2, ptr_size as u32)
-            };
-        }
-
         match self {
             TyKind::Generic { .. }
-            | TyKind::PrimitiveSelf(..)
-            | TyKind::PrimitiveStr(..)
+            | TyKind::PrimitiveSelf
+            | TyKind::PrimitiveStr
             | TyKind::DynType { .. }
             | TyKind::UnsizedArray { .. } => {
                 unreachable!("generics, self and unsized types don't have an alignment")
+            }
+            TyKind::Ref(v) => {
+                if v.is_sized() {
+                    (ptr_size, ptr_size as u32)
+                } else {
+                    (ptr_size * 2, ptr_size as u32)
+                }
             }
             TyKind::Struct { struct_id, .. } => {
                 let mut size = 0;
@@ -344,12 +380,11 @@ impl<'arena> TyKind<'arena> {
             TyKind::SizedArray {
                 typ,
                 number_elements,
-                ..
             } => {
                 let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
                 (size * *number_elements as u64, alignment)
             }
-            TyKind::Tuple { elements, .. } => {
+            TyKind::Tuple { elements } => {
                 let mut size = 0;
                 let mut alignment = 1;
                 for element in elements.iter() {
@@ -359,47 +394,27 @@ impl<'arena> TyKind<'arena> {
                 }
                 (align(size, alignment), alignment)
             }
-            TyKind::PrimitiveVoid(_)
-            | TyKind::PrimitiveNever
-            | TyKind::PrimitiveBool(_)
-            | TyKind::PrimitiveU8(_)
-            | TyKind::PrimitiveI8(_) => (1, 1),
-            TyKind::PrimitiveU16(_) | TyKind::PrimitiveI16(_) => (2, 2),
-            TyKind::PrimitiveF32(_) | TyKind::PrimitiveU32(_) | TyKind::PrimitiveI32(_) => (4, 4),
-            TyKind::PrimitiveF64(_) | TyKind::PrimitiveU64(_) | TyKind::PrimitiveI64(_) => (8, 8),
-            TyKind::Function(..) | TyKind::PrimitiveUSize(_) | TyKind::PrimitiveISize(_) => {
+            TyKind::PrimitiveVoid | TyKind::PrimitiveNever => (0, 1),
+            TyKind::PrimitiveBool | TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => (1, 1),
+            TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => (2, 2),
+            TyKind::PrimitiveF32 | TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => (4, 4),
+            TyKind::PrimitiveF64 | TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => (8, 8),
+            TyKind::Function(_) | TyKind::PrimitiveUSize | TyKind::PrimitiveISize => {
                 (ptr_size, ptr_size as u32)
             }
         }
     }
 
+    // TODO: deprecate this and replace uses of refcount() > 0 with some method that checks if it
+    // has a ref or let TyKind::Ref(ty) = ty.
     pub fn refcount(&self) -> u8 {
-        match self {
-            TyKind::PrimitiveNever => 0,
-            TyKind::Struct { num_references, .. }
-            | TyKind::UnsizedArray { num_references, .. }
-            | TyKind::SizedArray { num_references, .. }
-            | TyKind::DynType { num_references, .. }
-            | TyKind::Tuple { num_references, .. }
-            | TyKind::Generic { num_references, .. }
-            | TyKind::Function(_, num_references)
-            | TyKind::PrimitiveSelf(num_references)
-            | TyKind::PrimitiveVoid(num_references)
-            | TyKind::PrimitiveI8(num_references)
-            | TyKind::PrimitiveI16(num_references)
-            | TyKind::PrimitiveI32(num_references)
-            | TyKind::PrimitiveI64(num_references)
-            | TyKind::PrimitiveISize(num_references)
-            | TyKind::PrimitiveU8(num_references)
-            | TyKind::PrimitiveU16(num_references)
-            | TyKind::PrimitiveU32(num_references)
-            | TyKind::PrimitiveU64(num_references)
-            | TyKind::PrimitiveUSize(num_references)
-            | TyKind::PrimitiveF32(num_references)
-            | TyKind::PrimitiveF64(num_references)
-            | TyKind::PrimitiveStr(num_references)
-            | TyKind::PrimitiveBool(num_references) => *num_references,
+        let mut count = 0;
+        let mut ty = self;
+        while let Self::Ref(t) = ty {
+            count += 1;
+            ty = &***t;
         }
+        count
     }
 
     pub fn is_sized(&self) -> bool {
@@ -408,231 +423,83 @@ impl<'arena> TyKind<'arena> {
         }
         match self {
             TyKind::Generic { sized, .. } => *sized,
-            TyKind::PrimitiveSelf(_) => unreachable!("Self should be resolved"),
-            TyKind::PrimitiveStr(num_references)
-            | TyKind::UnsizedArray { num_references, .. }
-            | TyKind::DynType { num_references, .. } => *num_references > 0,
+            TyKind::PrimitiveSelf => unreachable!("Self should be resolved"),
+            TyKind::PrimitiveStr | TyKind::UnsizedArray { .. } | TyKind::DynType { .. } => false,
             _ => true,
         }
     }
 
     pub fn is_thin_ptr(&self) -> bool {
-        assert!(self.refcount() != 0);
+        let ty = match self {
+            TyKind::Ref(v) => v,
+            _ => unreachable!("only a pointer can be a thin pointer"),
+        };
         // &&str is a thin pointer as it is a reference to a fat pointer, which is a thin pointer
-        if self.refcount() > 1 {
-            return true;
-        }
-        match self {
+        match &**ty {
+            TyKind::Ref(_) => true,
             TyKind::Generic { sized, .. } => *sized,
             TyKind::PrimitiveNever => unreachable!("never can never be referenced"),
-            TyKind::PrimitiveSelf(_) => unreachable!("Self should be resolved by now"),
-            TyKind::DynType { .. } | TyKind::UnsizedArray { .. } | TyKind::PrimitiveStr(_) => false,
+            TyKind::PrimitiveSelf => unreachable!("Self should be resolved by now"),
+            TyKind::DynType { .. } | TyKind::UnsizedArray { .. } | TyKind::PrimitiveStr => false,
             TyKind::Struct { .. }
             | TyKind::Tuple { .. }
             | TyKind::SizedArray { .. }
             | TyKind::Function(..)
-            | TyKind::PrimitiveVoid(_)
-            | TyKind::PrimitiveI8(_)
-            | TyKind::PrimitiveI16(_)
-            | TyKind::PrimitiveI32(_)
-            | TyKind::PrimitiveI64(_)
-            | TyKind::PrimitiveISize(_)
-            | TyKind::PrimitiveU8(_)
-            | TyKind::PrimitiveU16(_)
-            | TyKind::PrimitiveU32(_)
-            | TyKind::PrimitiveU64(_)
-            | TyKind::PrimitiveUSize(_)
-            | TyKind::PrimitiveF32(_)
-            | TyKind::PrimitiveF64(_)
-            | TyKind::PrimitiveBool(_) => true,
-        }
-    }
-
-    pub fn from_numtype(typ: NumberType) -> Option<Self> {
-        match typ {
-            NumberType::F32 => Some(Self::PrimitiveF32(0)),
-            NumberType::F64 => Some(Self::PrimitiveF64(0)),
-            NumberType::I8 => Some(Self::PrimitiveI8(0)),
-            NumberType::I16 => Some(Self::PrimitiveI16(0)),
-            NumberType::I32 => Some(Self::PrimitiveI32(0)),
-            NumberType::I64 => Some(Self::PrimitiveI64(0)),
-            NumberType::Isize => Some(Self::PrimitiveISize(0)),
-            NumberType::U8 => Some(Self::PrimitiveU8(0)),
-            NumberType::U16 => Some(Self::PrimitiveU16(0)),
-            NumberType::U32 => Some(Self::PrimitiveU32(0)),
-            NumberType::U64 => Some(Self::PrimitiveU64(0)),
-            NumberType::Usize => Some(Self::PrimitiveUSize(0)),
-            NumberType::None => None,
-        }
-    }
-
-    pub fn take_ref(mut self) -> Self {
-        match &mut self {
-            TyKind::DynType { num_references, .. }
-            | TyKind::Struct { num_references, .. }
-            | TyKind::UnsizedArray { num_references, .. }
-            | TyKind::SizedArray { num_references, .. }
-            | TyKind::Tuple { num_references, .. }
-            | TyKind::Function(_, num_references)
-            | TyKind::PrimitiveVoid(num_references)
-            | TyKind::PrimitiveI8(num_references)
-            | TyKind::PrimitiveI16(num_references)
-            | TyKind::PrimitiveI32(num_references)
-            | TyKind::PrimitiveI64(num_references)
-            | TyKind::PrimitiveISize(num_references)
-            | TyKind::PrimitiveU8(num_references)
-            | TyKind::PrimitiveU16(num_references)
-            | TyKind::PrimitiveU32(num_references)
-            | TyKind::PrimitiveU64(num_references)
-            | TyKind::PrimitiveUSize(num_references)
-            | TyKind::PrimitiveF32(num_references)
-            | TyKind::PrimitiveF64(num_references)
-            | TyKind::PrimitiveStr(num_references)
-            | TyKind::PrimitiveBool(num_references)
-            | TyKind::PrimitiveSelf(num_references)
-            | TyKind::Generic { num_references, .. } => *num_references += 1,
-            TyKind::PrimitiveNever => {}
-        }
-        self
-    }
-
-    pub fn deref(&self) -> Option<Self> {
-        match self {
-            TyKind::DynType { num_references, .. }
-            | TyKind::Struct { num_references, .. }
-            | TyKind::UnsizedArray { num_references, .. }
-            | TyKind::SizedArray { num_references, .. }
-            | TyKind::Tuple { num_references, .. }
-            | TyKind::Function(_, num_references)
-            | TyKind::PrimitiveVoid(num_references)
-            | TyKind::PrimitiveI8(num_references)
-            | TyKind::PrimitiveI16(num_references)
-            | TyKind::PrimitiveI32(num_references)
-            | TyKind::PrimitiveI64(num_references)
-            | TyKind::PrimitiveISize(num_references)
-            | TyKind::PrimitiveU8(num_references)
-            | TyKind::PrimitiveU16(num_references)
-            | TyKind::PrimitiveU32(num_references)
-            | TyKind::PrimitiveU64(num_references)
-            | TyKind::PrimitiveUSize(num_references)
-            | TyKind::PrimitiveF32(num_references)
-            | TyKind::PrimitiveF64(num_references)
-            | TyKind::PrimitiveStr(num_references)
-            | TyKind::PrimitiveBool(num_references)
-            | TyKind::PrimitiveSelf(num_references)
-            | TyKind::Generic { num_references, .. } => {
-                if *num_references == 0 {
-                    None
-                } else {
-                    Some(self.clone().with_num_refs(*num_references - 1))
-                }
-            }
-            TyKind::PrimitiveNever => Some(TyKind::PrimitiveNever),
-        }
-    }
-
-    pub fn without_ref(mut self) -> Self {
-        match &mut self {
-            TyKind::DynType { num_references, .. }
-            | TyKind::Struct { num_references, .. }
-            | TyKind::UnsizedArray { num_references, .. }
-            | TyKind::SizedArray { num_references, .. }
-            | TyKind::Tuple { num_references, .. }
-            | TyKind::Function(_, num_references)
-            | TyKind::PrimitiveVoid(num_references)
-            | TyKind::PrimitiveI8(num_references)
-            | TyKind::PrimitiveI16(num_references)
-            | TyKind::PrimitiveI32(num_references)
-            | TyKind::PrimitiveI64(num_references)
-            | TyKind::PrimitiveISize(num_references)
-            | TyKind::PrimitiveU8(num_references)
-            | TyKind::PrimitiveU16(num_references)
-            | TyKind::PrimitiveU32(num_references)
-            | TyKind::PrimitiveU64(num_references)
-            | TyKind::PrimitiveUSize(num_references)
-            | TyKind::PrimitiveF32(num_references)
-            | TyKind::PrimitiveF64(num_references)
-            | TyKind::PrimitiveStr(num_references)
-            | TyKind::PrimitiveBool(num_references)
-            | TyKind::PrimitiveSelf(num_references)
-            | TyKind::Generic { num_references, .. } => {
-                *num_references = 0;
-                self
-            }
-            TyKind::PrimitiveNever => self,
-        }
-    }
-
-    pub fn with_num_refs(mut self, num_refs: u8) -> Self {
-        match &mut self {
-            TyKind::DynType { num_references, .. }
-            | TyKind::Struct { num_references, .. }
-            | TyKind::UnsizedArray { num_references, .. }
-            | TyKind::SizedArray { num_references, .. }
-            | TyKind::Tuple { num_references, .. }
-            | TyKind::Function(_, num_references)
-            | TyKind::PrimitiveVoid(num_references)
-            | TyKind::PrimitiveI8(num_references)
-            | TyKind::PrimitiveI16(num_references)
-            | TyKind::PrimitiveI32(num_references)
-            | TyKind::PrimitiveI64(num_references)
-            | TyKind::PrimitiveISize(num_references)
-            | TyKind::PrimitiveU8(num_references)
-            | TyKind::PrimitiveU16(num_references)
-            | TyKind::PrimitiveU32(num_references)
-            | TyKind::PrimitiveU64(num_references)
-            | TyKind::PrimitiveUSize(num_references)
-            | TyKind::PrimitiveF32(num_references)
-            | TyKind::PrimitiveF64(num_references)
-            | TyKind::PrimitiveStr(num_references)
-            | TyKind::PrimitiveBool(num_references)
-            | TyKind::PrimitiveSelf(num_references)
-            | TyKind::Generic { num_references, .. } => {
-                *num_references = num_refs;
-                self
-            }
-            TyKind::PrimitiveNever => self,
+            | TyKind::PrimitiveVoid
+            | TyKind::PrimitiveI8
+            | TyKind::PrimitiveI16
+            | TyKind::PrimitiveI32
+            | TyKind::PrimitiveI64
+            | TyKind::PrimitiveISize
+            | TyKind::PrimitiveU8
+            | TyKind::PrimitiveU16
+            | TyKind::PrimitiveU32
+            | TyKind::PrimitiveU64
+            | TyKind::PrimitiveUSize
+            | TyKind::PrimitiveF32
+            | TyKind::PrimitiveF64
+            | TyKind::PrimitiveBool => true,
         }
     }
 
     pub fn is_asm_primitive(&self) -> bool {
         matches!(
             self,
-            TyKind::PrimitiveI8(0)
-                | TyKind::PrimitiveI16(0)
-                | TyKind::PrimitiveI32(0)
-                | TyKind::PrimitiveI64(0)
-                | TyKind::PrimitiveISize(0)
-                | TyKind::PrimitiveU8(0)
-                | TyKind::PrimitiveU16(0)
-                | TyKind::PrimitiveU32(0)
-                | TyKind::PrimitiveU64(0)
-                | TyKind::PrimitiveUSize(0)
-                | TyKind::PrimitiveF32(0)
-                | TyKind::PrimitiveF64(0)
-                | TyKind::PrimitiveBool(0)
+            TyKind::PrimitiveI8
+                | TyKind::PrimitiveI16
+                | TyKind::PrimitiveI32
+                | TyKind::PrimitiveI64
+                | TyKind::PrimitiveISize
+                | TyKind::PrimitiveU8
+                | TyKind::PrimitiveU16
+                | TyKind::PrimitiveU32
+                | TyKind::PrimitiveU64
+                | TyKind::PrimitiveUSize
+                | TyKind::PrimitiveF32
+                | TyKind::PrimitiveF64
+                | TyKind::PrimitiveBool
         )
     }
 
     pub fn is_primitive(&self) -> bool {
         matches!(
             self,
-            TyKind::PrimitiveVoid(_)
+            TyKind::PrimitiveVoid
                 | TyKind::PrimitiveNever
-                | TyKind::PrimitiveI8(_)
-                | TyKind::PrimitiveI16(_)
-                | TyKind::PrimitiveI32(_)
-                | TyKind::PrimitiveI64(_)
-                | TyKind::PrimitiveISize(_)
-                | TyKind::PrimitiveU8(_)
-                | TyKind::PrimitiveU16(_)
-                | TyKind::PrimitiveU32(_)
-                | TyKind::PrimitiveU64(_)
-                | TyKind::PrimitiveUSize(_)
-                | TyKind::PrimitiveF32(_)
-                | TyKind::PrimitiveF64(_)
-                | TyKind::PrimitiveStr(_)
-                | TyKind::PrimitiveBool(_)
+                | TyKind::PrimitiveI8
+                | TyKind::PrimitiveI16
+                | TyKind::PrimitiveI32
+                | TyKind::PrimitiveI64
+                | TyKind::PrimitiveISize
+                | TyKind::PrimitiveU8
+                | TyKind::PrimitiveU16
+                | TyKind::PrimitiveU32
+                | TyKind::PrimitiveU64
+                | TyKind::PrimitiveUSize
+                | TyKind::PrimitiveF32
+                | TyKind::PrimitiveF64
+                | TyKind::PrimitiveStr
+                | TyKind::PrimitiveBool
         )
     }
 
@@ -640,43 +507,43 @@ impl<'arena> TyKind<'arena> {
     pub fn is_int_like(&self) -> bool {
         matches!(
             self,
-            Self::PrimitiveU8(0)
-                | Self::PrimitiveI8(0)
-                | Self::PrimitiveU16(0)
-                | Self::PrimitiveI16(0)
-                | Self::PrimitiveU32(0)
-                | Self::PrimitiveI32(0)
-                | Self::PrimitiveU64(0)
-                | Self::PrimitiveI64(0)
-                | Self::PrimitiveUSize(0)
-                | Self::PrimitiveISize(0)
+            Self::PrimitiveU8
+                | Self::PrimitiveI8
+                | Self::PrimitiveU16
+                | Self::PrimitiveI16
+                | Self::PrimitiveU32
+                | Self::PrimitiveI32
+                | Self::PrimitiveU64
+                | Self::PrimitiveI64
+                | Self::PrimitiveUSize
+                | Self::PrimitiveISize
         )
     }
 
     pub fn is_unsigned(&self) -> bool {
         matches!(
             self,
-            Self::PrimitiveU8(0)
-                | Self::PrimitiveU16(0)
-                | Self::PrimitiveU32(0)
-                | Self::PrimitiveU64(0)
-                | Self::PrimitiveUSize(0)
+            Self::PrimitiveU8
+                | Self::PrimitiveU16
+                | Self::PrimitiveU32
+                | Self::PrimitiveU64
+                | Self::PrimitiveUSize
         )
     }
 
     pub fn is_signed(&self) -> bool {
         matches!(
             self,
-            Self::PrimitiveI8(0)
-                | Self::PrimitiveI16(0)
-                | Self::PrimitiveI32(0)
-                | Self::PrimitiveI64(0)
-                | Self::PrimitiveISize(0)
+            Self::PrimitiveI8
+                | Self::PrimitiveI16
+                | Self::PrimitiveI32
+                | Self::PrimitiveI64
+                | Self::PrimitiveISize
         )
     }
 
     pub fn is_float(&self) -> bool {
-        matches!(self, Self::PrimitiveF32(0) | Self::PrimitiveF64(0))
+        matches!(self, Self::PrimitiveF32 | Self::PrimitiveF64)
     }
 
     pub fn get_bitwidth(&self, isize_bitwidth: u32) -> u32 {
@@ -688,30 +555,23 @@ impl<'arena> TyKind<'arena> {
             | TyKind::Tuple { .. }
             | TyKind::Generic { .. }
             | TyKind::Function(..)
-            | TyKind::PrimitiveSelf(_)
-            | TyKind::PrimitiveVoid(_)
-            | TyKind::PrimitiveBool(_)
-            | TyKind::PrimitiveStr(_)
-            | TyKind::PrimitiveNever => 0,
-            TyKind::PrimitiveU8(_) | TyKind::PrimitiveI8(_) => 8,
-            TyKind::PrimitiveU16(_) | TyKind::PrimitiveI16(_) => 16,
-            TyKind::PrimitiveF32(_) | TyKind::PrimitiveU32(_) | TyKind::PrimitiveI32(_) => 32,
-            TyKind::PrimitiveF64(_) | TyKind::PrimitiveU64(_) | TyKind::PrimitiveI64(_) => 64,
-            TyKind::PrimitiveUSize(_) | TyKind::PrimitiveISize(_) => isize_bitwidth,
+            | TyKind::PrimitiveSelf
+            | TyKind::PrimitiveVoid
+            | TyKind::PrimitiveBool
+            | TyKind::PrimitiveStr
+            | TyKind::Ref(_)
+            | TyKind::PrimitiveNever => unreachable!(),
+            TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => 8,
+            TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => 16,
+            TyKind::PrimitiveF32 | TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => 32,
+            TyKind::PrimitiveF64 | TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => 64,
+            TyKind::PrimitiveUSize | TyKind::PrimitiveISize => isize_bitwidth,
         }
-    }
-
-    pub fn is_bool(&self) -> bool {
-        matches!(self, TyKind::PrimitiveBool(0))
     }
 }
 
 impl Display for TyKind<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for _ in 0..self.refcount() {
-            f.write_char('&')?;
-        }
-
         match self {
             TyKind::Struct { name, .. } => Display::fmt(name, f),
             TyKind::DynType { trait_refs, .. } => {
@@ -750,7 +610,7 @@ impl Display for TyKind<'_> {
                 Display::fmt(number_elements, f)?;
                 f.write_char(']')
             }
-            TyKind::Function(contract, _) => {
+            TyKind::Function(contract) => {
                 f.write_str("fn")?;
                 f.write_char('(')?;
                 for (idx, typ) in contract.arguments.iter().enumerate() {
@@ -760,29 +620,29 @@ impl Display for TyKind<'_> {
                     Display::fmt(typ, f)?;
                 }
                 f.write_char(')')?;
-                if matches!(**contract.return_type, TyKind::PrimitiveVoid(0)) {
+                if contract.return_type == default_types::void {
                     return Ok(());
                 }
 
                 f.write_str(" -> ")?;
                 Display::fmt(&contract.return_type, f)
             }
-            TyKind::PrimitiveSelf(_) => f.write_str("Self"),
-            TyKind::PrimitiveVoid(_) => f.write_str("void"),
-            TyKind::PrimitiveI8(_) => f.write_str("i8"),
-            TyKind::PrimitiveI16(_) => f.write_str("i16"),
-            TyKind::PrimitiveI32(_) => f.write_str("i32"),
-            TyKind::PrimitiveI64(_) => f.write_str("i64"),
-            TyKind::PrimitiveU8(_) => f.write_str("u8"),
-            TyKind::PrimitiveU16(_) => f.write_str("u16"),
-            TyKind::PrimitiveU32(_) => f.write_str("u32"),
-            TyKind::PrimitiveU64(_) => f.write_str("u64"),
-            TyKind::PrimitiveF32(_) => f.write_str("f32"),
-            TyKind::PrimitiveF64(_) => f.write_str("f64"),
-            TyKind::PrimitiveBool(_) => f.write_str("bool"),
-            TyKind::PrimitiveStr(_) => f.write_str("str"),
-            TyKind::PrimitiveISize(_) => f.write_str("isize"),
-            TyKind::PrimitiveUSize(_) => f.write_str("usize"),
+            TyKind::PrimitiveSelf => f.write_str("Self"),
+            TyKind::PrimitiveVoid => f.write_str("void"),
+            TyKind::PrimitiveI8 => f.write_str("i8"),
+            TyKind::PrimitiveI16 => f.write_str("i16"),
+            TyKind::PrimitiveI32 => f.write_str("i32"),
+            TyKind::PrimitiveI64 => f.write_str("i64"),
+            TyKind::PrimitiveU8 => f.write_str("u8"),
+            TyKind::PrimitiveU16 => f.write_str("u16"),
+            TyKind::PrimitiveU32 => f.write_str("u32"),
+            TyKind::PrimitiveU64 => f.write_str("u64"),
+            TyKind::PrimitiveF32 => f.write_str("f32"),
+            TyKind::PrimitiveF64 => f.write_str("f64"),
+            TyKind::PrimitiveBool => f.write_str("bool"),
+            TyKind::PrimitiveStr => f.write_str("str"),
+            TyKind::PrimitiveISize => f.write_str("isize"),
+            TyKind::PrimitiveUSize => f.write_str("usize"),
             TyKind::PrimitiveNever => f.write_str("!"),
             TyKind::Generic {
                 name,
@@ -807,6 +667,10 @@ impl Display for TyKind<'_> {
                 f.write_str(" (#")?;
                 Display::fmt(generic_id, f)?;
                 f.write_char(')')
+            }
+            TyKind::Ref(c) => {
+                f.write_char('&')?;
+                Display::fmt(c, f)
             }
         }
     }
@@ -854,14 +718,12 @@ impl<'arena> TypeSuggestion<'arena> {
             TypeSuggestion::Struct(id) => Some(ctx.ctx.intern_ty(TyKind::Struct {
                 struct_id: *id,
                 name: ctx.structs.read()[*id].name,
-                num_references: 0,
             })),
             TypeSuggestion::Array(type_suggestion)
             | TypeSuggestion::UnsizedArray(type_suggestion) => type_suggestion
                 .to_type(ctx)
                 .map(|typ| TyKind::SizedArray {
                     typ,
-                    num_references: 0,
                     number_elements: 0,
                 })
                 .map(|typ| ctx.ctx.intern_ty(typ)),
@@ -886,10 +748,7 @@ impl<'arena> TypeSuggestion<'arena> {
                     elements.push(elem.to_type(ctx)?);
                 }
                 let elements = ctx.ctx.intern_tylist(&elements);
-                Some(ctx.ctx.intern_ty(TyKind::Tuple {
-                    elements,
-                    num_references: 0,
-                }))
+                Some(ctx.ctx.intern_ty(TyKind::Tuple { elements }))
             }
             TypeSuggestion::Unknown => None,
         }
@@ -897,32 +756,33 @@ impl<'arena> TypeSuggestion<'arena> {
 
     pub fn from_type(typ: Ty<'arena>) -> Self {
         match &**typ {
-            TyKind::PrimitiveStr(_)
-            | TyKind::PrimitiveSelf(_)
+            TyKind::PrimitiveStr
+            | TyKind::PrimitiveSelf
             | TyKind::Generic { .. }
             | TyKind::Function(..)
-            | TyKind::PrimitiveVoid(_)
+            | TyKind::PrimitiveVoid
             | TyKind::PrimitiveNever
             | TyKind::DynType { .. } => Self::Unknown,
             TyKind::Struct { struct_id, .. } => Self::Struct(*struct_id),
             TyKind::SizedArray { typ, .. } => Self::Array(Box::new(Self::from_type(*typ))),
             TyKind::UnsizedArray { typ, .. } => Self::UnsizedArray(Box::new(Self::from_type(*typ))),
-            TyKind::PrimitiveI8(_) => Self::Number(NumberType::I8),
-            TyKind::PrimitiveI16(_) => Self::Number(NumberType::I16),
-            TyKind::PrimitiveI32(_) => Self::Number(NumberType::I32),
-            TyKind::PrimitiveI64(_) => Self::Number(NumberType::I64),
-            TyKind::PrimitiveISize(_) => Self::Number(NumberType::Isize),
-            TyKind::PrimitiveU8(_) => Self::Number(NumberType::U8),
-            TyKind::PrimitiveU16(_) => Self::Number(NumberType::U16),
-            TyKind::PrimitiveU32(_) => Self::Number(NumberType::U32),
-            TyKind::PrimitiveU64(_) => Self::Number(NumberType::U64),
-            TyKind::PrimitiveUSize(_) => Self::Number(NumberType::Usize),
-            TyKind::PrimitiveF32(_) => Self::Number(NumberType::F32),
-            TyKind::PrimitiveF64(_) => Self::Number(NumberType::F64),
-            TyKind::PrimitiveBool(_) => Self::Bool,
+            TyKind::PrimitiveI8 => Self::Number(NumberType::I8),
+            TyKind::PrimitiveI16 => Self::Number(NumberType::I16),
+            TyKind::PrimitiveI32 => Self::Number(NumberType::I32),
+            TyKind::PrimitiveI64 => Self::Number(NumberType::I64),
+            TyKind::PrimitiveISize => Self::Number(NumberType::Isize),
+            TyKind::PrimitiveU8 => Self::Number(NumberType::U8),
+            TyKind::PrimitiveU16 => Self::Number(NumberType::U16),
+            TyKind::PrimitiveU32 => Self::Number(NumberType::U32),
+            TyKind::PrimitiveU64 => Self::Number(NumberType::U64),
+            TyKind::PrimitiveUSize => Self::Number(NumberType::Usize),
+            TyKind::PrimitiveF32 => Self::Number(NumberType::F32),
+            TyKind::PrimitiveF64 => Self::Number(NumberType::F64),
+            TyKind::PrimitiveBool => Self::Bool,
             TyKind::Tuple { elements, .. } => {
                 Self::Tuple(elements.iter().copied().map(Self::from_type).collect())
             }
+            TyKind::Ref(ty) => Self::from_type(*ty),
         }
     }
 }

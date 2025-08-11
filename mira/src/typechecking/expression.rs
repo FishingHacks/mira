@@ -4,14 +4,13 @@ use std::{
 };
 
 use crate::{annotations::Annotations, store::StoreKey, typechecking::types::FunctionType};
-use mira_spans::{interner::Symbol, Span};
+use mira_spans::{Span, interner::Symbol};
 
 use super::{
-    default_types,
+    Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
+    TypedStruct, TypedTrait, default_types,
     intrinsics::Intrinsic,
     typechecking::{ScopeTypeMetadata, ScopeValueId},
-    Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
-    TypedStruct, TypedTrait,
 };
 
 #[derive(Debug, Clone)]
@@ -59,7 +58,7 @@ impl<'arena> TypedLiteral<'arena> {
                         .ctx
                         .intern_tylist(&contract.arguments.iter().map(|v| v.1).collect::<Vec<_>>()),
                 };
-                ctx.ctx.intern_ty(TyKind::Function(fn_type, 0))
+                ctx.ctx.intern_ty(TyKind::Function(fn_type))
             }
             TypedLiteral::ExternalFunction(id) => {
                 let contract = &ctx.external_functions.read()[*id].0;
@@ -69,24 +68,21 @@ impl<'arena> TypedLiteral<'arena> {
                         .ctx
                         .intern_tylist(&contract.arguments.iter().map(|v| v.1).collect::<Vec<_>>()),
                 };
-                ctx.ctx.intern_ty(TyKind::Function(fn_type, 0))
+                ctx.ctx.intern_ty(TyKind::Function(fn_type))
             }
             TypedLiteral::Static(id) => ctx.statics.read()[*id].type_,
             TypedLiteral::String(_) => default_types::str_ref,
             TypedLiteral::Array(ty, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
                 typ: *ty,
-                num_references: 0,
                 number_elements: elems.len(),
             }),
             TypedLiteral::ArrayInit(ty, _, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
                 typ: *ty,
-                num_references: 0,
                 number_elements: *elems,
             }),
             TypedLiteral::Struct(struct_id, _) => ctx.ctx.intern_ty(TyKind::Struct {
                 struct_id: *struct_id,
                 name: ctx.structs.read()[*struct_id].name,
-                num_references: 0,
             }),
             TypedLiteral::Tuple(elems) => ctx.ctx.intern_ty(TyKind::Tuple {
                 elements: ctx.ctx.intern_tylist(
@@ -95,7 +91,6 @@ impl<'arena> TypedLiteral<'arena> {
                         .map(|v| v.to_type(scope, ctx))
                         .collect::<Vec<_>>(),
                 ),
-                num_references: 0,
             }),
             TypedLiteral::F64(_) => default_types::f64,
             TypedLiteral::F32(_) => default_types::f32,

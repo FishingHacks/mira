@@ -9,27 +9,27 @@ use crate::{
     context::SharedContext,
     store::{AssociatedStore, Store, StoreKey},
     typechecking::{
-        default_types, intrinsics::IntrinsicAnnotation, TyKind, TypecheckedModule,
-        TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStruct,
+        Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedExternalFunction, TypedFunction,
+        TypedStruct, default_types, intrinsics::IntrinsicAnnotation,
     },
 };
 use inkwell::{
+    AddressSpace,
     basic_block::BasicBlock,
     context::Context,
     debug_info::{
-        debug_metadata_version, AsDIScope, DIFile, DIFlags, DIFlagsConstants, DILexicalBlock,
-        DILocation, DINamespace, DIScope, DISubprogram, DIType, DWARFEmissionKind,
-        DWARFSourceLanguage, DebugInfoBuilder,
+        AsDIScope, DIFile, DIFlags, DIFlagsConstants, DILexicalBlock, DILocation, DINamespace,
+        DIScope, DISubprogram, DIType, DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder,
+        debug_metadata_version,
     },
     module::{FlagBehavior, Module},
     values::PointerValue,
-    AddressSpace,
 };
-use mira_spans::{interner::Symbol, Span};
+use mira_spans::{Span, interner::Symbol};
 
 use super::{
     context::DefaultTypes,
-    mangling::{mangle_external_function, mangle_function, ANON_FN_NAME},
+    mangling::{ANON_FN_NAME, mangle_external_function, mangle_function},
 };
 
 pub struct DebugContext<'ctx, 'arena> {
@@ -40,7 +40,7 @@ pub struct DebugContext<'ctx, 'arena> {
     pub(super) modules:
         AssociatedStore<(DINamespace<'ctx>, DIFile<'ctx>), TypecheckedModule<'arena>>,
     default_types: DefaultTypes<'ctx>,
-    type_store: HashMap<TyKind<'arena>, DIType<'ctx>>,
+    type_store: HashMap<Ty<'arena>, DIType<'ctx>>,
     context: &'ctx Context,
     pub(super) funcs: AssociatedStore<DISubprogram<'ctx>, TypedFunction<'arena>>,
     pub(super) ext_funcs: AssociatedStore<DISubprogram<'ctx>, TypedExternalFunction<'arena>>,
@@ -59,14 +59,14 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
         loc: Span<'arena>,
-        typ: &TyKind<'arena>,
+        ty: Ty<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
         module: StoreKey<TypecheckedModule<'arena>>,
         structs: &Store<TypedStruct<'arena>>,
         arg: u32,
     ) {
-        let ty = self.get_type(typ, structs);
+        let ty = self.get_type(ty, structs);
         let info = self.builder.create_parameter_variable(
             scope,
             &name,
@@ -87,17 +87,17 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
         loc: Span<'arena>,
-        typ: &TyKind<'arena>,
+        ty: Ty<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
         module: StoreKey<TypecheckedModule<'arena>>,
         structs: &Store<TypedStruct<'arena>>,
     ) {
-        let alignment = typ.alignment(
+        let alignment = ty.alignment(
             (self.default_types.isize.get_bit_width() / 8) as u64,
             structs,
         ) * 8;
-        let ty = self.get_type(typ, structs);
+        let ty = self.get_type(ty, structs);
         let info = self.builder.create_auto_variable(
             scope,
             &name,
@@ -212,12 +212,12 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             );
             let return_ty = (func.0.return_type != default_types::void
                 && func.0.return_type != default_types::never)
-                .then(|| me.get_type(&func.0.return_type, &struct_reader));
+                .then(|| me.get_type(func.0.return_type, &struct_reader));
             let args = func
                 .0
                 .arguments
                 .iter()
-                .map(|(_, ty)| me.get_type(ty, &struct_reader))
+                .map(|(_, ty)| me.get_type(*ty, &struct_reader))
                 .collect::<Vec<_>>();
             let module = &me.modules[func.0.module_id];
             let flags = if func.0.return_type == default_types::never {
@@ -256,12 +256,12 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         for (key, func) in ext_func_reader.index_value_iter() {
             let return_ty = (func.0.return_type != default_types::void
                 && func.0.return_type != default_types::never)
-                .then(|| me.get_type(&func.0.return_type, &struct_reader));
+                .then(|| me.get_type(func.0.return_type, &struct_reader));
             let args = func
                 .0
                 .arguments
                 .iter()
-                .map(|(_, ty)| me.get_type(ty, &struct_reader))
+                .map(|(_, ty)| me.get_type(*ty, &struct_reader))
                 .collect::<Vec<_>>();
             let module = &me.modules[func.0.module_id];
             let flags = if func.0.return_type == default_types::never {
@@ -301,99 +301,95 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
 
     pub fn get_type(
         &mut self,
-        typ: &TyKind<'arena>,
+        ty: Ty<'arena>,
         structs: &Store<TypedStruct<'arena>>,
     ) -> DIType<'ctx> {
-        if let Some(v) = self.type_store.get(typ) {
+        if let Some(v) = self.type_store.get(&ty) {
             return *v;
         }
 
         let di_typ = 'out: {
-            let name = format!("{typ}");
-            match typ {
-                TyKind::PrimitiveI8(0)
-                | TyKind::PrimitiveI16(0)
-                | TyKind::PrimitiveI32(0)
-                | TyKind::PrimitiveI64(0)
-                | TyKind::PrimitiveISize(0) => {
+            let name = format!("{ty}");
+            match **ty {
+                TyKind::PrimitiveI8
+                | TyKind::PrimitiveI16
+                | TyKind::PrimitiveI32
+                | TyKind::PrimitiveI64
+                | TyKind::PrimitiveISize => {
                     break 'out self
                         .builder
                         .create_basic_type(
                             &name,
-                            match typ {
-                                TyKind::PrimitiveI8(0) => 8,
-                                TyKind::PrimitiveI16(0) => 16,
-                                TyKind::PrimitiveI32(0) => 32,
-                                TyKind::PrimitiveI64(0) => 64,
-                                TyKind::PrimitiveISize(0) => {
-                                    self.default_types.isize.get_bit_width()
-                                }
+                            match **ty {
+                                TyKind::PrimitiveI8 => 8,
+                                TyKind::PrimitiveI16 => 16,
+                                TyKind::PrimitiveI32 => 32,
+                                TyKind::PrimitiveI64 => 64,
+                                TyKind::PrimitiveISize => self.default_types.isize.get_bit_width(),
                                 _ => unreachable!(),
                             } as u64,
                             BasicTypeEncoding::Signed,
                             DIFlags::PUBLIC,
                         )
                         .unwrap()
-                        .as_type()
+                        .as_type();
                 }
-                TyKind::PrimitiveU8(0)
-                | TyKind::PrimitiveU16(0)
-                | TyKind::PrimitiveU32(0)
-                | TyKind::PrimitiveU64(0)
-                | TyKind::PrimitiveUSize(0) => {
+                TyKind::PrimitiveU8
+                | TyKind::PrimitiveU16
+                | TyKind::PrimitiveU32
+                | TyKind::PrimitiveU64
+                | TyKind::PrimitiveUSize => {
                     break 'out self
                         .builder
                         .create_basic_type(
                             &name,
-                            match typ {
-                                TyKind::PrimitiveU8(0) => 8,
-                                TyKind::PrimitiveU16(0) => 16,
-                                TyKind::PrimitiveU32(0) => 32,
-                                TyKind::PrimitiveU64(0) => 64,
-                                TyKind::PrimitiveUSize(0) => {
-                                    self.default_types.isize.get_bit_width()
-                                }
+                            match **ty {
+                                TyKind::PrimitiveU8 => 8,
+                                TyKind::PrimitiveU16 => 16,
+                                TyKind::PrimitiveU32 => 32,
+                                TyKind::PrimitiveU64 => 64,
+                                TyKind::PrimitiveUSize => self.default_types.isize.get_bit_width(),
                                 _ => unreachable!(),
                             } as u64,
                             BasicTypeEncoding::Unsigned,
                             DIFlags::PUBLIC,
                         )
                         .unwrap()
-                        .as_type()
+                        .as_type();
                 }
-                TyKind::PrimitiveF32(0) => {
+                TyKind::PrimitiveF32 => {
                     break 'out self
                         .builder
-                        .create_basic_type("f32", 0, BasicTypeEncoding::Float, DIFlags::PUBLIC)
+                        .create_basic_type("f32", 32, BasicTypeEncoding::Float, DIFlags::PUBLIC)
                         .unwrap()
-                        .as_type()
+                        .as_type();
                 }
-                TyKind::PrimitiveF64(0) => {
+                TyKind::PrimitiveF64 => {
                     break 'out self
                         .builder
-                        .create_basic_type("f64", 0, BasicTypeEncoding::Float, DIFlags::PUBLIC)
+                        .create_basic_type("f64", 64, BasicTypeEncoding::Float, DIFlags::PUBLIC)
                         .unwrap()
-                        .as_type()
+                        .as_type();
                 }
-                TyKind::PrimitiveBool(0) => {
+                TyKind::PrimitiveBool => {
                     break 'out self
                         .builder
-                        .create_basic_type("bool", 0, BasicTypeEncoding::Boolean, DIFlags::PUBLIC)
+                        .create_basic_type("bool", 8, BasicTypeEncoding::Boolean, DIFlags::PUBLIC)
                         .unwrap()
-                        .as_type()
+                        .as_type();
                 }
-                TyKind::PrimitiveVoid(0) | TyKind::PrimitiveNever => {
+                TyKind::PrimitiveVoid | TyKind::PrimitiveNever => {
                     break 'out self
                         .builder
                         .create_basic_type("void", 0, BasicTypeEncoding::Unsigned, DIFlags::PUBLIC)
                         .unwrap()
-                        .as_type()
+                        .as_type();
                 }
                 _ => (),
             }
             // thin pointer
-            if typ.refcount() > 0 && typ.is_thin_ptr() {
-                let base_typ = self.get_type(&typ.clone().deref().unwrap(), structs);
+            if ty.refcount() > 0 && ty.is_thin_ptr() {
+                let base_typ = self.get_type(ty.deref().unwrap(), structs);
                 let typ = self.builder.create_pointer_type(
                     &name,
                     base_typ,
@@ -403,25 +399,28 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 );
                 break 'out typ.as_type();
             // fat pointer
-            } else if typ.refcount() > 0 {
-                let (metadata_type, pointer_type) = match typ {
-                    TyKind::PrimitiveSelf(_) | TyKind::Generic { .. } => {
-                        unreachable!("generics and self should be resolved by now")
-                    }
-                    TyKind::DynType { .. } => (
-                        self.get_type(&TyKind::PrimitiveVoid(1), structs),
-                        self.get_type(&TyKind::PrimitiveVoid(1), structs),
-                    ),
-                    TyKind::UnsizedArray { typ, .. } => (
-                        self.get_type(&TyKind::PrimitiveUSize(0), structs),
-                        self.get_type(&TyKind::clone(typ).take_ref(), structs),
-                    ),
-                    TyKind::PrimitiveStr(_) => (
-                        self.get_type(&TyKind::PrimitiveUSize(0), structs),
-                        self.get_type(&TyKind::PrimitiveU8(1), structs),
-                    ),
-                    v => unreachable!("Type {v} is not a fat pointer"),
-                };
+            } else if ty.refcount() > 0 {
+                // &&_ should always be a thin pointer
+                assert_eq!(ty.refcount(), 1);
+                let (metadata_type, pointer_type) =
+                    match **ty.deref().expect("dereferencing &_ should never fail") {
+                        TyKind::PrimitiveSelf | TyKind::Generic { .. } => {
+                            unreachable!("generics and self should be resolved by now")
+                        }
+                        TyKind::DynType { .. } => (
+                            self.get_type(default_types::void_ref, structs),
+                            self.get_type(default_types::void_ref, structs),
+                        ),
+                        TyKind::UnsizedArray { typ, .. } => (
+                            self.get_type(default_types::usize, structs),
+                            self.get_type(typ.take_ref(self.ctx), structs),
+                        ),
+                        TyKind::PrimitiveStr => (
+                            self.get_type(default_types::usize, structs),
+                            self.get_type(default_types::u8_ref, structs),
+                        ),
+                        _ => unreachable!("Type {ty} is not a fat pointer"),
+                    };
                 let isize_bits = self.default_types.isize.get_bit_width();
                 let pointer_member_type = self.builder.create_member_type(
                     self.global_scope,
@@ -462,23 +461,23 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         ],
                         DWARFSourceLanguage::C as u32,
                         None,
-                        &format!("{:x}", calculate_hash(typ)),
+                        &format!("{:x}", calculate_hash(&ty)),
                     )
                     .as_type();
             }
 
-            match typ {
-                TyKind::Generic { .. } | TyKind::PrimitiveSelf(..) => {
+            match &**ty {
+                TyKind::Generic { .. } | TyKind::PrimitiveSelf => {
                     unreachable!("generics and self should be resolved by now")
                 }
-                TyKind::PrimitiveStr(_) | TyKind::UnsizedArray { .. } | TyKind::DynType { .. } => {
+                TyKind::PrimitiveStr | TyKind::UnsizedArray { .. } | TyKind::DynType { .. } => {
                     unreachable!("cannot turn unsized type into a dwarf type")
                 }
                 TyKind::Struct { struct_id, .. } => {
                     let structure = &structs[*struct_id];
                     let elements = &structure.elements;
                     let ptr_size = (self.default_types.isize.get_bit_width() / 8) as u64;
-                    let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
+                    let (size, alignment) = ty.size_and_alignment(ptr_size, structs);
                     let line = structure
                         .span
                         .with_source_file(self.ctx.source_map())
@@ -488,9 +487,9 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         .iter()
                         .enumerate()
                         .map(|(i, (name, v))| {
-                            let offset = typ.struct_offset(ptr_size, structs, i);
+                            let offset = ty.struct_offset(ptr_size, structs, i);
                             let (size, alignment) = v.size_and_alignment(ptr_size, structs);
-                            let ty = self.get_type(v, structs);
+                            let ty = self.get_type(*v, structs);
                             self.builder
                                 .create_member_type(
                                     self.modules[structure.module_id].0.as_debug_info_scope(),
@@ -519,7 +518,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                             &fields,
                             0,
                             None,
-                            &format!("{:x}", calculate_hash(typ)),
+                            &format!("{:x}", calculate_hash(&ty)),
                         )
                         .as_type()
                 }
@@ -528,11 +527,11 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                     number_elements,
                     ..
                 } => {
-                    let (size, alignment) = typ.size_and_alignment(
+                    let (size, alignment) = ty.size_and_alignment(
                         (self.default_types.isize.get_bit_width() / 8) as u64,
                         structs,
                     );
-                    let inner_ty = self.get_type(child, structs);
+                    let inner_ty = self.get_type(*child, structs);
                     self.builder
                         .create_array_type(
                             inner_ty,
@@ -544,13 +543,13 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         .as_type()
                 }
                 TyKind::Tuple { elements, .. } => {
-                    let (size, alignment) = typ.size_and_alignment(
+                    let (size, alignment) = ty.size_and_alignment(
                         (self.default_types.isize.get_bit_width() / 8) as u64,
                         structs,
                     );
                     let fields = elements
                         .iter()
-                        .map(|v| self.get_type(v, structs))
+                        .map(|v| self.get_type(*v, structs))
                         .collect::<Vec<_>>();
                     self.builder
                         .create_struct_type(
@@ -565,12 +564,12 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                             &fields,
                             0,
                             None,
-                            &format!("{:x}", calculate_hash(typ)),
+                            &format!("{:x}", calculate_hash(&ty)),
                         )
                         .as_type()
                 }
                 TyKind::Function(..) => {
-                    let base_type = self.get_type(&TyKind::PrimitiveVoid(0), structs);
+                    let base_type = self.get_type(default_types::void, structs);
                     self.builder
                         .create_pointer_type(
                             &name,
@@ -584,11 +583,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 _ => unreachable!(),
             }
         };
-        *self
-            .type_store
-            .entry(typ.clone())
-            .insert_entry(di_typ)
-            .get()
+        *self.type_store.entry(ty).insert_entry(di_typ).get()
     }
 
     pub fn get_file(&self, file: &Path) -> DIFile<'ctx> {
