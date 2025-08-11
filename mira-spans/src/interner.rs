@@ -10,9 +10,9 @@ macro_rules! interner {
         #[derive(Clone, Copy, Eq)]
         pub struct $internee<'arena>(&'arena $ty);
 
-        impl std::hash::Hash for $internee<'_> {
+        impl<'arena> std::hash::Hash for $internee<'arena> {
             fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-                self.0.hash(state);
+                (self.0 as *const $ty).hash(state);
             }
         }
 
@@ -34,12 +34,6 @@ macro_rules! interner {
             }
         }
 
-        impl<'arena> std::borrow::Borrow<&'arena $ty> for $internee<'arena> {
-            fn borrow(&self) -> &&'arena $ty {
-                &self.0
-            }
-        }
-
         impl<'arena, T> PartialEq<T> for $internee<'arena>
         where
             $ty: PartialEq<T>,
@@ -58,7 +52,7 @@ macro_rules! interner {
 
         impl<'arena> $interner<'arena> {
             #[allow(unused, dead_code)]
-            const fn check_default(_: &[$internee<'arena>]) {}
+            const fn check_default(_: &[&'static $internee<'arena>]) {}
 
             pub fn new(arena: &'arena Arena) -> Self {
                 Self::new_with(arena, &[])
@@ -174,14 +168,14 @@ macro_rules! symbols {
     ($( $category:ident { $($sym:ident $(= $value:expr)?),* $(,)? } ),* $(,)?) => {
         pub mod symbols {
         use super::Symbol;
-        pub const EMPTY_SYM: Symbol<'static> = Symbol("");
+        pub static EMPTY_SYM: Symbol<'static> = Symbol("");
 
         $(#[allow(non_upper_case_globals, non_snake_case)] pub mod $category {
             use super::Symbol;
-            $(pub static $sym: Symbol<'static> = Symbol(symbols!(value $sym $(= $value)?));)*
+            $(pub static $sym: Symbol<'static> = Symbol(unsafe { &*(symbols!(value $sym $(= $value)?) as *const _) });)*
         })*
 
-        pub(super) static ALL_SYMBOLS: &[Symbol<'static>] = &[EMPTY_SYM, $($($category::$sym),*),*];
+        pub(super) static ALL_SYMBOLS: &[&Symbol<'static>] = &[&EMPTY_SYM, $($(&$category::$sym),*),*];
         }
     };
 
@@ -210,6 +204,15 @@ mod test {
     pub fn interner_interns() {
         let arena = Arena::new();
         let mut interner = SymbolInterner::new(&arena);
+        println!(
+            "u8 is {:p}, but supposed to be {:p}",
+            *interner.values.get("u8").unwrap(),
+            symbols::Types::u8.0
+        );
+        for symbol in symbols::ALL_SYMBOLS {
+            println!("all symbols {} is {:p}", symbol.0, symbol.0);
+        }
+        println!("pointer for empty symbol is {:p}", symbols::EMPTY_SYM.0);
         let abcd1 = interner.intern("abcd");
         let abcd2 = interner.intern("abcd");
         let meow1 = interner.intern("meow");
@@ -218,13 +221,23 @@ mod test {
         let meow2 = interner.intern("meow");
         let purr2 = interner.intern("purr");
 
+        let u8 = interner.intern("u8");
+        let u16 = interner.intern("u16");
+        let u32 = interner.intern("u32");
+
         assert_eq!(abcd1, abcd2);
         assert_eq!(abcd2, abcd3);
         assert_eq!(meow1, meow2);
         assert_eq!(purr1, purr2);
+        assert_eq!(u8, symbols::Types::u8);
+        assert_eq!(u16, symbols::Types::u16);
+        assert_eq!(u32, symbols::Types::u32);
         assert_eq!(addr(abcd1), addr(abcd2));
         assert_eq!(addr(abcd2), addr(abcd3));
         assert_eq!(addr(meow1), addr(meow2));
         assert_eq!(addr(purr1), addr(purr2));
+        assert_eq!(addr(u8), addr(symbols::Types::u8));
+        assert_eq!(addr(u16), addr(symbols::Types::u16));
+        assert_eq!(addr(u32), addr(symbols::Types::u32));
     }
 }

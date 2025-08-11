@@ -46,9 +46,9 @@ pub mod default_types {
     pub static void_ref: Ty<'static> = Ty(&TyKind::Ref(void));
     pub static u8_ref: Ty<'static> = Ty(&TyKind::Ref(u8));
 
-    pub static ALL: &[Ty<'static>] = &[
-        u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, void, never, str_ref, self_ref,
-        void_ref, self_, u8_ref,
+    pub static ALL: &[&Ty<'static>] = &[
+        &u8, &u16, &u32, &u64, &usize, &i8, &i16, &i32, &i64, &isize, &bool, &void, &never,
+        &str_ref, &self_ref, &void_ref, &self_, &u8_ref,
     ];
 }
 
@@ -778,5 +778,25 @@ impl<'arena> TypeSuggestion<'arena> {
             }
             TyKind::Ref(ty) => Self::from_type(*ty),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn ty_interner_interns() {
+        let arena = Arena::new();
+        let mut interner = TypeInterner::new(&arena);
+        let u8 = interner.intern_owned(TyKind::PrimitiveU8);
+        let u16 = interner.intern_owned(TyKind::PrimitiveU16);
+        let u8ref = interner.intern_owned(TyKind::Ref(u8));
+        assert_eq!(default_types::u8, u8);
+        assert_eq!(default_types::u16, u16);
+        assert_eq!(default_types::u8_ref, u8ref);
+        assert_eq!(default_types::u8.0, u8.0);
+        assert_eq!(default_types::u16.0, u16.0);
+        assert_eq!(default_types::u8_ref.0, u8ref.0);
     }
 }
