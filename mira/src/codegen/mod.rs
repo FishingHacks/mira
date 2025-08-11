@@ -207,7 +207,7 @@ impl<'ctx, 'arena> TyKind<'arena> {
             TyKind::PrimitiveSelf => unreachable!("Self must be resolved at this point"),
             TyKind::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
             TyKind::Struct { struct_id, .. } => structs[*struct_id].into(),
-            TyKind::Tuple { elements, .. } => ctx
+            TyKind::Tuple(elements) => ctx
                 .struct_type(
                     &elements
                         .iter()
@@ -699,7 +699,7 @@ fn build_deref<'ctx, 'arena>(
             }
             Ok(value.into())
         }
-        TyKind::Tuple { elements, .. } => {
+        TyKind::Tuple(elements) => {
             let llvm_structure = ty
                 .to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context)
                 .into_struct_type();
@@ -829,7 +829,7 @@ fn build_ptr_store<'ctx, 'arena>(
                 build_ptr_store(ptr, val, *ty, ctx, volatile)?;
             }
         }
-        TyKind::Tuple { elements, .. } => {
+        TyKind::Tuple(elements) => {
             let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for (idx, ty) in elements.iter().enumerate() {
                 let val = ctx.builder.build_extract_value(
@@ -1705,7 +1705,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                         ctx.push_value(*dst, value.into());
                         Ok(())
                     }
-                    TyKind::UnsizedArray { typ } => {
+                    TyKind::UnsizedArray(typ) => {
                         let offset = match offset {
                             OffsetValue::Dynamic(id) => ctx.get_value(*id).into_int_value(),
                             OffsetValue::Static(v) => {
@@ -2210,7 +2210,7 @@ impl<'arena> TypecheckedExpression<'arena> {
                                     .build_load(ctx.default_types.isize, vtable_ptr, "")?;
                             ctx.push_value(dst, size);
                         }
-                        TyKind::UnsizedArray { typ, .. } => {
+                        TyKind::UnsizedArray(typ) => {
                             let fat_ptr = args[0].fn_ctx_to_basic_value(ctx).into_struct_value();
                             let len = ctx
                                 .builder

@@ -411,7 +411,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                             self.get_type(default_types::void_ref, structs),
                             self.get_type(default_types::void_ref, structs),
                         ),
-                        TyKind::UnsizedArray { typ, .. } => (
+                        TyKind::UnsizedArray(typ) => (
                             self.get_type(default_types::usize, structs),
                             self.get_type(typ.take_ref(self.ctx), structs),
                         ),
@@ -542,7 +542,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         )
                         .as_type()
                 }
-                TyKind::Tuple { elements, .. } => {
+                TyKind::Tuple(elements) => {
                     let (size, alignment) = ty.size_and_alignment(
                         (self.default_types.isize.get_bit_width() / 8) as u64,
                         structs,

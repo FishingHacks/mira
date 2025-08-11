@@ -80,23 +80,17 @@ impl<'a> AsRef<TyKind<'a>> for &TyKind<'a> {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TyKind<'arena> {
-    DynType {
-        trait_refs: ArenaList<'arena, (StoreKey<TypedTrait<'arena>>, Ident<'arena>)>,
-    },
+    DynType(ArenaList<'arena, (StoreKey<TypedTrait<'arena>>, Ident<'arena>)>),
     Struct {
         struct_id: StoreKey<TypedStruct<'arena>>,
         name: Ident<'arena>,
     },
-    UnsizedArray {
-        typ: Ty<'arena>,
-    },
+    UnsizedArray(Ty<'arena>),
     SizedArray {
         typ: Ty<'arena>,
         number_elements: usize,
     },
-    Tuple {
-        elements: TyList<'arena>,
-    },
+    Tuple(TyList<'arena>),
     Function(FunctionType<'arena>),
 
     PrimitiveVoid,
@@ -268,7 +262,7 @@ impl<'arena> TyKind<'arena> {
     ) -> bool {
         match self {
             TyKind::Ref(v) => {
-                if let TyKind::DynType { trait_refs } = &***v {
+                if let TyKind::DynType(trait_refs) = &***v {
                     values_match(&trait_refs.iter().map(|v| v.0).collect::<Vec<_>>(), traits)
                 } else {
                     false
@@ -328,7 +322,7 @@ impl<'arena> TyKind<'arena> {
                 .max()
                 .unwrap_or(1),
             TyKind::SizedArray { typ, .. } => typ.alignment(ptr_size, structs),
-            TyKind::Tuple { elements, .. } => elements
+            TyKind::Tuple(elements) => elements
                 .iter()
                 .map(|v| v.alignment(ptr_size, structs))
                 .max()
@@ -384,7 +378,7 @@ impl<'arena> TyKind<'arena> {
                 let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
                 (size * *number_elements as u64, alignment)
             }
-            TyKind::Tuple { elements } => {
+            TyKind::Tuple(elements) => {
                 let mut size = 0;
                 let mut alignment = 1;
                 for element in elements.iter() {
@@ -574,7 +568,7 @@ impl Display for TyKind<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TyKind::Struct { name, .. } => Display::fmt(name, f),
-            TyKind::DynType { trait_refs, .. } => {
+            TyKind::DynType(trait_refs) => {
                 f.write_str("dyn ")?;
                 for (i, (_, trait_ref)) in trait_refs.iter().enumerate() {
                     if i != 0 {
@@ -584,7 +578,7 @@ impl Display for TyKind<'_> {
                 }
                 Ok(())
             }
-            TyKind::Tuple { elements, .. } => {
+            TyKind::Tuple(elements) => {
                 f.write_char('(')?;
                 for (i, elem) in elements.iter().enumerate() {
                     if i != 0 {
@@ -594,7 +588,7 @@ impl Display for TyKind<'_> {
                 }
                 f.write_char(')')
             }
-            TyKind::UnsizedArray { typ, .. } => {
+            TyKind::UnsizedArray(typ) => {
                 f.write_char('[')?;
                 Display::fmt(typ, f)?;
                 f.write_char(']')
@@ -748,7 +742,7 @@ impl<'arena> TypeSuggestion<'arena> {
                     elements.push(elem.to_type(ctx)?);
                 }
                 let elements = ctx.ctx.intern_tylist(&elements);
-                Some(ctx.ctx.intern_ty(TyKind::Tuple { elements }))
+                Some(ctx.ctx.intern_ty(TyKind::Tuple(elements)))
             }
             TypeSuggestion::Unknown => None,
         }
@@ -765,7 +759,7 @@ impl<'arena> TypeSuggestion<'arena> {
             | TyKind::DynType { .. } => Self::Unknown,
             TyKind::Struct { struct_id, .. } => Self::Struct(*struct_id),
             TyKind::SizedArray { typ, .. } => Self::Array(Box::new(Self::from_type(*typ))),
-            TyKind::UnsizedArray { typ, .. } => Self::UnsizedArray(Box::new(Self::from_type(*typ))),
+            TyKind::UnsizedArray(typ) => Self::UnsizedArray(Box::new(Self::from_type(*typ))),
             TyKind::PrimitiveI8 => Self::Number(NumberType::I8),
             TyKind::PrimitiveI16 => Self::Number(NumberType::I16),
             TyKind::PrimitiveI32 => Self::Number(NumberType::I32),
@@ -779,7 +773,7 @@ impl<'arena> TypeSuggestion<'arena> {
             TyKind::PrimitiveF32 => Self::Number(NumberType::F32),
             TyKind::PrimitiveF64 => Self::Number(NumberType::F64),
             TyKind::PrimitiveBool => Self::Bool,
-            TyKind::Tuple { elements, .. } => {
+            TyKind::Tuple(elements) => {
                 Self::Tuple(elements.iter().copied().map(Self::from_type).collect())
             }
             TyKind::Ref(ty) => Self::from_type(*ty),

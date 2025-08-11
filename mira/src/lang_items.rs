@@ -4,7 +4,7 @@ use std::fmt::{Debug, Display, Write};
 use crate::context::SharedContext;
 use crate::store::StoreKey;
 use crate::typechecking::{
-    default_types, Ty, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
+    Ty, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct, default_types,
 };
 use crate::{
     annotations::{Annotation, AnnotationReceiver, Annotations},
@@ -13,7 +13,7 @@ use crate::{
     typechecking::{TyKind, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
 };
 use mira_macros::ErrorData;
-use mira_spans::{interner::Symbol, Span};
+use mira_spans::{Span, interner::Symbol};
 
 #[derive(Clone, Debug)]
 pub struct LangItemAnnotation(String);
@@ -275,28 +275,40 @@ pub enum LangItemError<'arena> {
         lang_item: &'static str,
         function: Symbol<'arena>,
     },
-    #[error("Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(expected), FunctionList(found))]
+    #[error(
+        "Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}",
+        FunctionList(expected),
+        FunctionList(found)
+    )]
     TraitMismatchingArguments {
         expected: Vec<Ty<'arena>>,
         found: Vec<Ty<'arena>>,
         function: Symbol<'arena>,
         lang_item: &'static str,
     },
-    #[error("Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}")]
+    #[error(
+        "Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}"
+    )]
     TraitMismatchingReturnType {
         expected: Ty<'arena>,
         found: Ty<'arena>,
         function: Symbol<'arena>,
         lang_item: &'static str,
     },
-    #[error("Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}", FunctionList(expected), FunctionList(found))]
+    #[error(
+        "Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}",
+        FunctionList(expected),
+        FunctionList(found)
+    )]
     StructMismatchingArguments {
         expected: Vec<Ty<'arena>>,
         found: Vec<Ty<'arena>>,
         function: Symbol<'arena>,
         lang_item: &'static str,
     },
-    #[error("Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}")]
+    #[error(
+        "Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}"
+    )]
     StructMismatchingReturnType {
         expected: Ty<'arena>,
         found: Ty<'arena>,
@@ -310,7 +322,11 @@ pub enum LangItemError<'arena> {
         lang_item: &'static str,
         generic: Symbol<'arena>,
     },
-    #[error("Struct lang-item `{lang_item}`s generic `{generic}` doesn't match, expected {}, but found {}", GenericList(expected), GenericList(found))]
+    #[error(
+        "Struct lang-item `{lang_item}`s generic `{generic}` doesn't match, expected {}, but found {}",
+        GenericList(expected),
+        GenericList(found)
+    )]
     StructGenericMismatch {
         lang_item: &'static str,
         generic: Symbol<'arena>,
@@ -340,7 +356,9 @@ pub enum LangItemError<'arena> {
         found: Vec<Ty<'arena>>,
         lang_item: &'static str,
     },
-    #[error("Function lang-item `{lang_item}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}")]
+    #[error(
+        "Function lang-item `{lang_item}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}"
+    )]
     MismatchingReturnType {
         expected: Ty<'arena>,
         found: Ty<'arena>,
@@ -746,7 +764,7 @@ fn does_static_match<'arena>(
 ) -> bool {
     let trait_reader = context.traits.read();
     match &**typ {
-        TyKind::DynType { trait_refs, .. } => {
+        TyKind::DynType(trait_refs) => {
             let mut matches = true;
             for trait_id in traits.iter().copied() {
                 if !trait_refs.iter().any(|(v, _)| *v == trait_id) {

@@ -84,14 +84,14 @@ impl<'arena> TypedLiteral<'arena> {
                 struct_id: *struct_id,
                 name: ctx.structs.read()[*struct_id].name,
             }),
-            TypedLiteral::Tuple(elems) => ctx.ctx.intern_ty(TyKind::Tuple {
-                elements: ctx.ctx.intern_tylist(
+            TypedLiteral::Tuple(elems) => ctx.ctx.intern_ty(TyKind::Tuple(
+                ctx.ctx.intern_tylist(
                     &elems
                         .iter()
                         .map(|v| v.to_type(scope, ctx))
                         .collect::<Vec<_>>(),
                 ),
-            }),
+            )),
             TypedLiteral::F64(_) => default_types::f64,
             TypedLiteral::F32(_) => default_types::f32,
             TypedLiteral::U8(_) => default_types::u8,

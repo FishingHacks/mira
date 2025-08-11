@@ -394,7 +394,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 let trait_refs = ArenaList::new(self.ctx.arena(), &trait_refs);
                 Ok(with_refcount(
                     self.ctx,
-                    self.ctx.intern_ty(TyKind::DynType { trait_refs }),
+                    self.ctx.intern_ty(TyKind::DynType(trait_refs)),
                     *num_references,
                 ))
             }
@@ -476,9 +476,9 @@ impl<'arena> TypecheckingContext<'arena> {
                 span: _,
             } => Ok(with_refcount(
                 self.ctx,
-                self.ctx.intern_ty(TyKind::UnsizedArray {
-                    typ: self.resolve_type(module_id, child, generics)?,
-                }),
+                self.ctx.intern_ty(TyKind::UnsizedArray(
+                    self.resolve_type(module_id, child, generics)?,
+                )),
                 *num_references,
             )),
             TypeRef::SizedArray {
@@ -503,9 +503,9 @@ impl<'arena> TypecheckingContext<'arena> {
                 for elem in elements.iter() {
                     typed_elements.push(self.resolve_type(module_id, elem, generics)?);
                 }
-                let ty = self.ctx.intern_ty(TyKind::Tuple {
-                    elements: self.ctx.intern_tylist(&typed_elements),
-                });
+                let ty = self
+                    .ctx
+                    .intern_ty(TyKind::Tuple(self.ctx.intern_tylist(&typed_elements)));
                 Ok(with_refcount(self.ctx, ty, *num_references))
             }
         }
@@ -720,11 +720,10 @@ impl<'arena> TypecheckingContext<'arena> {
                 span: _,
             } => Some(with_refcount(
                 self.ctx,
-                self.ctx.intern_ty(TyKind::UnsizedArray {
-                    typ: self.type_resolution_resolve_type(
+                self.ctx
+                    .intern_ty(TyKind::UnsizedArray(self.type_resolution_resolve_type(
                         child, generics, module, context, errors, left,
-                    )?,
-                }),
+                    )?)),
                 *num_references,
             )),
             TypeRef::SizedArray {
@@ -758,9 +757,9 @@ impl<'arena> TypecheckingContext<'arena> {
                         left,
                     )?);
                 }
-                let ty = self.ctx.intern_ty(TyKind::Tuple {
-                    elements: self.ctx.intern_tylist(&typed_elements),
-                });
+                let ty = self
+                    .ctx
+                    .intern_ty(TyKind::Tuple(self.ctx.intern_tylist(&typed_elements)));
                 Some(with_refcount(self.ctx, ty, *num_references))
             }
         }
