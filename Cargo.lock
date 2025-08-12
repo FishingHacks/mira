@@ -272,9 +272,9 @@ dependencies = [
  "inkwell",
  "mira-errors",
  "mira-macros",
+ "mira-progress-bar",
  "mira-spans",
  "parking_lot",
- "termsize",
  "thiserror",
 ]
 
@@ -297,6 +297,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "mira-progress-bar"
+version = "0.1.0"
+dependencies = [
+ "termsize",
 ]
 
 [[package]]

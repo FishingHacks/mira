@@ -1,4 +1,4 @@
-workspace = { members = ["mira", "mira-error-codes", "mira-errors", "mira-macros", "mira-spans", "mirafmt"] }
+workspace = { members = ["mira", "mira-error-codes", "mira-errors", "mira-macros", "mira-progress-bar", "mira-spans", "mirafmt"] }
 [package]
 name = "mirac"
 version = "0.1.0"

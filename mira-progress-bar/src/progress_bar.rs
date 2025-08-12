@@ -1,26 +1,25 @@
-use std::fmt::{Debug, Write};
+use std::collections::HashMap;
+use std::fmt::Debug;
 
-use super::box_drawing_characters as bdc;
-use super::sized_line_writer::SizedLineWriter;
-use crate::slab::Slab;
-use bdc::BoxDrawingChars;
+use crate::box_drawing_characters::{self as bdc, BoxDrawingChars};
+use crate::sized_line_writer::SizedLineWriter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct ProgressItemRef(pub usize);
 
 #[derive(Debug, Clone)]
-struct ProgressItem {
+pub(crate) struct ProgressItem {
     name: Box<str>,
-    children: Vec<ProgressItemRef>,
+    pub(crate) children: Vec<ProgressItemRef>,
     parent: ProgressItemRef,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ProgressBar {
     chars: BoxDrawingChars,
-    items: Slab<ProgressItem>,
-    root_children: Vec<ProgressItemRef>,
+    pub(crate) items: HashMap<usize, ProgressItem>,
+    pub(crate) root_children: Vec<ProgressItemRef>,
     last_paint_linenum: usize,
 }
 
@@ -64,21 +63,23 @@ impl ProgressBar {
         }
     }
 
-    pub fn add_item(&mut self, name: Box<str>) -> ProgressItemRef {
-        let child_ref = ProgressItemRef(self.items.push(ProgressItem {
-            name,
-            children: Vec::new(),
-            parent: ProgressItemRef(usize::MAX),
-        }));
-        self.root_children.push(child_ref);
-        child_ref
+    pub fn add_item(&mut self, name: Box<str>, item_ref: ProgressItemRef) {
+        self.items.insert(
+            item_ref.0,
+            ProgressItem {
+                name,
+                children: Vec::new(),
+                parent: ProgressItemRef(usize::MAX),
+            },
+        );
+        self.root_children.push(item_ref);
     }
 
     pub fn remove_item(&mut self, item_ref: ProgressItemRef) {
         let Some(item) = self.remove_item_inner(item_ref) else {
             return;
         };
-        match self.items.get_mut(item.parent.0) {
+        match self.items.get_mut(&item.parent.0) {
             Some(v) => {
                 let mut i = 0;
                 while i < v.children.len() {
@@ -102,29 +103,32 @@ impl ProgressBar {
         }
     }
 
-    fn remove_item_inner(&mut self, item_ref: ProgressItemRef) -> Option<ProgressItem> {
-        let item = self.items.remove(item_ref.0)?;
+    pub(crate) fn remove_item_inner(&mut self, item_ref: ProgressItemRef) -> Option<ProgressItem> {
+        let item = self.items.remove(&item_ref.0)?;
         for child in item.children.iter().copied() {
             self.remove_item_inner(child);
         }
         Some(item)
     }
 
-    pub fn add_child_item(&mut self, parent: ProgressItemRef, name: Box<str>) -> ProgressItemRef {
-        let child_ref = ProgressItemRef(self.items.push(ProgressItem {
-            name,
-            children: Vec::new(),
-            parent,
-        }));
+    pub fn add_child_item(
+        &mut self,
+        parent: ProgressItemRef,
+        name: Box<str>,
+        item_ref: ProgressItemRef,
+    ) {
+        self.items.insert(
+            item_ref.0,
+            ProgressItem {
+                name,
+                children: Vec::new(),
+                parent,
+            },
+        );
 
-        if let Some(v) = self.items.get_mut(parent.0) {
-            v.children.push(child_ref)
+        if let Some(v) = self.items.get_mut(&parent.0) {
+            v.children.push(item_ref)
         }
-        child_ref
-    }
-
-    pub fn get_name(&self, item_ref: ProgressItemRef) -> &str {
-        &self.items[item_ref.0].name
     }
 
     fn print_inner(
@@ -133,10 +137,10 @@ impl ProgressBar {
         children: &[ProgressItemRef],
         last_item: *mut Indent,
         root_node: *const Indent,
-    ) -> std::fmt::Result {
+    ) -> std::io::Result<()> {
         let last_idx = children.len().saturating_sub(1);
         for (idx, value) in children.iter().enumerate() {
-            let Some(child) = self.items.get(value.0) else {
+            let Some(child) = self.items.get(&value.0) else {
                 continue;
             };
             for ty in IndentIter(root_node) {
@@ -171,26 +175,23 @@ impl ProgressBar {
         Ok(())
     }
 
-    pub fn clean(&mut self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str("\x1b[G\x1b[K")?;
+    pub fn clean(&mut self, f: &mut dyn std::io::Write) -> std::io::Result<()> {
+        f.write_all("\x1b[G\x1b[K".as_bytes())?;
         for _ in 0..self.last_paint_linenum {
-            f.write_str("\x1b[A\x1b[K")?;
+            f.write_all("\x1b[A\x1b[K".as_bytes())?;
         }
         self.last_paint_linenum = 0;
         Ok(())
     }
 
-    pub fn display(&mut self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    pub fn display(&mut self, f: &mut dyn std::io::Write) -> std::io::Result<()> {
         self.clean(f)?;
         let mut f = SizedLineWriter::new(get_size().0 as usize, f);
         f.write_str("root\n")?;
         let mut root_node = Indent::new(IndentType::None);
-        match self.print_inner(&mut f, &self.root_children, &mut root_node, &root_node) {
-            v @ Ok(_) | v @ Err(_) => {
-                self.last_paint_linenum = f.lines_written;
-                v
-            }
-        }
+        let v = self.print_inner(&mut f, &self.root_children, &mut root_node, &root_node);
+        self.last_paint_linenum = f.lines_written;
+        v
     }
 }
 
@@ -227,26 +228,26 @@ enum IndentType {
     None,
 }
 
-impl ProgressItemRef {
-    pub fn remove(self, bar: &mut ProgressBar) {
-        bar.remove_item(self);
-    }
-
-    pub fn name(self, bar: &ProgressBar) -> &str {
-        &bar.items[self.0].name
-    }
-
-    pub fn remove_all_children(self, bar: &mut ProgressBar) {
-        let Some(v) = bar.items.get_mut(self.0) else {
-            return;
-        };
-        let children = std::mem::take(&mut v.children);
-        for child in children {
-            bar.remove_item_inner(child);
-        }
-    }
-
-    pub fn add_child(self, name: Box<str>, bar: &mut ProgressBar) -> ProgressItemRef {
-        bar.add_child_item(self, name)
-    }
-}
+// impl ProgressItemRef {
+//     pub fn remove(self, bar: &mut ProgressBar) {
+//         bar.remove_item(self);
+//     }
+//
+//     pub fn name(self, bar: &ProgressBar) -> &str {
+//         &bar.items[self.0].name
+//     }
+//
+//     pub fn remove_all_children(self, bar: &mut ProgressBar) {
+//         let Some(v) = bar.items.get_mut(self.0) else {
+//             return;
+//         };
+//         let children = std::mem::take(&mut v.children);
+//         for child in children {
+//             bar.remove_item_inner(child);
+//         }
+//     }
+//
+//     pub fn add_child(self, name: Box<str>, bar: &mut ProgressBar) -> ProgressItemRef {
+//         bar.add_child_item(self, name)
+//     }
+// }

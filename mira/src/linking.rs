@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::Write,
+    mem::MaybeUninit,
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus},
     sync::Arc,
@@ -10,7 +11,7 @@ use std::{
 use inkwell::context::Context;
 use mira_errors::Diagnostics;
 use mira_macros::ErrorData;
-use parking_lot::RwLock;
+use mira_progress_bar::ProgressBarStyle;
 
 mod parsing;
 use parsing::parse_all;
@@ -20,14 +21,13 @@ use crate::{
     context::SharedContext,
     error::{CurrentDirError, FailedToWriteIR, FileOpenError, IoReadError},
     optimizations,
-    progress_bar::{ProgressBar, ProgressBarStyle},
     store::AssociatedStore,
     target::{Abi, Arch, Os, Target},
     typechecking::{
+        TypecheckingContext,
         intrinsics::IntrinsicAnnotation,
         ir_displayer::{Formatter, IoWriteWrapper, ReadOnlyTypecheckingContext, TCContextDisplay},
         typechecking::{typecheck_external_function, typecheck_function, typecheck_static},
-        TypecheckingContext,
     },
 };
 
@@ -538,14 +538,15 @@ pub fn run_full_compilation_pipeline<'arena>(
     drop(opts.library_tree.names);
     ctx.source_map().set_main_package(main_lib);
 
-    let progress_bar = Arc::new(RwLock::new(ProgressBar::new(ProgressBarStyle::Normal)));
-    let parser_item = progress_bar.write().add_item("Parsing".into());
+    let (thread, mut progress_bar) =
+        mira_progress_bar::print_thread::start_thread(ProgressBarStyle::Normal);
+    let _deferred = DeferFn::new(move || _ = thread.join());
+    let parser_item = progress_bar.add_item("Parsing".into());
 
     let module_context = parse_all(ctx, progress_bar.clone(), parser_item);
-    progress_bar.write().remove_item(parser_item);
-    let typechecking_item = progress_bar.write().add_item("Typechecking".into());
-    let type_resolution_item = progress_bar.write().add_item("Type Resolution".into());
-    print_progress_bar(&progress_bar);
+    progress_bar.remove(parser_item);
+    let typechecking_item = progress_bar.add_item("Typechecking".into());
+    let type_resolution_item = progress_bar.add_item("Type Resolution".into());
 
     let module_context = module_context?;
     let typechecking_context = TypecheckingContext::new(ctx, module_context.clone());
@@ -558,7 +559,7 @@ pub fn run_full_compilation_pipeline<'arena>(
         return Err(errs);
     }
 
-    progress_bar.write().remove_item(type_resolution_item);
+    progress_bar.remove(type_resolution_item);
 
     let function_keys = typechecking_context
         .functions
@@ -581,25 +582,23 @@ pub fn run_full_compilation_pipeline<'arena>(
     let mut scopes_ext_fns = AssociatedStore::new();
 
     for key in function_keys {
-        let item = progress_bar.write().add_child_item(
+        let item = progress_bar.add_child(
             typechecking_item,
             format!("Typechecking function {key}").into_boxed_str(),
         );
-        print_progress_bar(&progress_bar);
 
         if let Ok(v) = typecheck_function(&typechecking_context, &module_context, key, &mut errs) {
             scopes_fns.insert(key, v);
         }
 
-        progress_bar.write().remove_item(item);
+        progress_bar.remove(item);
     }
 
     for key in ext_function_keys {
-        let item = progress_bar.write().add_child_item(
+        let item = progress_bar.add_child(
             typechecking_item,
             format!("Typechecking external function {key}").into_boxed_str(),
         );
-        print_progress_bar(&progress_bar);
 
         if let Ok(v) =
             typecheck_external_function(&typechecking_context, &module_context, key, &mut errs)
@@ -607,36 +606,31 @@ pub fn run_full_compilation_pipeline<'arena>(
             scopes_ext_fns.insert(key, v);
         }
 
-        progress_bar.write().remove_item(item);
+        progress_bar.remove(item);
     }
 
     for key in static_keys {
-        let item = progress_bar.write().add_child_item(
+        let item = progress_bar.add_child(
             typechecking_item,
             format!("Typechecking static {key}").into_boxed_str(),
         );
-        print_progress_bar(&progress_bar);
 
         typecheck_static(&typechecking_context, &module_context, key, &mut errs);
 
-        progress_bar.write().remove_item(item);
+        progress_bar.remove(item);
     }
 
-    progress_bar.write().remove_item(typechecking_item);
+    progress_bar.remove(typechecking_item);
 
     if let Err(err) = typechecking_context.validate_main_function(ctx, &module_context) {
         errs.add_err(err);
     }
 
-    let dce_item = progress_bar
-        .write()
-        .add_item("Dead code elimination".into());
-    print_progress_bar(&progress_bar);
+    let dce_item = progress_bar.add_item("Dead code elimination".into());
 
     optimizations::dead_code_elimination::run_dce(&typechecking_context, &[], &[]);
 
-    progress_bar.write().remove_item(dce_item);
-    print_progress_bar(&progress_bar);
+    progress_bar.remove(dce_item);
 
     if !errs.is_empty() {
         return Err(errs);
@@ -679,18 +673,16 @@ pub fn run_full_compilation_pipeline<'arena>(
 
     drop(module_context);
 
-    let codegen_item = progress_bar.write().add_item("Codegen".into());
-    print_progress_bar(&progress_bar);
+    let codegen_item = progress_bar.add_item("Codegen".into());
 
     for (fn_id, (contract, _)) in typechecking_context.functions.read().index_value_iter() {
         if contract.annotations.has_annotation::<IntrinsicAnnotation>() {
             continue;
         }
-        let item = progress_bar.write().add_child_item(
+        let item = progress_bar.add_child(
             codegen_item,
             format!("Codegening function #{fn_id}").into_boxed_str(),
         );
-        print_progress_bar(&progress_bar);
 
         if let Err(e) = codegen_context.compile_fn(
             fn_id,
@@ -698,15 +690,14 @@ pub fn run_full_compilation_pipeline<'arena>(
         ) {
             errs.add_err(CodegenError::from(e));
         }
-        progress_bar.write().remove_item(item);
+        progress_bar.remove(item);
     }
 
     for fn_id in typechecking_context.external_functions.read().indices() {
-        let item = progress_bar.write().add_child_item(
+        let item = progress_bar.add_child(
             codegen_item,
             format!("Codegening external function #{fn_id}").into_boxed_str(),
         );
-        print_progress_bar(&progress_bar);
 
         if let Err(e) = codegen_context.compile_external_fn(
             fn_id,
@@ -716,23 +707,19 @@ pub fn run_full_compilation_pipeline<'arena>(
         ) {
             errs.add_err(CodegenError::from(e));
         }
-        progress_bar.write().remove_item(item);
+        progress_bar.remove(item);
     }
 
     drop(scopes_fns);
     drop(scopes_ext_fns);
 
-    progress_bar
-        .write()
-        .add_child_item(codegen_item, "Optimizing".into());
-    print_progress_bar(&progress_bar);
+    progress_bar.add_child(codegen_item, "Optimizing".into());
 
     if let Err(e) = codegen_context.finish() {
         errs.add_err(CodegenError::from(e));
     }
 
-    progress_bar.write().remove_item(codegen_item);
-    print_progress_bar(&progress_bar);
+    progress_bar.remove(codegen_item);
 
     // emit llvm ir even in the case there are errors. LLVM errors are often more-or-less cryptic, and
     // seeing what junk the compiler generated will probably help in diagnosing them.
@@ -823,19 +810,17 @@ pub fn run_full_compilation_pipeline<'arena>(
     Ok(Some(exec_path))
 }
 
-struct ClosureDisplay<F: Fn(&mut std::fmt::Formatter) -> std::fmt::Result>(pub F);
-impl<F: Fn(&mut std::fmt::Formatter) -> std::fmt::Result> std::fmt::Display for ClosureDisplay<F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        (self.0)(f)
+struct DeferFn<F: FnOnce()>(MaybeUninit<F>);
+impl<F: FnOnce()> Drop for DeferFn<F> {
+    fn drop(&mut self) {
+        // SAFETY: drop should only be called once, and this is the only place where we remove the
+        // function
+        let func = unsafe { self.0.assume_init_read() };
+        func()
     }
 }
-pub fn print_progress_bar(bar: &RwLock<ProgressBar>) {
-    let mut stdout = std::io::stdout().lock();
-    stdout
-        .write_fmt(format_args!(
-            "{}\n",
-            ClosureDisplay(|f| bar.write().display(f))
-        ))
-        .expect("failed to write to stdout");
-    _ = stdout.flush();
+impl<F: FnOnce()> DeferFn<F> {
+    pub fn new(f: F) -> Self {
+        Self(MaybeUninit::new(f))
+    }
 }

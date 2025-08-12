@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use crossbeam::channel::{bounded, Sender};
+use crossbeam::channel::{Sender, bounded};
 use mira_errors::Diagnostics;
+use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
 
 use crate::{
@@ -9,19 +10,16 @@ use crate::{
     error::{IoReadError, ParsingError, ProgramFormingError, TokenizationError},
     module::{Module, ModuleContext},
     parser::ParserQueueEntry,
-    progress_bar::{ProgressBar, ProgressItemRef},
     store::{Store, StoreKey},
     threadpool::ThreadPool,
     tokenizer::Tokenizer,
 };
 use mira_spans::SourceFile;
 
-use super::print_progress_bar;
-
 #[allow(clippy::too_many_arguments)]
 fn parse_single<'arena>(
     file: Arc<SourceFile>,
-    progress_bar: Arc<RwLock<ProgressBar>>,
+    mut progress_bar: ProgressBarThread,
     parsing_item: ProgressItemRef,
     finish_sender: Sender<()>,
     errors: Arc<RwLock<Diagnostics<'arena>>>,
@@ -32,11 +30,10 @@ fn parse_single<'arena>(
     // ┌──────────────┐
     // │ Tokenization │
     // └──────────────┘
-    let mut item = progress_bar.write().add_child_item(
+    let mut item = progress_bar.add_child(
         parsing_item,
         format!("Tokenizing {}", file.path.display()).into_boxed_str(),
     );
-    print_progress_bar(&progress_bar);
     let mut tokenizer = Tokenizer::new(module_context.ctx, file.clone());
 
     if let Err(errs) = tokenizer.scan_tokens() {
@@ -45,15 +42,11 @@ fn parse_single<'arena>(
             .extend(errs.into_iter().map(TokenizationError::to_error));
     }
 
-    {
-        let mut writer = progress_bar.write();
-        writer.remove_item(item);
-        item = writer.add_child_item(
-            parsing_item,
-            format!("Parsing {}", file.path.display()).into_boxed_str(),
-        );
-    }
-    print_progress_bar(&progress_bar);
+    progress_bar.remove(item);
+    item = progress_bar.add_child(
+        parsing_item,
+        format!("Parsing {}", file.path.display()).into_boxed_str(),
+    );
 
     // ┌─────────┐
     // │ Parsing │
@@ -70,15 +63,11 @@ fn parse_single<'arena>(
     // ┌─────────────────┐
     // │ Program Forming │
     // └─────────────────┘
-    {
-        let mut writer = progress_bar.write();
-        writer.remove_item(item);
-        item = writer.add_child_item(
-            parsing_item,
-            format!("Processing {}", file.path.display()).into_boxed_str(),
-        );
-    }
-    print_progress_bar(&progress_bar);
+    progress_bar.remove(item);
+    item = progress_bar.add_child(
+        parsing_item,
+        format!("Processing {}", file.path.display()).into_boxed_str(),
+    );
 
     let mut module = Module::new(
         current_parser.imports,
@@ -91,8 +80,7 @@ fn parse_single<'arena>(
             .extend(errs.into_iter().map(ProgramFormingError::to_error));
     }
     module_context.modules.write().insert_reserved(key, module);
-    progress_bar.write().remove_item(item);
-    print_progress_bar(&progress_bar);
+    progress_bar.remove(item);
 
     _ = finish_sender.send(())
 }
@@ -105,7 +93,7 @@ fn parse_single<'arena>(
 #[allow(clippy::too_many_arguments)]
 pub fn parse_all<'arena>(
     ctx: SharedContext<'arena>,
-    progress_bar: Arc<RwLock<ProgressBar>>,
+    progress_bar: ProgressBarThread,
     parsing_item: ProgressItemRef,
 ) -> Result<Arc<ModuleContext<'arena>>, Diagnostics<'arena>> {
     let errors = Arc::new(RwLock::new(Diagnostics::new()));
@@ -139,57 +127,59 @@ pub fn parse_all<'arena>(
 
     let mut thread_pool = ThreadPool::new_auto();
 
-    thread_pool.enter(|handle| 'outer_loop: loop {
-        if parsing_queue.read().is_empty() {
-            break;
-        }
-        let entry = parsing_queue.write().remove(0);
-        let key = entry.reserved_key;
-        let file = entry.file;
-        let package = entry.package;
+    thread_pool.enter(|handle| {
+        'outer_loop: loop {
+            if parsing_queue.read().is_empty() {
+                break;
+            }
+            let entry = parsing_queue.write().remove(0);
+            let key = entry.reserved_key;
+            let file = entry.file;
+            let package = entry.package;
 
-        let source = match entry.loaded_file {
-            Some(fid) => ctx.source_map().get_file(fid).unwrap(),
-            None => match ctx.source_map().load_file(file.clone(), package) {
-                Ok(v) => v,
-                Err(e) => {
-                    errors.write().add_err(IoReadError(file.to_path_buf(), e));
-                    break 'outer_loop;
-                }
-            },
-        };
+            let source = match entry.loaded_file {
+                Some(fid) => ctx.source_map().get_file(fid).unwrap(),
+                None => match ctx.source_map().load_file(file.clone(), package) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        errors.write().add_err(IoReadError(file.to_path_buf(), e));
+                        break 'outer_loop;
+                    }
+                },
+            };
 
-        let progress_bar = progress_bar.clone();
-        let errors = errors.clone();
-        let finish_sender = finish_sender.clone();
-        let _parsing_queue = parsing_queue.clone();
-        let _module_context = module_context.clone();
-        modules_left += 1;
-        handle.spawn(move || {
-            parse_single(
-                source,
-                progress_bar,
-                parsing_item,
-                finish_sender,
-                errors,
-                _parsing_queue,
-                _module_context,
-                key,
-            );
-        });
+            let progress_bar = progress_bar.clone();
+            let errors = errors.clone();
+            let finish_sender = finish_sender.clone();
+            let _parsing_queue = parsing_queue.clone();
+            let _module_context = module_context.clone();
+            modules_left += 1;
+            handle.spawn(move || {
+                parse_single(
+                    source,
+                    progress_bar,
+                    parsing_item,
+                    finish_sender,
+                    errors,
+                    _parsing_queue,
+                    _module_context,
+                    key,
+                );
+            });
 
-        if !parsing_queue.read().is_empty() {
-            continue 'outer_loop;
-        }
-
-        loop {
-            _ = finish_receiver.recv();
-            modules_left -= 1;
             if !parsing_queue.read().is_empty() {
                 continue 'outer_loop;
             }
-            if modules_left == 0 {
-                break 'outer_loop;
+
+            loop {
+                _ = finish_receiver.recv();
+                modules_left -= 1;
+                if !parsing_queue.read().is_empty() {
+                    continue 'outer_loop;
+                }
+                if modules_left == 0 {
+                    break 'outer_loop;
+                }
             }
         }
     });

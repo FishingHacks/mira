@@ -12,8 +12,8 @@ parking_lot = "0.12.3"
 thiserror = "2.0.12"
 inkwell = { git = "https://github.com/fishinghacks/inkwell.git", features = ["llvm20-1-prefer-static"] }
 cfg-if = "1.0.0"
-termsize = "0.1.9"
 crossbeam = "0.8.4"
 mira-errors = { path = "../mira-errors" }
 mira-macros = { path = "../mira-macros" }
 mira-spans = { path = "../mira-spans" }
+mira-progress-bar = { path = "../mira-progress-bar" }
