@@ -230,12 +230,17 @@ dependencies = [
  "crossbeam-channel",
  "inkwell",
  "mira-errors",
+ "mira-lexer",
  "mira-macros",
  "mira-progress-bar",
  "mira-spans",
  "parking_lot",
  "thiserror",
 ]
+
+[[package]]
+name = "mira-context"
+version = "0.1.0"
 
 [[package]]
 name = "mira-error-codes"
@@ -247,6 +252,15 @@ version = "0.1.0"
 dependencies = [
  "mira-macros",
  "mira-spans",
+]
+
+[[package]]
+name = "mira-lexer"
+version = "0.1.0"
+dependencies = [
+ "mira-errors",
+ "mira-spans",
+ "parking_lot",
 ]
 
 [[package]]
@@ -279,16 +293,6 @@ dependencies = [
  "clap",
  "mira",
  "parking_lot",
-]
-
-[[package]]
-name = "mirafmt"
-version = "0.1.0"
-dependencies = [
- "mira",
- "mira-errors",
- "mira-macros",
- "mira-spans",
 ]
 
 [[package]]

@@ -1,11 +1,12 @@
 use std::{fmt::Debug, io::IsTerminal};
 
 use mira_errors::{DiagnosticFormatter, Output, StyledPrinter, Styles};
+use mira_lexer::lexing_context::LexingContext;
 use parking_lot::Mutex;
 
 use mira_spans::{
-    interner::{SpanInterner, SymbolInterner},
     Arena, SourceMap, Span, SpanData, Symbol,
+    interner::{SpanInterner, SymbolInterner},
 };
 
 use crate::typechecking::{Ty, TyKind, TyList, TypeInterner, TypeListInterner};
@@ -90,5 +91,15 @@ impl<'arena> SharedContext<'arena> {
             _ => Styles::NO_COLORS,
         };
         DiagnosticFormatter::new(self.source_map(), output, printer, styles)
+    }
+}
+
+impl<'arena> From<SharedContext<'arena>> for LexingContext<'arena> {
+    fn from(value: SharedContext<'arena>) -> Self {
+        LexingContext::new(
+            &value.0.string_interner,
+            &value.0.span_interner,
+            &value.0.source_map,
+        )
     }
 }

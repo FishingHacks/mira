@@ -3,8 +3,9 @@ use std::fmt::{Debug, Display, Write};
 use std::hash::Hash;
 
 use crate::context::SharedContext;
+use crate::parser::TypeRef;
 use crate::store::{Store, StoreKey};
-use crate::{parser::TypeRef, tokenizer::NumberType};
+use mira_lexer::NumberType;
 use mira_spans::Ident;
 
 use super::{TypecheckingContext, TypedStruct, TypedTrait};

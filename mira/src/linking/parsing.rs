@@ -7,13 +7,13 @@ use parking_lot::RwLock;
 
 use crate::{
     context::SharedContext,
-    error::{IoReadError, ParsingError, ProgramFormingError, TokenizationError},
+    error::{IoReadError, ParsingError, ProgramFormingError},
     module::{Module, ModuleContext},
-    parser::ParserQueueEntry,
+    parser::{Parser, ParserQueueEntry},
     store::{Store, StoreKey},
     threadpool::ThreadPool,
-    tokenizer::Tokenizer,
 };
+use mira_lexer::{Lexer, LexingError};
 use mira_spans::SourceFile;
 
 #[allow(clippy::too_many_arguments)]
@@ -34,12 +34,13 @@ fn parse_single<'arena>(
         parsing_item,
         format!("Tokenizing {}", file.path.display()).into_boxed_str(),
     );
-    let mut tokenizer = Tokenizer::new(module_context.ctx, file.clone());
+    let lexing_ctx = module_context.ctx.into();
+    let mut lexer = Lexer::new(lexing_ctx, file.clone());
 
-    if let Err(errs) = tokenizer.scan_tokens() {
+    if let Err(errs) = lexer.scan_tokens() {
         errors
             .write()
-            .extend(errs.into_iter().map(TokenizationError::to_error));
+            .extend(errs.into_iter().map(LexingError::to_error));
     }
 
     progress_bar.remove(item);
@@ -51,8 +52,13 @@ fn parse_single<'arena>(
     // ┌─────────┐
     // │ Parsing │
     // └─────────┘
-    let mut current_parser =
-        tokenizer.to_parser(parsing_queue.clone(), &module_context.modules, key);
+    let mut current_parser = Parser::from_lexer(
+        lexer,
+        parsing_queue.clone(),
+        &module_context.modules,
+        key,
+        module_context.ctx,
+    );
     current_parser.file = file.clone();
 
     let (statements, parsing_errors) = current_parser.parse_all();

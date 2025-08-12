@@ -1,12 +1,9 @@
-use crate::{
-    context::SharedContext,
-    tokenizer::{Literal, NumberType, Token, TokenType},
-};
+use crate::{LexingContext, Literal, NumberType, Token, TokenType};
 use mira_spans::Span;
 use std::fmt::Write;
 
 type MacroFn<'arena> =
-    fn(SharedContext<'arena>, Span<'arena>, &[Token<'arena>]) -> Vec<Token<'arena>>;
+    fn(LexingContext<'arena>, Span<'arena>, &[Token<'arena>]) -> Vec<Token<'arena>>;
 
 pub fn get_builtin_macro(name: &str) -> Option<MacroFn> {
     match name {
@@ -22,7 +19,7 @@ pub fn get_builtin_macro(name: &str) -> Option<MacroFn> {
 }
 
 fn macro_concat<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: LexingContext<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
@@ -38,7 +35,7 @@ fn macro_concat<'arena>(
             | TokenType::BooleanLiteral => (),
             _ => panic!(
                 "{}: concat! only accepts literals",
-                arg.span.with_source_file(ctx.source_map())
+                arg.span.with_source_file(ctx.source_map)
             ),
         }
         match arg.literal {
@@ -65,7 +62,7 @@ fn macro_concat<'arena>(
 }
 
 fn macro_concat_idents<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: LexingContext<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
@@ -75,7 +72,7 @@ fn macro_concat_idents<'arena>(
             TokenType::IdentifierLiteral | TokenType::Comma => (),
             _ => panic!(
                 "{}: concat! only accepts identifiers",
-                arg.span.with_source_file(ctx.source_map())
+                arg.span.with_source_file(ctx.source_map)
             ),
         }
         match arg.literal {
@@ -94,19 +91,19 @@ fn macro_concat_idents<'arena>(
 }
 
 fn macro_line<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: LexingContext<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
     if !args.is_empty() {
         panic!(
             "{}: did not expect any arguments",
-            span.with_source_file(ctx.source_map())
+            span.with_source_file(ctx.source_map)
         );
     }
     let data = span.get_span_data();
     let line = ctx
-        .source_map()
+        .source_map
         .lookup_line(data.file, data.pos)
         .map(|v| v + 1)
         .unwrap_or_default();
@@ -118,18 +115,18 @@ fn macro_line<'arena>(
 }
 
 fn macro_column<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: LexingContext<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
     if !args.is_empty() {
         panic!(
             "{}: did not expect any arguments",
-            span.with_source_file(ctx.source_map())
+            span.with_source_file(ctx.source_map)
         )
     }
     let data = span.get_span_data();
-    let column = ctx.source_map().lookup_file_pos(data.file, data.pos).1;
+    let column = ctx.source_map.lookup_file_pos(data.file, data.pos).1;
     vec![Token {
         span,
         literal: Some(Literal::UInt(column as u64, NumberType::U32)),
@@ -138,21 +135,21 @@ fn macro_column<'arena>(
 }
 
 fn macro_file<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: LexingContext<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
     if !args.is_empty() {
         panic!(
             "{}: did not expect any arguments",
-            span.with_source_file(ctx.source_map())
+            span.with_source_file(ctx.source_map)
         )
     }
     vec![Token {
         span,
         literal: Some(Literal::String(
             ctx.intern_str(
-                &ctx.source_map()
+                &ctx.source_map
                     .get_file(span.get_span_data().file)
                     .unwrap()
                     .path
@@ -165,11 +162,11 @@ fn macro_file<'arena>(
 }
 
 fn macro_compile_error<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: LexingContext<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {
-    let span = span.with_source_file(ctx.source_map());
+    let span = span.with_source_file(ctx.source_map);
     if let Some(lit) = args.first().as_ref().and_then(|v| v.literal.as_ref()) {
         match lit {
             Literal::Float(v, _) => panic!("{span}: error: {v}"),
@@ -184,7 +181,7 @@ fn macro_compile_error<'arena>(
 }
 
 fn macro_stringify<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: LexingContext<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
 ) -> Vec<Token<'arena>> {

@@ -1,8 +1,6 @@
-use crate::{
-    error::ParsingError,
-    tokenizer::{Token, TokenType},
-};
-use mira_spans::{interner::Symbol, Ident, Span};
+use crate::error::ParsingError;
+use mira_lexer::{Token, TokenType};
+use mira_spans::{Ident, Span, interner::Symbol};
 
 pub struct TokenStream<'arena> {
     tokens: Vec<Token<'arena>>,
@@ -23,15 +21,19 @@ impl<'arena> TokenStream<'arena> {
 
     pub fn add_tokens<I: IntoIterator<Item = Token<'arena>>>(&mut self, tokens: I) {
         self.tokens.extend(tokens);
-        assert!(!self.tokens[0..self.tokens.len().saturating_sub(1)]
-            .iter()
-            .any(|v| v.typ == TokenType::Eof));
+        assert!(
+            !self.tokens[0..self.tokens.len().saturating_sub(1)]
+                .iter()
+                .any(|v| v.typ == TokenType::Eof)
+        );
     }
 
     pub fn new(mut tokens: Vec<Token<'arena>>, eof_span: Span<'arena>) -> Self {
-        assert!(!tokens[0..tokens.len().saturating_sub(1)]
-            .iter()
-            .any(|v| v.typ == TokenType::Eof));
+        assert!(
+            !tokens[0..tokens.len().saturating_sub(1)]
+                .iter()
+                .any(|v| v.typ == TokenType::Eof)
+        );
         match tokens.last() {
             Some(Token {
                 typ: TokenType::Eof,
@@ -157,7 +159,7 @@ impl<'arena> TokenStream<'arena> {
     /// Expects and removes a token. Only removes if the token matches the expected token.
     pub fn expect_identifier(&mut self) -> Result<Ident<'arena>, ParsingError<'arena>> {
         let tok = self.expect(TokenType::IdentifierLiteral)?;
-        Ok(Ident::new(tok.string_literal()?, tok.span))
+        Ok(Ident::new(tok.string_literal(), tok.span))
     }
 
     pub fn match_tok(&mut self, typ: TokenType) -> bool {
@@ -181,7 +183,7 @@ impl<'arena> TokenStream<'arena> {
         &mut self,
     ) -> Result<(Symbol<'arena>, Span<'arena>), ParsingError<'arena>> {
         let tok = self.expect(TokenType::StringLiteral)?;
-        Ok((tok.string_literal()?, tok.span))
+        Ok((tok.string_literal(), tok.span))
     }
 
     /// Finishes parsing. Will error if there are any tokens remaining, unless there's only a

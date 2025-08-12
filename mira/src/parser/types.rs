@@ -3,12 +3,11 @@ use std::{
     fmt::{Display, Write},
 };
 
-use crate::{
-    error::ParsingError, module::Function, store::StoreKey, symbols, tokenizer::TokenType,
-};
-use mira_spans::{interner::Symbol, Ident, Span};
+use crate::{error::ParsingError, module::Function, store::StoreKey, symbols};
+use mira_lexer::TokenType;
+use mira_spans::{Ident, Span, interner::Symbol};
 
-use super::{expression::PathWithoutGenerics, Annotations, Parser, Path};
+use super::{Annotations, Parser, Path, expression::PathWithoutGenerics};
 
 pub static RESERVED_TYPE_NAMES: &[&str] = &[
     "str", "bool", "char", "void", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
@@ -176,7 +175,7 @@ impl<'arena> TypeRef<'arena> {
                 let child = Box::new(Self::parse(parser)?);
                 if parser.match_tok(TokenType::Semicolon) {
                     // case [<type>; <amount>]
-                    let (lit, _) = parser.expect(TokenType::UIntLiteral)?.uint_literal()?;
+                    let lit = parser.expect(TokenType::UIntLiteral)?.uint_literal().0;
                     parser.expect(TokenType::BracketRight)?;
 
                     return Ok(Self::SizedArray {
@@ -205,7 +204,7 @@ impl<'arena> TypeRef<'arena> {
             } else if parser.match_tok(TokenType::VoidLiteral) {
                 return Ok(Self::Void(parser.span_from(span), num_references));
             } else if parser.peek().typ == TokenType::IdentifierLiteral {
-                let name = parser.peek().string_literal()?;
+                let name = parser.peek().string_literal();
                 return if *name == "dyn" {
                     Self::parse_dyn(parser, num_references, span)
                 } else {

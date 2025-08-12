@@ -10,19 +10,11 @@ use commands::{
 };
 use mira::{
     target::{Target, NATIVE_TARGET},
-    AUTHORS as MIRA_AUTHORS, VERSION as VER,
+    VERSION as VER,
 };
-use std::{collections::HashSet, error::Error, sync::LazyLock};
+use std::error::Error;
 
 const MIRAC_VERSION: &str = env!("CARGO_PKG_VERSION");
-const MIRAC_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
-static AUTHORS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
-    let hashset = MIRA_AUTHORS
-        .split(':')
-        .chain(MIRAC_AUTHORS.split(':'))
-        .collect::<HashSet<_>>();
-    hashset.into_iter().collect()
-});
 
 #[derive(Parser, Debug)]
 struct Args {

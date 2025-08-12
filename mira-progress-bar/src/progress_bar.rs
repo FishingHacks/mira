@@ -227,27 +227,3 @@ enum IndentType {
     Line,
     None,
 }
-
-// impl ProgressItemRef {
-//     pub fn remove(self, bar: &mut ProgressBar) {
-//         bar.remove_item(self);
-//     }
-//
-//     pub fn name(self, bar: &ProgressBar) -> &str {
-//         &bar.items[self.0].name
-//     }
-//
-//     pub fn remove_all_children(self, bar: &mut ProgressBar) {
-//         let Some(v) = bar.items.get_mut(self.0) else {
-//             return;
-//         };
-//         let children = std::mem::take(&mut v.children);
-//         for child in children {
-//             bar.remove_item_inner(child);
-//         }
-//     }
-//
-//     pub fn add_child(self, name: Box<str>, bar: &mut ProgressBar) -> ProgressItemRef {
-//         bar.add_child_item(self, name)
-//     }
-// }

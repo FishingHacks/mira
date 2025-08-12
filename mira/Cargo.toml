@@ -3,8 +3,6 @@ name = "mira"
 version = "0.1.0"
 edition = "2024"
 
-authors = ["Skylar (github.com/FishingHacks)", "Eden (Discord - @your.eden)"]
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -17,3 +15,4 @@ mira-macros = { path = "../mira-macros" }
 mira-spans = { path = "../mira-spans" }
 mira-progress-bar = { path = "../mira-progress-bar" }
 crossbeam-channel = "0.5.15"
+mira-lexer = { path = "../mira-lexer" }

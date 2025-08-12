@@ -1,0 +1,9 @@
+[package]
+name = "mira-lexer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mira-spans = { path = "../mira-spans" }
+mira-errors = { path = "../mira-errors" }
+parking_lot = "0.12.4"

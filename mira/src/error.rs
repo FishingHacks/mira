@@ -6,12 +6,9 @@ use std::{
 pub use mira_errors::{Diagnostic, Diagnostics};
 use mira_macros::ErrorData;
 
-use crate::{
-    annotations::AnnotationReceiver,
-    tokenizer::{Token, TokenType},
-    typechecking::Ty,
-};
-use mira_spans::{interner::Symbol, Span};
+use crate::{annotations::AnnotationReceiver, typechecking::Ty};
+use mira_lexer::{Token, TokenType};
+use mira_spans::{Span, interner::Symbol};
 
 #[derive(ErrorData)]
 #[error("couldn't write `{}`: {_1}", _0.display())]
@@ -232,9 +229,7 @@ pub enum ParsingError<'arena> {
         name: String,
     },
     #[error("`{_0}` is not a valid module name")]
-    #[note(
-        "Filenames cannot contain `.`, `\\0`, `<`, `>`, `:`, `\"`, `/`, `\\`, `|`, `?` or `*`."
-    )]
+    #[note("Filenames cannot contain `.`, `\\0`, `<`, `>`, `:`, `\"`, `/`, `\\`, `|`, `?` or `*`.")]
     InvalidFileNameErr(
         Symbol<'arena>,
         #[primary_label("this character is not allowed")] Span<'arena>,
@@ -242,57 +237,9 @@ pub enum ParsingError<'arena> {
     #[error("Could not find module `{_0}`")]
     #[note("to create the module `{_0}`, create file `{0}/{_0}.mr` or `{0}/{_0}/mod.mr`", _2.display())]
     #[note(
-    "if there is a `mod {_0}` elsewhere in the package, import it with `use crate::...` instead"
-)]
+        "if there is a `mod {_0}` elsewhere in the package, import it with `use crate::...` instead"
+    )]
     FileNotFoundErr(Symbol<'arena>, #[primary_label("")] Span<'arena>, PathBuf),
-}
-
-#[derive(ErrorData, Debug)]
-pub enum TokenizationError<'arena> {
-    #[error("unknown start of token: {character}")]
-    UnknownTokenError {
-        #[primary_label("")]
-        loc: Span<'arena>,
-        character: char,
-    },
-    #[error("Invalid Number")]
-    InvalidNumberError {
-        #[primary_label("this is not a valid number literal")]
-        loc: Span<'arena>,
-    },
-    #[error("Expected a string closing literal, but found `<eof>`")]
-    UnclosedString {
-        #[primary_label("string defined here")]
-        loc: Span<'arena>,
-    },
-    #[error("Invalid number type")]
-    InvalidNumberType(
-        #[primary_label("This number is not valid for the number type")] Span<'arena>,
-    ),
-    #[error("unclosed macro invocation")]
-    UnclosedMacro {
-        #[primary_label("expected a `{bracket}`")]
-        loc: Span<'arena>,
-        bracket: char,
-    },
-    #[error("expected one of `(`, `[` or `{{`, but found `{character}`")]
-    MacroExpectedBracket {
-        #[primary_label("expected one of `(`, `[`, or `{{`")]
-        loc: Span<'arena>,
-        character: char,
-    },
-}
-
-impl<'arena> TokenizationError<'arena> {
-    pub fn invalid_number(loc: Span<'arena>) -> Self {
-        Self::InvalidNumberError { loc }
-    }
-    pub fn unclosed_string(loc: Span<'arena>) -> Self {
-        Self::UnclosedString { loc }
-    }
-    pub fn unknown_token(loc: Span<'arena>, character: char) -> Self {
-        Self::UnknownTokenError { loc, character }
-    }
 }
 
 #[derive(Debug, ErrorData)]

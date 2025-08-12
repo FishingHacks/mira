@@ -1,7 +1,7 @@
 pub use crate::annotations::{Annotation, AnnotationParser, AnnotationReceiver, Annotations};
 pub use crate::error::ParsingError;
-pub use crate::tokenizer::TokenType;
 pub use crate::tokenstream::TokenStream;
+pub use mira_lexer::TokenType;
 use std::collections::HashMap;
 pub use std::fmt::{Display, Write};
 

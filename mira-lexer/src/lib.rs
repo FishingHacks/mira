@@ -1,335 +1,27 @@
-use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData};
-use parking_lot::RwLock;
-use std::{
-    fmt::{Debug, Display},
-    str::FromStr,
-    sync::Arc,
-};
+use lexing_context::LexingContext;
+use mira_spans::{BytePos, SourceFile, Span, SpanData};
+use std::str::FromStr;
+use std::sync::Arc;
 
-use crate::{
-    context::SharedContext,
-    error::{ParsingError, TokenizationError},
-    module::Module,
-    parser::{LiteralValue, Parser, ParserQueueEntry},
-    store::{Store, StoreKey},
-    tokenstream::TokenStream,
-};
+mod builtin_macros;
+mod error;
+pub mod lexing_context;
+pub mod token;
+pub use error::LexingError;
 use mira_spans::interner::Symbol;
+pub use token::{Literal, NumberType, Token, TokenType};
 
-macro_rules! token_type {
-    ($($key:ident $(=$value:literal)?),* $(,)?) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum TokenType {
-            $($key),*
-        }
-
-        impl TokenType {
-            pub fn char_len(self) -> Option<u32> {
-                self.as_str().map(|s| s.len() as u32)
-            }
-
-            pub fn as_str(self) -> Option<&'static str> {
-                match self {
-                    $(Self::$key => token_type!(!internal $($value)?),)*
-                }
-            }
-        }
-    };
-    (!internal) => {
-        None
-    };
-    (!internal $value:literal) => {
-        Some($value)
-    };
-}
-
-token_type! {
-    Let = "let",
-    EqualEqual = "==",
-    NotEquals = "!=",
-    LessThan = "<",
-    GreaterThan = ">",
-    LogicalNot = "!",
-    LogicalAnd = "&&",
-    LogicalOr = "||",
-    StringLiteral,
-    FloatLiteral,
-    SIntLiteral,
-    UIntLiteral,
-    BooleanLiteral,
-    VoidLiteral = "void",
-    IdentifierLiteral,
-    Equal = "=",
-    Colon = ":",
-    Semicolon = ";",
-    ParenLeft = "(",
-    ParenRight = ")",
-    CurlyLeft = "{",
-    CurlyRight = "}",
-    BracketLeft = "[",
-    BracketRight = "]",
-    Plus = "+",
-    Minus = "-",
-    Asterix = "*",
-    Divide = "/",
-    Modulo = "%",
-    BitwiseNot = "~",
-    Ampersand = "&",
-    BitwiseOr = "|",
-    BitwiseXor = "^",
-    PipeOperator = "|>",
-    Return = "return",
-    Fn = "fn",
-    Extern = "extern",
-    Use = "use",
-    Mod = "mod",
-    Export = "export",
-    If = "if",
-    Else = "else",
-    Asm = "asm",
-    Volatile = "volatile",
-    While = "while",
-    For = "for",
-    Pub = "pub",
-    In = "in",
-    Unsized = "unsized",
-    Range = "..",
-    RangeInclusive = "..=",
-    ReturnType = "->",
-    Struct = "struct",
-    Trait = "trait",
-    Impl = "impl",
-    Comma = ",",
-    PlusAssign = "+=",
-    MinusAssign = "-=",
-    Dot = ".",
-    As = "as",
-    AnnotationIntroducer = "@",
-    NamespaceAccess = "::",
-    Eof = "",
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NumberType {
-    F32,
-    F64,
-    I8,
-    I16,
-    I32,
-    I64,
-    Isize,
-    U8,
-    U16,
-    U32,
-    U64,
-    Usize,
-    None,
-}
-
-impl Display for NumberType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::F32 => f.write_str("f32"),
-            Self::F64 => f.write_str("f64"),
-            Self::I8 => f.write_str("i8"),
-            Self::I16 => f.write_str("i16"),
-            Self::I32 => f.write_str("i32"),
-            Self::I64 => f.write_str("i64"),
-            Self::U8 => f.write_str("u8"),
-            Self::U16 => f.write_str("u16"),
-            Self::U32 => f.write_str("u32"),
-            Self::U64 => f.write_str("u64"),
-            Self::Usize => f.write_str("usize"),
-            Self::Isize => f.write_str("isize"),
-            Self::None => Ok(()),
-        }
-    }
-}
-
-impl FromStr for NumberType {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "f32" => Ok(Self::F32),
-            "f64" => Ok(Self::F64),
-            "i8" => Ok(Self::I8),
-            "i16" => Ok(Self::I16),
-            "i32" => Ok(Self::I32),
-            "i64" => Ok(Self::I64),
-            "u8" => Ok(Self::U8),
-            "u16" => Ok(Self::U16),
-            "u32" => Ok(Self::U32),
-            "u64" => Ok(Self::U64),
-            "usize" => Ok(Self::Usize),
-            "isize" => Ok(Self::Isize),
-            _ => Err(()),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Literal<'arena> {
-    Float(f64, NumberType),
-    SInt(i64, NumberType),
-    UInt(u64, NumberType),
-    String(Symbol<'arena>),
-    Bool(bool),
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Token<'arena> {
-    pub typ: TokenType,
-    pub literal: Option<Literal<'arena>>,
-    pub span: Span<'arena>,
-}
-
-impl<'arena> From<Token<'arena>> for Ident<'arena> {
-    fn from(value: Token<'arena>) -> Self {
-        assert_eq!(value.typ, TokenType::IdentifierLiteral);
-        let Some(Literal::String(s)) = value.literal else {
-            unreachable!("expected value.literal to be Some(Literal::String(_))")
-        };
-        Self::new(s, value.span)
-    }
-}
-
-impl Display for TokenType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(s) = self.as_str() {
-            return f.write_str(s);
-        }
-        match self {
-            TokenType::IdentifierLiteral => f.write_str("identifier"),
-            TokenType::SIntLiteral => f.write_str("signed number"),
-            TokenType::UIntLiteral => f.write_str("unsigned number"),
-            TokenType::VoidLiteral => f.write_str("void"),
-            TokenType::FloatLiteral => f.write_str("decimal number"),
-            TokenType::StringLiteral => f.write_str("string"),
-            TokenType::BooleanLiteral => f.write_str("boolean"),
-            _ => unreachable!(),
-        }
-    }
-}
-
-impl Display for Token<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(s) = self.typ.as_str() {
-            return f.write_str(s);
-        }
-        match self.typ {
-            TokenType::BooleanLiteral => match &self.literal {
-                Some(Literal::Bool(v)) => Display::fmt(v, f),
-                _ => f.write_str("bool(malformed data)"),
-            },
-            TokenType::IdentifierLiteral => match &self.literal {
-                Some(Literal::String(v)) => Display::fmt(v, f),
-                _ => f.write_str("identifier(malformed data)"),
-            },
-            TokenType::FloatLiteral => match self.literal {
-                Some(Literal::Float(v, typ)) => f.write_fmt(format_args!("{v}{typ}")),
-                _ => f.write_str("float(malformed data)"),
-            },
-            TokenType::SIntLiteral => match self.literal {
-                Some(Literal::SInt(v, typ)) => f.write_fmt(format_args!("{v}{typ}")),
-                _ => f.write_str("int(malformed data)"),
-            },
-            TokenType::UIntLiteral => match self.literal {
-                Some(Literal::UInt(v, typ)) => f.write_fmt(format_args!("{v}{typ}")),
-                _ => f.write_str("uint(malformed data)"),
-            },
-            TokenType::StringLiteral => match &self.literal {
-                Some(Literal::String(v)) => Debug::fmt(v, f),
-                _ => f.write_str("string(malformed data)"),
-            },
-            _ => unreachable!(),
-        }
-    }
-}
-
-impl<'arena> Token<'arena> {
-    pub fn new(typ: TokenType, literal: Option<Literal<'arena>>, span: Span<'arena>) -> Self {
-        Self { typ, span, literal }
-    }
-
-    pub fn to_literal_value(&self) -> Option<LiteralValue<'arena>> {
-        match self.typ {
-            TokenType::StringLiteral
-            | TokenType::BooleanLiteral
-            | TokenType::FloatLiteral
-            | TokenType::UIntLiteral
-            | TokenType::SIntLiteral => self.literal.as_ref().map(|v| match v {
-                Literal::Bool(boolean) => LiteralValue::Bool(*boolean),
-                Literal::Float(float, typ) => LiteralValue::Float(*float, *typ),
-                Literal::SInt(int, typ) => LiteralValue::SInt(*int, *typ),
-                Literal::UInt(uint, typ) => LiteralValue::UInt(*uint, *typ),
-                Literal::String(string) => LiteralValue::String(*string),
-            }),
-            TokenType::VoidLiteral => Some(LiteralValue::Void),
-            TokenType::IdentifierLiteral => match self.literal {
-                Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(
-                    crate::parser::Path::new(Ident::new(*v, self.span), Vec::new()),
-                )),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    pub fn void_literal(&self) -> Result<(), ParsingError<'arena>> {
-        match &self.literal {
-            None => Ok(()),
-            _ => Err(ParsingError::InvalidTokenization(self.span)),
-        }
-    }
-
-    pub fn string_literal(&self) -> Result<Symbol<'arena>, ParsingError<'arena>> {
-        match &self.literal {
-            Some(Literal::String(v)) => Ok(*v),
-            _ => Err(ParsingError::InvalidTokenization(self.span)),
-        }
-    }
-
-    pub fn bool_literal(&self) -> Result<bool, ParsingError<'arena>> {
-        match &self.literal {
-            Some(Literal::Bool(v)) => Ok(*v),
-            _ => Err(ParsingError::InvalidTokenization(self.span)),
-        }
-    }
-
-    pub fn float_literal(&self) -> Result<(f64, NumberType), ParsingError<'arena>> {
-        match &self.literal {
-            Some(Literal::Float(v, numty)) => Ok((*v, *numty)),
-            _ => Err(ParsingError::InvalidTokenization(self.span)),
-        }
-    }
-
-    pub fn sint_literal(&self) -> Result<(i64, NumberType), ParsingError<'arena>> {
-        match &self.literal {
-            Some(Literal::SInt(v, numty)) => Ok((*v, *numty)),
-            _ => Err(ParsingError::InvalidTokenization(self.span)),
-        }
-    }
-
-    pub fn uint_literal(&self) -> Result<(u64, NumberType), ParsingError<'arena>> {
-        match &self.literal {
-            Some(Literal::UInt(v, numty)) => Ok((*v, *numty)),
-            _ => Err(ParsingError::InvalidTokenization(self.span)),
-        }
-    }
-}
-
-pub struct Tokenizer<'arena> {
+pub struct Lexer<'arena> {
     source: Vec<char>,
     pub file: Arc<SourceFile>,
     tokens: Vec<Token<'arena>>,
     start: usize,
     current: usize,
-    ctx: SharedContext<'arena>,
+    ctx: LexingContext<'arena>,
 }
 
-impl<'arena> Tokenizer<'arena> {
-    pub fn new(ctx: SharedContext<'arena>, file: Arc<SourceFile>) -> Self {
+impl<'arena> Lexer<'arena> {
+    pub fn new(ctx: LexingContext<'arena>, file: Arc<SourceFile>) -> Self {
         Self {
             source: file.source.chars().collect(),
             file,
@@ -340,7 +32,11 @@ impl<'arena> Tokenizer<'arena> {
         }
     }
 
-    pub fn scan_tokens(&mut self) -> Result<(), Vec<TokenizationError<'arena>>> {
+    pub fn into_tokens(self) -> Vec<Token<'arena>> {
+        self.tokens
+    }
+
+    pub fn scan_tokens(&mut self) -> Result<(), Vec<LexingError<'arena>>> {
         let mut errors = vec![];
         while !self.is_at_end() {
             self.start = self.current;
@@ -397,7 +93,7 @@ impl<'arena> Tokenizer<'arena> {
         self.tokens.push(tok);
     }
 
-    fn scan_token(&mut self) -> Result<(), TokenizationError<'arena>> {
+    fn scan_token(&mut self) -> Result<(), LexingError<'arena>> {
         let tok = self.int_scan_token()?;
         let Some(tok) = tok else { return Ok(()) };
         match tok.typ {
@@ -415,7 +111,7 @@ impl<'arena> Tokenizer<'arena> {
         Ok(())
     }
 
-    fn int_scan_token(&mut self) -> Result<Option<Token<'arena>>, TokenizationError<'arena>> {
+    fn int_scan_token(&mut self) -> Result<Option<Token<'arena>>, LexingError<'arena>> {
         let c = self.advance();
 
         macro_rules! token {
@@ -492,7 +188,12 @@ impl<'arena> Tokenizer<'arena> {
             _ if Self::is_valid_identifier_char(c) && !c.is_ascii_digit() => {
                 self.parse_identifier(c)
             }
-            _ => return Err(TokenizationError::unknown_token(self.current_span(), c)),
+            _ => {
+                return Err(LexingError::UnknownTokenError {
+                    span: self.current_span(),
+                    char: c,
+                });
+            }
         }
         .map(Some)
     }
@@ -532,7 +233,7 @@ impl<'arena> Tokenizer<'arena> {
         value: u64,
         is_negative: bool,
         allow_float: bool,
-    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
+    ) -> Result<Token<'arena>, LexingError<'arena>> {
         let mut typ = String::from(first_char);
         let first_type_char = self.current - 1;
 
@@ -540,7 +241,7 @@ impl<'arena> Tokenizer<'arena> {
             match self.peek() {
                 'a'..='z' | '0'..='9' => typ.push(self.advance()),
                 _ => {
-                    let err = TokenizationError::InvalidNumberType(self.span_from(first_type_char));
+                    let err = LexingError::InvalidNumberType(self.span_from(first_type_char));
                     let Ok(number_type) = NumberType::from_str(&typ) else {
                         return Err(err);
                     };
@@ -585,7 +286,7 @@ impl<'arena> Tokenizer<'arena> {
         &mut self,
         start_bytepos: usize,
         is_negative: bool,
-    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
+    ) -> Result<Token<'arena>, LexingError<'arena>> {
         let mut value: u64 = 0;
 
         loop {
@@ -594,21 +295,21 @@ impl<'arena> Tokenizer<'arena> {
                 'a'..='f' => value = (value << 4) | (self.advance() as u64 - 'a' as u64 + 0xa),
                 'A'..='F' => value = (value << 4) | (self.advance() as u64 - 'A' as u64 + 0xa),
                 c if Self::is_valid_identifier_char(c) => {
-                    return self.parse_numtype(start_bytepos, c, value, is_negative, false)
+                    return self.parse_numtype(start_bytepos, c, value, is_negative, false);
                 }
                 _ if is_negative => {
                     return Ok(Token::new(
                         TokenType::SIntLiteral,
                         Some(Literal::SInt(-(value as i64), NumberType::None)),
                         self.span_from(start_bytepos),
-                    ))
+                    ));
                 }
                 _ => {
                     return Ok(Token::new(
                         TokenType::UIntLiteral,
                         Some(Literal::UInt(value, NumberType::None)),
                         self.span_from(start_bytepos),
-                    ))
+                    ));
                 }
             }
         }
@@ -618,7 +319,7 @@ impl<'arena> Tokenizer<'arena> {
         &mut self,
         start_bytepos: usize,
         is_negative: bool,
-    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
+    ) -> Result<Token<'arena>, LexingError<'arena>> {
         let mut value: u64 = 0;
 
         loop {
@@ -626,26 +327,26 @@ impl<'arena> Tokenizer<'arena> {
                 '0' | '1' => value = (value << 1) | (self.advance() as u64 - '0' as u64),
                 '2'..='9' => {
                     self.advance();
-                    return Err(TokenizationError::invalid_number(
+                    return Err(LexingError::InvalidNumberError(
                         self.span_from(start_bytepos),
                     ));
                 }
                 c if Self::is_valid_identifier_char(c) => {
-                    return self.parse_numtype(start_bytepos, c, value, is_negative, false)
+                    return self.parse_numtype(start_bytepos, c, value, is_negative, false);
                 }
                 _ if is_negative => {
                     return Ok(Token::new(
                         TokenType::SIntLiteral,
                         Some(Literal::SInt(-(value as i64), NumberType::None)),
                         self.span_from(start_bytepos),
-                    ))
+                    ));
                 }
                 _ => {
                     return Ok(Token::new(
                         TokenType::UIntLiteral,
                         Some(Literal::UInt(value, NumberType::None)),
                         self.span_from(start_bytepos),
-                    ))
+                    ));
                 }
             }
         }
@@ -655,7 +356,7 @@ impl<'arena> Tokenizer<'arena> {
         &mut self,
         start_bytepos: usize,
         is_negative: bool,
-    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
+    ) -> Result<Token<'arena>, LexingError<'arena>> {
         let mut value: u64 = 0;
 
         loop {
@@ -663,26 +364,26 @@ impl<'arena> Tokenizer<'arena> {
                 '0'..='7' => value = (value << 3) | (self.advance() as u64 - '0' as u64),
                 '8' | '9' => {
                     self.advance();
-                    return Err(TokenizationError::invalid_number(
+                    return Err(LexingError::InvalidNumberError(
                         self.span_from(start_bytepos),
                     ));
                 }
                 c if Self::is_valid_identifier_char(c) => {
-                    return self.parse_numtype(start_bytepos, c, value, is_negative, false)
+                    return self.parse_numtype(start_bytepos, c, value, is_negative, false);
                 }
                 _ if is_negative => {
                     return Ok(Token::new(
                         TokenType::SIntLiteral,
                         Some(Literal::SInt(-(value as i64), NumberType::None)),
                         self.span_from(start_bytepos),
-                    ))
+                    ));
                 }
                 _ => {
                     return Ok(Token::new(
                         TokenType::UIntLiteral,
                         Some(Literal::UInt(value, NumberType::None)),
                         self.span_from(start_bytepos),
-                    ))
+                    ));
                 }
             }
         }
@@ -704,10 +405,7 @@ impl<'arena> Tokenizer<'arena> {
         value
     }
 
-    fn parse_number(
-        &mut self,
-        mut first_char: char,
-    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
+    fn parse_number(&mut self, mut first_char: char) -> Result<Token<'arena>, LexingError<'arena>> {
         let start_byte = self.current;
         let is_negative = first_char == '-';
         let mut is_float = false;
@@ -719,27 +417,21 @@ impl<'arena> Tokenizer<'arena> {
             self.advance();
             if !self.peek().is_ascii_hexdigit() {
                 self.advance();
-                return Err(TokenizationError::invalid_number(
-                    self.span_from(start_byte),
-                ));
+                return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
             }
             return self.parse_hex(start_byte, is_negative);
         } else if first_char == '0' && self.peek() == 'b' {
             self.advance();
             if !matches!(self.peek(), '0' | '1') {
                 self.advance();
-                return Err(TokenizationError::invalid_number(
-                    self.span_from(start_byte),
-                ));
+                return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
             }
             return self.parse_bin(start_byte, is_negative);
         } else if first_char == '0' && self.peek() == 'o' {
             self.advance();
             if !matches!(self.peek(), '0'..='7') {
                 self.advance();
-                return Err(TokenizationError::invalid_number(
-                    self.span_from(start_byte),
-                ));
+                return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
             }
             return self.parse_oct(start_byte, is_negative);
         }
@@ -777,9 +469,7 @@ impl<'arena> Tokenizer<'arena> {
             {
                 if is_float {
                     self.skip_to_after_number();
-                    return Err(TokenizationError::invalid_number(
-                        self.span_from(start_byte),
-                    ));
+                    return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
                 }
                 is_float = true;
                 str.push(self.advance());
@@ -799,9 +489,7 @@ impl<'arena> Tokenizer<'arena> {
             Ok(v) if !is_float => v,
             Err(_) if typ.is_empty() => NumberType::None,
             _ => {
-                return Err(TokenizationError::InvalidNumberType(
-                    self.span_from(start_byte),
-                ))
+                return Err(LexingError::InvalidNumberType(self.span_from(start_byte)));
             }
         };
 
@@ -809,9 +497,7 @@ impl<'arena> Tokenizer<'arena> {
             let num = match str.parse::<f64>() {
                 Ok(num) => num,
                 Err(..) => {
-                    return Err(TokenizationError::invalid_number(
-                        self.span_from(start_byte),
-                    ))
+                    return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
                 }
             };
             (Literal::Float(num, number_type), TokenType::FloatLiteral)
@@ -830,10 +516,7 @@ impl<'arena> Tokenizer<'arena> {
         Ok(Token::new(tok, Some(lit), self.span_from(start_byte)))
     }
 
-    fn parse_string(
-        &mut self,
-        string_char: char,
-    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
+    fn parse_string(&mut self, string_char: char) -> Result<Token<'arena>, LexingError<'arena>> {
         let mut is_backslash = false;
         let mut s = String::new();
         let start = self.current;
@@ -842,7 +525,7 @@ impl<'arena> Tokenizer<'arena> {
             let c = self.advance();
 
             if c == '\n' || c == '\r' {
-                return Err(TokenizationError::unclosed_string(self.current_span()));
+                return Err(LexingError::UnclosedString(self.current_span()));
             } else if is_backslash {
                 is_backslash = false;
                 s.push(Self::escape_char_to_real_char(c));
@@ -855,7 +538,7 @@ impl<'arena> Tokenizer<'arena> {
             }
         }
         if self.cur_char() != string_char || self.source[self.current - 2] == '\\' {
-            return Err(TokenizationError::unclosed_string(self.current_span()));
+            return Err(LexingError::UnclosedString(self.current_span()));
         }
 
         Ok(Token::new(
@@ -878,7 +561,7 @@ impl<'arena> Tokenizer<'arena> {
     fn parse_identifier(
         &mut self,
         starting_char: char,
-    ) -> Result<Token<'arena>, TokenizationError<'arena>> {
+    ) -> Result<Token<'arena>, LexingError<'arena>> {
         let mut identifier = String::new();
         identifier.push(starting_char);
         let start = self.current;
@@ -895,14 +578,14 @@ impl<'arena> Tokenizer<'arena> {
                     TokenType::BooleanLiteral,
                     Some(Literal::Bool(true)),
                     self.span_from(start),
-                ))
+                ));
             }
             "false" => {
                 return Ok(Token::new(
                     TokenType::BooleanLiteral,
                     Some(Literal::Bool(false)),
                     self.span_from(start),
-                ))
+                ));
             }
             "void" => return Ok(self.get_token(TokenType::VoidLiteral)),
             _ => (),
@@ -942,7 +625,7 @@ impl<'arena> Tokenizer<'arena> {
         &mut self,
         loc: Span<'arena>,
         name: &Symbol<'arena>,
-    ) -> Result<Vec<Token<'arena>>, TokenizationError<'arena>> {
+    ) -> Result<Vec<Token<'arena>>, LexingError<'arena>> {
         let start = loc.get_span_data().pos.to_usize();
 
         let bracket_type = match self.peek() {
@@ -950,10 +633,10 @@ impl<'arena> Tokenizer<'arena> {
             '(' => ')',
             '{' => '}',
             _ => {
-                return Err(TokenizationError::MacroExpectedBracket {
+                return Err(LexingError::MacroExpectedBracket {
                     loc: self.current_span(),
                     character: self.peek(),
-                })
+                });
             }
         };
         let mut depth = 0usize;
@@ -967,7 +650,7 @@ impl<'arena> Tokenizer<'arena> {
             } else if self.peek() == bracket_type {
                 depth += 1;
             } else if self.peek() == '\0' || self.is_at_end() {
-                return Err(TokenizationError::UnclosedMacro {
+                return Err(LexingError::UnclosedMacro {
                     loc: self.current_span(),
                     bracket: bracket_type,
                 });
@@ -1033,35 +716,17 @@ impl<'arena> Tokenizer<'arena> {
     pub fn get_tokens(&self) -> &[Token<'arena>] {
         &self.tokens
     }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn to_parser<'a>(
-        self,
-        parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
-        modules: &'a RwLock<Store<Module<'arena>>>,
-        key: StoreKey<Module<'arena>>,
-    ) -> Parser<'a, 'arena> {
-        let eof_span = Span::new(
-            SpanData::new(BytePos::from_u32(self.file.len()), 1, self.file.id),
-            self.ctx.span_interner(),
-        );
-        Parser::new(
-            self.ctx,
-            TokenStream::new(self.tokens, eof_span),
-            parser_queue,
-            modules,
-            self.file,
-            key,
-        )
-    }
 }
 
 #[cfg(test)]
 mod test {
     use std::{collections::HashMap, path::Path};
 
-    use crate::context::GlobalContext;
-    use mira_spans::Arena;
+    use mira_spans::{
+        Arena, SourceMap,
+        interner::{SpanInterner, SymbolInterner},
+    };
+    use parking_lot::Mutex;
 
     use super::*;
 
@@ -1090,12 +755,12 @@ mod test {
     }
 
     fn get_tokens<'arena>(
-        ctx: SharedContext<'arena>,
+        ctx: LexingContext<'arena>,
         src: &str,
-    ) -> (Vec<Token<'arena>>, Vec<TokenizationError<'arena>>) {
-        let mut tokenizer = Tokenizer::new(
+    ) -> (Vec<Token<'arena>>, Vec<LexingError<'arena>>) {
+        let mut tokenizer = Lexer::new(
             ctx,
-            ctx.source_map()
+            ctx.source_map
                 .add_package(
                     Path::new("root").into(),
                     Path::new("root/file.mr").into(),
@@ -1112,7 +777,7 @@ mod test {
     fn assert_token_eq(
         src: &str,
         expected_tokens: &[(TokenType, Option<Literal>)],
-        ctx: SharedContext,
+        ctx: LexingContext,
     ) {
         let eof_token = (TokenType::Eof, None);
         let (tokens, errs) = get_tokens(ctx, src);
@@ -1124,7 +789,9 @@ mod test {
             .zip(expected_tokens.iter().chain(std::iter::once(&eof_token)))
         {
             if tok.typ != expected.0 || tok.literal != expected.1 {
-                panic!("mismatching tokens\n  left: {tokens:?}\n  right: {expected_tokens:?}\n\n{tok:?} - {expected:?}");
+                panic!(
+                    "mismatching tokens\n  left: {tokens:?}\n  right: {expected_tokens:?}\n\n{tok:?} - {expected:?}"
+                );
             }
         }
     }
@@ -1133,8 +800,11 @@ mod test {
         ($str: expr; $($pat:pat),* $(,)?) => {
             let mut i = 0;
             let arena = Arena::new();
-            let ctx = GlobalContext::new(&arena);
-            let (_, errs) = get_tokens(ctx.share(), $str);
+            let span_interner = SpanInterner::new(&arena);
+            let string_interner = Mutex::new(SymbolInterner::new(&arena));
+            let source_map = SourceMap::new();
+            let ctx = LexingContext::new(&string_interner, &span_interner, &source_map);
+            let (_, errs) = get_tokens(ctx, $str);
             $(
                 if i >= errs.len() {
                     panic!("Expected error matching {:?} ({i})", stringify!($pat));
@@ -1177,8 +847,10 @@ mod test {
     #[test]
     fn test_strings() {
         let arena = Arena::new();
-        let ctx = GlobalContext::new(&arena);
-        let ctx = ctx.share();
+        let span_interner = SpanInterner::new(&arena);
+        let string_interner = Mutex::new(SymbolInterner::new(&arena));
+        let source_map = SourceMap::new();
+        let ctx = LexingContext::new(&string_interner, &span_interner, &source_map);
         assert_token_eq(
             r#"
 "a b c";
@@ -1196,14 +868,16 @@ mod test {
             ctx,
         );
 
-        match_errs!("\"a\nb\nc\";"; TokenizationError::UnclosedString { loc: _ }, TokenizationError::UnclosedString { loc: _ });
+        match_errs!("\"a\nb\nc\";"; LexingError::UnclosedString(_), LexingError::UnclosedString(_));
     }
 
     #[test]
     fn test_idents() {
         let arena = Arena::new();
-        let ctx = GlobalContext::new(&arena);
-        let ctx = ctx.share();
+        let span_interner = SpanInterner::new(&arena);
+        let string_interner = Mutex::new(SymbolInterner::new(&arena));
+        let source_map = SourceMap::new();
+        let ctx = LexingContext::new(&string_interner, &span_interner, &source_map);
         assert_token_eq(
             "jkhdfgkjhdf",
             &[tok!(ctx, IdentifierLiteral, jkhdfgkjhdf)],
@@ -1215,14 +889,16 @@ mod test {
             &[tok!(ctx, IdentifierLiteral, String("_3$5#12_mow"))],
             ctx,
         );
-        match_errs!("1289hjdsjhfgdfg_meow"; TokenizationError::InvalidNumberType(_));
+        match_errs!("1289hjdsjhfgdfg_meow"; LexingError::InvalidNumberType(_));
     }
 
     #[test]
     fn test_numbers() {
         let arena = Arena::new();
-        let ctx = GlobalContext::new(&arena);
-        let ctx = ctx.share();
+        let span_interner = SpanInterner::new(&arena);
+        let string_interner = Mutex::new(SymbolInterner::new(&arena));
+        let source_map = SourceMap::new();
+        let ctx = LexingContext::new(&string_interner, &span_interner, &source_map);
         assert_token_eq(
             "12; -23; 23.9; -29.3; 0x1; -0x1;",
             &[

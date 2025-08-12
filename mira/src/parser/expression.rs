@@ -8,17 +8,17 @@ use crate::{
     error::ParsingError,
     module::{Function, Module, ModuleContext},
     store::StoreKey,
-    tokenizer::{NumberType, TokenType},
 };
+use mira_lexer::{Literal, NumberType, Token, TokenType};
 use mira_spans::{
-    interner::{SpanInterner, Symbol},
     Ident, Span,
+    interner::{SpanInterner, Symbol},
 };
 
 use super::{
-    statement::{display_contract, FunctionContract},
-    types::TypeRef,
     Parser, Statement,
+    statement::{FunctionContract, display_contract},
+    types::TypeRef,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,7 +280,7 @@ impl Display for LiteralValue<'_> {
     }
 }
 
-impl LiteralValue<'_> {
+impl<'arena> LiteralValue<'arena> {
     // NOTE: **ONLY** FOR ERROR MESSAGES!!!!!
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -294,6 +294,30 @@ impl LiteralValue<'_> {
             LiteralValue::Tuple(..) => "tuple",
             LiteralValue::Void => "void",
             LiteralValue::AnonymousFunction(..) | Self::BakedAnonymousFunction(..) => "function",
+        }
+    }
+
+    fn from_token(value: Token<'arena>) -> Option<Self> {
+        match value.typ {
+            TokenType::StringLiteral
+            | TokenType::BooleanLiteral
+            | TokenType::FloatLiteral
+            | TokenType::UIntLiteral
+            | TokenType::SIntLiteral => value.literal.as_ref().map(|v| match v {
+                Literal::Bool(boolean) => LiteralValue::Bool(*boolean),
+                Literal::Float(float, typ) => LiteralValue::Float(*float, *typ),
+                Literal::SInt(int, typ) => LiteralValue::SInt(*int, *typ),
+                Literal::UInt(uint, typ) => LiteralValue::UInt(*uint, *typ),
+                Literal::String(string) => LiteralValue::String(*string),
+            }),
+            TokenType::VoidLiteral => Some(LiteralValue::Void),
+            TokenType::IdentifierLiteral => match value.literal {
+                Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(
+                    crate::parser::Path::new(Ident::new(*v, value.span), Vec::new()),
+                )),
+                _ => None,
+            },
+            _ => None,
         }
     }
 }
@@ -692,7 +716,7 @@ impl<'arena> Parser<'_, 'arena> {
         self.expect(TokenType::BracketLeft)?;
         let name = self.expect_identifier()?.symbol();
         self.expect(TokenType::BracketRight)?;
-        let bound = self.expect(TokenType::StringLiteral)?.string_literal()?;
+        let bound = self.expect(TokenType::StringLiteral)?.string_literal();
         self.expect(TokenType::ParenLeft)?;
         let type_ = self.expect_identifier()?;
         self.expect(TokenType::ParenRight)?;
@@ -720,7 +744,7 @@ impl<'arena> Parser<'_, 'arena> {
                     break;
                 }
             }
-            let s = self.expect(TokenType::StringLiteral)?.string_literal()?;
+            let s = self.expect(TokenType::StringLiteral)?.string_literal();
             if !asm.is_empty() {
                 asm.push('\n');
             }
@@ -809,7 +833,7 @@ impl<'arena> Parser<'_, 'arena> {
                 registers.push(',');
             }
             registers.push_str("~{");
-            let register = self.expect(TokenType::StringLiteral)?.string_literal()?;
+            let register = self.expect(TokenType::StringLiteral)?.string_literal();
             registers.push_str(&register);
             registers.push('}');
 
@@ -819,7 +843,7 @@ impl<'arena> Parser<'_, 'arena> {
                 }
                 self.expect(TokenType::Comma)?;
                 registers.push_str(",~{");
-                let register = self.expect(TokenType::StringLiteral)?.string_literal()?;
+                let register = self.expect(TokenType::StringLiteral)?.string_literal();
                 registers.push_str(&register);
                 registers.push('}');
             }
@@ -1275,7 +1299,7 @@ impl<'arena> Parser<'_, 'arena> {
             }
         }
 
-        if let Some(lit) = self.peek().to_literal_value() {
+        if let Some(lit) = LiteralValue::from_token(self.peek()) {
             return Ok(Expression::Literal(lit, self.eat().span));
         }
 
@@ -1299,7 +1323,7 @@ impl<'arena> Parser<'_, 'arena> {
             let mut arr = vec![];
             while !self.match_tok(TokenType::BracketRight) {
                 if arr.len() == 1 && self.match_tok(TokenType::Semicolon) {
-                    let amount = self.expect(TokenType::UIntLiteral)?.uint_literal()?.0 as usize;
+                    let amount = self.expect(TokenType::UIntLiteral)?.uint_literal().0 as usize;
                     self.expect(TokenType::BracketRight)?;
                     return Ok(Some(Expression::Literal(
                         LiteralValue::Array(ArrayLiteral::CopyInitialized(

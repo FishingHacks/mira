@@ -6,10 +6,10 @@ use crate::{
     parser::{ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp},
     std_annotations::ext_vararg::ExternVarArg,
     store::StoreKey,
-    tokenizer::NumberType,
     typechecking::typed_resolve_import,
 };
 use mira_errors::{Diagnostic, Diagnostics};
+use mira_lexer::NumberType;
 use mira_spans::{ArenaList, Ident, Span};
 
 use super::{

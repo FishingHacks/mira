@@ -11,15 +11,15 @@ use crate::{
     error::ParsingError,
     module::{Import, Module},
     store::{Store, StoreKey},
-    tokenizer::TokenType,
     tokenstream::TokenStream,
 };
 pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
-use mira_spans::{FileId, Ident, PackageId, SourceFile, Span};
+use mira_lexer::{Lexer, TokenType};
+use mira_spans::{BytePos, FileId, Ident, PackageId, SourceFile, Span, SpanData};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
-pub use types::{Generic, Implementation, Struct, TypeRef, RESERVED_TYPE_NAMES};
+pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, Struct, TypeRef};
 mod expression;
 pub mod module_resolution;
 mod statement;
@@ -65,6 +65,30 @@ impl std::fmt::Debug for Parser<'_, '_> {
 }
 
 impl<'a, 'arena> Parser<'a, 'arena> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_lexer(
+        lexer: Lexer<'arena>,
+        parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
+        modules: &'a RwLock<Store<Module<'arena>>>,
+        key: StoreKey<Module<'arena>>,
+        ctx: SharedContext<'arena>,
+    ) -> Parser<'a, 'arena> {
+        let eof_span = ctx.intern_span(SpanData::new(
+            BytePos::from_u32(lexer.file.len()),
+            1,
+            lexer.file.id,
+        ));
+        let file = lexer.file.clone();
+        Parser::new(
+            ctx,
+            TokenStream::new(lexer.into_tokens(), eof_span),
+            parser_queue,
+            modules,
+            file,
+            key,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         ctx: SharedContext<'arena>,

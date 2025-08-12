@@ -13,13 +13,12 @@ use crate::{
     parser::ParserQueueEntry,
     store::StoreKey,
     symbols,
-    tokenizer::{Token, TokenType},
 };
+use mira_lexer::{Token, TokenType};
 
 use super::{
-    module_resolution,
+    Expression, Parser, PathWithoutGenerics, module_resolution,
     types::{Generic, TypeRef},
-    Expression, Parser, PathWithoutGenerics,
 };
 use mira_spans::{Ident, Span, SpanData};
 
@@ -621,7 +620,7 @@ impl<'arena> Parser<'_, 'arena> {
                 return Err(ParsingError::ExpectedElementForPub {
                     loc: self.peek().span,
                     typ: self.peek().typ,
-                })
+                });
             }
         };
         let ident = match &stmt {
@@ -1096,7 +1095,7 @@ impl<'arena> Parser<'_, 'arena> {
                             loc: self.peek().span,
                             found: token,
                             is_trait_impl: false,
-                        })
+                        });
                     }
                 }
             }
@@ -1141,13 +1140,13 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Unsized => symbols::Keywords::Unsized,
             TokenType::Struct => symbols::Keywords::Struct,
             TokenType::Trait => symbols::Keywords::Trait,
-            TokenType::IdentifierLiteral => self.peek().string_literal()?,
+            TokenType::IdentifierLiteral => self.peek().string_literal(),
 
             _ => {
                 return Err(ParsingError::ExpectedIdentifier {
                     loc: self.peek().span,
                     found: self.peek().typ,
-                })
+                });
             }
         };
         self.dismiss();
@@ -1171,7 +1170,7 @@ impl<'arena> Parser<'_, 'arena> {
                                 self.file.id,
                             )),
                         ),
-                    })
+                    });
                 }
                 TokenType::ParenRight if deepness == 0 => {
                     self.dismiss();
@@ -1343,7 +1342,7 @@ impl<'arena> Parser<'_, 'arena> {
                     return Err(ParsingError::ExpectedFunctionBody {
                         loc: self.peek().span,
                         found: self.peek().typ,
-                    })
+                    });
                 }
             })
         };
