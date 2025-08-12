@@ -7,7 +7,7 @@ use std::{
     thread::JoinHandle,
 };
 
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender};
 
 pub struct HeapJob<F: FnOnce() + Send>(F);
 
@@ -78,7 +78,7 @@ impl ThreadPool {
         let mut threads = Vec::with_capacity(num_threads);
         let jobs = Default::default();
 
-        let (sender, receiver) = crossbeam::channel::unbounded();
+        let (sender, receiver) = crossbeam_channel::unbounded();
         for _ in 0..num_threads {
             let receiver = receiver.clone();
             let jobs = Arc::clone(&jobs);
@@ -133,7 +133,7 @@ impl ThreadPool {
     fn finish(&mut self) {
         // println!("finishing :3");
         _ = self.sender.send(ThreadPoolMessage::Exit);
-        self.sender = crossbeam::channel::bounded(0).0;
+        self.sender = crossbeam_channel::bounded(0).0;
 
         let threads: Vec<JoinHandle<()>> = std::mem::take(&mut self.threads).into();
         for (i, handle) in threads.into_iter().enumerate() {

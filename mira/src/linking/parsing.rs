@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crossbeam::channel::{Sender, bounded};
+use crossbeam_channel::{Sender, bounded};
 use mira_errors::Diagnostics;
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
