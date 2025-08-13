@@ -4,7 +4,8 @@ use std::{
 };
 
 use inkwell::targets::TargetTriple;
-use thiserror::Error;
+
+pub use native_target::NATIVE_TARGET;
 
 macro_rules! str_enum {
     ($name:ident: $($tag:ident = $value:literal),* $(,)?) => {
@@ -154,19 +155,29 @@ impl std::fmt::Debug for Target {
     }
 }
 
-#[derive(Error, Clone, Copy, Debug)]
+impl Display for TargetParsingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::InvalidArch => "Invalid Arch",
+            Self::InvalidOs => "Invalid Operating System",
+            Self::InvalidAbi => "Invalid ABI",
+            Self::TooManyArguments => "Too many arguments. Format: arch-os-abi or arch-os",
+            Self::MissingArch => "No arch specified. Format: arch-os-abi or arch-os",
+            Self::MissingOs => "No os specified. Format: arch-os-abi or arch-os",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::error::Error for TargetParsingError {}
+
+#[derive(Clone, Copy, Debug)]
 pub enum TargetParsingError {
-    #[error("Invalid Arch")]
     InvalidArch,
-    #[error("Invalid Operating System")]
     InvalidOs,
-    #[error("Invalid ABI")]
     InvalidAbi,
-    #[error("Too many arguments. Format: arch-os-abi or arch-os")]
     TooManyArguments,
-    #[error("No arch specified. Format: arch-os-abi or arch-os")]
     MissingArch,
-    #[error("No os specified. Format: arch-os-abi or arch-os")]
     MissingOs,
 }
 
@@ -280,4 +291,3 @@ mod native_target {
         os: OS,
     };
 }
-pub use native_target::NATIVE_TARGET;

@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-mira-spans = { path = "../mira-spans" }
-mira-macros = { path = "../mira-macros" }
+mira-spans.workspace = true
+mira-macros.workspace = true

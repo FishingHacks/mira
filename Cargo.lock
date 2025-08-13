@@ -235,7 +235,6 @@ dependencies = [
  "mira-progress-bar",
  "mira-spans",
  "parking_lot",
- "thiserror",
 ]
 
 [[package]]
@@ -253,6 +252,10 @@ dependencies = [
  "mira-macros",
  "mira-spans",
 ]
+
+[[package]]
+name = "mira-expand"
+version = "0.1.0"
 
 [[package]]
 name = "mira-lexer"

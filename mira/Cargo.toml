@@ -6,13 +6,12 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-parking_lot = "0.12.3"
-thiserror = "2.0.12"
-inkwell = { git = "https://github.com/fishinghacks/inkwell.git", features = ["llvm20-1-prefer-static"] }
-cfg-if = "1.0.0"
-mira-errors = { path = "../mira-errors" }
-mira-macros = { path = "../mira-macros" }
-mira-spans = { path = "../mira-spans" }
-mira-progress-bar = { path = "../mira-progress-bar" }
-crossbeam-channel = "0.5.15"
-mira-lexer = { path = "../mira-lexer" }
+parking_lot.workspace = true
+inkwell.workspace = true
+cfg-if.workspace = true
+mira-errors.workspace = true
+mira-macros.workspace = true
+mira-spans.workspace = true
+mira-progress-bar.workspace = true
+crossbeam-channel.workspace = true
+mira-lexer.workspace = true

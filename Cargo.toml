@@ -1,12 +1,34 @@
-workspace = { members = ["mira", "mira-context", "mira-error-codes", "mira-errors", "mira-lexer", "mira-macros", "mira-progress-bar", "mira-spans"] }
 [package]
 name = "mirac"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["mira", "mira-context", "mira-error-codes", "mira-errors", "mira-expand", "mira-lexer", "mira-macros", "mira-progress-bar", "mira-spans"]
+
+[workspace.dependencies]
+mira = { path = "./mira" }
+mira-context = { path = "./mira-context" }
+mira-error-codes = { path = "./mira-error-codes" }
+mira-errors = { path = "./mira-errors" }
+mira-expand = { path = "./mira-expand" }
+mira-lexer = { path = "./mira-lexer" }
+mira-macros = { path = "./mira-macros" }
+mira-progress-bar = { path = "./mira-progress-bar" }
+mira-spans = { path = "./mira-spans" }
+parking_lot = "0.12.3"
+clap = { version = "4.5.28", features = ["derive"] }
+inkwell = { git = "https://github.com/fishinghacks/inkwell.git", features = ["llvm20-1-prefer-static"] }
+cfg-if = "1.0.0"
+crossbeam-channel = "0.5.15"
+syn = "2.0.104"
+proc-macro2 = "1.0.95"
+quote = "1.0.40"
+termsize = "0.1.9"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-parking_lot = "0.12.3"
-mira = { path = "./mira" }
-clap = { version = "4.5.28", features = ["derive"] }
+parking_lot.workspace = true
+mira.workspace = true
+clap.workspace = true
