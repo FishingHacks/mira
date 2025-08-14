@@ -1,7 +1,7 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use mira_errors::{Diagnostic, Diagnostics, pluralize};
-use mira_lexer::{Token, TokenType};
+use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_macros::ErrorData;
 use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData, Symbol, interner::SpanInterner};
 
@@ -349,7 +349,7 @@ fn expand_body<'arena>(
 }
 
 #[derive(ErrorData)]
-#[error("variable `{var1}` repeats {var1_rep} time{s1}, but variable `{var2}` repeats {var2_rep} time{s2}", s1 = pluralize!(*var1_rep), s2 = pluralize!(*var2_rep))]
+#[error("variable {} repeats {var1_rep} time{s1}, but variable {} repeats {var2_rep} time{s2}", IdentDisplay(*var1), IdentDisplay(*var2), s1 = pluralize!(*var1_rep), s2 = pluralize!(*var2_rep))]
 struct VariableRepetitionMismatch<'arena> {
     #[primary_label("")]
     span: Span<'arena>,

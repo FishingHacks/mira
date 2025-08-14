@@ -1,10 +1,9 @@
-use mira_errors::Diagnostics;
-use mira_lexer::{Literal, NumberType, Token, TokenType};
-use mira_macros::ErrorData;
-use mira_spans::Span;
+use mira_errors::{Diagnostics, ErrorData};
+use mira_lexer::{Literal, NumberType, Token, TokenType, token::IdentDisplay};
+use mira_spans::{Span, SpanData, Symbol};
 use std::fmt::Write;
 
-use crate::context::SharedContext;
+use crate::{context::SharedContext, tokenstream::BorrowedTokenStream};
 
 type MacroFn<'arena> = fn(
     SharedContext<'arena>,
@@ -22,6 +21,7 @@ pub fn get_builtin_macro(name: &str) -> Option<MacroFn> {
         "file" => Some(macro_file),
         "compile_error" => Some(macro_compile_error),
         "stringify" => Some(macro_stringify),
+        "env" => Some(macro_env),
         _ => None,
     }
 }
@@ -43,6 +43,57 @@ struct ConcatIdentsOnlyExpectsLiterals<'arena>(
 #[derive(Clone, Copy, ErrorData)]
 #[error("{_0}! doesn't accept arguments")]
 struct NoArgMacro<'arena>(&'static str, #[primary_label("")] Span<'arena>);
+
+#[derive(Clone, ErrorData)]
+#[error("Environment variable {} is not defined", IdentDisplay(*_0))]
+struct UndefinedEnvVar<'arena>(Symbol<'arena>, #[primary_label("")] Span<'arena>);
+
+fn eof_span<'arena>(ctx: SharedContext<'arena>, span: Span<'arena>) -> Span<'arena> {
+    let data = span.get_span_data();
+    ctx.intern_span(SpanData::new(data.pos + data.len - 1, 1, data.file))
+}
+
+macro_rules! err {
+    ($diags: ident, $err:expr) => {
+        $err.map_err(|v| _ = $diags.add_err(v))
+    };
+}
+
+fn macro_env<'arena>(
+    ctx: SharedContext<'arena>,
+    span: Span<'arena>,
+    args: &[Token<'arena>],
+    diagnostics: &mut Diagnostics<'arena>,
+) -> Result<Vec<Token<'arena>>, ()> {
+    let mut stream = BorrowedTokenStream::new(args, eof_span(ctx, span));
+    let name = err!(diagnostics, stream.expect_string())?.0;
+    let err;
+    if stream.match_tok(TokenType::Comma) {
+        if stream.is_at_end() {
+            err = None;
+        } else {
+            err = Some(err!(diagnostics, stream.expect_string())?.0);
+            stream.match_tok(TokenType::Comma);
+        }
+    } else {
+        err = None;
+    }
+    err!(diagnostics, stream.finish())?;
+    match std::env::var(name.to_str()) {
+        Ok(v) => Ok(vec![Token::new(
+            TokenType::StringLiteral,
+            Some(Literal::String(ctx.intern_str(&v))),
+            span,
+        )]),
+        Err(_) => {
+            match err {
+                Some(v) => _ = diagnostics.add_compile_error(v.to_string(), span),
+                None => _ = diagnostics.add_undefined_env_var(name, span),
+            }
+            Err(())
+        }
+    }
+}
 
 fn macro_concat<'arena>(
     ctx: SharedContext<'arena>,

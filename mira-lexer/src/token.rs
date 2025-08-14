@@ -2,6 +2,8 @@ use mira_spans::{Ident, Span, Symbol};
 use std::fmt::{Debug, Display, Write};
 use std::str::FromStr;
 
+use crate::Lexer;
+
 macro_rules! token_type {
     ($($key:ident $(=$value:literal)?),* $(,)?) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,20 +186,33 @@ impl<'arena> From<Token<'arena>> for Ident<'arena> {
     }
 }
 
+pub struct IdentDisplay<'a>(pub Symbol<'a>);
+
+impl Display for IdentDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        display_ident(f, self.0)
+    }
+}
+
 impl Display for TokenType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(s) = self.as_str() {
-            return f.write_str(s);
+            if s.chars().all(|v| v.is_ascii_alphabetic()) {
+                return f.write_str(s);
+            }
+            f.write_char('\'')?;
+            f.write_str(s)?;
+            return f.write_char('\'');
         }
         match self {
-            TokenType::IdentifierLiteral => f.write_str("identifier"),
-            TokenType::SIntLiteral => f.write_str("signed number"),
-            TokenType::UIntLiteral => f.write_str("unsigned number"),
+            TokenType::IdentifierLiteral => f.write_str("an identifier"),
+            TokenType::SIntLiteral => f.write_str("a signed number"),
+            TokenType::UIntLiteral => f.write_str("an unsigned number"),
             TokenType::VoidLiteral => f.write_str("void"),
-            TokenType::FloatLiteral => f.write_str("decimal number"),
-            TokenType::StringLiteral => f.write_str("string"),
-            TokenType::BooleanLiteral => f.write_str("boolean"),
-            TokenType::MacroInvocation => f.write_str("macro invocation"),
+            TokenType::FloatLiteral => f.write_str("a decimal number"),
+            TokenType::StringLiteral => f.write_str("a string"),
+            TokenType::BooleanLiteral => f.write_str("a boolean"),
+            TokenType::MacroInvocation => f.write_str("a macro invocation"),
             _ => unreachable!(),
         }
     }
@@ -207,6 +222,7 @@ fn display_ident(f: &mut std::fmt::Formatter, ident: Symbol) -> std::fmt::Result
     // only idents that are >= 1 character and only alphanumeric + #, $, _ and don't start with a
     // number can be printed without a string
     let needs_str = matches!(ident.chars().next(), Some('0'..='9') | None)
+        || Lexer::try_token_from_keyword(ident.to_str()).is_some()
         || ident
             .chars()
             .any(|c| !matches!(c, 'a'..='z'|'A'..='Z'|'0'..='9'|'#'|'$'|'_'));

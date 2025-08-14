@@ -210,6 +210,14 @@ impl AddAssign<u32> for BytePos {
         self.0 += rhs;
     }
 }
+impl Sub<u32> for BytePos {
+    type Output = Self;
+
+    #[inline(always)]
+    fn sub(self, rhs: u32) -> Self::Output {
+        Self(self.0 - rhs)
+    }
+}
 impl Add<u32> for BytePos {
     type Output = Self;
 

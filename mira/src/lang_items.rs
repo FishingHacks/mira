@@ -1,4 +1,5 @@
 use mira_errors::{Diagnostic, Diagnostics};
+use mira_lexer::token::IdentDisplay;
 use std::fmt::{Debug, Display, Write};
 
 use crate::context::SharedContext;
@@ -220,7 +221,7 @@ impl Display for GenericList<'_, '_> {
             if i != 0 {
                 f.write_str(" + ")?;
             }
-            Display::fmt(&self.0[i], f)?;
+            Display::fmt(&IdentDisplay(self.0[i]), f)?;
         }
         Ok(())
     }
@@ -233,21 +234,21 @@ pub enum LangItemError<'arena> {
         langitem: &'static str,
         ty: LangItemType,
     },
-    #[error("Static lang-item `{langitem}` is missing trait-implementation `{name}`")]
+    #[error("Static lang-item `{langitem}` is missing trait-implementation {}", IdentDisplay(*name))]
     StaticIsMissingTrait {
         name: Symbol<'arena>,
         langitem: &'static str,
     },
     #[error("Static lang-item `{langitem}` is a primitive, who are not supported")]
     StaticIsPrimitive { langitem: &'static str },
-    #[error("Struct lang-item `{langitem}` is missing field `{name}` of type `{ty}`")]
+    #[error("Struct lang-item `{langitem}` is missing field {} of type `{ty}`", IdentDisplay(*name))]
     StructMissingElement {
         name: Symbol<'arena>,
         ty: Ty<'arena>,
         langitem: &'static str,
     },
     #[error(
-        "Struct lang-item `{langitem}`'s field `{name}` is expected to be {expected} but {found}"
+        "Struct lang-item `{langitem}`'s field {} is expected to be {expected} but {found}", IdentDisplay(*name)
     )]
     StructMismatchingField {
         name: Symbol<'arena>,
@@ -255,28 +256,29 @@ pub enum LangItemError<'arena> {
         found: Ty<'arena>,
         langitem: &'static str,
     },
-    #[error("Struct lang-item `{langitem}`'s field `{name}` is not expected to be there")]
+    #[error("Struct lang-item `{langitem}`'s field {} is not expected to be there", IdentDisplay(*name))]
     StructUnexpectedField {
         name: Symbol<'arena>,
         langitem: &'static str,
     },
-    #[error("Struct lang-item `{lang_item}` is missing function `{function}`")]
+    #[error("Struct lang-item `{lang_item}` is missing function {}", IdentDisplay(*function))]
     StructMissingFunction {
         lang_item: &'static str,
         function: Symbol<'arena>,
     },
-    #[error("Struct lang-item `{lang_item}` is missing the trait `{trait_name}`")]
+    #[error("Struct lang-item `{lang_item}` is missing the trait {}", IdentDisplay(*trait_name))]
     StructMissingTrait {
         lang_item: &'static str,
         trait_name: Symbol<'arena>,
     },
-    #[error("Trait lang-item `{lang_item}` is missing function `{function}`")]
+    #[error("Trait lang-item `{lang_item}` is missing function {}", IdentDisplay(*function))]
     TraitMissingFunction {
         lang_item: &'static str,
         function: Symbol<'arena>,
     },
     #[error(
-        "Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}",
+        "Trait lang-item `{lang_item}`'s function {} has a mismatching signature. Expected: {}, but found {}",
+        IdentDisplay(*function),
         FunctionList(expected),
         FunctionList(found)
     )]
@@ -287,7 +289,7 @@ pub enum LangItemError<'arena> {
         lang_item: &'static str,
     },
     #[error(
-        "Trait lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}"
+        "Trait lang-item `{lang_item}`'s function `{}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}", IdentDisplay(*function)
     )]
     TraitMismatchingReturnType {
         expected: Ty<'arena>,
@@ -296,7 +298,8 @@ pub enum LangItemError<'arena> {
         lang_item: &'static str,
     },
     #[error(
-        "Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: {}, but found {}",
+        "Struct lang-item `{lang_item}`'s function {} has a mismatching signature. Expected: {}, but found {}",
+        IdentDisplay(*function),
         FunctionList(expected),
         FunctionList(found)
     )]
@@ -306,24 +309,21 @@ pub enum LangItemError<'arena> {
         function: Symbol<'arena>,
         lang_item: &'static str,
     },
-    #[error(
-        "Struct lang-item `{lang_item}`'s function `{function}` has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}"
-    )]
+    #[error("Struct lang-item `{lang_item}`'s function {} has a mismatching signature. Expected: fn(...) -> {expected}, but found fn(...) -> {found}", IdentDisplay(*function))]
     StructMismatchingReturnType {
         expected: Ty<'arena>,
         found: Ty<'arena>,
         function: Symbol<'arena>,
         lang_item: &'static str,
     },
-    #[error(
-        "Struct lang-item `{lang_item}`s generic `{generic}` requires that it allow unsized types"
-    )]
+    #[error("Struct lang-item `{lang_item}`s generic {} requires that it allow unsized types", IdentDisplay(*generic))]
     StructGenericSizingIncompatability {
         lang_item: &'static str,
         generic: Symbol<'arena>,
     },
     #[error(
-        "Struct lang-item `{lang_item}`s generic `{generic}` doesn't match, expected {}, but found {}",
+        "Struct lang-item `{lang_item}`s generic {} doesn't match, expected {}, but found {}",
+        IdentDisplay(*generic),
         GenericList(expected),
         GenericList(found)
     )]
@@ -341,7 +341,7 @@ pub enum LangItemError<'arena> {
         lang_item: &'static str,
         generic: Vec<Symbol<'arena>>,
     },
-    #[error("Struct lang-item `{lang_item}` has an unexpected generic `{generic}`")]
+    #[error("Struct lang-item `{lang_item}` has an unexpected generic {}", IdentDisplay(*generic))]
     StructUnexpectedGeneric {
         lang_item: &'static str,
         generic: Symbol<'arena>,
@@ -364,7 +364,7 @@ pub enum LangItemError<'arena> {
         found: Ty<'arena>,
         lang_item: &'static str,
     },
-    #[error("Trait lang-item `{lang_item}` has an unexpected function `{function}`")]
+    #[error("Trait lang-item `{lang_item}` has an unexpected function {}", IdentDisplay(*function))]
     TraitExcessiveFunction {
         lang_item: &'static str,
         function: Symbol<'arena>,

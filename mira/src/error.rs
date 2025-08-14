@@ -7,7 +7,7 @@ pub use mira_errors::{Diagnostic, Diagnostics};
 use mira_macros::ErrorData;
 
 use crate::{annotations::AnnotationReceiver, typechecking::Ty};
-use mira_lexer::{Token, TokenType};
+use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_spans::{Span, interner::Symbol};
 
 #[derive(ErrorData)]
@@ -41,14 +41,14 @@ impl<T: Display> Display for ExpectedOneOfDisplay<'_, T> {
         if self.0.is_empty() {
             return Ok(());
         }
-        f.write_fmt(format_args!("`{}`", self.0[0]))?;
+        f.write_fmt(format_args!("{}", self.0[0]))?;
         if self.0.len() < 2 {
             return Ok(());
         }
         for el in &self.0[1..self.0.len() - 1] {
-            f.write_fmt(format_args!(", `{el}`"))?;
+            f.write_fmt(format_args!(", {el}"))?;
         }
-        f.write_fmt(format_args!(", or `{}`", self.0[self.0.len() - 1]))
+        f.write_fmt(format_args!(", or {}", self.0[self.0.len() - 1]))
     }
 }
 
@@ -59,83 +59,78 @@ pub enum ParsingError<'arena> {
         #[secondary_label("unclosed delimiter")] Span<'arena>,
         #[primary_label("")] Span<'arena>,
     ),
-    #[error("Invalid meta variable type `{_1}`")]
-    #[note("Valid meta types are: `tok`, `token`, and `ident`")]
+    #[error("Invalid meta variable type {}", IdentDisplay(*_1))]
+    #[note("Valid meta types are: tok, token, and ident")]
     InvalidMetaVarType(
         #[primary_label("invalid meta var type")] Span<'arena>,
         Symbol<'arena>,
     ),
-    #[error("Expected `{expected}`, but found `{found}`.")]
+    #[error("Expected {expected}, but found {found}.")]
     Expected {
-        #[primary_label("Expected `{expected}`")]
+        #[primary_label("Expected {expected}")]
         loc: Span<'arena>,
         expected: TokenType,
         found: Token<'arena>,
     },
-    #[error("Expected `{expected}` but found `{found}`")]
+    #[error("Expected {expected} but found {found}")]
     ExpectedToktype {
-        #[note("Expected `{expected}`")]
+        #[primary_label("Expected {expected}")]
         loc: Span<'arena>,
         expected: TokenType,
         found: TokenType,
     },
-    #[error(
-        "Expected one of {}, but found `{found}`.",
-        ExpectedOneOfDisplay(valid)
-    )]
+    #[error("Expected one of {}, but found {found}.", ExpectedOneOfDisplay(valid))]
     ExpectedOneOf {
         #[primary_label("Expected one of {}", ExpectedOneOfDisplay(valid))]
         loc: Span<'arena>,
         valid: &'static [TokenType],
         found: Token<'arena>,
     },
-    #[error("unresolved import `{name}`")]
+    #[error("unresolved import `{}`", IdentDisplay(*name))]
     CannotResolveModule {
-        #[primary_label("cannot find module `{name}`")]
+        #[primary_label("cannot find module {}", IdentDisplay(*name))]
         loc: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error(
-        "Expected one of `let`, `fn`, `extern`, `struct`, `use`, or `trait`, but found {typ:?}"
-    )]
+    #[error("Expected one of let, fn, extern, struct, use, or trait, but found {tok}")]
     ExpectedElementForPub {
-        #[primary_label("Expected one of `let`, `fn`, `extern`, `struct`, `use`, or `trait`")]
+        #[primary_label("Expected one of let, fn, extern, struct, use, or trait")]
         loc: Span<'arena>,
-        typ: TokenType,
+        tok: Token<'arena>,
     },
-    #[error("Output register must start with `=`")]
+    #[error("Output register must start with '='")]
     #[note("Try using \"={}\"", output.escape_debug())]
     OutputNotStartingWithEqual {
-        #[primary_label("Register isn't starting with an `=`")]
+        #[primary_label("Register isn't starting with an '='")]
         loc: Span<'arena>,
         output: Symbol<'arena>,
     },
-    #[error("Input register cannot start with `=` or `~`")]
+    #[error("Input register cannot start with '=' or '~'")]
     #[note("Try using {:?}", &input[1..])]
     InputStartingWithInvalidChar {
-        #[primary_label("Register is starting with either `=` or `~`")]
+        #[primary_label("Register is starting with either '=' or '~'")]
         loc: Span<'arena>,
         input: Symbol<'arena>,
     },
-    #[error("A bound register with name `{name}` was already defined")]
+    #[error("A bound register with name {} was already defined", IdentDisplay(*name))]
     DuplicateAsmReplacer {
         #[primary_label("redefinition here")]
         loc: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("Attribute `{name}` cannot be applied to functions")]
+    #[error("Attribute `{}` cannot be applied to functions", IdentDisplay(*name))]
     InvalidFunctionAttribute {
         #[primary_label("attribute applied here")]
         loc: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("{name} is an invalid intrinsic")]
+    #[error("{} is an invalid intrinsic", IdentDisplay(*name))]
     InvalidIntrinsic {
         #[primary_label("no such intrinsic")]
         loc: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("invalid calling convention: found `{name}`")]
+    #[error("invalid calling convention: found `{}`", IdentDisplay(*name))]
     InvalidCallConv {
         #[primary_label("invalid calling convention")]
         loc: Span<'arena>,
@@ -152,37 +147,37 @@ pub enum ParsingError<'arena> {
         #[primary_label("expected a function call")]
         loc: Span<'arena>,
     },
-    #[error("Expected one of `,`, or `)`, but found {found}")]
+    #[error("Expected one of ',', or ')', but found {found}")]
     ExpectedFunctionArgument {
-        #[primary_label("Expected one of `,`, or `)`")]
+        #[primary_label("Expected one of ',', or ')'")]
         loc: Span<'arena>,
         found: Token<'arena>,
     },
-    #[error("Expected one of `,`, or `]`, but found `{found}`")]
+    #[error("Expected one of ',', or ']', but found {found}")]
     ExpectedArrayElement {
-        #[primary_label("Expected one of `,`, or `]`")]
+        #[primary_label("Expected one of ',', or ']'")]
         loc: Span<'arena>,
         found: TokenType,
     },
-    #[error("Expected an expression or `)`, but found `{found}`")]
+    #[error("Expected an expression or ')', but found {found}")]
     ExpectedFunctionArgumentExpression {
-        #[primary_label("Expected an expression or `)`")]
+        #[primary_label("Expected an expression or ')'")]
         loc: Span<'arena>,
         found: TokenType,
     },
-    #[error("Expected one of `=`, or `{{`, but found `{found}`")]
+    #[error("Expected one of '=', or '{{', but found {found}")]
     ExpectedFunctionBody {
-        #[primary_label("Expected one of `=`, or `{{`")]
+        #[primary_label("Expected one of '=', or {{")]
         loc: Span<'arena>,
         found: TokenType,
     },
-    #[error("Expected an expression, but found `{found}`")]
+    #[error("Expected an expression, but found {found}")]
     ExpectedExpression {
         #[primary_label("expected an expression")]
         loc: Span<'arena>,
         found: TokenType,
     },
-    #[error("Expected an identifier, but found `{found}`")]
+    #[error("Expected an identifier, but found {found}")]
     ExpectedIdentifier {
         #[primary_label("Expected an identifier")]
         loc: Span<'arena>,
@@ -197,7 +192,7 @@ pub enum ParsingError<'arena> {
         loc: Span<'arena>,
         keyword: &'static str,
     },
-    #[error("Redefinition of name `{name}`")]
+    #[error("Redefinition of name {}", IdentDisplay(*name))]
     ItemAlreadyDefined {
         #[primary_label("redefinition here")]
         loc: Span<'arena>,
@@ -205,7 +200,7 @@ pub enum ParsingError<'arena> {
         #[primary_label("`{name}` was originally defined here")]
         first: Span<'arena>,
     },
-    #[error("Redefinition of name `{name}`")]
+    #[error("Redefinition of name `{}`", IdentDisplay(*name))]
     FunctionAlreadyDefined {
         #[primary_label("redefinition here")]
         loc: Span<'arena>,
@@ -213,9 +208,9 @@ pub enum ParsingError<'arena> {
         #[primary_label("`{name}` was originally defined here")]
         first_func_loc: Span<'arena>,
     },
-    #[error("{loc:?}: Expected one of {}fn or `}}`, but found {found:?}", is_trait_impl.then_some("impl, ").unwrap_or(""))]
+    #[error("{loc:?}: Expected one of {}fn or '}}', but found {found:?}", is_trait_impl.then_some("impl, ").unwrap_or(""))]
     StructImplRegionExpect {
-        #[primary_label("Expected one of {}fn or `}}`", is_trait_impl.then_some("impl, ").unwrap_or(""))]
+        #[primary_label("Expected one of {}fn or '}}'", is_trait_impl.then_some("impl, ").unwrap_or(""))]
         loc: Span<'arena>,
         found: TokenType,
         is_trait_impl: bool,
@@ -239,16 +234,16 @@ pub enum ParsingError<'arena> {
         loc: Span<'arena>,
         name: String,
     },
-    #[error("`{_0}` is not a valid module name")]
-    #[note("Filenames cannot contain `.`, `\\0`, `<`, `>`, `:`, `\"`, `/`, `\\`, `|`, `?` or `*`.")]
+    #[error("{} is not a valid module name", IdentDisplay(*_0))]
+    #[note("Filenames cannot contain '.', '\\0', '<', '>', ':', '\"', '/', '\\', '|', '?' or '*'.")]
     InvalidFileNameErr(
         Symbol<'arena>,
         #[primary_label("this character is not allowed")] Span<'arena>,
     ),
-    #[error("Could not find module `{_0}`")]
-    #[note("to create the module `{_0}`, create file `{0}/{_0}.mr` or `{0}/{_0}/mod.mr`", _2.display())]
+    #[error("Could not find module {}", IdentDisplay(*_0))]
+    #[note("to create the module {1}, create file `{0}/{2}.mr` or `{0}/{3}/mod.mr`", _2.display(), IdentDisplay(*_0), _0.to_str().escape_debug(), _0.to_str().escape_debug())]
     #[note(
-        "if there is a `mod {_0}` elsewhere in the package, import it with `use crate::...` instead"
+        "if there is a `mod {_0}` elsewhere in the package, import it with `use crate::...` instead", _0 = IdentDisplay(*_0)
     )]
     FileNotFoundErr(Symbol<'arena>, #[primary_label("")] Span<'arena>, PathBuf),
 }
@@ -265,14 +260,14 @@ pub enum ProgramFormingError<'arena> {
     ),
     #[error("missing type for static or constant item in the module context")]
     GlobalValueNoType(#[primary_label("this static or constant needs a type")] Span<'arena>),
-    #[error("cannot find value `{_1}` in this scope")]
+    #[error("cannot find value `{}` in this scope", IdentDisplay(*_1))]
     IdentNotDefined(
         #[primary_label("export defined here")] Span<'arena>,
         Symbol<'arena>,
     ),
-    #[error("the name `{_1}` is defined multiple times")]
+    #[error("the name `{}` is defined multiple times", IdentDisplay(*_1))]
     IdentAlreadyDefined(
-        #[primary_label("`{_1}` redefined here")] Span<'arena>,
+        #[primary_label("`{}` redefined here", IdentDisplay(*_1))] Span<'arena>,
         Symbol<'arena>,
     ),
 }

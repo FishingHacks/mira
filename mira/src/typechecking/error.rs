@@ -4,6 +4,7 @@ use crate::{
     error::FunctionList,
     parser::{Path, PathWithoutGenerics},
 };
+use mira_lexer::token::IdentDisplay;
 use mira_macros::ErrorData;
 use mira_spans::{Span, interner::Symbol};
 
@@ -49,7 +50,7 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("type has to be sized")] Span<'arena>,
         Ty<'arena>,
     ),
-    #[error("Function {_1} on trait {_2} is not valid for &dyn {_2} types")]
+    #[error("Function {0} on trait {1} is not valid for &dyn {1} types", IdentDisplay(*_1), IdentDisplay(*_2))]
     InvalidDynTypeFunc(
         #[primary_label("dyn-incompatible trait")] Span<'arena>,
         Symbol<'arena>,
@@ -80,7 +81,7 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("expected a numeric type")] Span<'arena>,
         Ty<'arena>,
     ),
-    #[error("Inline assembly only accepts numeric types (i_, u_, f_ and bool), but got `{_1}`")]
+    #[error("Inline assembly only accepts numeric types (i_, u_, f_ and bool), but got {}", IdentDisplay(*_1))]
     AsmNonNumericType(
         #[primary_label("expected a numeric type")] Span<'arena>,
         Symbol<'arena>,
@@ -100,16 +101,17 @@ pub enum TypecheckingError<'arena> {
     #[note("Try using `[] as [<type>;0]`")]
     CannotInferArrayType(#[primary_label("cannot infer type")] Span<'arena>),
     #[error(
-        "Function `{_1}` of type `{_2}` is not a method as it doesn't have the signature (Self, ...) or (&Self, ...)"
+        "Function {} of type `{_2}` is not a method as it doesn't have the signature (Self, ...) or (&Self, ...)", IdentDisplay(*_1)
     )]
     NonMemberFunction(
-        #[primary_label("Cannot find method `{_1}`")] Span<'arena>,
+        #[primary_label("Cannot find method {}", IdentDisplay(*_1))] Span<'arena>,
         Symbol<'arena>,
         Ty<'arena>,
     ),
-    #[error("Cannot find function `{_1}` on type `{_2}`")]
+    #[error("Cannot find function {} on type `{_2}`", IdentDisplay(*_1))]
     CannotFindFunctionOnType(
-        #[primary_label("No function named `{_1}` is associated with `{_2}`")] Span<'arena>,
+        #[primary_label("No function named {} is associated with `{_2}`", IdentDisplay(*_1))]
+        Span<'arena>,
         Symbol<'arena>,
         Ty<'arena>,
     ),
@@ -128,7 +130,7 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("Cannot index into this value")] Span<'arena>,
         Ty<'arena>,
     ),
-    #[error("Could not find field `{_2}` on `{_1}`")]
+    #[error("Could not find field {} on `{_1}`", IdentDisplay(*_2))]
     FieldNotFound(
         #[primary_label("no such field found")] Span<'arena>,
         Ty<'arena>,
@@ -218,7 +220,7 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("cannot dereference")] Span<'arena>,
         Ty<'arena>,
     ),
-    #[error("could not find item `{name}`")]
+    #[error("could not find item {}", IdentDisplay(*name))]
     ItemNotFound {
         #[primary_label("No such item found")]
         location: Span<'arena>,
@@ -226,7 +228,7 @@ pub enum TypecheckingError<'arena> {
     },
     #[error("cyclic dependency detected")]
     CyclicDependency(#[primary_label("cyclic dependency")] Span<'arena>),
-    #[error("Unbound identifier `{name}`")]
+    #[error("Unbound identifier {}", IdentDisplay(*name))]
     UnboundIdent {
         #[primary_label("unbound identifier")]
         location: Span<'arena>,
@@ -256,21 +258,21 @@ pub enum TypecheckingError<'arena> {
         expected: Ty<'arena>,
         found: Ty<'arena>,
     },
-    #[error("`{name}` is not a struct type")]
+    #[error("{} is not a struct type", IdentDisplay(*name))]
     IdentifierIsNotStruct {
         #[primary_label("Tried to construct a non-struct type as a struct")]
         location: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("no such field named `{name}` found!")]
+    #[error("no such field named {} found!", IdentDisplay(*name))]
     NoSuchFieldFound {
         #[primary_label("no such field found")]
         location: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("missing field `{name}`")]
+    #[error("missing field {}", IdentDisplay(*name))]
     MissingField {
-        #[primary_label("missing `{name}`")]
+        #[primary_label("missing {}", IdentDisplay(*name))]
         location: Span<'arena>,
         name: Symbol<'arena>,
     },
@@ -294,19 +296,19 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("generics not allowed")]
         location: Span<'arena>,
     },
-    #[error("`{name}` is not a member of the trait.")]
+    #[error("{} is not a member of the trait.", IdentDisplay(*name))]
     IsNotTraitMember {
         #[primary_label("No such method exists on the trait")]
         location: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("missing trait item `{name}`")]
+    #[error("missing trait item {}", IdentDisplay(*name))]
     MissingTraitItem {
         #[primary_label("Missing implementation for trait item")]
         location: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("Type {_1} is expected to implement the traits {_2:?}")]
+    #[error("Type {_1} is expected to implement the traits{}", _2.iter().map(|v| format!(" {}", IdentDisplay(*v))).collect::<String>())]
     MismatchingTraits(
         #[primary_label("Trait is missing dependency traits")] Span<'arena>,
         Ty<'arena>,

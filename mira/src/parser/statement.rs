@@ -619,7 +619,7 @@ impl<'arena> Parser<'_, 'arena> {
             _ => {
                 return Err(ParsingError::ExpectedElementForPub {
                     loc: self.peek().span,
-                    typ: self.peek().typ,
+                    tok: self.peek(),
                 });
             }
         };

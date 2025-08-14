@@ -6,7 +6,7 @@ use std::{
 };
 
 use mira_errors::Diagnostic;
-use mira_lexer::{Token, TokenType};
+use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_macros::{Display, ErrorData};
 use mira_spans::{Ident, SourceFile, Span, Symbol};
 use parking_lot::RwLock;
@@ -62,7 +62,7 @@ enum MacroError<'arena> {
     MissingTokens(#[primary_label("more input required")] Span<'arena>),
     #[error("ambiguity: multiple successful parses")]
     MultipleFinished(#[primary_label("")] Span<'arena>),
-    #[error("More than one meta variable defined as `{_0}`")]
+    #[error("More than one meta variable defined as {}", IdentDisplay(*_0))]
     MultipleMetaVars(
         Symbol<'arena>,
         #[primary_label("this meta variable was already defined")] Span<'arena>,
@@ -77,9 +77,9 @@ enum MacroError<'arena> {
         #[primary_label("unclosed delimiter")] Span<'arena>,
         #[secondary_label("")] Span<'arena>,
     ),
-    #[error("Cannot find macro `{_1}`")]
+    #[error("Cannot find macro {}", IdentDisplay(*_1))]
     CannotFindMacro(#[primary_label("")] Span<'arena>, Symbol<'arena>),
-    #[error("variable `{_1}` is still repeating at this depth")]
+    #[error("variable `{}` is still repeating at this depth", IdentDisplay(*_1))]
     VariableStillRepeating(#[primary_label("")] Span<'arena>, Symbol<'arena>),
     #[error(
         "attempted to repeat an expression containing no syntax variables matched as repeating at this depth"
