@@ -239,8 +239,8 @@ fn display_ident(f: &mut std::fmt::Formatter, ident: Symbol) -> std::fmt::Result
 
 impl Display for Token<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(s) = self.typ.as_str() {
-            return f.write_str(s);
+        if self.typ.as_str().is_some() {
+            return Display::fmt(&self.typ, f);
         }
         match self.typ {
             TokenType::BooleanLiteral => match &self.literal {

@@ -1,4 +1,8 @@
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use mira_errors::{Diagnostic, Diagnostics, pluralize};
 use mira_lexer::{Token, TokenType, token::IdentDisplay};
@@ -8,8 +12,8 @@ use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData, Symbol, interner::S
 use crate::{
     context::SharedContext,
     parser::expand::{
-        MacroErrorDiagnosticsExt, MacroParser, ParseResult, builtin_macros, compute_locs,
-        pat_parser::parse_token_tree,
+        MacroErrorDiagnosticsExt, MacroParser, MatcherLoc, ParseResult, builtin_macros,
+        compute_locs, pat_parser::parse_token_tree,
     },
     tokenstream::BorrowedTokenStream,
 };
@@ -207,6 +211,7 @@ impl<'arena> MacroExpander<'arena> {
             return Err(());
         }
 
+        let mut has_err = false;
         let mut cases = Vec::new();
         while !tokens.is_at_end() {
             err!(tokens.expect(TokenType::ParenLeft));
@@ -221,6 +226,22 @@ impl<'arena> MacroExpander<'arena> {
                 span_interner,
             )?;
             let def = compute_locs(&def);
+            let mut defined_meta_vars = HashSet::new();
+            for loc in &def {
+                if let MatcherLoc::MetaVarDecl { bind, .. } = loc {
+                    match defined_meta_vars.get(bind) {
+                        None => _ = defined_meta_vars.insert(*bind),
+                        Some(first) => {
+                            has_err = true;
+                            diagnostics.add_multiple_meta_vars(
+                                bind.symbol(),
+                                bind.span(),
+                                first.span(),
+                            );
+                        }
+                    }
+                }
+            }
             err!(tokens.expect(TokenType::Equal));
             err!(tokens.expect(TokenType::GreaterThan));
             err!(tokens.expect(TokenType::CurlyLeft));
@@ -236,7 +257,7 @@ impl<'arena> MacroExpander<'arena> {
             err!(tokens.expect(TokenType::Semicolon));
             cases.push((def.into_boxed_slice(), body.into_boxed_slice()));
         }
-        Ok(Macro { name, cases })
+        (!has_err).then_some(Macro { name, cases }).ok_or(())
     }
 }
 
