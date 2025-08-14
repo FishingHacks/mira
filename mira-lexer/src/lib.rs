@@ -1,5 +1,5 @@
 use lexing_context::LexingContext;
-use mira_spans::{BytePos, SourceFile, Span, SpanData};
+use mira_spans::{BytePos, SourceFile, Span, SpanData, interner::symbols};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -10,6 +10,13 @@ pub mod token;
 pub use error::LexingError;
 use mira_spans::interner::Symbol;
 pub use token::{Literal, NumberType, Token, TokenType};
+#[macro_use]
+mod quote;
+
+#[doc(hidden)]
+pub fn dummy_token(tokens: &mut Vec<Token<'static>>, ty: TokenType) {
+    tokens.push(Token::new(ty, None, Span::DUMMY));
+}
 
 pub struct Lexer<'arena> {
     source: Vec<char>,
@@ -98,8 +105,8 @@ impl<'arena> Lexer<'arena> {
         let Some(tok) = tok else { return Ok(()) };
         match tok.typ {
             TokenType::IdentifierLiteral if self.if_char_advance('!') => match &tok.literal {
-                Some(Literal::String(str)) => {
-                    let mut tokens = self.do_macro(tok.span, str)?;
+                Some(Literal::String(sym)) => {
+                    let mut tokens = self.do_macro(tok.span, *sym)?;
                     self.tokens.append(&mut tokens);
                 }
                 _ => unreachable!(
@@ -136,6 +143,8 @@ impl<'arena> Lexer<'arena> {
             '[' => token!(BracketLeft),
             ']' => token!(BracketRight),
             ',' => token!(Comma),
+            '$' => token!(Dollar),
+            '?' => token!(QuestionMark),
             '.' if self.if_char_advance('.') => token!(Range, RangeInclusive, '='),
             '.' if self.peek().is_ascii_digit() => self.parse_number('.'),
             '.' => token!(Dot),
@@ -623,10 +632,10 @@ impl<'arena> Lexer<'arena> {
 
     fn do_macro(
         &mut self,
-        loc: Span<'arena>,
-        name: &Symbol<'arena>,
+        span: Span<'arena>,
+        name: Symbol<'arena>,
     ) -> Result<Vec<Token<'arena>>, LexingError<'arena>> {
-        let start = loc.get_span_data().pos.to_usize();
+        let start = span.get_span_data().pos.to_usize();
 
         let bracket_type = match self.peek() {
             '[' => ']',
@@ -664,16 +673,26 @@ impl<'arena> Lexer<'arena> {
                         "TokenType::IdentifierLiteral should always have a string literal value"
                     )
                 };
-                tokens.append(&mut self.do_macro(tok.span, name)?);
+                tokens.append(&mut self.do_macro(tok.span, *name)?);
             } else {
                 tokens.push(tok);
             }
         }
-        let tokens = if let Some(macro_fn) = crate::builtin_macros::get_builtin_macro(name) {
+        let tokens = if let Some(macro_fn) = crate::builtin_macros::get_builtin_macro(&name) {
             macro_fn(self.ctx, self.span_from(start), &tokens)
+        } else if name == symbols::DefaultIdents::r#macro {
+            tokens.insert(0, Token::new(TokenType::MacroDef, None, span));
+            tokens
         } else {
-            // TODO: implement macros
-            unimplemented!("custom macros");
+            tokens.insert(
+                0,
+                Token::new(
+                    TokenType::MacroInvocation,
+                    Some(Literal::String(name)),
+                    span,
+                ),
+            );
+            tokens
         };
         Ok(tokens)
     }

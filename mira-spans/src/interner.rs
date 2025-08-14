@@ -190,7 +190,7 @@ macro_rules! symbols {
 symbols!(
     Types { u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, NeverType = "!" },
     Keywords { If, While, For, Pub, As, Else, Asm, Volatile, Impl, Fn, In, Unsized, Struct, Trait },
-    DefaultIdents { main }
+    DefaultIdents { main, r#macro = "macro" }
 );
 
 #[cfg(test)]

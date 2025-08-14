@@ -53,7 +53,7 @@ fn parse_single<'arena>(
     // │ Parsing │
     // └─────────┘
     let mut current_parser = Parser::from_lexer(
-        lexer,
+        &lexer,
         parsing_queue.clone(),
         &module_context.modules,
         key,
@@ -80,6 +80,8 @@ fn parse_single<'arena>(
         current_parser.exports,
         current_parser.file,
     );
+    _ = current_parser;
+    drop(lexer);
     if let Err(errs) = module.push_all(statements, key, &module_context) {
         errors
             .write()

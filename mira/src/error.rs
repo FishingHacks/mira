@@ -54,6 +54,17 @@ impl<T: Display> Display for ExpectedOneOfDisplay<'_, T> {
 
 #[derive(Debug, ErrorData)]
 pub enum ParsingError<'arena> {
+    #[error("Unmatched parenthese")]
+    UnmatchedParen(
+        #[secondary_label("unclosed delimiter")] Span<'arena>,
+        #[primary_label("")] Span<'arena>,
+    ),
+    #[error("Invalid meta variable type `{_1}`")]
+    #[note("Valid meta types are: `tok`, `token`, and `ident`")]
+    InvalidMetaVarType(
+        #[primary_label("invalid meta var type")] Span<'arena>,
+        Symbol<'arena>,
+    ),
     #[error("Expected `{expected}`, but found `{found}`.")]
     Expected {
         #[primary_label("Expected `{expected}`")]

@@ -4,14 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["mira", "mira-context", "mira-error-codes", "mira-errors", "mira-expand", "mira-lexer", "mira-macros", "mira-progress-bar", "mira-spans"]
+members = ["mira", "mira-error-codes", "mira-errors", "mira-lexer", "mira-macros", "mira-progress-bar", "mira-spans"]
 
 [workspace.dependencies]
 mira = { path = "./mira" }
-mira-context = { path = "./mira-context" }
 mira-error-codes = { path = "./mira-error-codes" }
 mira-errors = { path = "./mira-errors" }
-mira-expand = { path = "./mira-expand" }
 mira-lexer = { path = "./mira-lexer" }
 mira-macros = { path = "./mira-macros" }
 mira-progress-bar = { path = "./mira-progress-bar" }

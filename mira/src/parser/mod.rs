@@ -11,15 +11,17 @@ use crate::{
     error::ParsingError,
     module::{Import, Module},
     store::{Store, StoreKey},
-    tokenstream::TokenStream,
+    tokenstream::{BorrowedTokenStream, TokenStream},
 };
 pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
 use mira_lexer::{Lexer, TokenType};
-use mira_spans::{BytePos, FileId, Ident, PackageId, SourceFile, Span, SpanData};
+use mira_spans::{BytePos, FileId, Ident, PackageId, SourceFile, Span, SpanData, Symbol};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, Struct, TypeRef};
+
+mod expand;
 mod expression;
 pub mod module_resolution;
 mod statement;
@@ -37,8 +39,9 @@ pub struct Parser<'a, 'arena> {
     pub ctx: SharedContext<'arena>,
     pub file: Arc<SourceFile>,
 
+    macros: HashMap<Symbol<'arena>, ()>,
     // pub tokens: Vec<Token<'arena>>,
-    stream: TokenStream<'arena>,
+    stream: BorrowedTokenStream<'arena, 'a>,
     // pub current: usize,
     current_annotations: Annotations<'arena>,
     pub parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
@@ -55,8 +58,6 @@ impl std::fmt::Debug for Parser<'_, '_> {
         f.debug_struct("Parser")
             .field("file", &self.file.path)
             .field("root_directory", &self.file.package_root)
-            // .field("tokens", &self.tokens)
-            // .field("current", &self.current)
             .field("current_annotations", &self.current_annotations)
             .field("modules", &self.parser_queue)
             .field("imports", &self.imports)
@@ -67,7 +68,7 @@ impl std::fmt::Debug for Parser<'_, '_> {
 impl<'a, 'arena> Parser<'a, 'arena> {
     #[allow(clippy::too_many_arguments)]
     pub fn from_lexer(
-        lexer: Lexer<'arena>,
+        lexer: &'a Lexer<'arena>,
         parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
         modules: &'a RwLock<Store<Module<'arena>>>,
         key: StoreKey<Module<'arena>>,
@@ -81,7 +82,7 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         let file = lexer.file.clone();
         Parser::new(
             ctx,
-            TokenStream::new(lexer.into_tokens(), eof_span),
+            TokenStream::new(lexer.get_tokens(), eof_span),
             parser_queue,
             modules,
             file,
@@ -93,13 +94,14 @@ impl<'a, 'arena> Parser<'a, 'arena> {
     pub fn new(
         ctx: SharedContext<'arena>,
         // tokens: Vec<Token<'arena>>,
-        stream: TokenStream<'arena>,
+        stream: BorrowedTokenStream<'arena, 'a>,
         parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
         modules: &'a RwLock<Store<Module<'arena>>>,
         file: Arc<SourceFile>,
         key: StoreKey<Module<'arena>>,
     ) -> Self {
         Self {
+            macros: HashMap::new(),
             ctx,
             stream,
             // tokens,
@@ -168,8 +170,8 @@ impl<'a, 'arena> Parser<'a, 'arena> {
     }
 }
 
-impl<'arena> Deref for Parser<'_, 'arena> {
-    type Target = TokenStream<'arena>;
+impl<'a, 'arena> Deref for Parser<'a, 'arena> {
+    type Target = BorrowedTokenStream<'arena, 'a>;
 
     fn deref(&self) -> &Self::Target {
         &self.stream

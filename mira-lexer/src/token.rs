@@ -1,5 +1,5 @@
 use mira_spans::{Ident, Span, Symbol};
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, Write};
 use std::str::FromStr;
 
 macro_rules! token_type {
@@ -43,6 +43,8 @@ token_type! {
     SIntLiteral,
     UIntLiteral,
     BooleanLiteral,
+    MacroInvocation,
+    MacroDef = "macro!",
     VoidLiteral = "void",
     IdentifierLiteral,
     Equal = "=",
@@ -89,9 +91,11 @@ token_type! {
     PlusAssign = "+=",
     MinusAssign = "-=",
     Dot = ".",
+    Dollar = "$",
     As = "as",
     AnnotationIntroducer = "@",
     NamespaceAccess = "::",
+    QuestionMark = "?",
     Eof = "",
 }
 
@@ -163,7 +167,7 @@ pub enum Literal<'arena> {
     Bool(bool),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Token<'arena> {
     pub typ: TokenType,
     pub literal: Option<Literal<'arena>>,
@@ -198,6 +202,24 @@ impl Display for TokenType {
     }
 }
 
+fn display_ident(f: &mut std::fmt::Formatter, ident: Symbol) -> std::fmt::Result {
+    // only idents that are >= 1 character and only alphanumeric + #, $, _ and don't start with a
+    // number can be printed without a string
+    let needs_str = matches!(ident.chars().next(), Some('0'..='9') | None)
+        || ident
+            .chars()
+            .any(|c| !matches!(c, 'a'..='z'|'A'..='Z'|'0'..='9'|'#'|'$'|'_'));
+    if needs_str {
+        f.write_char('`')?;
+        for c in ident.escape_debug() {
+            f.write_char(c)?;
+        }
+        f.write_char('`')
+    } else {
+        f.write_str(&ident)
+    }
+}
+
 impl Display for Token<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(s) = self.typ.as_str() {
@@ -209,7 +231,7 @@ impl Display for Token<'_> {
                 _ => f.write_str("bool(malformed data)"),
             },
             TokenType::IdentifierLiteral => match &self.literal {
-                Some(Literal::String(v)) => Display::fmt(v, f),
+                Some(Literal::String(v)) => display_ident(f, *v),
                 _ => f.write_str("identifier(malformed data)"),
             },
             TokenType::FloatLiteral => match self.literal {
@@ -227,6 +249,13 @@ impl Display for Token<'_> {
             TokenType::StringLiteral => match &self.literal {
                 Some(Literal::String(v)) => Debug::fmt(v, f),
                 _ => f.write_str("string(malformed data)"),
+            },
+            TokenType::MacroInvocation => match &self.literal {
+                Some(Literal::String(v)) => {
+                    display_ident(f, *v)?;
+                    f.write_char('!')
+                }
+                _ => f.write_str("macro_invocation(malformed data)!"),
             },
             _ => unreachable!(),
         }

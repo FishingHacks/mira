@@ -1,46 +1,71 @@
+use std::slice::SliceIndex;
+
 use crate::error::ParsingError;
 use mira_lexer::{Token, TokenType};
 use mira_spans::{Ident, Span, interner::Symbol};
 
-pub struct TokenStream<'arena> {
-    tokens: Vec<Token<'arena>>,
+pub trait TokenHolder<'arena>: AsRef<[Token<'arena>]> {
+    fn len(&self) -> usize {
+        self.as_ref().len()
+    }
+    fn last(&self) -> Option<Token<'arena>> {
+        self.as_ref()
+            .get(self.as_ref().len().saturating_sub(1))
+            .copied()
+    }
+    fn get<'a, I: SliceIndex<[Token<'arena>]>>(&'a self, value: I) -> Option<&'a I::Output>
+    where
+        'arena: 'a,
+    {
+        self.as_ref().get(value)
+    }
+}
+
+pub trait MutableTokenHolder<'arena>: TokenHolder<'arena> {
+    fn swap(&mut self, a: usize, b: usize);
+    fn push(&mut self, token: Token<'arena>);
+    fn extend(&mut self, iter: impl IntoIterator<Item = Token<'arena>>) {
+        for token in iter {
+            self.push(token)
+        }
+    }
+}
+
+impl<'arena> TokenHolder<'arena> for &[Token<'arena>] {}
+
+impl<'arena> TokenHolder<'arena> for Vec<Token<'arena>> {}
+
+impl<'arena> MutableTokenHolder<'arena> for Vec<Token<'arena>> {
+    fn swap(&mut self, a: usize, b: usize) {
+        <[_]>::swap(self, a, b)
+    }
+
+    fn push(&mut self, token: Token<'arena>) {
+        Vec::push(self, token);
+    }
+
+    fn extend(&mut self, iter: impl IntoIterator<Item = Token<'arena>>) {
+        Extend::extend(self, iter);
+    }
+}
+
+pub struct TokenStream<'arena, Holder: TokenHolder<'arena> = Vec<Token<'arena>>> {
+    tokens: Holder,
     eof_span: Span<'arena>,
     pos: usize,
 }
 
-impl<'arena> TokenStream<'arena> {
-    /// pushes the token to the end of the tokenstream, maintaining the last token as eof.
-    pub fn push_token(&mut self, tok: Token<'arena>) {
-        assert_ne!(tok.typ, TokenType::Eof);
-        self.tokens.push(tok);
-        let len = self.tokens.len();
-        if len > 1 && self.tokens[len - 2].typ == TokenType::Eof {
-            self.tokens.swap(len - 1, len - 2);
-        }
-    }
+pub type OwnedTokenStream<'arena> = TokenStream<'arena>;
+pub type BorrowedTokenStream<'arena, 'a> = TokenStream<'arena, &'a [Token<'arena>]>;
 
-    pub fn add_tokens<I: IntoIterator<Item = Token<'arena>>>(&mut self, tokens: I) {
-        self.tokens.extend(tokens);
+impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
+    pub fn new(tokens: Holder, eof_span: Span<'arena>) -> Self {
+        let token_slice = tokens.as_ref();
         assert!(
-            !self.tokens[0..self.tokens.len().saturating_sub(1)]
+            !token_slice[0..token_slice.len().saturating_sub(1)]
                 .iter()
                 .any(|v| v.typ == TokenType::Eof)
         );
-    }
-
-    pub fn new(mut tokens: Vec<Token<'arena>>, eof_span: Span<'arena>) -> Self {
-        assert!(
-            !tokens[0..tokens.len().saturating_sub(1)]
-                .iter()
-                .any(|v| v.typ == TokenType::Eof)
-        );
-        match tokens.last() {
-            Some(Token {
-                typ: TokenType::Eof,
-                ..
-            }) => {}
-            _ => tokens.push(Token::new(TokenType::Eof, None, eof_span)),
-        }
         Self {
             tokens,
             eof_span,
@@ -50,7 +75,11 @@ impl<'arena> TokenStream<'arena> {
 
     /// returns all tokens from the current position of the stream
     pub fn tokens(&self) -> &[Token<'arena>] {
-        &self.tokens[self.pos..]
+        &self.tokens.as_ref()[self.pos..]
+    }
+
+    pub fn token_holder(&self) -> &Holder {
+        &self.tokens
     }
 
     pub fn pos(&self) -> usize {
@@ -81,14 +110,22 @@ impl<'arena> TokenStream<'arena> {
     }
 
     pub fn eat(&mut self) -> Token<'arena> {
-        self.pos += 1;
-        self.tokens[self.pos - 1]
+        match self.tokens.get(self.pos).copied() {
+            Some(tok) => {
+                self.pos += 1;
+                tok
+            }
+            None => self.eof_token(),
+        }
     }
 
     /// returns the "current" token, aka the last token dismissed or returned by eat
     pub fn current(&self) -> Token<'arena> {
         assert!(self.pos > 0);
-        self.tokens[self.pos - 1]
+        *self
+            .tokens
+            .get(self.pos - 1)
+            .expect("there should always have been a token")
     }
 
     /// returns the token that would be returned by the next eat() call
@@ -102,7 +139,10 @@ impl<'arena> TokenStream<'arena> {
     // the token returned by the eat call before the current one
     pub fn last(&self) -> Token<'arena> {
         assert!(self.pos > 1);
-        self.tokens[self.pos - 2]
+        self.tokens
+            .get(self.pos - 2)
+            .copied()
+            .expect("there should always have been a token")
     }
 
     /// returns the token that would be returned by the next eat() call after a prior eat/dismiss
@@ -192,9 +232,33 @@ impl<'arena> TokenStream<'arena> {
         self.is_at_end()
             .then_some(())
             .ok_or(ParsingError::Expected {
-                loc: self.tokens[0].span,
+                loc: self.tokens.get(0).unwrap().span,
                 expected: TokenType::Eof,
-                found: self.tokens[0],
+                found: *self.tokens.get(0).unwrap(),
             })
+    }
+}
+
+impl<'arena, Holder: MutableTokenHolder<'arena>> TokenStream<'arena, Holder> {
+    /// pushes the token to the end of the tokenstream, maintaining the last token as eof.
+    pub fn push_token(&mut self, tok: Token<'arena>) {
+        assert_ne!(tok.typ, TokenType::Eof);
+        self.tokens.push(tok);
+        let len = self.tokens.len();
+        if len > 1 && self.tokens.get(self.tokens.len() - 2).unwrap().typ == TokenType::Eof {
+            self.tokens.swap(len - 1, len - 2);
+        }
+    }
+
+    pub fn add_tokens<I: IntoIterator<Item = Token<'arena>>>(&mut self, tokens: I) {
+        self.tokens.extend(tokens);
+        assert!(
+            !self
+                .tokens
+                .get(0..self.tokens.len().saturating_sub(1))
+                .unwrap()
+                .iter()
+                .any(|v| v.typ == TokenType::Eof)
+        );
     }
 }
