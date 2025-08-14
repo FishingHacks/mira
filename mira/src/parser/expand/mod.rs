@@ -4,16 +4,13 @@ use std::{
     rc::Rc,
 };
 
-use mira_errors::{Diagnostic, Diagnostics};
+use mira_errors::Diagnostic;
 use mira_lexer::{Token, TokenType};
 use mira_macros::{Display, ErrorData};
 use mira_spans::{Ident, Span, Symbol};
+mod pat_parser;
 
-use crate::{
-    context::SharedContext,
-    error::{ParsingError, ParsingErrorDiagnosticsExt},
-    tokenstream::BorrowedTokenStream,
-};
+use crate::{context::SharedContext, error::ParsingError, tokenstream::CowTokenStream};
 
 use super::Parser;
 
@@ -199,7 +196,7 @@ impl<'arena> MacroParser<'arena> {
 
     pub fn parse(
         &mut self,
-        tokens: BorrowedTokenStream<'arena, '_>,
+        tokens: CowTokenStream<'arena, '_>,
         matcher: &[MatcherLoc<'arena>],
         ctx: SharedContext<'arena>,
         parser: &Parser<'_, 'arena>,
@@ -512,143 +509,4 @@ pub enum TokenTree<'arena> {
     Sequence(SequenceRepetition<'arena>),
     MetaVar(Ident<'arena>),
     MetaVarDecl(Ident<'arena>, MetaVarType),
-}
-
-pub fn parse_token_tree<'arena>(
-    mut input: BorrowedTokenStream<'arena, '_>,
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<TokenTree<'arena>>, ()> {
-    let mut res = Vec::new();
-    let mut success = true;
-    while !input.is_at_end() {
-        match parse_tree(&mut input, diagnostics) {
-            Ok(v) => res.push(v),
-            Err(()) => success = false,
-        }
-    }
-    success.then_some(res).ok_or(())
-}
-
-fn count_metavar_decls(matcher: &[TokenTree]) -> usize {
-    matcher
-        .iter()
-        .map(|tt| match tt {
-            TokenTree::Token(_) => 0,
-            TokenTree::Sequence(seq) => seq.num_captures,
-            TokenTree::MetaVar(_) => unreachable!(),
-            TokenTree::MetaVarDecl(..) => 1,
-        })
-        .sum()
-}
-
-fn parse_tree<'arena>(
-    tokens: &mut BorrowedTokenStream<'arena, '_>,
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<TokenTree<'arena>, ()> {
-    match tokens.eat().typ {
-        TokenType::Dollar => {
-            let next = tokens.eat();
-            match next.typ {
-                TokenType::ParenLeft => {
-                    let Some(toks) = match_paren(tokens) else {
-                        diagnostics.add_unmatched_paren(next.span, tokens.eof_span());
-                        return Err(());
-                    };
-                    let res = parse_token_tree(
-                        BorrowedTokenStream::new(toks, tokens.current().span),
-                        diagnostics,
-                    );
-                    // match <tok>?<kleene>
-                    let seperator = match tokens.peek().typ {
-                        TokenType::Asterix | TokenType::Plus | TokenType::QuestionMark => None,
-                        _ => Some(tokens.eat()),
-                    };
-                    let kleene = match tokens.eat().typ {
-                        TokenType::Asterix => KleeneOp::ZeroOrMore,
-                        TokenType::Plus => KleeneOp::OneOrMore,
-                        TokenType::QuestionMark => KleeneOp::ZeroOrOne,
-                        _ => {
-                            diagnostics.add_expected_one_of(
-                                tokens.current().span,
-                                &[TokenType::Asterix, TokenType::Plus, TokenType::QuestionMark],
-                                tokens.current(),
-                            );
-                            return Err(());
-                        }
-                    };
-                    let content = res?;
-                    Ok(TokenTree::Sequence(SequenceRepetition {
-                        num_captures: count_metavar_decls(&content),
-                        content,
-                        separator: seperator,
-                        kleene,
-                    }))
-                }
-                TokenType::IdentifierLiteral => {
-                    let name = Ident::new(next.string_literal(), next.span);
-                    // check if there is a :type following
-                    if tokens.peek().typ == TokenType::Colon
-                        && tokens.peek2().typ == TokenType::IdentifierLiteral
-                    {
-                        tokens.dismiss();
-                        let ident = tokens.eat();
-                        let meta_var_type =
-                            match MetaVarType::from_str(ident.string_literal().to_str()) {
-                                Some(v) => v,
-                                None => {
-                                    diagnostics.add_invalid_meta_var_type(
-                                        ident.span,
-                                        ident.string_literal(),
-                                    );
-                                    return Err(());
-                                }
-                            };
-                        Ok(TokenTree::MetaVarDecl(name, meta_var_type))
-                    } else {
-                        Ok(TokenTree::MetaVar(name))
-                    }
-                }
-                // escaped $
-                TokenType::Dollar => Ok(TokenTree::Token(tokens.current())),
-                TokenType::Eof => Ok(TokenTree::Token(tokens.last())),
-                _ => {
-                    tokens.set_pos(tokens.pos() - 1);
-                    match tokens.expect_one_of(&[
-                        TokenType::Dollar,
-                        TokenType::IdentifierLiteral,
-                        TokenType::ParenLeft,
-                    ]) {
-                        Ok(_) => unreachable!(),
-                        Err(e) => {
-                            tokens.eat();
-                            diagnostics.add_err(e);
-                            Err(())
-                        }
-                    }
-                }
-            }
-        }
-        _ => Ok(TokenTree::Token(tokens.current())),
-    }
-}
-
-fn match_paren<'arena, 'tok>(
-    tokens: &mut BorrowedTokenStream<'arena, 'tok>,
-) -> Option<&'tok [Token<'arena>]> {
-    let mut paren_count = 0;
-    let start = tokens.pos();
-    loop {
-        match tokens.eat().typ {
-            TokenType::ParenLeft => paren_count += 1,
-            TokenType::ParenRight if paren_count > 0 => paren_count -= 1,
-            TokenType::ParenRight => break,
-            TokenType::Eof => {
-                tokens.set_pos(start);
-                return None;
-            }
-            _ => {}
-        }
-    }
-    let inside_tokens = &tokens.token_holder()[start..tokens.pos() - 1];
-    Some(inside_tokens)
 }
