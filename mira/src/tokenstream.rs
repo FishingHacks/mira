@@ -8,6 +8,9 @@ pub trait TokenHolder<'arena>: AsRef<[Token<'arena>]> {
     fn len(&self) -> usize {
         self.as_ref().len()
     }
+    fn is_empty(&self) -> bool {
+        self.as_ref().is_empty()
+    }
     fn last(&self) -> Option<Token<'arena>> {
         self.as_ref()
             .get(self.as_ref().len().saturating_sub(1))

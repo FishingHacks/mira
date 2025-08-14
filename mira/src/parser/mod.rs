@@ -13,11 +13,12 @@ use crate::{
     store::{Store, StoreKey},
     tokenstream::{BorrowedTokenStream, TokenStream},
 };
+pub use expand::expand_tokens;
 pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
-use mira_lexer::{Lexer, TokenType};
-use mira_spans::{BytePos, FileId, Ident, PackageId, SourceFile, Span, SpanData, Symbol};
+use mira_lexer::{Token, TokenType};
+use mira_spans::{BytePos, FileId, Ident, PackageId, SourceFile, Span, SpanData};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, Struct, TypeRef};
 
@@ -39,7 +40,6 @@ pub struct Parser<'a, 'arena> {
     pub ctx: SharedContext<'arena>,
     pub file: Arc<SourceFile>,
 
-    macros: HashMap<Symbol<'arena>, ()>,
     // pub tokens: Vec<Token<'arena>>,
     stream: BorrowedTokenStream<'arena, 'a>,
     // pub current: usize,
@@ -66,23 +66,19 @@ impl std::fmt::Debug for Parser<'_, '_> {
 }
 
 impl<'a, 'arena> Parser<'a, 'arena> {
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_lexer(
-        lexer: &'a Lexer<'arena>,
+    pub fn from_tokens(
+        ctx: SharedContext<'arena>,
+        tokens: &'a [Token<'arena>],
         parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
         modules: &'a RwLock<Store<Module<'arena>>>,
+        file: Arc<SourceFile>,
         key: StoreKey<Module<'arena>>,
-        ctx: SharedContext<'arena>,
-    ) -> Parser<'a, 'arena> {
-        let eof_span = ctx.intern_span(SpanData::new(
-            BytePos::from_u32(lexer.file.len()),
-            1,
-            lexer.file.id,
-        ));
-        let file = lexer.file.clone();
+    ) -> Self {
+        let eof_span = ctx.intern_span(SpanData::new(BytePos::from_u32(file.len()), 1, file.id));
+        let file = file.clone();
         Parser::new(
             ctx,
-            TokenStream::new(lexer.get_tokens(), eof_span),
+            TokenStream::new(tokens, eof_span),
             parser_queue,
             modules,
             file,
@@ -90,10 +86,8 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ctx: SharedContext<'arena>,
-        // tokens: Vec<Token<'arena>>,
         stream: BorrowedTokenStream<'arena, 'a>,
         parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
         modules: &'a RwLock<Store<Module<'arena>>>,
@@ -101,7 +95,6 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         key: StoreKey<Module<'arena>>,
     ) -> Self {
         Self {
-            macros: HashMap::new(),
             ctx,
             stream,
             // tokens,

@@ -197,6 +197,7 @@ impl Display for TokenType {
             TokenType::FloatLiteral => f.write_str("decimal number"),
             TokenType::StringLiteral => f.write_str("string"),
             TokenType::BooleanLiteral => f.write_str("boolean"),
+            TokenType::MacroInvocation => f.write_str("macro invocation"),
             _ => unreachable!(),
         }
     }

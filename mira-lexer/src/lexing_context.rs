@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 #[derive(Clone, Copy)]
 pub struct LexingContext<'arena> {
     string_interner: &'arena Mutex<SymbolInterner<'arena>>,
-    span_interner: &'arena SpanInterner<'arena>,
+    pub span_interner: &'arena SpanInterner<'arena>,
     pub source_map: &'arena SourceMap,
 }
 

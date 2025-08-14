@@ -1,14 +1,12 @@
 use lexing_context::LexingContext;
-use mira_spans::{BytePos, SourceFile, Span, SpanData, interner::symbols};
+use mira_spans::{BytePos, SourceFile, Span, SpanData};
 use std::str::FromStr;
 use std::sync::Arc;
 
-mod builtin_macros;
 mod error;
 pub mod lexing_context;
 pub mod token;
 pub use error::LexingError;
-use mira_spans::interner::Symbol;
 pub use token::{Literal, NumberType, Token, TokenType};
 #[macro_use]
 mod quote;
@@ -106,8 +104,16 @@ impl<'arena> Lexer<'arena> {
         match tok.typ {
             TokenType::IdentifierLiteral if self.if_char_advance('!') => match &tok.literal {
                 Some(Literal::String(sym)) => {
-                    let mut tokens = self.do_macro(tok.span, *sym)?;
-                    self.tokens.append(&mut tokens);
+                    let span = self
+                        .current_span()
+                        .combine_with([tok.span], self.ctx.span_interner);
+                    if **sym == "macro" {
+                        self.tokens
+                            .push(Token::new(TokenType::MacroDef, None, span));
+                    } else {
+                        self.tokens
+                            .push(Token::new(TokenType::MacroInvocation, tok.literal, span));
+                    }
                 }
                 _ => unreachable!(
                     "Token::IdentifierLiteral should always have a string literal value"
@@ -209,11 +215,7 @@ impl<'arena> Lexer<'arena> {
 
     #[inline(always)]
     fn get_token(&self, token: TokenType) -> Token<'arena> {
-        Token::new(
-            token,
-            None,
-            self.span_from(self.current - token.char_len().unwrap() as usize),
-        )
+        Token::new(token, None, self.span(token.char_len().unwrap()))
     }
 
     fn skip_to_after_number(&mut self) {
@@ -415,7 +417,7 @@ impl<'arena> Lexer<'arena> {
     }
 
     fn parse_number(&mut self, mut first_char: char) -> Result<Token<'arena>, LexingError<'arena>> {
-        let start_byte = self.current;
+        let start_byte = self.current - 1;
         let is_negative = first_char == '-';
         let mut is_float = false;
         if is_negative {
@@ -528,7 +530,7 @@ impl<'arena> Lexer<'arena> {
     fn parse_string(&mut self, string_char: char) -> Result<Token<'arena>, LexingError<'arena>> {
         let mut is_backslash = false;
         let mut s = String::new();
-        let start = self.current;
+        let start = self.current - 1;
 
         while !self.is_at_end() {
             let c = self.advance();
@@ -573,7 +575,7 @@ impl<'arena> Lexer<'arena> {
     ) -> Result<Token<'arena>, LexingError<'arena>> {
         let mut identifier = String::new();
         identifier.push(starting_char);
-        let start = self.current;
+        let start = self.current - 1;
 
         while !self.is_at_end() {
             if !Self::is_valid_identifier_char(self.peek()) {
@@ -628,73 +630,6 @@ impl<'arena> Lexer<'arena> {
             1,
             self.file.id,
         ))
-    }
-
-    fn do_macro(
-        &mut self,
-        span: Span<'arena>,
-        name: Symbol<'arena>,
-    ) -> Result<Vec<Token<'arena>>, LexingError<'arena>> {
-        let start = span.get_span_data().pos.to_usize();
-
-        let bracket_type = match self.peek() {
-            '[' => ']',
-            '(' => ')',
-            '{' => '}',
-            _ => {
-                return Err(LexingError::MacroExpectedBracket {
-                    loc: self.current_span(),
-                    character: self.peek(),
-                });
-            }
-        };
-        let mut depth = 0usize;
-        let mut tokens = Vec::new();
-        loop {
-            if self.peek() == bracket_type && depth > 0 {
-                depth -= 1;
-            } else if self.peek() == bracket_type {
-                self.advance();
-                break;
-            } else if self.peek() == bracket_type {
-                depth += 1;
-            } else if self.peek() == '\0' || self.is_at_end() {
-                return Err(LexingError::UnclosedMacro {
-                    loc: self.current_span(),
-                    bracket: bracket_type,
-                });
-            }
-            let Some(tok) = self.int_scan_token()? else {
-                continue;
-            };
-            if tok.typ == TokenType::IdentifierLiteral && self.if_char_advance('!') {
-                let Some(Literal::String(ref name)) = tok.literal else {
-                    unreachable!(
-                        "TokenType::IdentifierLiteral should always have a string literal value"
-                    )
-                };
-                tokens.append(&mut self.do_macro(tok.span, *name)?);
-            } else {
-                tokens.push(tok);
-            }
-        }
-        let tokens = if let Some(macro_fn) = crate::builtin_macros::get_builtin_macro(&name) {
-            macro_fn(self.ctx, self.span_from(start), &tokens)
-        } else if name == symbols::DefaultIdents::r#macro {
-            tokens.insert(0, Token::new(TokenType::MacroDef, None, span));
-            tokens
-        } else {
-            tokens.insert(
-                0,
-                Token::new(
-                    TokenType::MacroInvocation,
-                    Some(Literal::String(name)),
-                    span,
-                ),
-            );
-            tokens
-        };
-        Ok(tokens)
     }
 
     fn try_token_from_keyword(word: &str) -> Option<TokenType> {

@@ -17,6 +17,16 @@ pub use printers::{AsciiPrinter, StyledPrinter, Styles, UnicodePrinter};
 #[cfg(test)]
 pub(crate) mod test_errors;
 
+#[macro_export]
+macro_rules! pluralize {
+    ($v:expr) => {
+        if $v == 1 { "" } else { "s" }
+    };
+    ($plural:literal, $v:expr) => {
+        if $v == 1 { "" } else { $plural }
+    };
+}
+
 pub trait OutputWriter: Write + Any {}
 
 impl<T: Write + Any> OutputWriter for T {}

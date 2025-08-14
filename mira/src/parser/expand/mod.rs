@@ -1,18 +1,30 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
-    fmt::Write,
+    fmt::{Display, Write},
     rc::Rc,
+    sync::Arc,
 };
 
 use mira_errors::Diagnostic;
 use mira_lexer::{Token, TokenType};
 use mira_macros::{Display, ErrorData};
-use mira_spans::{Ident, Span, Symbol};
+use mira_spans::{Ident, SourceFile, Span, Symbol};
+use parking_lot::RwLock;
+mod builtin_macros;
+mod macro_expander;
 mod pat_parser;
 
-use crate::{context::SharedContext, error::ParsingError, tokenstream::CowTokenStream};
+pub use macro_expander::expand_tokens;
 
-use super::Parser;
+use crate::{
+    context::SharedContext,
+    error::ParsingError,
+    module::Module,
+    store::{Store, StoreKey},
+    tokenstream::BorrowedTokenStream,
+};
+
+use super::{Parser, ParserQueueEntry};
 
 enum FullyMatchedParsers<'arena> {
     None,
@@ -21,7 +33,7 @@ enum FullyMatchedParsers<'arena> {
 }
 
 impl<'arena> FullyMatchedParsers<'arena> {
-    pub fn add_position(&mut self, position: MatcherPos<'arena>) {
+    fn add_position(&mut self, position: MatcherPos<'arena>) {
         match self {
             FullyMatchedParsers::None => *self = Self::One(position),
             FullyMatchedParsers::One(_) => *self = Self::Multiple,
@@ -30,8 +42,7 @@ impl<'arena> FullyMatchedParsers<'arena> {
     }
 }
 
-pub struct MacroParser<'arena> {
-    name: Ident<'arena>,
+struct MacroParser<'arena> {
     // the positions for the current step
     cur_pos: Vec<MatcherPos<'arena>>,
     // the positions for the next step to refill cur_pos once it's empty
@@ -44,7 +55,9 @@ pub struct MacroParser<'arena> {
 }
 
 #[derive(ErrorData)]
-pub enum MacroMatchError<'arena> {
+enum MacroError<'arena> {
+    #[error("Macro is empty")]
+    EmptyMacro(#[primary_label("empty macro")] Span<'arena>),
     #[error("more input is required")]
     MissingTokens(#[primary_label("more input required")] Span<'arena>),
     #[error("ambiguity: multiple successful parses")]
@@ -59,16 +72,72 @@ pub enum MacroMatchError<'arena> {
     UnexpectedToken(#[primary_label("unexpected token")] Span<'arena>),
     #[error("{_0}")]
     Ambiguity(String, #[primary_label("")] Span<'arena>),
+    #[error("Unclosed Delimiter")]
+    UnmatchedParen(
+        #[primary_label("unclosed delimiter")] Span<'arena>,
+        #[secondary_label("")] Span<'arena>,
+    ),
+    #[error("Cannot find macro `{_1}`")]
+    CannotFindMacro(#[primary_label("")] Span<'arena>, Symbol<'arena>),
+    #[error("variable `{_1}` is still repeating at this depth")]
+    VariableStillRepeating(#[primary_label("")] Span<'arena>, Symbol<'arena>),
+    #[error(
+        "attempted to repeat an expression containing no syntax variables matched as repeating at this depth"
+    )]
+    NoVariableRepetition(#[primary_label("")] Span<'arena>),
 }
 
 type NamedParseResult<'arena> = HashMap<Ident<'arena>, NamedMatch<'arena>>;
+
+enum ParseResult<'arena> {
+    Success(NamedParseResult<'arena>),
+    /// failed to match the input
+    /// the failure diagnostic and the approximate buffer position
+    Failure(Diagnostic<'arena>, usize),
+    Err(Diagnostic<'arena>),
+}
+
+macro_rules! parse_res {
+    ($res:expr, $pos:expr) => {
+        match $res {
+            Ok(v) => v,
+            Err(e) => return ParseResult::Failure(e, $pos),
+        }
+    };
+    (@err $res:expr) => {
+        match $res {
+            Ok(v) => v,
+            Err(e) => return ParseResult::Err(e),
+        }
+    };
+}
+
+/// a context with dummy values, the shared context and the source file to construct a parser,
+struct ExpandContext<'arena> {
+    ctx: SharedContext<'arena>,
+    file: Arc<SourceFile>,
+    parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
+    modules: RwLock<Store<Module<'arena>>>,
+}
+
+impl<'arena> ExpandContext<'arena> {
+    fn new(ctx: SharedContext<'arena>, file: Arc<SourceFile>) -> Self {
+        Self {
+            ctx,
+            file,
+            parser_queue: Arc::default(),
+            modules: RwLock::default(),
+        }
+    }
+}
 
 impl<'arena> MacroParser<'arena> {
     fn parse_inner(
         &mut self,
         matcher: &[MatcherLoc<'arena>],
         token: &Token<'arena>,
-    ) -> Option<Result<NamedParseResult<'arena>, MacroMatchError<'arena>>> {
+        approx_pos: usize,
+    ) -> Option<ParseResult<'arena>> {
         let mut fully_matched = FullyMatchedParsers::None;
 
         while let Some(mut pos) = self.cur_pos.pop() {
@@ -156,7 +225,10 @@ impl<'arena> MacroParser<'arena> {
         // Otherwise, either the parse is ambiguous (which is an error) or there is a syntax error.
         if token.typ == TokenType::Eof {
             Some(match fully_matched {
-                FullyMatchedParsers::None => Err(MacroMatchError::MissingTokens(token.span)),
+                FullyMatchedParsers::None => ParseResult::Failure(
+                    MacroError::MissingTokens(token.span).to_error(),
+                    approx_pos,
+                ),
                 FullyMatchedParsers::One(mut pos) => {
                     Rc::make_mut(&mut pos.matches);
                     let mut matches = Rc::try_unwrap(pos.matches).unwrap().into_iter();
@@ -165,28 +237,32 @@ impl<'arena> MacroParser<'arena> {
                         if let MatcherLoc::MetaVarDecl { bind, .. } = loc {
                             match result.entry(*bind) {
                                 Entry::Occupied(e) => {
-                                    return Some(Err(MacroMatchError::MultipleMetaVars(
-                                        bind.symbol(),
-                                        bind.span(),
-                                        e.key().span(),
-                                    )));
+                                    return Some(ParseResult::Err(
+                                        MacroError::MultipleMetaVars(
+                                            bind.symbol(),
+                                            bind.span(),
+                                            e.key().span(),
+                                        )
+                                        .to_error(),
+                                    ));
                                 }
                                 Entry::Vacant(e) => _ = e.insert(matches.next().unwrap()),
                             }
                         }
                     }
-                    Ok(result)
+                    ParseResult::Success(result)
                 }
-                FullyMatchedParsers::Multiple => Err(MacroMatchError::MultipleFinished(token.span)),
+                FullyMatchedParsers::Multiple => {
+                    ParseResult::Err(MacroError::MultipleFinished(token.span).to_error())
+                }
             })
         } else {
             None
         }
     }
 
-    pub fn new(name: Ident<'arena>) -> Self {
+    fn new() -> Self {
         Self {
-            name,
             cur_pos: Vec::new(),
             next_pos: Vec::new(),
             waiting_positions: Vec::new(),
@@ -194,20 +270,19 @@ impl<'arena> MacroParser<'arena> {
         }
     }
 
-    pub fn parse(
+    fn parse(
         &mut self,
-        tokens: CowTokenStream<'arena, '_>,
+        tokens: BorrowedTokenStream<'arena, '_>,
         matcher: &[MatcherLoc<'arena>],
-        ctx: SharedContext<'arena>,
-        parser: &Parser<'_, 'arena>,
-    ) -> Result<NamedParseResult<'arena>, Diagnostic<'arena>> {
+        ctx: &ExpandContext<'arena>,
+    ) -> ParseResult<'arena> {
         let mut parser = Parser::new(
-            ctx,
+            ctx.ctx,
             tokens,
-            parser.parser_queue.clone(),
-            parser.modules,
-            parser.file.clone(),
-            parser.key,
+            ctx.parser_queue.clone(),
+            &ctx.modules,
+            ctx.file.clone(),
+            StoreKey::undefined(),
         );
 
         self.cur_pos.clear();
@@ -220,14 +295,18 @@ impl<'arena> MacroParser<'arena> {
             self.next_pos.clear();
             self.waiting_positions.clear();
 
-            if let Some(res) = self.parse_inner(matcher, &parser.peek()) {
-                return res.map_err(MacroMatchError::to_error);
+            let approx_pos = parser.pos();
+            if let Some(res) = self.parse_inner(matcher, &parser.peek(), approx_pos) {
+                return res;
             }
 
             match (self.next_pos.len(), self.waiting_positions.len()) {
                 // unexpected token
                 (0, 0) => {
-                    return Err(MacroMatchError::UnexpectedToken(parser.current().span).to_error());
+                    return ParseResult::Failure(
+                        MacroError::UnexpectedToken(parser.current().span).to_error(),
+                        approx_pos,
+                    );
                 }
                 (_, 0) => {
                     self.cur_pos.append(&mut self.next_pos);
@@ -248,7 +327,7 @@ impl<'arena> MacroParser<'arena> {
 
                     let r#match = match kind {
                         MetaVarType::Token => SingleMatch::Token(parser.eat()),
-                        MetaVarType::Ident => SingleMatch::Token(
+                        MetaVarType::Ident => SingleMatch::Token(parse_res!(
                             parser
                                 .expect(TokenType::IdentifierLiteral)
                                 .map_err(ParsingError::to_error)
@@ -257,8 +336,9 @@ impl<'arena> MacroParser<'arena> {
                                         bind.span(),
                                         "While trying to parse this meta variable",
                                     )
-                                })?,
-                        ),
+                                }),
+                            approx_pos
+                        )),
                     };
 
                     pos.index += 1;
@@ -289,11 +369,10 @@ impl<'arena> MacroParser<'arena> {
                         ))
                         .unwrap();
                     }
-                    let s = format!(
-                        "local ambiguity when calling macro `{}`: multiple parsing options: {err}",
-                        self.name
+                    let s = format!("local ambiguity: multiple parsing options: {err}",);
+                    return ParseResult::Err(
+                        MacroError::Ambiguity(s, parser.peek().span).to_error(),
                     );
-                    return Err(MacroMatchError::Ambiguity(s, parser.peek().span).to_error());
                 }
             }
         }
@@ -303,13 +382,28 @@ impl<'arena> MacroParser<'arena> {
 #[derive(Debug, Clone)]
 enum SingleMatch<'arena> {
     Token(Token<'arena>),
-    Tokens(Rc<[Token<'arena>]>),
 }
 
 #[derive(Debug, Clone)]
 enum NamedMatch<'arena> {
     MatchedSeq(Vec<NamedMatch<'arena>>),
     ParsedSingle(SingleMatch<'arena>),
+}
+
+impl NamedMatch<'_> {
+    fn repetitions_at_idx(&self, depth: &[usize]) -> Option<usize> {
+        let mut me = self;
+        for i in depth.iter().copied() {
+            match me {
+                NamedMatch::MatchedSeq(named_matchs) => me = &named_matchs[i],
+                NamedMatch::ParsedSingle(_) => return None,
+            }
+        }
+        match me {
+            NamedMatch::MatchedSeq(named_matchs) => Some(named_matchs.len()),
+            NamedMatch::ParsedSingle(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -354,13 +448,15 @@ impl<'arena> MatcherPos<'arena> {
     }
 }
 
-pub struct Macro<'arena> {
-    name: Symbol<'arena>,
-    cases: Vec<(Box<[TokenTree<'arena>]>, Box<[Token<'arena>]>)>,
+type MacroPattern<'arena> = Box<[MatcherLoc<'arena>]>;
+type MacroBody<'arena> = Box<[TokenTree<'arena>]>;
+struct Macro<'arena> {
+    name: Ident<'arena>,
+    cases: Vec<(MacroPattern<'arena>, MacroBody<'arena>)>,
 }
 
 #[derive(Clone, Debug)]
-pub enum MatcherLoc<'arena> {
+enum MatcherLoc<'arena> {
     Token(Token<'arena>),
     Sequence {
         op: KleeneOp,
@@ -387,7 +483,25 @@ pub enum MatcherLoc<'arena> {
     },
     Eof,
 }
-pub(super) fn compute_locs<'arena>(matcher: &[TokenTree<'arena>]) -> Vec<MatcherLoc<'arena>> {
+
+impl Display for MatcherLoc<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MatcherLoc::SequenceSep { separator: token } | MatcherLoc::Token(token) => {
+                f.write_fmt(format_args!("'{token}'"))
+            }
+            MatcherLoc::Sequence { .. } => f.write_str("sequence start"),
+            MatcherLoc::SequenceKleeneOpAfterSep { .. }
+            | MatcherLoc::SequenceKleeneOpNoSep { .. } => f.write_str("sequence end"),
+            MatcherLoc::MetaVarDecl { bind, kind, .. } => {
+                f.write_fmt(format_args!("meta-variable `${bind}:{kind}`"))
+            }
+            MatcherLoc::Eof => f.write_str("end of macro"),
+        }
+    }
+}
+
+fn compute_locs<'arena>(matcher: &[TokenTree<'arena>]) -> Vec<MatcherLoc<'arena>> {
     fn inner<'arena>(
         tts: &[TokenTree<'arena>],
         locs: &mut Vec<MatcherLoc<'arena>>,
@@ -396,6 +510,7 @@ pub(super) fn compute_locs<'arena>(matcher: &[TokenTree<'arena>]) -> Vec<Matcher
     ) {
         for tt in tts {
             match tt {
+                TokenTree::Tokens(_) => unreachable!(),
                 TokenTree::Token(token) => {
                     locs.push(MatcherLoc::Token(*token));
                 }
@@ -450,12 +565,7 @@ pub(super) fn compute_locs<'arena>(matcher: &[TokenTree<'arena>]) -> Vec<Matcher
 
     let mut locs = vec![];
     let mut next_metavar = 0;
-    inner(
-        matcher,
-        &mut locs,
-        &mut next_metavar,
-        /* seq_depth */ 0,
-    );
+    inner(matcher, &mut locs, &mut next_metavar, 0);
 
     // A final entry is needed for eof.
     locs.push(MatcherLoc::Eof);
@@ -464,7 +574,7 @@ pub(super) fn compute_locs<'arena>(matcher: &[TokenTree<'arena>]) -> Vec<Matcher
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum KleeneOp {
+enum KleeneOp {
     /// Kleene Start (`*`)
     ZeroOrMore,
     /// Kleene Plus (`+`)
@@ -474,7 +584,7 @@ pub enum KleeneOp {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct SequenceRepetition<'arena> {
+struct SequenceRepetition<'arena> {
     content: Vec<TokenTree<'arena>>,
     /// the optional seperator:
     /// $($item:ident),+
@@ -482,10 +592,11 @@ pub struct SequenceRepetition<'arena> {
     separator: Option<Token<'arena>>,
     kleene: KleeneOp,
     num_captures: usize,
+    span: Span<'arena>,
 }
 
 #[derive(Clone, Display, Copy, PartialEq, Eq, Debug)]
-pub enum MetaVarType {
+enum MetaVarType {
     #[display("token")]
     Token,
     #[display("ident")]
@@ -493,7 +604,7 @@ pub enum MetaVarType {
 }
 
 impl MetaVarType {
-    pub fn from_str(s: &str) -> Option<Self> {
+    fn from_str(s: &str) -> Option<Self> {
         match s {
             "tok" => Some(Self::Token),
             "token" => Some(Self::Token),
@@ -504,9 +615,33 @@ impl MetaVarType {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub enum TokenTree<'arena> {
+enum TokenTree<'arena> {
     Token(Token<'arena>),
+    Tokens(Box<[Token<'arena>]>),
     Sequence(SequenceRepetition<'arena>),
     MetaVar(Ident<'arena>),
     MetaVarDecl(Ident<'arena>, MetaVarType),
+}
+
+impl<'arena> TokenTree<'arena> {
+    /// calls the function `f` on all meta var children with their name, returning how many there
+    /// were in total.
+    fn meta_vars<E>(&self, mut f: impl FnMut(Ident<'arena>) -> Result<(), E>) -> Result<(), E> {
+        fn inner<'arena, E>(
+            me: &TokenTree<'arena>,
+            f: &mut impl FnMut(Ident<'arena>) -> Result<(), E>,
+        ) -> Result<(), E> {
+            match me {
+                TokenTree::Token(_) | TokenTree::Tokens(_) | TokenTree::MetaVarDecl(..) => Ok(()),
+                TokenTree::Sequence(sequence_repetition) => {
+                    for v in sequence_repetition.content.iter() {
+                        inner(v, f)?;
+                    }
+                    Ok(())
+                }
+                TokenTree::MetaVar(ident) => f(*ident),
+            }
+        }
+        inner(self, &mut f)
+    }
 }

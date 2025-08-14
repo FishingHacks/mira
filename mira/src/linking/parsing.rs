@@ -49,17 +49,34 @@ fn parse_single<'arena>(
         format!("Parsing {}", file.path.display()).into_boxed_str(),
     );
 
+    let file = lexer.file.clone();
+    let tokens = lexer.into_tokens();
+    let tokens = {
+        let mut diagnostics = Diagnostics::new();
+        match crate::parser::expand_tokens(
+            module_context.ctx,
+            file.clone(),
+            tokens,
+            &mut diagnostics,
+        ) {
+            Some(v) => v,
+            None => {
+                errors.write().extend(diagnostics);
+                vec![]
+            }
+        }
+    };
     // ┌─────────┐
     // │ Parsing │
     // └─────────┘
-    let mut current_parser = Parser::from_lexer(
-        &lexer,
+    let mut current_parser = Parser::from_tokens(
+        module_context.ctx,
+        &tokens,
         parsing_queue.clone(),
         &module_context.modules,
+        file.clone(),
         key,
-        module_context.ctx,
     );
-    current_parser.file = file.clone();
 
     let (statements, parsing_errors) = current_parser.parse_all();
     errors
@@ -81,7 +98,6 @@ fn parse_single<'arena>(
         current_parser.file,
     );
     _ = current_parser;
-    drop(lexer);
     if let Err(errs) = module.push_all(statements, key, &module_context) {
         errors
             .write()
