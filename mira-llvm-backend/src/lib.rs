@@ -72,7 +72,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 
 impl<'ctx> FunctionCodegenContext<'ctx, '_, '_> {
     pub fn goto(&mut self, bb: BasicBlock<'ctx>) {
-        self.builder.position_at_end(bb);
+        self.position_at_end(bb);
         self.current_block = bb;
     }
 
@@ -134,7 +134,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             return;
         }
         let allocated_value = self
-            .builder
             .build_alloca(
                 self.tc_scope[id].0.to_llvm_basic_type(
                     &self.default_types,
@@ -189,7 +188,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             &|id| self.get_value(id),
             &self.default_types,
             self.structs,
-            self.builder,
+            self,
             self.statics,
             self.functions,
             self.external_functions,
@@ -588,7 +587,6 @@ macro_rules! f_s_u {
             | TyKind::PrimitiveI32
             | TyKind::PrimitiveI64
             | TyKind::PrimitiveISize => $ctx
-                .builder
                 .$sint($($sint_val,)* $lhs.into_int_value(), $rhs.into_int_value(), "")?
                 .into(),
             TyKind::PrimitiveU8
@@ -596,11 +594,9 @@ macro_rules! f_s_u {
             | TyKind::PrimitiveU32
             | TyKind::PrimitiveU64
             | TyKind::PrimitiveUSize => $ctx
-                .builder
                 .$uint($($uint_val,)* $lhs.into_int_value(), $rhs.into_int_value(), "")?
                 .into(),
             TyKind::PrimitiveF32 | TyKind::PrimitiveF64 => $ctx
-                .builder
                 .$float($($float_val,)* $lhs.into_float_value(), $rhs.into_float_value(), "")?
                 .into(),
             _ => unreachable!(concat!($err, "  -- Type: {}"), $typ),
@@ -613,7 +609,6 @@ macro_rules! f_s_u {
             | Type::PrimitiveI32(0)
             | Type::PrimitiveI64(0)
             | Type::PrimitiveISize(0) => $ctx
-                .builder
                 .$sint($lhs.into_int_value(), $rhs.into_int_value(), "")?
                 .into(),
             Type::PrimitiveU8(0)
@@ -621,15 +616,12 @@ macro_rules! f_s_u {
             | Type::PrimitiveU32(0)
             | Type::PrimitiveU64(0)
             | Type::PrimitiveUSize(0) => $ctx
-                .builder
                 .$uint($lhs.into_int_value(), $rhs.into_int_value(), "")?
                 .into(),
             Type::PrimitiveF32(0) | Type::PrimitiveF64(0) => $ctx
-                .builder
                 .$float($lhs.into_float_value(), $rhs.into_float_value(), "")?
                 .into(),
             Type::PrimitiveBool(0) => $ctx
-                .builder
                 .$bool($lhs.into_int_value(), $rhs.into_int_value(), "")?
                 .into(),
             _ => unreachable!($err),
@@ -658,30 +650,18 @@ fn build_deref<'ctx, 'arena>(
     if ty.refcount() > 0 {
         if ty.is_thin_ptr() {
             return Ok(make_volatile(
-                ctx.builder
-                    .build_load(ctx.default_types.ptr, left_side, "")?,
+                ctx.build_load(ctx.default_types.ptr, left_side, "")?,
                 volatile,
             ));
         } else {
-            let actual_ptr = ctx
-                .builder
-                .build_load(ctx.default_types.ptr, left_side, "")?;
+            let actual_ptr = ctx.build_load(ctx.default_types.ptr, left_side, "")?;
             make_volatile(actual_ptr, volatile);
-            let offset_ptr =
-                ctx.builder
-                    .build_struct_gep(ctx.default_types.fat_ptr, left_side, 1, "")?;
-            let metadata = ctx
-                .builder
-                .build_load(ctx.default_types.isize, offset_ptr, "")?;
+            let offset_ptr = ctx.build_struct_gep(ctx.default_types.fat_ptr, left_side, 1, "")?;
+            let metadata = ctx.build_load(ctx.default_types.isize, offset_ptr, "")?;
             make_volatile(metadata, volatile);
-            let ptr_only_struct = ctx.builder.build_insert_value(
-                ctx.default_types.fat_ptr.get_poison(),
-                actual_ptr,
-                0,
-                "",
-            )?;
+            let ptr_only_struct =
+                ctx.build_insert_value(ctx.default_types.fat_ptr.get_poison(), actual_ptr, 0, "")?;
             return Ok(ctx
-                .builder
                 .build_insert_value(ptr_only_struct, metadata, 1, "")?
                 .as_basic_value_enum());
         }
@@ -702,12 +682,9 @@ fn build_deref<'ctx, 'arena>(
             let structure = &ctx.tc_ctx.structs.read()[*struct_id];
             let mut value = llvm_structure.get_poison();
             for i in 0..structure.elements.len() {
-                let offset_val =
-                    ctx.builder
-                        .build_struct_gep(llvm_structure, left_side, i as u32, "")?;
+                let offset_val = ctx.build_struct_gep(llvm_structure, left_side, i as u32, "")?;
                 let element_val = build_deref(offset_val, structure.elements[i].1, ctx, volatile)?;
                 value = ctx
-                    .builder
                     .build_insert_value(value, element_val, i as u32, "")?
                     .into_struct_value();
             }
@@ -719,12 +696,9 @@ fn build_deref<'ctx, 'arena>(
                 .into_struct_type();
             let mut value = llvm_structure.get_poison();
             for (i, elem) in elements.iter().enumerate() {
-                let offset_val =
-                    ctx.builder
-                        .build_struct_gep(llvm_structure, left_side, i as u32, "")?;
+                let offset_val = ctx.build_struct_gep(llvm_structure, left_side, i as u32, "")?;
                 let element_val = build_deref(offset_val, *elem, ctx, volatile)?;
                 value = ctx
-                    .builder
                     .build_insert_value(value, element_val, i as u32, "")?
                     .into_struct_value();
             }
@@ -742,7 +716,7 @@ fn build_deref<'ctx, 'arena>(
                 .get_poison();
             for i in 0..*number_elements {
                 let offset_val = unsafe {
-                    ctx.builder.build_in_bounds_gep(
+                    ctx.build_in_bounds_gep(
                         llvm_element_ty,
                         left_side,
                         &[ctx.default_types.isize.const_int(i as u64, false)],
@@ -751,7 +725,6 @@ fn build_deref<'ctx, 'arena>(
                 }?;
                 let element_val = build_deref(offset_val, ty, ctx, volatile)?;
                 value = ctx
-                    .builder
                     .build_insert_value(value, element_val, i as u32, "")?
                     .into_array_value();
             }
@@ -771,7 +744,7 @@ fn build_deref<'ctx, 'arena>(
         | TyKind::PrimitiveF32
         | TyKind::PrimitiveF64
         | TyKind::PrimitiveBool => Ok(make_volatile(
-            ctx.builder.build_load(
+            ctx.build_load(
                 ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context),
                 left_side,
                 "",
@@ -790,30 +763,20 @@ fn build_ptr_store<'ctx, 'arena>(
 ) -> Result<(), BuilderError> {
     if ty.refcount() > 0 {
         if ty.is_thin_ptr() {
-            ctx.builder
-                .build_store(left_side, right_side)?
+            ctx.build_store(left_side, right_side)?
                 .set_volatile(volatile)
                 .expect("setting volatile should never fail");
             return Ok(());
         } else {
-            let actual_ptr =
-                ctx.builder
-                    .build_extract_value(right_side.into_struct_value(), 0, "")?;
-            let metadata =
-                ctx.builder
-                    .build_extract_value(right_side.into_struct_value(), 1, "")?;
+            let actual_ptr = ctx.build_extract_value(right_side.into_struct_value(), 0, "")?;
+            let metadata = ctx.build_extract_value(right_side.into_struct_value(), 1, "")?;
             let actual_ptr_ptr =
-                ctx.builder
-                    .build_struct_gep(ctx.default_types.fat_ptr, left_side, 0, "")?;
-            let metadata_ptr =
-                ctx.builder
-                    .build_struct_gep(ctx.default_types.fat_ptr, left_side, 1, "")?;
-            ctx.builder
-                .build_store(actual_ptr_ptr, actual_ptr)?
+                ctx.build_struct_gep(ctx.default_types.fat_ptr, left_side, 0, "")?;
+            let metadata_ptr = ctx.build_struct_gep(ctx.default_types.fat_ptr, left_side, 1, "")?;
+            ctx.build_store(actual_ptr_ptr, actual_ptr)?
                 .set_volatile(volatile)
                 .expect("setting volatile should never fail");
-            ctx.builder
-                .build_store(metadata_ptr, metadata)?
+            ctx.build_store(metadata_ptr, metadata)?
                 .set_volatile(volatile)
                 .expect("setting volatile should never fail");
             return Ok(());
@@ -832,28 +795,18 @@ fn build_ptr_store<'ctx, 'arena>(
             let structure = &ctx.tc_ctx.structs.read()[*struct_id];
             let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for (idx, ty) in structure.elements.iter().map(|v| &v.1).enumerate() {
-                let val = ctx.builder.build_extract_value(
-                    right_side.into_struct_value(),
-                    idx as u32,
-                    "",
-                )?;
-                let ptr = ctx
-                    .builder
-                    .build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
+                let val =
+                    ctx.build_extract_value(right_side.into_struct_value(), idx as u32, "")?;
+                let ptr = ctx.build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
                 build_ptr_store(ptr, val, *ty, ctx, volatile)?;
             }
         }
         TyKind::Tuple(elements) => {
             let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for (idx, ty) in elements.iter().enumerate() {
-                let val = ctx.builder.build_extract_value(
-                    right_side.into_struct_value(),
-                    idx as u32,
-                    "",
-                )?;
-                let ptr = ctx
-                    .builder
-                    .build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
+                let val =
+                    ctx.build_extract_value(right_side.into_struct_value(), idx as u32, "")?;
+                let ptr = ctx.build_struct_gep(llvm_ty, left_side, idx as u32, "")?;
                 build_ptr_store(ptr, val, *ty, ctx, volatile)?;
             }
         }
@@ -864,11 +817,9 @@ fn build_ptr_store<'ctx, 'arena>(
         } => {
             let llvm_ty = ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             for i in 0..*number_elements {
-                let val =
-                    ctx.builder
-                        .build_extract_value(right_side.into_array_value(), i as u32, "")?;
+                let val = ctx.build_extract_value(right_side.into_array_value(), i as u32, "")?;
                 let ptr = unsafe {
-                    ctx.builder.build_in_bounds_gep(
+                    ctx.build_in_bounds_gep(
                         llvm_ty,
                         left_side,
                         &[ctx.default_types.isize.const_int(i as u64, false)],
@@ -892,8 +843,7 @@ fn build_ptr_store<'ctx, 'arena>(
         | TyKind::PrimitiveF32
         | TyKind::PrimitiveF64
         | TyKind::PrimitiveBool => {
-            ctx.builder
-                .build_store(left_side, right_side)?
+            ctx.build_store(left_side, right_side)?
                 .set_volatile(volatile)
                 .expect("setting volatile should never fail");
         }
@@ -938,16 +888,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
         scope: DIScope<'ctx>,
         module_id: StoreKey<TypecheckedModule<'arena>>,
     ) -> Result<(), BuilderError> {
-        self.builder
-            .set_current_debug_location(self.debug_ctx.location(scope, expr.span()));
+        self.set_current_debug_location(self.debug_ctx.location(scope, expr.span()));
         match expr {
             TypecheckedExpression::AttachVtable(_, dst, src, vtable_id) => {
                 let vtable_value = self.vtables[vtable_id].as_pointer_value();
                 let vtable_isize =
-                    self.builder
-                        .build_bit_cast(vtable_value, self.default_types.isize, "")?;
+                    self.build_bit_cast(vtable_value, self.default_types.isize, "")?;
                 let fat_ptr = make_fat_ptr(
-                    self.builder,
+                    self,
                     &self.default_types,
                     self.lit_to_basic_value(src).into_pointer_value(),
                     vtable_isize.into_int_value(),
@@ -974,7 +922,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     == Some(default_types::void)
                 {
                     let bb = self
-                        .builder
                         .get_insert_block()
                         .expect("builder needs a basic block to codegen into");
                     if bb.get_terminator().is_some() {
@@ -983,22 +930,20 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         );
                         return Ok(());
                     }
-                    return self.builder.build_return(None).map(|_| ());
+                    return self.build_return(None).map(|_| ());
                 }
                 match typed_literal {
                     TypedLiteral::Dynamic(id) if self.tc_scope[*id].0 == default_types::void => {
-                        self.builder.build_return(None)?
+                        self.build_return(None)?
                     }
                     TypedLiteral::Static(id)
                         if self.tc_ctx.statics.read()[*id].type_ == default_types::void =>
                     {
-                        self.builder.build_return(None)?
+                        self.build_return(None)?
                     }
-                    TypedLiteral::Void => self.builder.build_return(None)?,
+                    TypedLiteral::Void => self.build_return(None)?,
                     TypedLiteral::Intrinsic(..) => unreachable!("intrinsic"),
-                    lit => self
-                        .builder
-                        .build_return(Some(&self.lit_to_basic_value(lit)))?,
+                    lit => self.build_return(Some(&self.lit_to_basic_value(lit)))?,
                 };
                 Ok(())
             }
@@ -1057,9 +1002,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     .iter()
                     .map(|v| self.get_value(*v).into())
                     .collect::<Vec<_>>();
-                let val = self
-                    .builder
-                    .build_indirect_call(fn_ty, asm_fn_ptr, &args, "")?;
+                let val = self.build_indirect_call(fn_ty, asm_fn_ptr, &args, "")?;
                 self.push_value(
                     *dst,
                     val.try_as_basic_value()
@@ -1083,7 +1026,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             } => {
                 let if_basic_block = self.context.append_basic_block(self.current_fn, "then");
                 let end_basic_block = self.context.append_basic_block(self.current_fn, "endif");
-                self.builder.build_conditional_branch(
+                self.build_conditional_branch(
                     self.lit_to_basic_value(cond).into_int_value(),
                     if_basic_block,
                     end_basic_block,
@@ -1094,7 +1037,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 for expr in if_block.0.iter() {
                     self.codegen(expr, scope, module_id)?;
                 }
-                self.terminate(|| self.builder.build_unconditional_branch(end_basic_block))?;
+                self.terminate(|| self.build_unconditional_branch(end_basic_block))?;
                 self.goto(end_basic_block);
                 Ok(())
             }
@@ -1108,7 +1051,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 let if_basic_block = self.context.append_basic_block(self.current_fn, "then");
                 let else_basic_block = self.context.append_basic_block(self.current_fn, "else");
                 let end_basic_block = self.context.append_basic_block(self.current_fn, "endif");
-                self.builder.build_conditional_branch(
+                self.build_conditional_branch(
                     self.lit_to_basic_value(cond).into_int_value(),
                     if_basic_block,
                     else_basic_block,
@@ -1120,14 +1063,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     self.codegen(expr, scope, module_id)?;
                 }
 
-                self.terminate(|| self.builder.build_unconditional_branch(end_basic_block))?;
+                self.terminate(|| self.build_unconditional_branch(end_basic_block))?;
                 self.goto(else_basic_block);
                 let block = self.debug_ctx.new_block(scope, else_block.1, module_id);
                 let scope = block.as_debug_info_scope();
                 for expr in else_block.0.iter() {
                     self.codegen(expr, scope, module_id)?;
                 }
-                self.terminate(|| self.builder.build_unconditional_branch(end_basic_block))?;
+                self.terminate(|| self.build_unconditional_branch(end_basic_block))?;
                 self.goto(end_basic_block);
                 Ok(())
             }
@@ -1146,13 +1089,13 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 let end_basic_block = self
                     .context
                     .append_basic_block(self.current_fn, "while-end");
-                self.builder.build_unconditional_branch(cond_basic_block)?;
+                self.build_unconditional_branch(cond_basic_block)?;
                 self.goto(cond_basic_block);
                 for expr in cond_block {
                     self.codegen(expr, scope, module_id)?;
                 }
                 self.terminate(|| {
-                    self.builder.build_conditional_branch(
+                    self.build_conditional_branch(
                         self.lit_to_basic_value(cond).into_int_value(),
                         body_basic_block,
                         end_basic_block,
@@ -1164,7 +1107,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 for expr in body.0.iter() {
                     self.codegen(expr, scope, module_id)?;
                 }
-                self.terminate(|| self.builder.build_unconditional_branch(cond_basic_block))?;
+                self.terminate(|| self.build_unconditional_branch(cond_basic_block))?;
                 self.goto(end_basic_block);
                 Ok(())
             }
@@ -1176,7 +1119,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         let llvm_ty =
                             ty.to_llvm_basic_type(&self.default_types, self.structs, self.context);
                         let alignment = get_alignment(llvm_ty);
-                        self.builder.build_memmove(
+                        self.build_memmove(
                             self.lit_to_basic_value(dst).into_pointer_value(),
                             alignment,
                             self.get_value_ptr(*id),
@@ -1192,7 +1135,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                             self.context,
                         );
                         let alignment = get_alignment(llvm_ty);
-                        self.builder.build_memmove(
+                        self.build_memmove(
                             self.lit_to_basic_value(dst).into_pointer_value(),
                             alignment,
                             self.statics[*id].as_pointer_value(),
@@ -1238,7 +1181,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 };
                 let llvm_fn_ty =
                     fn_ty.to_llvm_fn_type(&self.default_types, self.structs, self.context);
-                let val = self.builder.build_indirect_call(
+                let val = self.build_indirect_call(
                     llvm_fn_ty,
                     fn_ptr,
                     &args
@@ -1281,14 +1224,12 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::Neg(_, dst, src) => {
                 let src = self.lit_to_basic_value(src);
                 let value = match src {
-                    BasicValueEnum::IntValue(int_value) => self
-                        .builder
-                        .build_int_neg(int_value, "")?
-                        .as_basic_value_enum(),
-                    BasicValueEnum::FloatValue(float_value) => self
-                        .builder
-                        .build_float_neg(float_value, "")?
-                        .as_basic_value_enum(),
+                    BasicValueEnum::IntValue(int_value) => {
+                        self.build_int_neg(int_value, "")?.as_basic_value_enum()
+                    }
+                    BasicValueEnum::FloatValue(float_value) => {
+                        self.build_float_neg(float_value, "")?.as_basic_value_enum()
+                    }
                     _ => unreachable!(),
                 };
                 self.push_value(*dst, value);
@@ -1296,7 +1237,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             }
             TypecheckedExpression::BNot(_, dst, src) | TypecheckedExpression::LNot(_, dst, src) => {
                 let src = self.lit_to_basic_value(src).into_int_value();
-                self.push_value(*dst, self.builder.build_not(src, "")?.as_basic_value_enum());
+                self.push_value(*dst, self.build_not(src, "")?.as_basic_value_enum());
                 Ok(())
             }
             TypecheckedExpression::Add(_, dst, lhs, rhs) => {
@@ -1391,8 +1332,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 if typ.is_int_like() || typ == default_types::bool {
                     self.push_value(
                         *dst,
-                        self.builder
-                            .build_and(lhs.into_int_value(), rhs.into_int_value(), "")?
+                        self.build_and(lhs.into_int_value(), rhs.into_int_value(), "")?
                             .into(),
                     );
                 } else {
@@ -1409,8 +1349,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 if typ.is_int_like() || *typ == default_types::bool {
                     self.push_value(
                         *dst,
-                        self.builder
-                            .build_or(lhs.into_int_value(), rhs.into_int_value(), "")?
+                        self.build_or(lhs.into_int_value(), rhs.into_int_value(), "")?
                             .into(),
                     );
                 } else {
@@ -1427,8 +1366,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 if typ.is_int_like() || *typ == default_types::bool {
                     self.push_value(
                         *dst,
-                        self.builder
-                            .build_xor(lhs.into_int_value(), rhs.into_int_value(), "")?
+                        self.build_xor(lhs.into_int_value(), rhs.into_int_value(), "")?
                             .into(),
                     );
                 } else {
@@ -1559,8 +1497,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 if typ.is_int_like() {
                     self.push_value(
                         *dst,
-                        self.builder
-                            .build_left_shift(lhs.into_int_value(), rhs.into_int_value(), "")?
+                        self.build_left_shift(lhs.into_int_value(), rhs.into_int_value(), "")?
                             .into(),
                     );
                     Ok(())
@@ -1575,14 +1512,13 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 if typ.is_int_like() {
                     self.push_value(
                         *dst,
-                        self.builder
-                            .build_right_shift(
-                                lhs.into_int_value(),
-                                rhs.into_int_value(),
-                                false,
-                                "",
-                            )?
-                            .into(),
+                        self.build_right_shift(
+                            lhs.into_int_value(),
+                            rhs.into_int_value(),
+                            false,
+                            "",
+                        )?
+                        .into(),
                     );
                     Ok(())
                 } else {
@@ -1619,7 +1555,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     self.default_types.isize.const_int(*sz as u64, false).into(),
                 ]);
                 let fat_ptr = self
-                    .builder
                     .build_insert_value(fat_ptr_no_ptr, self.lit_to_basic_value(src), 0, "")?
                     .into_struct_value();
                 self.push_value(*dst, fat_ptr.into());
@@ -1633,9 +1568,9 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         self.structs,
                         self.context,
                     );
-                    let lhs_ptr = self.builder.build_alloca(ty, "")?;
+                    let lhs_ptr = self.build_alloca(ty, "")?;
                     let alignment = get_alignment(ty);
-                    self.builder.build_memmove(
+                    self.build_memmove(
                         lhs_ptr, // dest (dst = *rhs), in this case *dst =
                         // *rhs as lhs is stack-allocated, meaning an implicit store has to be
                         // added.
@@ -1675,7 +1610,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                             }
                         };
                         let value = unsafe {
-                            self.builder.build_in_bounds_gep(
+                            self.build_in_bounds_gep(
                                 self.structs[struct_id],
                                 self.lit_to_basic_value(src).into_pointer_value(),
                                 &[self.default_types.isize.const_int(0, false), offset],
@@ -1693,7 +1628,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                             }
                         };
                         let value = unsafe {
-                            self.builder.build_in_bounds_gep(
+                            self.build_in_bounds_gep(
                                 ty.to_llvm_basic_type(
                                     &self.default_types,
                                     self.structs,
@@ -1715,7 +1650,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                             }
                         };
                         let value = unsafe {
-                            self.builder.build_in_bounds_gep(
+                            self.build_in_bounds_gep(
                                 typ.to_llvm_basic_type(
                                     &self.default_types,
                                     self.structs,
@@ -1737,7 +1672,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                             }
                         };
                         let actual_ptr = self
-                            .builder
                             .build_extract_value(
                                 self.lit_to_basic_value(src).into_struct_value(),
                                 0,
@@ -1745,7 +1679,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                             )?
                             .into_pointer_value();
                         let value = unsafe {
-                            self.builder.build_in_bounds_gep(
+                            self.build_in_bounds_gep(
                                 typ.to_llvm_basic_type(
                                     &self.default_types,
                                     self.structs,
@@ -1767,16 +1701,12 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 if src.is_array_value() {
                     self.push_value(
                         *dst,
-                        self.builder.build_extract_value(
-                            src.into_array_value(),
-                            *offset_value as u32,
-                            "",
-                        )?,
+                        self.build_extract_value(src.into_array_value(), *offset_value as u32, "")?,
                     );
                 } else if src.is_struct_value() {
                     self.push_value(
                         *dst,
-                        self.builder.build_extract_value(
+                        self.build_extract_value(
                             src.into_struct_value(),
                             *offset_value as u32,
                             "",
@@ -1795,17 +1725,13 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     .map(|v| self.lit_to_basic_value(v).into())
                     .collect::<Vec<BasicMetadataValueEnum<'ctx>>>();
                 let dyn_ptr = arguments[0].into_struct_value();
-                let real_ptr = self.builder.build_extract_value(dyn_ptr, 0, "")?;
+                let real_ptr = self.build_extract_value(dyn_ptr, 0, "")?;
                 arguments[0] = real_ptr.into();
-                let vtable_ptr_isize = self
-                    .builder
-                    .build_extract_value(dyn_ptr, 1, "")?
-                    .into_int_value();
+                let vtable_ptr_isize = self.build_extract_value(dyn_ptr, 1, "")?.into_int_value();
                 let vtable_ptr =
-                    self.builder
-                        .build_int_to_ptr(vtable_ptr_isize, self.default_types.ptr, "")?;
+                    self.build_int_to_ptr(vtable_ptr_isize, self.default_types.ptr, "")?;
                 let fn_ptr_ptr = unsafe {
-                    self.builder.build_gep(
+                    self.build_gep(
                         self.default_types.ptr,
                         vtable_ptr,
                         &[self
@@ -1816,7 +1742,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     )
                 }?;
                 let fn_ptr = self
-                    .builder
                     .build_load(self.default_types.ptr, fn_ptr_ptr, "")?
                     .into_pointer_value();
                 let param_types = std::iter::once(self.default_types.ptr.into())
@@ -1835,9 +1760,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         .fn_type(&param_types, false),
                 };
 
-                let res = self
-                    .builder
-                    .build_indirect_call(fn_ty, fn_ptr, &arguments, "")?;
+                let res = self.build_indirect_call(fn_ty, fn_ptr, &arguments, "")?;
                 self.push_value(
                     *dst,
                     res.try_as_basic_value()
@@ -1850,7 +1773,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 let old_typ = old.to_type(&self.tc_scope, self.tc_ctx);
                 assert!(new_typ.refcount() == 0 || new_typ.is_thin_ptr());
                 assert!(old_typ.refcount() == 0 || old_typ.is_thin_ptr());
-                let new_value = self.builder.build_bit_cast(
+                let new_value = self.build_bit_cast(
                     self.lit_to_basic_value(old),
                     new_typ.to_llvm_basic_type(&self.default_types, self.structs, self.context),
                     "",
@@ -1867,8 +1790,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         let llvm_ty =
                             ty.to_llvm_basic_type(&self.default_types, self.structs, self.context);
                         let alignment = get_alignment(llvm_ty);
-                        let new_ptr = self.builder.build_alloca(llvm_ty, "")?;
-                        self.builder.build_memmove(
+                        let new_ptr = self.build_alloca(llvm_ty, "")?;
+                        self.build_memmove(
                             new_ptr,
                             alignment,
                             self.get_value_ptr(*id),
@@ -1884,8 +1807,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         let llvm_ty =
                             ty.to_llvm_basic_type(&self.default_types, self.structs, self.context);
                         let alignment = get_alignment(llvm_ty);
-                        let new_ptr = self.builder.build_alloca(llvm_ty, "")?;
-                        self.builder.build_memmove(
+                        let new_ptr = self.build_alloca(llvm_ty, "")?;
+                        self.build_memmove(
                             new_ptr,
                             alignment,
                             self.statics[*id].as_pointer_value(),
@@ -1900,7 +1823,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 Ok(())
             }
             TypecheckedExpression::PtrToInt(_, dst, src) => {
-                let value = self.builder.build_ptr_to_int(
+                let value = self.build_ptr_to_int(
                     self.lit_to_basic_value(src).into_pointer_value(),
                     self.tc_scope[*dst]
                         .0
@@ -1912,7 +1835,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 Ok(())
             }
             TypecheckedExpression::IntToPtr(_, dst, src) => {
-                let value = self.builder.build_int_to_ptr(
+                let value = self.build_int_to_ptr(
                     self.lit_to_basic_value(src).into_int_value(),
                     self.default_types.ptr,
                     "",
@@ -1929,7 +1852,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     (self.lit_to_basic_value(src), false)
                 };
                 let pointer = if is_ptr {
-                    let pointer_pointer = self.builder.build_struct_gep(
+                    let pointer_pointer = self.build_struct_gep(
                         self.default_types.fat_ptr,
                         value.into_pointer_value(),
                         0,
@@ -1937,8 +1860,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     )?;
                     build_deref(pointer_pointer, self.tc_scope[*dst].0, self, false)?
                 } else {
-                    self.builder
-                        .build_extract_value(value.into_struct_value(), 0, "")?
+                    self.build_extract_value(value.into_struct_value(), 0, "")?
                 };
                 self.push_value(*dst, pointer);
                 Ok(())
@@ -1951,7 +1873,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 let src_value = self.lit_to_basic_value(src);
                 // u8 -> bool
                 if src_ty == default_types::u8 && *dst_ty == default_types::bool {
-                    let value = self.builder.build_int_truncate(
+                    let value = self.build_int_truncate(
                         src_value.into_int_value(),
                         self.default_types.bool,
                         "",
@@ -1961,7 +1883,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 }
                 // bool -> u8
                 if src_ty == default_types::bool && *dst_ty == default_types::u8 {
-                    let value = self.builder.build_int_z_extend(
+                    let value = self.build_int_z_extend(
                         src_value.into_int_value(),
                         self.default_types.i8,
                         "",
@@ -1971,7 +1893,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 }
                 // f32 -> f64
                 if src_ty == default_types::f32 && *dst_ty == default_types::f64 {
-                    let value = self.builder.build_float_ext(
+                    let value = self.build_float_ext(
                         src_value.into_float_value(),
                         self.default_types.f64,
                         "",
@@ -1981,7 +1903,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 }
                 // f64 -> f32
                 if src_ty == default_types::f64 && *dst_ty == default_types::f32 {
-                    let value = self.builder.build_float_trunc(
+                    let value = self.build_float_trunc(
                         src_value.into_float_value(),
                         self.default_types.f32,
                         "",
@@ -1997,23 +1919,11 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         .context
                         .custom_width_int_type(dst_ty.get_bitwidth(isize_bitwidth));
                     let value = if trunc {
-                        self.builder.build_int_truncate_or_bit_cast(
-                            src_value.into_int_value(),
-                            ty,
-                            "",
-                        )?
+                        self.build_int_truncate_or_bit_cast(src_value.into_int_value(), ty, "")?
                     } else if dst_ty.is_unsigned() {
-                        self.builder.build_int_z_extend_or_bit_cast(
-                            src_value.into_int_value(),
-                            ty,
-                            "",
-                        )?
+                        self.build_int_z_extend_or_bit_cast(src_value.into_int_value(), ty, "")?
                     } else {
-                        self.builder.build_int_s_extend_or_bit_cast(
-                            src_value.into_int_value(),
-                            ty,
-                            "",
-                        )?
+                        self.build_int_s_extend_or_bit_cast(src_value.into_int_value(), ty, "")?
                     };
                     self.push_value(*dst, value.into());
                     return Ok(());
@@ -2024,17 +1934,9 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         .context
                         .custom_width_int_type(dst_ty.get_bitwidth(isize_bitwidth));
                     let value = if dst_ty.is_unsigned() {
-                        self.builder.build_float_to_unsigned_int(
-                            src_value.into_float_value(),
-                            ty,
-                            "",
-                        )?
+                        self.build_float_to_unsigned_int(src_value.into_float_value(), ty, "")?
                     } else {
-                        self.builder.build_float_to_signed_int(
-                            src_value.into_float_value(),
-                            ty,
-                            "",
-                        )?
+                        self.build_float_to_signed_int(src_value.into_float_value(), ty, "")?
                     };
                     self.push_value(*dst, value.into());
                     Ok(())
@@ -2045,23 +1947,15 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         _ => unreachable!("not a float type: {:?}", dst_ty),
                     };
                     let value = if src_ty.is_unsigned() {
-                        self.builder.build_unsigned_int_to_float(
-                            src_value.into_int_value(),
-                            ty,
-                            "",
-                        )?
+                        self.build_unsigned_int_to_float(src_value.into_int_value(), ty, "")?
                     } else {
-                        self.builder.build_signed_int_to_float(
-                            src_value.into_int_value(),
-                            ty,
-                            "",
-                        )?
+                        self.build_signed_int_to_float(src_value.into_int_value(), ty, "")?
                     };
                     self.push_value(*dst, value.into());
                     Ok(())
                 }
             }
-            TypecheckedExpression::Unreachable(_) => Ok(_ = self.builder.build_unreachable()?),
+            TypecheckedExpression::Unreachable(_) => Ok(_ = self.build_unreachable()?),
             TypecheckedExpression::Empty(_) => Ok(()),
             TypecheckedExpression::None => {
                 unreachable!("None-expressions are not valid and indicate an error")
@@ -2075,7 +1969,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
         dst: usize,
         args: &[TypedLiteral<'arena>],
     ) -> Result<(), BuilderError> {
-        let val = self.builder.build_direct_call(
+        let val = self.build_direct_call(
             function,
             &args
                 .iter()
@@ -2212,24 +2106,16 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     match &**generics[0] {
                         TyKind::DynType { .. } => {
                             let fat_ptr = self.lit_to_basic_value(&args[0]).into_struct_value();
-                            let vtable_ptr_int = self
-                                .builder
-                                .build_extract_value(fat_ptr, 1, "")?
-                                .into_int_value();
-                            let vtable_ptr = self.builder.build_int_to_ptr(
-                                vtable_ptr_int,
-                                self.default_types.ptr,
-                                "",
-                            )?;
+                            let vtable_ptr_int =
+                                self.build_extract_value(fat_ptr, 1, "")?.into_int_value();
+                            let vtable_ptr =
+                                self.build_int_to_ptr(vtable_ptr_int, self.default_types.ptr, "")?;
                             let size = self.build_load(self.default_types.isize, vtable_ptr, "")?;
                             self.push_value(dst, size);
                         }
                         TyKind::UnsizedArray(typ) => {
                             let fat_ptr = self.lit_to_basic_value(&args[0]).into_struct_value();
-                            let len = self
-                                .builder
-                                .build_extract_value(fat_ptr, 1, "")?
-                                .into_int_value();
+                            let len = self.build_extract_value(fat_ptr, 1, "")?.into_int_value();
                             let size_single = typ
                                 .size_and_alignment(self.pointer_size, &self.tc_ctx.structs.read())
                                 .0;
