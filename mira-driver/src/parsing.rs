@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, fmt::Write, path::Path, sync::Arc};
 
 use crossbeam_channel::{Sender, bounded};
 use mira_errors::Diagnostics;
@@ -16,6 +16,8 @@ use mira::{
 use mira_errors::IoReadError;
 use mira_lexer::{Lexer, LexingError};
 use mira_spans::SourceFile;
+
+use crate::EmitMethod;
 
 #[allow(clippy::too_many_arguments)]
 fn parse_single<'arena>(
@@ -216,4 +218,44 @@ pub fn parse_all<'arena>(
             .expect("more than one reference to errors")
             .into_inner())
     }
+}
+
+pub fn expand_macros<'a>(
+    ctx: SharedContext<'a>,
+    file: Arc<Path>,
+    mut output: EmitMethod,
+) -> Result<(), Diagnostics<'a>> {
+    let mut diags = Diagnostics::new();
+    let f = match ctx.source_map().add_package_load(
+        file.parent().unwrap().into(),
+        file.clone(),
+        HashMap::new(),
+    ) {
+        Ok(v) => v.1,
+        Err(e) => {
+            diags.add_err(IoReadError(file.to_path_buf(), e));
+            return Err(diags);
+        }
+    };
+    let mut lexer = Lexer::new(ctx.into(), f);
+    _ = lexer
+        .scan_tokens()
+        .map_err(|e| diags.extend(e.into_iter().map(LexingError::to_error)));
+
+    let file = lexer.file.clone();
+    let tokens = lexer.into_tokens();
+    let tokens = match mira::parser::expand_tokens(ctx, file.clone(), tokens, &mut diags) {
+        Some(v) => v,
+        None => return Err(diags),
+    };
+    let mut s = String::with_capacity(10);
+    for token in tokens {
+        s.write_fmt(format_args!("{token} ")).unwrap();
+        if !output.emit_diags(s.as_bytes(), &mut diags) {
+            return Err(diags);
+        }
+        s.clear();
+    }
+
+    Ok(())
 }

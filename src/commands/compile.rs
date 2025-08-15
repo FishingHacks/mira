@@ -106,7 +106,7 @@ which is required by `&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_p
 */
 
 #[derive(Clone, Debug)]
-enum PathOrStdout {
+pub(super) enum PathOrStdout {
     Stdout,
     Path(Box<Path>),
 }
@@ -121,7 +121,7 @@ impl From<OsString> for PathOrStdout {
     }
 }
 
-fn to_emit(value: Option<PathOrStdout>) -> EmitMethod {
+pub(super) fn to_emit(value: Option<PathOrStdout>) -> EmitMethod {
     match value {
         Some(PathOrStdout::Stdout) => EmitMethod::Stdout,
         Some(PathOrStdout::Path(p)) => EmitMethod::file(p),
@@ -134,12 +134,16 @@ pub struct CompileArgs {
     /// The target to compile to
     #[arg(short, long, default_value_t = NATIVE_TARGET)]
     target: Target,
+    /// File to emit the ir to (or specify `-` for stdout)
     #[arg(long)]
     emit_ir: Option<PathOrStdout>,
+    /// File to emit the llvm ir to (or specify `-` for stdout)
     #[arg(long)]
     emit_llvm_ir: Option<PathOrStdout>,
+    /// File to emit the llvm bitcode to (or specify `-` for stdout)
     #[arg(long)]
     emit_llvm_bc: Option<PathOrStdout>,
+    /// File to emit the assembly to (or specify `-` for stdout)
     #[arg(long)]
     emit_asm: Option<PathOrStdout>,
     /// The file to emit the object (.o) file to

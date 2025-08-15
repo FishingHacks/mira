@@ -14,6 +14,7 @@ use mira_errors::{
 use mira_progress_bar::ProgressBarStyle;
 
 mod parsing;
+pub use parsing::expand_macros;
 use parsing::parse_all;
 
 use mira::{
@@ -29,6 +30,7 @@ use mira::{
         typechecking::{typecheck_external_function, typecheck_function, typecheck_static},
     },
 };
+// TODO: This should be abstracted away so we don't have to handle different configs.
 use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder, CodegenError, Optimizations};
 
 #[derive(Clone, Debug)]
@@ -238,8 +240,6 @@ pub struct FullCompilationOptions<'a> {
     pub llvm_bc_writer: EmitMethod,
     /// Writer to write the assembly to
     pub asm_writer: EmitMethod,
-    /// Thing to emit the tokens after macro expansion to
-    pub macro_expansion_writer: EmitMethod,
 }
 
 macro_rules! setters {
@@ -271,7 +271,6 @@ impl<'a> FullCompilationOptions<'a> {
             llvm_ir_writer: EmitMethod::None,
             llvm_bc_writer: EmitMethod::None,
             asm_writer: EmitMethod::None,
-            macro_expansion_writer: EmitMethod::None,
         }
     }
     setters![
@@ -286,7 +285,6 @@ impl<'a> FullCompilationOptions<'a> {
         ir_writer => ir_writer: EmitMethod,
         llvm_ir_writer => llvm_ir_writer: EmitMethod,
         llvm_bc_writer => llvm_bc_writer: EmitMethod,
-        macro_expansion_writer => macro_expansion_writer: EmitMethod,
         asm_writer => asm_writer: EmitMethod,
         set_codegen_opts => codegen_opts: CodegenConfig<'a>,
     ];
@@ -669,3 +667,12 @@ impl<F: FnOnce()> DeferFn<F> {
         Self(MaybeUninit::new(f))
     }
 }
+
+#[cfg(not(feature = "mira-llvm-backend"))]
+compile_error!("you have to enable llvm20-1, llvm19-1 or llvm18-0");
+#[cfg(any(
+    all(feature = "llvm20-1", feature = "llvm19-1"),
+    all(feature = "llvm20-1", feature = "llvm18-0"),
+    all(feature = "llvm19-1", feature = "llvm18-0"),
+))]
+compile_error!("only one of llvm20-1, llvm19-1 or llvm18-0 are allowed to be enabled");

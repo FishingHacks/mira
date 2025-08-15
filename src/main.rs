@@ -6,6 +6,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use commands::{
     about::print_about,
     compile::{compile_main, CompileArgs},
+    expand::{expand_main, ExpandArgs},
     repl::{repl_main, ReplArgs},
 };
 use mira::{
@@ -40,6 +41,8 @@ enum Action {
     Targets,
     /// Launches a repl to edit, compile and run your code in.
     Repl(ReplArgs),
+    /// Print out all the tokens after running macro expansion on a file
+    Expand(ExpandArgs),
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -55,6 +58,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     match action {
         Action::Version | Action::About => {
             print_about();
+            Ok(())
+        }
+        Action::Expand(args) => {
+            expand_main(args);
             Ok(())
         }
         Action::Targets => {

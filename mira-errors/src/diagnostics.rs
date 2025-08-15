@@ -144,6 +144,12 @@ impl Drop for Diagnostic<'_> {
 }
 
 impl<'arena> Diagnostic<'arena> {
+    /// intentionally destroys this diagnostics. this function should be minimized, as diagnostics
+    /// are usually fairly expensive to construct.
+    pub fn dismiss(mut self) {
+        self.diagnostic.take();
+    }
+
     pub(crate) fn take_inner(
         &mut self,
     ) -> Option<Box<DiagnosticInner<'arena, dyn ErrorData + 'arena>>> {

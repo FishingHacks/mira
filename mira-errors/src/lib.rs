@@ -387,8 +387,8 @@ impl<'arena, P: StyledPrinter> DiagnosticFormatter<'arena, P> {
     }
 
     /// Discards the diagnostic without printing it.
-    pub fn discard_diagnostic(&mut self, mut diagnostic: Diagnostic<'arena>) {
-        _ = diagnostic.take_inner();
+    pub fn discard_diagnostic(&mut self, diagnostic: Diagnostic<'arena>) {
+        diagnostic.dismiss();
     }
 }
 

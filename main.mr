@@ -1,3 +1,12 @@
+macro! meow {
+    ($first:ident) => { $first };
+    ($first:ident $(, $ident:ident)* $(,)?) => {
+        concat_idents!($first, $(` `, $ident),*)
+    };
+}
+
+meow!(a, b)
+
 fn main() {
     "Hello, World!".println();
 }

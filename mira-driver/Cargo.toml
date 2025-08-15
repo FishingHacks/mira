@@ -4,11 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["llvm20-1"]
-codegen = []
-llvm20-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm20-1", "codegen"]
-llvm19-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm19-1", "codegen"]
-llvm18-0 = ["mira-llvm-backend", "mira-llvm-backend/llvm18-0", "codegen"]
+default = []
+llvm20-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm20-1"]
+llvm19-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm19-1"]
+llvm18-0 = ["mira-llvm-backend", "mira-llvm-backend/llvm18-0"]
 
 [dependencies]
 mira.workspace = true

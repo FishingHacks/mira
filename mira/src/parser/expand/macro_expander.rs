@@ -289,13 +289,16 @@ fn expand_macro<'arena>(
             }
         }
     }
-    if let Some((err, rule, _)) = err {
+    let Some((values, body)) = res else {
+        let (err, rule, _) = err.unwrap();
         return Err(err.with_note(format!(
             "While parsing macro `{}`, in rule #{}",
             r#macro.name, rule
         )));
+    };
+    if let Some((diag, ..)) = err {
+        diag.dismiss()
     }
-    let (values, body) = res.unwrap();
     expand_body(body, &values, output, &mut Vec::new())
 }
 
