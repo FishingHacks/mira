@@ -307,7 +307,6 @@ name = "mira-llvm-backend"
 version = "0.1.0"
 dependencies = [
  "inkwell",
- "llvm-sys 191.0.0",
  "mira",
  "mira-errors",
  "mira-macros",

@@ -2202,7 +2202,7 @@ pub fn llvm_version() -> (u32, u32, u32) {
     let mut major = 0u32;
     let mut minor = 0u32;
     let mut patch = 0u32;
-    unsafe { llvm_sys::core::LLVMGetVersion(&mut major, &mut minor, &mut patch) };
+    unsafe { inkwell::llvm_sys::core::LLVMGetVersion(&mut major, &mut minor, &mut patch) };
     (major, minor, patch)
 }
 

@@ -15,5 +15,3 @@ mira-errors.workspace = true
 mira-macros.workspace = true
 mira-spans.workspace = true
 inkwell.workspace = true
-# use any llvm-sys to get the llvm version info
-llvm-sys = "*"

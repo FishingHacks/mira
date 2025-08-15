@@ -5,7 +5,7 @@ macro! meow {
     };
 }
 
-meow!(a, b)
+//meow!(a, b)
 
 fn main() {
     "Hello, World!".println();
