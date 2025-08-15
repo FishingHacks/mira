@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["mira", "mira-driver", "mira-error-codes", "mira-errors", "mira-lexer", "mira-macros", "mira-progress-bar", "mira-spans"]
+members = ["mira", "mira-driver", "mira-error-codes", "mira-errors", "mira-lexer", "mira-llvm-backend", "mira-macros", "mira-progress-bar", "mira-spans"]
 
 [workspace.dependencies]
 mira = { path = "./mira" }
@@ -13,11 +13,12 @@ mira-driver = { path = "./mira-driver" }
 mira-errors = { path = "./mira-errors" }
 mira-lexer = { path = "./mira-lexer" }
 mira-macros = { path = "./mira-macros" }
+mira-llvm-backend = { path = "./mira-llvm-backend" }
 mira-progress-bar = { path = "./mira-progress-bar" }
 mira-spans = { path = "./mira-spans" }
 parking_lot = "0.12.3"
 clap = { version = "4.5.28", features = ["derive"] }
-inkwell = { git = "https://github.com/fishinghacks/inkwell.git", features = ["llvm20-1-prefer-static"] }
+inkwell = { git = "https://github.com/fishinghacks/inkwell.git" }
 cfg-if = "1.0.0"
 crossbeam-channel = "0.5.15"
 syn = "2.0.104"
@@ -25,11 +26,15 @@ proc-macro2 = "1.0.95"
 quote = "1.0.40"
 termsize = "0.1.9"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["llvm20-1"]
+llvm20-1 = ["mira-driver/llvm20-1"]
+llvm19-1 = ["mira-driver/llvm19-1"]
+llvm18-0 = ["mira-driver/llvm18-0"]
 
 [dependencies]
 parking_lot.workspace = true
 mira.workspace = true
 mira-driver.workspace = true
 clap.workspace = true
-llvm-sys = "*"
+mira-llvm-backend.workspace = true

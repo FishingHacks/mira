@@ -3,6 +3,13 @@ name = "mira-driver"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["llvm20-1"]
+codegen = []
+llvm20-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm20-1", "codegen"]
+llvm19-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm19-1", "codegen"]
+llvm18-0 = ["mira-llvm-backend", "mira-llvm-backend/llvm18-0", "codegen"]
+
 [dependencies]
 mira.workspace = true
 mira-errors.workspace = true
@@ -11,3 +18,4 @@ mira-spans.workspace = true
 mira-lexer.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
+mira-llvm-backend = { workspace = true, optional = true }

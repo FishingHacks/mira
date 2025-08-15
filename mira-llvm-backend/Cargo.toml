@@ -1,0 +1,19 @@
+[package]
+name = "mira-llvm-backend"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["llvm20-1"]
+llvm20-1 = ["inkwell/llvm20-1-prefer-static"]
+llvm19-1 = ["inkwell/llvm19-1-prefer-static"]
+llvm18-0 = ["inkwell/llvm18-0-prefer-static"]
+
+[dependencies]
+mira.workspace = true
+mira-errors.workspace = true
+mira-macros.workspace = true
+mira-spans.workspace = true
+inkwell.workspace = true
+# use any llvm-sys to get the llvm version info
+llvm-sys = "*"

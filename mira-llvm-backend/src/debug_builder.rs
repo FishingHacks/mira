@@ -4,15 +4,6 @@ use std::{
     path::Path,
 };
 
-use crate::{
-    codegen::debug_constants::BasicTypeEncoding,
-    context::SharedContext,
-    store::{AssociatedStore, Store, StoreKey},
-    typechecking::{
-        Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedExternalFunction, TypedFunction,
-        TypedStruct, default_types, intrinsics::IntrinsicAnnotation,
-    },
-};
 use inkwell::{
     AddressSpace,
     basic_block::BasicBlock,
@@ -25,12 +16,29 @@ use inkwell::{
     module::{FlagBehavior, Module},
     values::PointerValue,
 };
+use mira::{
+    context::SharedContext,
+    store::{AssociatedStore, Store, StoreKey},
+    typechecking::{
+        Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedExternalFunction, TypedFunction,
+        TypedStruct, default_types, intrinsics::IntrinsicAnnotation,
+    },
+};
 use mira_spans::{Span, interner::Symbol};
 
 use super::{
     context::DefaultTypes,
     mangling::{ANON_FN_NAME, mangle_external_function, mangle_function},
 };
+
+#[allow(non_upper_case_globals)]
+#[allow(non_snake_case)]
+pub mod BasicTypeEncoding {
+    pub const Boolean: u32 = 2;
+    pub const Float: u32 = 4;
+    pub const Signed: u32 = 5;
+    pub const Unsigned: u32 = 7;
+}
 
 pub struct DebugContext<'ctx, 'arena> {
     ctx: SharedContext<'arena>,

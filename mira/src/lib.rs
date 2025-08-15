@@ -1,12 +1,11 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod annotations;
-pub mod codegen;
 pub mod error;
 pub mod lang_items;
 pub mod linking;
 pub mod module;
 pub mod parser;
-pub(crate) mod std_annotations;
+pub mod std_annotations;
 pub mod target;
 pub mod tokenstream;
 pub mod typechecking;

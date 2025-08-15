@@ -1,7 +1,7 @@
-use crate::module::ModuleScopeValue;
-use crate::std_annotations::alias::ExternAliasAnnotation;
-use crate::store::StoreKey;
-use crate::typechecking::{
+use mira::module::ModuleScopeValue;
+use mira::std_annotations::alias::ExternAliasAnnotation;
+use mira::store::StoreKey;
+use mira::typechecking::{
     TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
 };
 use std::fmt::Write;

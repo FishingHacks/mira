@@ -6,7 +6,10 @@ use std::{
     sync::Arc,
 };
 
+use crate::to_basic_value;
+
 use super::{
+    TyKindExt,
     debug_builder::DebugContext,
     error::CodegenError,
     intrinsics::LLVMIntrinsics,
@@ -31,7 +34,7 @@ use inkwell::{
     values::{FunctionValue, GlobalValue},
 };
 
-use crate::{
+use mira::{
     std_annotations::{
         alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
         noinline::Noinline, section::SectionAnnotation,
@@ -532,7 +535,8 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                 &mangle_static(&ctx, key),
             );
             global.set_linkage(Linkage::Internal);
-            global.set_initializer(&static_element.value.to_basic_value(
+            global.set_initializer(&to_basic_value(
+                &static_element.value,
                 &|i| panic!("index out of bounds: the length is 0, but the index is {i}"),
                 &default_types,
                 &structs,
@@ -740,7 +744,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         drop(structs_reader);
 
         for expr in body {
-            expr.codegen(&mut function_ctx, scope, contract.module_id)?;
+            function_ctx.codegen(expr, scope, contract.module_id)?;
         }
 
         drop(function_reader);

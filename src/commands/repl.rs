@@ -14,12 +14,12 @@ use std::{
 
 use clap::{Args, ValueEnum};
 use mira::{
-    codegen::CodegenConfig,
     context::GlobalContext,
     target::{Target, NATIVE_TARGET},
     Arena, Output, UnicodePrinter,
 };
 use mira_driver::{run_full_compilation_pipeline, EmitMethod, FullCompilationOptions, LibraryTree};
+use mira_llvm_backend::CodegenConfig;
 
 use super::about::print_about;
 

@@ -17,7 +17,6 @@ mod parsing;
 use parsing::parse_all;
 
 use mira::{
-    codegen::{CodegenConfig, CodegenContextBuilder, CodegenError, Optimizations},
     context::SharedContext,
     linking::{self, LinkOptions, LinkerErrorDiagnosticsExt as _, LinkerInput},
     optimizations,
@@ -30,6 +29,7 @@ use mira::{
         typechecking::{typecheck_external_function, typecheck_function, typecheck_static},
     },
 };
+use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder, CodegenError, Optimizations};
 
 #[derive(Clone, Debug)]
 pub enum LibraryInput {
