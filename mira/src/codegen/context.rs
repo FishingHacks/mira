@@ -32,7 +32,6 @@ use inkwell::{
 };
 
 use crate::{
-    context::SharedContext,
     std_annotations::{
         alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
         noinline::Noinline, section::SectionAnnotation,
@@ -71,6 +70,30 @@ pub type ExternalFunctionsStore<'ctx, 'arena> =
     AssociatedStore<FunctionValue<'ctx>, TypedExternalFunction<'arena>>;
 pub type StructsStore<'ctx, 'arena> = AssociatedStore<StructType<'ctx>, TypedStruct<'arena>>;
 pub type StaticsStore<'ctx, 'arena> = AssociatedStore<GlobalValue<'ctx>, TypedStatic<'arena>>;
+
+pub struct CodegenContextBuilder(Context);
+
+impl CodegenContextBuilder {
+    pub fn new() -> Self {
+        Self(Context::create())
+    }
+
+    pub fn build<'ctx, 'arena>(
+        &'ctx self,
+        ctx: Arc<TypecheckingContext<'arena>>,
+        module: &str,
+        path: Arc<Path>,
+        config: CodegenConfig<'ctx>,
+    ) -> Result<CodegenContext<'ctx, 'arena>, CodegenError> {
+        CodegenContext::new(&self.0, ctx, module, path, config)
+    }
+}
+
+impl Default for CodegenContextBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub struct CodegenContext<'ctx, 'arena> {
     pub(super) tc_ctx: Arc<TypecheckingContext<'arena>>,
@@ -250,14 +273,14 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             .map_err(CodegenError::WriteObjectError)
     }
 
-    pub fn new(
+    fn new(
         context: &'ctx Context,
         ctx: Arc<TypecheckingContext<'arena>>,
         module: &str,
         path: Arc<Path>,
         config: CodegenConfig<'ctx>,
-        shared_ctx: SharedContext<'arena>,
     ) -> Result<Self, CodegenError> {
+        let shared_ctx = ctx.ctx;
         LLVMTarget::initialize_all(&InitializationConfig::default());
         let (triple, _) = config.target.to_llvm_triple();
         let llvm_target = LLVMTarget::from_triple(&triple)?;

@@ -13,10 +13,9 @@ use crate::{
         typechecking::ScopeTypeMetadata,
     },
 };
-pub use inkwell::context::Context as InkwellContext;
 use mira_spans::interner::Symbol;
 pub mod mangling;
-pub use context::{CodegenConfig, CodegenContext, Optimizations};
+pub use context::{CodegenConfig, CodegenContext, CodegenContextBuilder, Optimizations};
 pub use error::CodegenError;
 pub use inkwell::support::LLVMString;
 use inkwell::{

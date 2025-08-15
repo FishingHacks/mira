@@ -17,9 +17,7 @@ mod parsing;
 use parsing::parse_all;
 
 use mira::{
-    codegen::{
-        CodegenConfig, CodegenContext, CodegenError, InkwellContext as Context, Optimizations,
-    },
+    codegen::{CodegenConfig, CodegenContextBuilder, CodegenError, Optimizations},
     context::SharedContext,
     linking::{self, LinkOptions, LinkerErrorDiagnosticsExt as _, LinkerInput},
     optimizations,
@@ -145,7 +143,8 @@ impl std::fmt::Write for EmitMethodWithDiags<'_, '_, '_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         self.0
             .emit_diags(s.as_bytes(), self.1)
-            .map_err(|()| std::fmt::Error)
+            .then_some(())
+            .ok_or(std::fmt::Error)
     }
 }
 
@@ -192,8 +191,9 @@ impl EmitMethod {
         }
     }
 
-    pub fn emit_diags(&mut self, data: &[u8], diagnostics: &mut Diagnostics) -> Result<(), ()> {
-        self.emit(data).map_err(|v| _ = diagnostics.add(v))
+    /// emits the error into the diagnostics struct, returning if the operating was successful.
+    pub fn emit_diags(&mut self, data: &[u8], diagnostics: &mut Diagnostics) -> bool {
+        self.emit(data).map_err(|v| _ = diagnostics.add(v)).is_ok()
     }
 }
 
@@ -499,23 +499,21 @@ pub fn run_full_compilation_pipeline<'arena>(
         _ = TCContextDisplay.fmt(&mut formatter);
     }
 
-    let context = Context::create();
-
     let root_file = ctx.source_map().packages()[0].root_file;
     let file = ctx.source_map().get_file(root_file).unwrap().path.clone();
     let filename = file
         .file_name()
         .expect("file should have a filename")
         .to_string_lossy();
-    let mut codegen_context = CodegenContext::new(
-        &context,
-        typechecking_context.clone(),
-        &filename,
-        file.clone(),
-        opts.codegen_opts,
-        ctx,
-    )
-    .expect("failed to create the llvm context");
+    let ctx_builder = CodegenContextBuilder::new();
+    let mut codegen_context = ctx_builder
+        .build(
+            typechecking_context.clone(),
+            &filename,
+            file.clone(),
+            opts.codegen_opts,
+        )
+        .expect("failed to create the llvm context");
 
     drop(module_context);
 

@@ -10,11 +10,6 @@ use crate::{annotations::AnnotationReceiver, typechecking::Ty};
 use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_spans::{Span, interner::Symbol};
 
-#[derive(ErrorData)]
-#[error("failed to write the IR")]
-#[no_arena_lifetime]
-pub struct FailedToWriteIR;
-
 struct ExpectedOneOfDisplay<'a, T>(&'a [T]);
 impl<T: Display> Display for ExpectedOneOfDisplay<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -266,6 +261,3 @@ impl Display for FunctionList<'_> {
         f.write_char(')')
     }
 }
-
-pub type Result<'arena, T = ()> = std::result::Result<T, Diagnostic<'arena>>;
-pub type StdResult<T, E> = std::result::Result<T, E>;
