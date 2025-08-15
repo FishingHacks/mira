@@ -5,7 +5,7 @@ use mira_errors::Diagnostics;
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
 
-use crate::{
+use mira::{
     context::SharedContext,
     error::{ParsingError, ProgramFormingError},
     module::{Module, ModuleContext},
@@ -54,7 +54,7 @@ fn parse_single<'arena>(
     let tokens = lexer.into_tokens();
     let tokens = {
         let mut diagnostics = Diagnostics::new();
-        match crate::parser::expand_tokens(
+        match mira::parser::expand_tokens(
             module_context.ctx,
             file.clone(),
             tokens,

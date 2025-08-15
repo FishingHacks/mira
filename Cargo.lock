@@ -238,6 +238,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mira-driver"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "mira",
+ "mira-errors",
+ "mira-lexer",
+ "mira-progress-bar",
+ "mira-spans",
+ "parking_lot",
+]
+
+[[package]]
 name = "mira-error-codes"
 version = "0.1.0"
 
@@ -288,6 +301,7 @@ dependencies = [
  "clap",
  "llvm-sys",
  "mira",
+ "mira-driver",
  "parking_lot",
 ]
 

@@ -11,26 +11,6 @@ use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_spans::{Span, interner::Symbol};
 
 #[derive(ErrorData)]
-#[error("couldn't write `{}`: {_1}", _0.display())]
-#[no_arena_lifetime]
-pub struct IoWriteError(pub PathBuf, pub std::io::Error);
-
-#[derive(ErrorData)]
-#[error("couldn't read `{}`: {_1}", _0.display())]
-#[no_arena_lifetime]
-pub struct IoReadError(pub PathBuf, pub std::io::Error);
-
-#[derive(ErrorData)]
-#[error("failed to get the working directory: {_0}")]
-#[no_arena_lifetime]
-pub struct CurrentDirError(pub std::io::Error);
-
-#[derive(ErrorData)]
-#[error("failed to open `{}`: {_1}", _0.display())]
-#[no_arena_lifetime]
-pub struct FileOpenError(pub PathBuf, pub std::io::Error);
-
-#[derive(ErrorData)]
 #[error("failed to write the IR")]
 #[no_arena_lifetime]
 pub struct FailedToWriteIR;

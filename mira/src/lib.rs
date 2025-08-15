@@ -14,7 +14,7 @@ pub use parser::module_resolution;
 pub mod context;
 pub mod optimizations;
 pub mod store;
-pub(crate) mod threadpool;
+pub mod threadpool;
 pub use mira_errors::{AsciiPrinter, Output, UnicodePrinter};
 pub use mira_spans::Arena;
 pub use mira_spans::interner::symbols;

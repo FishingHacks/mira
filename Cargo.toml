@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["mira", "mira-error-codes", "mira-errors", "mira-lexer", "mira-macros", "mira-progress-bar", "mira-spans"]
+members = ["mira", "mira-driver", "mira-error-codes", "mira-errors", "mira-lexer", "mira-macros", "mira-progress-bar", "mira-spans"]
 
 [workspace.dependencies]
 mira = { path = "./mira" }
 mira-error-codes = { path = "./mira-error-codes" }
+mira-driver = { path = "./mira-driver" }
 mira-errors = { path = "./mira-errors" }
 mira-lexer = { path = "./mira-lexer" }
 mira-macros = { path = "./mira-macros" }
@@ -29,5 +30,6 @@ termsize = "0.1.9"
 [dependencies]
 parking_lot.workspace = true
 mira.workspace = true
+mira-driver.workspace = true
 clap.workspace = true
 llvm-sys = "*"

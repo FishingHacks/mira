@@ -1,0 +1,13 @@
+[package]
+name = "mira-driver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mira.workspace = true
+mira-errors.workspace = true
+mira-progress-bar.workspace = true
+mira-spans.workspace = true
+mira-lexer.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true

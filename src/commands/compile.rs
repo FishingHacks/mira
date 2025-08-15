@@ -1,5 +1,6 @@
 use std::{
     error::Error,
+    ffi::OsString,
     fmt::Debug,
     path::{Path, PathBuf},
     process::Command,
@@ -11,10 +12,10 @@ use clap::{Args, ValueEnum};
 use mira::{
     codegen::CodegenConfig,
     context::GlobalContext,
-    linking::{run_full_compilation_pipeline, FullCompilationOptions, LibraryTree},
     target::{Target, NATIVE_TARGET},
     Arena, Output, UnicodePrinter,
 };
+use mira_driver::{run_full_compilation_pipeline, EmitMethod, FullCompilationOptions, LibraryTree};
 
 use crate::libfinder;
 
@@ -86,19 +87,61 @@ impl std::fmt::Display for OptimizationMode {
 //│ ReleaseTiny  │    -Oz    │      false     │
 //└──────────────┴───────────┴────────────────┘
 
+/*
+`EmitMethod: Debug`
+`EmitMethod: Clone`
+`EmitMethod: ValueEnum`
+which is required by `&&&&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_ValueEnum`
+`EmitMethod: ValueParserFactory`
+which is required by `&&&&&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_ValueParserFactory`
+`EmitMethod: From<OsString>`
+which is required by `&&&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_From_OsString`
+`EmitMethod: From<&'s std::ffi::OsStr>`
+which is required by `&&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_From_OsStr`
+`EmitMethod: From<std::string::String>`
+which is required by `&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_From_String`
+`EmitMethod: From<&'s str>`
+which is required by `&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_From_str`
+`EmitMethod: FromStr`
+*/
+
+#[derive(Clone, Debug)]
+enum PathOrStdout {
+    Stdout,
+    Path(Box<Path>),
+}
+
+impl From<OsString> for PathOrStdout {
+    fn from(value: OsString) -> Self {
+        if value == "-" {
+            Self::Stdout
+        } else {
+            Self::Path(PathBuf::from(value).into_boxed_path())
+        }
+    }
+}
+
+fn to_emit(value: Option<PathOrStdout>) -> EmitMethod {
+    match value {
+        Some(PathOrStdout::Stdout) => EmitMethod::Stdout,
+        Some(PathOrStdout::Path(p)) => EmitMethod::file(p),
+        None => EmitMethod::None,
+    }
+}
+
 #[derive(Debug, Args)]
 pub struct CompileArgs {
     /// The target to compile to
     #[arg(short, long, default_value_t = NATIVE_TARGET)]
     target: Target,
     #[arg(long)]
-    emit_ir: Option<PathBuf>,
+    emit_ir: Option<PathOrStdout>,
     #[arg(long)]
-    emit_llvm_ir: Option<PathBuf>,
+    emit_llvm_ir: Option<PathOrStdout>,
     #[arg(long)]
-    emit_llvm_bc: Option<PathBuf>,
+    emit_llvm_bc: Option<PathOrStdout>,
     #[arg(long)]
-    emit_asm: Option<PathBuf>,
+    emit_asm: Option<PathOrStdout>,
     /// The file to emit the object (.o) file to
     #[arg(long)]
     emit_obj: Option<PathBuf>,
@@ -178,44 +221,12 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
         .set_verbose_printing(args.verbose)
         .shared_object(args.shared)
         .set_additional_linker_args(&args.linker_args)
+        .ir_writer(to_emit(args.emit_ir))
+        .llvm_bc_writer(to_emit(args.emit_llvm_bc))
+        .llvm_ir_writer(to_emit(args.emit_llvm_ir))
+        .asm_writer(to_emit(args.emit_asm))
         .add_extension_to_exe = !args.without_extension;
     opts.exec_path = args.out_file;
-    if let Some(path) = &args.emit_ir {
-        opts.ir_writer = Some(Box::new(
-            std::fs::File::options()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)?,
-        ));
-    }
-    if let Some(path) = &args.emit_llvm_ir {
-        opts.llvm_ir_writer = Some(Box::new(
-            std::fs::File::options()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)?,
-        ));
-    }
-    if let Some(path) = &args.emit_llvm_bc {
-        opts.llvm_bc_writer = Some(Box::new(
-            std::fs::File::options()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)?,
-        ));
-    }
-    if let Some(path) = &args.emit_asm {
-        opts.asm_writer = Some(Box::new(
-            std::fs::File::options()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)?,
-        ));
-    }
     let mut tmp_obj_path = None;
     opts.obj_path = args.emit_obj.or_else(|| {
         opts.exec_path.is_some().then(|| {

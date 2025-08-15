@@ -1,25 +1,25 @@
 use crate::editor::{get_path, run_editor};
 use crate::repl::Repl;
+use crate::{libfinder, VER};
+
 use std::time::Instant;
 use std::{
     error::Error,
-    io::{ErrorKind, Write},
+    io::ErrorKind,
     path::{Path, PathBuf},
     process::Command,
     str::FromStr,
     sync::Arc,
 };
 
-use crate::{libfinder, VER};
 use clap::{Args, ValueEnum};
-use mira::context::GlobalContext;
-use mira::linking::LibraryTree;
 use mira::{
     codegen::CodegenConfig,
-    linking::{run_full_compilation_pipeline, FullCompilationOptions},
+    context::GlobalContext,
     target::{Target, NATIVE_TARGET},
+    Arena, Output, UnicodePrinter,
 };
-use mira::{Arena, Output, UnicodePrinter};
+use mira_driver::{run_full_compilation_pipeline, EmitMethod, FullCompilationOptions, LibraryTree};
 
 use super::about::print_about;
 
@@ -245,10 +245,10 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     }
 
     let mut opts = parse_opts(rest);
-    let mut llvm_ir_writer: Option<Box<dyn Write>> = None;
-    let mut llvm_bc_writer: Option<Box<dyn Write>> = None;
-    let mut asm_writer: Option<Box<dyn Write>> = None;
-    let mut ir_writer: Option<Box<dyn Write>> = None;
+    let mut llvm_ir_writer: EmitMethod = EmitMethod::None;
+    let mut llvm_bc_writer: EmitMethod = EmitMethod::None;
+    let mut asm_writer: EmitMethod = EmitMethod::None;
+    let mut ir_writer: EmitMethod = EmitMethod::None;
     let mut obj_file = None;
     let mut exec_file = None;
     let mut target = Target::from_name("x86_64-linux");
@@ -264,76 +264,36 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                 opts.remove(i);
                 if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
-                    let path = PathBuf::from(file);
-                    match std::fs::File::options()
-                        .write(true)
-                        .read(false)
-                        .create(true)
-                        .truncate(true)
-                        .open(&path)
-                    {
-                        Err(e) => println!("Failed to open {}: {e:?}", path.display()),
-                        Ok(v) => llvm_ir_writer = Some(Box::new(v)),
-                    }
+                    llvm_ir_writer = EmitMethod::file(PathBuf::from(file).into_boxed_path());
                 } else {
-                    llvm_ir_writer = Some(Box::new(std::io::stdout()));
+                    llvm_ir_writer = EmitMethod::stdout();
                 }
             }
             "--llvm-bc" => {
                 opts.remove(i);
                 if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
-                    let path = PathBuf::from(file);
-                    match std::fs::File::options()
-                        .write(true)
-                        .read(false)
-                        .create(true)
-                        .truncate(true)
-                        .open(&path)
-                    {
-                        Err(e) => println!("Failed to open {}: {e:?}", path.display()),
-                        Ok(v) => llvm_bc_writer = Some(Box::new(v)),
-                    }
+                    llvm_bc_writer = EmitMethod::file(PathBuf::from(file).into_boxed_path());
                 } else {
-                    llvm_bc_writer = Some(Box::new(std::io::stdout()));
+                    llvm_bc_writer = EmitMethod::stdout();
                 }
             }
             "--asm" => {
                 opts.remove(i);
                 if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
-                    let path = PathBuf::from(file);
-                    match std::fs::File::options()
-                        .write(true)
-                        .read(false)
-                        .create(true)
-                        .truncate(true)
-                        .open(&path)
-                    {
-                        Err(e) => println!("Failed to open {}: {e:?}", path.display()),
-                        Ok(v) => asm_writer = Some(Box::new(v)),
-                    }
+                    asm_writer = EmitMethod::file(PathBuf::from(file).into_boxed_path());
                 } else {
-                    asm_writer = Some(Box::new(std::io::stdout()));
+                    asm_writer = EmitMethod::stdout();
                 }
             }
             "--ir" => {
                 opts.remove(i);
                 if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
-                    let path = PathBuf::from(file);
-                    match std::fs::File::options()
-                        .write(true)
-                        .read(false)
-                        .create(true)
-                        .truncate(true)
-                        .open(&path)
-                    {
-                        Err(e) => println!("Failed to open {}: {e:?}", path.display()),
-                        Ok(v) => ir_writer = Some(Box::new(v)),
-                    }
+                    ir_writer = EmitMethod::file(PathBuf::from(file).into_boxed_path());
                 } else {
-                    ir_writer = Some(Box::new(std::io::stdout()));
+                    ir_writer = EmitMethod::stdout();
                 }
             }
             "--obj" => {

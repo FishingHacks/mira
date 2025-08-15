@@ -4,11 +4,19 @@
 cargo doc --no-deps -p clap
 cargo doc --open --no-deps \
  -p mira \
- -p mira-errors \
+ -p mira-driver \
  -p mira-error-codes \
+ -p mira-errors \
+ -p mira-lexer \
+ -p mira-macros \
+ -p mira-progress-bar \
+ -p mira-spans \
  -p parking_lot \
- -p thiserror \
  -p inkwell \
  -p termsize \
- -p crossbeam \
+ -p crossbeam-channel \
+ -p syn \
+ -p proc-macro2 \
+ -p quote \
  -p cfg-if
+

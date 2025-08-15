@@ -19,6 +19,7 @@ use inkwell::{
     context::Context,
     debug_info::AsDIScope,
     llvm_sys::LLVMCallConv,
+    memory_buffer::MemoryBuffer,
     module::{Linkage, Module},
     passes::PassBuilderOptions,
     support::LLVMString,
@@ -203,6 +204,20 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     pub fn run_passes(&self, passes: &str) -> Result<(), LLVMString> {
         self.module
             .run_passes(passes, &self.machine, PassBuilderOptions::create())
+    }
+
+    pub fn gen_bitcode(&self) -> MemoryBuffer {
+        self.module.write_bitcode_to_memory()
+    }
+
+    pub fn gen_ir(&self) -> LLVMString {
+        self.module.print_to_string()
+    }
+
+    pub fn gen_assembly(&self) -> Result<MemoryBuffer, CodegenError> {
+        self.machine
+            .write_to_memory_buffer(&self.module, FileType::Assembly)
+            .map_err(CodegenError::from)
     }
 
     pub fn write_bitcode(&self, writer: &mut dyn Write) -> std::io::Result<()> {

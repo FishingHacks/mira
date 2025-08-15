@@ -31,6 +31,33 @@ pub trait OutputWriter: Write + Any {}
 
 impl<T: Write + Any> OutputWriter for T {}
 
+use crate as mira_errors;
+
+#[derive(ErrorData)]
+#[error("couldn't write to stdout: {_0}")]
+#[no_arena_lifetime]
+pub struct StdoutWriteError(pub std::io::Error);
+
+#[derive(ErrorData)]
+#[error("couldn't write `{}`: {_1}", _0.display())]
+#[no_arena_lifetime]
+pub struct IoWriteError(pub std::path::PathBuf, pub std::io::Error);
+
+#[derive(ErrorData)]
+#[error("couldn't read `{}`: {_1}", _0.display())]
+#[no_arena_lifetime]
+pub struct IoReadError(pub std::path::PathBuf, pub std::io::Error);
+
+#[derive(ErrorData)]
+#[error("failed to get the working directory: {_0}")]
+#[no_arena_lifetime]
+pub struct CurrentDirError(pub std::io::Error);
+
+#[derive(ErrorData)]
+#[error("failed to open `{}`: {_1}", _0.display())]
+#[no_arena_lifetime]
+pub struct FileOpenError(pub std::path::PathBuf, pub std::io::Error);
+
 pub enum Output {
     Stdout,
     Stderr,
