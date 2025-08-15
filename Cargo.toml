@@ -30,3 +30,4 @@ termsize = "0.1.9"
 parking_lot.workspace = true
 mira.workspace = true
 clap.workspace = true
+llvm-sys = "*"

@@ -17,6 +17,7 @@ use std::error::Error;
 const MIRAC_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser, Debug)]
+#[command(arg_required_else_help(true))]
 struct Args {
     #[arg(short, long)]
     version: bool,

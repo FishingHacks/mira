@@ -286,6 +286,7 @@ name = "mirac"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "llvm-sys",
  "mira",
  "parking_lot",
 ]
