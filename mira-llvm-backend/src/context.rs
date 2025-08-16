@@ -284,7 +284,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     ) -> Result<Self, CodegenError> {
         let shared_ctx = ctx.ctx;
         LLVMTarget::initialize_all(&InitializationConfig::default());
-        let (triple, _) = config.target.to_llvm_triple();
+        let triple = TargetTriple::create(&config.target.to_llvm());
         let llvm_target = LLVMTarget::from_triple(&triple)?;
         let Some(machine) = llvm_target.create_target_machine(
             &triple,

@@ -3,8 +3,6 @@ use std::{
     str::FromStr,
 };
 
-use inkwell::targets::TargetTriple;
-
 pub use native_target::NATIVE_TARGET;
 
 macro_rules! str_enum {
@@ -197,11 +195,6 @@ impl Target {
 
     pub const fn new_simple(arch: Arch, os: Os) -> Self {
         Self::new(arch, os, Abi::None)
-    }
-
-    pub fn to_llvm_triple(&self) -> (TargetTriple, String) {
-        let v = self.to_llvm();
-        (TargetTriple::create(&v), v)
     }
 
     pub fn from_name(name: &str) -> Self {

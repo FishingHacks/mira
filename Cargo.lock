@@ -258,7 +258,6 @@ version = "0.2.1"
 dependencies = [
  "cfg-if",
  "crossbeam-channel",
- "inkwell",
  "mira-common",
  "mira-errors",
  "mira-lexer",

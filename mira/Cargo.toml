@@ -7,7 +7,6 @@ edition = "2024"
 
 [dependencies]
 parking_lot.workspace = true
-inkwell.workspace = true
 cfg-if.workspace = true
 mira-errors.workspace = true
 mira-macros.workspace = true
