@@ -9,17 +9,12 @@ use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_macros::ErrorData;
 use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData, Symbol, interner::SpanInterner};
 
-use crate::{
-    context::SharedContext,
-    parser::expand::{
-        MacroErrorDiagnosticsExt, MacroParser, MatcherLoc, ParseResult, builtin_macros,
-        compute_locs, pat_parser::parse_token_tree,
-    },
-    tokenstream::BorrowedTokenStream,
-};
+use crate::{context::SharedContext, tokenstream::BorrowedTokenStream};
 
 use super::{
-    ExpandContext, Macro, MacroError, NamedMatch, SingleMatch, TokenTree,
+    ExpandContext, Macro, MacroError, MacroErrorDiagnosticsExt, MacroParser, MatcherLoc,
+    NamedMatch, ParseResult, SingleMatch, TokenTree, builtin_macros, compute_locs,
+    pat_parser::parse_token_tree,
     pat_parser::{ParenType, match_paren},
 };
 

@@ -7,7 +7,7 @@ use crate::{error::ParsingError, module::Function, store::StoreKey, symbols};
 use mira_lexer::TokenType;
 use mira_spans::{Ident, Span, interner::Symbol};
 
-use super::{Annotations, Parser, Path, expression::PathWithoutGenerics};
+use super::{Parser, Path, expression::PathWithoutGenerics};
 
 pub static RESERVED_TYPE_NAMES: &[&str] = &[
     "str", "bool", "char", "void", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
@@ -416,17 +416,6 @@ impl PartialEq for TypeRef<'_> {
 }
 
 pub type Implementation<'arena> = HashMap<Symbol<'arena>, StoreKey<Function<'arena>>>;
-
-#[derive(Debug)]
-pub struct Struct<'arena> {
-    pub span: Span<'arena>,
-    pub name: Symbol<'arena>,
-    pub fields: Vec<(Symbol<'arena>, TypeRef<'arena>)>,
-    pub generics: Vec<Generic<'arena>>,
-    pub global_impl: Implementation<'arena>,
-    pub trait_impls: Vec<(Symbol<'arena>, Implementation<'arena>)>,
-    pub annotations: Annotations<'arena>,
-}
 
 #[derive(Debug, Clone)]
 pub struct Generic<'arena> {

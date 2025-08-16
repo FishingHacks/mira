@@ -17,7 +17,7 @@ pub use expression::{
 use mira_lexer::{Token, TokenType};
 use mira_spans::{BytePos, SourceFile, SpanData};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
-pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, Struct, TypeRef};
+pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, TypeRef};
 
 mod expand;
 mod expression;
