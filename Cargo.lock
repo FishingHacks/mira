@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "mira"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cfg-if",
  "crossbeam-channel",
@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "mira-driver"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "mira",
@@ -283,11 +283,11 @@ dependencies = [
 
 [[package]]
 name = "mira-error-codes"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "mira-errors"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mira-macros",
  "mira-spans",
@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "mira-lexer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mira-errors",
  "mira-spans",
@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "mira-llvm-backend"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "inkwell",
  "mira",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "mira-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -324,21 +324,21 @@ dependencies = [
 
 [[package]]
 name = "mira-progress-bar"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "termsize",
 ]
 
 [[package]]
 name = "mira-spans"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "parking_lot",
 ]
 
 [[package]]
 name = "mirac"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "mira",
