@@ -9,7 +9,7 @@ members = ["mira", "mira-driver", "mira-error-codes", "mira-errors", "mira-lexer
 [workspace.dependencies]
 mira = { path = "./mira" }
 mira-error-codes = { path = "./mira-error-codes" }
-mira-driver = { path = "./mira-driver" }
+mira-driver = { path = "./mira-driver", default-features = false }
 mira-errors = { path = "./mira-errors" }
 mira-lexer = { path = "./mira-lexer" }
 mira-macros = { path = "./mira-macros" }
@@ -35,7 +35,7 @@ llvm18-0 = ["mira-driver/llvm18-0"]
 [dependencies]
 parking_lot.workspace = true
 mira.workspace = true
-mira-driver.workspace = true
+mira-driver . workspace = true 
 clap.workspace = true
 mira-llvm-backend.workspace = true
 

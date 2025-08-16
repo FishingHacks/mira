@@ -4,7 +4,7 @@ version = "0.2.1"
 edition = "2024"
 
 [features]
-default = []
+default = ["llvm20-1"]
 llvm20-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm20-1"]
 llvm19-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm19-1"]
 llvm18-0 = ["mira-llvm-backend", "mira-llvm-backend/llvm18-0"]
