@@ -209,18 +209,6 @@ pub enum ParsingError<'arena> {
         loc: Span<'arena>,
         name: String,
     },
-    #[error("{} is not a valid module name", IdentDisplay(*_0))]
-    #[note("Filenames cannot contain '.', '\\0', '<', '>', ':', '\"', '/', '\\', '|', '?' or '*'.")]
-    InvalidFileNameErr(
-        Symbol<'arena>,
-        #[primary_label("this character is not allowed")] Span<'arena>,
-    ),
-    #[error("Could not find module {}", IdentDisplay(*_0))]
-    #[note("to create the module {1}, create file `{0}/{2}.mr` or `{0}/{3}/mod.mr`", _2.display(), IdentDisplay(*_0), _0.to_str().escape_debug(), _0.to_str().escape_debug())]
-    #[note(
-        "if there is a `mod {_0}` elsewhere in the package, import it with `use crate::...` instead", _0 = IdentDisplay(*_0)
-    )]
-    FileNotFoundErr(Symbol<'arena>, #[primary_label("")] Span<'arena>, PathBuf),
 }
 
 #[derive(Debug, ErrorData)]
@@ -245,6 +233,18 @@ pub enum ProgramFormingError<'arena> {
         #[primary_label("`{}` redefined here", IdentDisplay(*_1))] Span<'arena>,
         Symbol<'arena>,
     ),
+    #[error("{} is not a valid module name", IdentDisplay(*_0))]
+    #[note("Filenames cannot contain '.', '\\0', '<', '>', ':', '\"', '/', '\\', '|', '?' or '*'.")]
+    InvalidFileNameErr(
+        Symbol<'arena>,
+        #[primary_label("this character is not allowed")] Span<'arena>,
+    ),
+    #[error("Could not find module {}", IdentDisplay(*_0))]
+    #[note("to create the module {1}, create file `{0}/{2}.mr` or `{0}/{3}/mod.mr`", _2.display(), IdentDisplay(*_0), _0.to_str().escape_debug(), _0.to_str().escape_debug())]
+    #[note(
+        "if there is a `mod {_0}` elsewhere in the package, import it with `use crate::...` instead", _0 = IdentDisplay(*_0)
+    )]
+    FileNotFoundErr(Symbol<'arena>, #[primary_label("")] Span<'arena>, PathBuf),
 }
 
 pub struct FunctionList<'a>(pub &'a [Ty<'a>]);

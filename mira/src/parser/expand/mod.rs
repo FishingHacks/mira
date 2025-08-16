@@ -9,7 +9,6 @@ use mira_errors::Diagnostic;
 use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_macros::{Display, ErrorData};
 use mira_spans::{Ident, SourceFile, Span, Symbol};
-use parking_lot::RwLock;
 mod builtin_macros;
 mod macro_expander;
 mod pat_parser;
@@ -17,14 +16,10 @@ mod pat_parser;
 pub use macro_expander::expand_tokens;
 
 use crate::{
-    context::SharedContext,
-    error::ParsingError,
-    module::Module,
-    store::{Store, StoreKey},
-    tokenstream::BorrowedTokenStream,
+    context::SharedContext, error::ParsingError, store::StoreKey, tokenstream::BorrowedTokenStream,
 };
 
-use super::{Parser, ParserQueueEntry};
+use super::Parser;
 
 enum FullyMatchedParsers<'arena> {
     None,
@@ -112,22 +107,14 @@ macro_rules! parse_res {
     };
 }
 
-/// a context with dummy values, the shared context and the source file to construct a parser,
 struct ExpandContext<'arena> {
     ctx: SharedContext<'arena>,
     file: Arc<SourceFile>,
-    parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
-    modules: RwLock<Store<Module<'arena>>>,
 }
 
 impl<'arena> ExpandContext<'arena> {
     fn new(ctx: SharedContext<'arena>, file: Arc<SourceFile>) -> Self {
-        Self {
-            ctx,
-            file,
-            parser_queue: Arc::default(),
-            modules: RwLock::default(),
-        }
+        Self { ctx, file }
     }
 }
 
@@ -276,14 +263,7 @@ impl<'arena> MacroParser<'arena> {
         matcher: &[MatcherLoc<'arena>],
         ctx: &ExpandContext<'arena>,
     ) -> ParseResult<'arena> {
-        let mut parser = Parser::new(
-            ctx.ctx,
-            tokens,
-            ctx.parser_queue.clone(),
-            &ctx.modules,
-            ctx.file.clone(),
-            StoreKey::undefined(),
-        );
+        let mut parser = Parser::new(ctx.ctx, tokens, ctx.file.clone(), StoreKey::undefined());
 
         self.cur_pos.clear();
         self.cur_pos.push(MatcherPos {

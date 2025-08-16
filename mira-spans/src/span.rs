@@ -121,6 +121,22 @@ impl<'arena> Span<'arena> {
         }
     }
 
+    /// returns a span containing only the last character of this span.
+    pub fn last(self, interner: &SpanInterner<'arena>) -> Self {
+        let mut data = self.get_span_data();
+        data.pos += data.len - 1;
+        data.len = 1;
+        Span::new(data, interner)
+    }
+
+    /// returns a span immediately following this span of `len` characters.
+    pub fn after(self, len: u32, interner: &SpanInterner<'arena>) -> Self {
+        let mut data = self.get_span_data();
+        data.pos += data.len;
+        data.len = len;
+        Span::new(data, interner)
+    }
+
     pub fn combine_with(
         self,
         others: impl IntoIterator<Item = Span<'arena>>,

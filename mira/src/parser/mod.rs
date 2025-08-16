@@ -1,4 +1,3 @@
-use parking_lot::RwLock;
 use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
@@ -10,7 +9,7 @@ use crate::{
     context::SharedContext,
     error::ParsingError,
     module::{Import, Module},
-    store::{Store, StoreKey},
+    store::StoreKey,
     tokenstream::{BorrowedTokenStream, TokenStream},
 };
 pub use expand::expand_tokens;
@@ -18,34 +17,21 @@ pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
 use mira_lexer::{Token, TokenType};
-use mira_spans::{BytePos, FileId, Ident, PackageId, SourceFile, Span, SpanData};
+use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, Struct, TypeRef};
 
 mod expand;
 mod expression;
-pub mod module_resolution;
 mod statement;
 mod types;
-
-#[derive(Clone, Debug)]
-pub struct ParserQueueEntry<'arena> {
-    pub file: Arc<std::path::Path>,
-    pub loaded_file: Option<FileId>,
-    pub package: PackageId,
-    pub reserved_key: StoreKey<Module<'arena>>,
-}
 
 pub struct Parser<'a, 'arena> {
     pub ctx: SharedContext<'arena>,
     pub file: Arc<SourceFile>,
 
-    // pub tokens: Vec<Token<'arena>>,
     stream: BorrowedTokenStream<'arena, 'a>,
-    // pub current: usize,
     current_annotations: Annotations<'arena>,
-    pub parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
-    pub modules: &'a RwLock<Store<Module<'arena>>>,
     /// all imports
     pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
     pub key: StoreKey<Module<'arena>>,
@@ -57,7 +43,6 @@ impl std::fmt::Debug for Parser<'_, '_> {
             .field("file", &self.file.path)
             .field("root_directory", &self.file.package_root)
             .field("current_annotations", &self.current_annotations)
-            .field("modules", &self.parser_queue)
             .field("imports", &self.imports)
             .finish()
     }
@@ -67,28 +52,17 @@ impl<'a, 'arena> Parser<'a, 'arena> {
     pub fn from_tokens(
         ctx: SharedContext<'arena>,
         tokens: &'a [Token<'arena>],
-        parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
-        modules: &'a RwLock<Store<Module<'arena>>>,
         file: Arc<SourceFile>,
         key: StoreKey<Module<'arena>>,
     ) -> Self {
         let eof_span = ctx.intern_span(SpanData::new(BytePos::from_u32(file.len()), 1, file.id));
         let file = file.clone();
-        Parser::new(
-            ctx,
-            TokenStream::new(tokens, eof_span),
-            parser_queue,
-            modules,
-            file,
-            key,
-        )
+        Parser::new(ctx, TokenStream::new(tokens, eof_span), file, key)
     }
 
     pub fn new(
         ctx: SharedContext<'arena>,
         stream: BorrowedTokenStream<'arena, 'a>,
-        parser_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
-        modules: &'a RwLock<Store<Module<'arena>>>,
         file: Arc<SourceFile>,
         key: StoreKey<Module<'arena>>,
     ) -> Self {
@@ -98,8 +72,6 @@ impl<'a, 'arena> Parser<'a, 'arena> {
             // tokens,
             // current: 0,
             current_annotations: Default::default(),
-            parser_queue,
-            modules,
             file,
             key,
             imports: HashMap::new(),

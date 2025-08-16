@@ -1,8 +1,7 @@
+use super::ProgramFormingError;
 use std::{path::Path, sync::Arc};
 
-use mira_spans::{interner::SpanInterner, Ident, SourceFile, SourceMap, Span};
-
-use crate::error::ParsingError;
+use mira_spans::{Ident, SourceFile, SourceMap, Span, interner::SpanInterner};
 
 // if $current_file is the $package's root file or is called "mod.mr":
 //   -> if "${current_file.path.parent}/$name.mr" exists, return that
@@ -21,13 +20,13 @@ pub fn resolve_module<'arena>(
     source_map: &SourceMap,
     mod_span: Span<'arena>,
     semicolon_span: Span<'arena>,
-) -> Result<Arc<Path>, ParsingError<'arena>> {
+) -> Result<Arc<Path>, ProgramFormingError<'arena>> {
     if let Some(c) = is_valid_filename(&name) {
         let mut data = name.span().get_span_data();
         data.len = 1;
         data.pos += c as u32;
         let pos = Span::new(data, span_interner);
-        return Err(ParsingError::InvalidFileNameErr(name.symbol(), pos));
+        return Err(ProgramFormingError::InvalidFileNameErr(name.symbol(), pos));
     }
     let package = source_map.get_package(current_file.package);
     let mut searchdir = current_file
@@ -64,7 +63,7 @@ pub fn resolve_module<'arena>(
     searchdir.pop();
     searchdir.pop();
     let span = mod_span.combine_with([semicolon_span, name.span()], span_interner);
-    Err(ParsingError::FileNotFoundErr(
+    Err(ProgramFormingError::FileNotFoundErr(
         name.symbol(),
         span,
         searchdir,

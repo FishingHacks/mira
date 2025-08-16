@@ -15,7 +15,9 @@ use crate::{
     },
     store::{Store, StoreKey},
 };
-use mira_spans::{Ident, PackageId, SourceFile, Span};
+use mira_spans::{FileId, Ident, PackageId, SourceFile, Span};
+
+mod module_resolution;
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum ModuleScopeValue<'arena> {
@@ -126,6 +128,14 @@ impl Debug for Module<'_> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ParserQueueEntry<'arena> {
+    pub file: Arc<std::path::Path>,
+    pub loaded_file: Option<FileId>,
+    pub package: PackageId,
+    pub module_key: StoreKey<Module<'arena>>,
+}
+
 impl<'arena> Module<'arena> {
     pub fn new(
         imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
@@ -162,10 +172,14 @@ impl<'arena> Module<'arena> {
         statements: Vec<Statement<'arena>>,
         module_id: StoreKey<Module<'arena>>,
         context: &ModuleContext<'arena>,
+        parser_queue: &RwLock<Vec<ParserQueueEntry<'arena>>>,
+        modules: &RwLock<Store<Module<'arena>>>,
     ) -> Result<(), Vec<ProgramFormingError<'arena>>> {
         let errors = statements
             .into_iter()
-            .map(|statement| self.push_statement(statement, module_id, context))
+            .map(|statement| {
+                self.push_statement(statement, module_id, context, parser_queue, modules)
+            })
             .filter_map(|el| el.err())
             .collect::<Vec<_>>();
 
@@ -191,6 +205,8 @@ impl<'arena> Module<'arena> {
         statement: Statement<'arena>,
         module_id: StoreKey<Module<'arena>>,
         context: &ModuleContext<'arena>,
+        parser_queue: &RwLock<Vec<ParserQueueEntry<'arena>>>,
+        modules: &RwLock<Store<Module<'arena>>>,
     ) -> Result<(), ProgramFormingError<'arena>> {
         match statement {
             Statement::Function {
@@ -338,7 +354,32 @@ impl<'arena> Module<'arena> {
                 public,
                 ..
             } => self.maybe_add_export(public, alias.unwrap_or(*path.entries.last().unwrap())),
-            Statement::Mod { public, name, .. } => self.maybe_add_export(public, name),
+            Statement::Mod { public, name, span } => {
+                if self.is_defined(&name) {
+                    return Err(ProgramFormingError::IdentAlreadyDefined(
+                        span,
+                        name.symbol(),
+                    ));
+                }
+                let file = module_resolution::resolve_module(
+                    context.ctx.span_interner(),
+                    name,
+                    &self.file,
+                    context.ctx.source_map(),
+                    span,
+                    span.last(context.ctx.span_interner()),
+                )?;
+                let module_key = modules.write().reserve_key();
+                parser_queue.write().push(ParserQueueEntry {
+                    file,
+                    package: self.file.package,
+                    module_key,
+                    loaded_file: None,
+                });
+                self.scope
+                    .insert(name, ModuleScopeValue::Module(module_key));
+                self.maybe_add_export(public, name);
+            }
             _ => {
                 return Err(ProgramFormingError::NoCodeOutsideOfFunctions(
                     statement.span(),

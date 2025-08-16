@@ -8,8 +8,8 @@ use parking_lot::RwLock;
 use mira::{
     context::SharedContext,
     error::{ParsingError, ProgramFormingError},
-    module::{Module, ModuleContext},
-    parser::{Parser, ParserQueueEntry},
+    module::{Module, ModuleContext, ParserQueueEntry},
+    parser::Parser,
     store::{Store, StoreKey},
     threadpool::ThreadPool,
 };
@@ -72,14 +72,7 @@ fn parse_single<'arena>(
     // ┌─────────┐
     // │ Parsing │
     // └─────────┘
-    let mut current_parser = Parser::from_tokens(
-        module_context.ctx,
-        &tokens,
-        parsing_queue.clone(),
-        &module_context.modules,
-        file.clone(),
-        key,
-    );
+    let mut current_parser = Parser::from_tokens(module_context.ctx, &tokens, file.clone(), key);
 
     let (statements, parsing_errors) = current_parser.parse_all();
     errors
@@ -97,7 +90,13 @@ fn parse_single<'arena>(
 
     let mut module = Module::new(current_parser.imports, current_parser.file);
     _ = current_parser;
-    if let Err(errs) = module.push_all(statements, key, &module_context) {
+    if let Err(errs) = module.push_all(
+        statements,
+        key,
+        &module_context,
+        &parsing_queue,
+        &module_context.modules,
+    ) {
         errors
             .write()
             .extend(errs.into_iter().map(ProgramFormingError::to_error));
@@ -132,7 +131,7 @@ pub fn parse_all<'arena>(
             ParserQueueEntry {
                 file: file.path.clone(),
                 package: p.id,
-                reserved_key: module_store.reserve_key(),
+                module_key: module_store.reserve_key(),
                 loaded_file: Some(p.root_file),
             }
         })
@@ -140,7 +139,7 @@ pub fn parse_all<'arena>(
     drop(files);
     let packages = parsing_queue
         .iter()
-        .map(|e| (e.package, e.reserved_key))
+        .map(|e| (e.package, e.module_key))
         .collect();
     let module_context = Arc::new(ModuleContext::new(packages, module_store, ctx));
     let parsing_queue = Arc::new(RwLock::new(parsing_queue));
@@ -156,7 +155,7 @@ pub fn parse_all<'arena>(
                 break;
             }
             let entry = parsing_queue.write().remove(0);
-            let key = entry.reserved_key;
+            let key = entry.module_key;
             let file = entry.file;
             let package = entry.package;
 

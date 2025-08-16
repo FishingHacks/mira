@@ -6,18 +6,14 @@ use std::{
 use crate::{
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
-    module::{
-        BakedStruct, ExternalFunction, Function, Import, Module, ModuleContext, ModuleScopeValue,
-        Static,
-    },
-    parser::ParserQueueEntry,
+    module::{BakedStruct, ExternalFunction, Function, Import, Module, ModuleContext, Static},
     store::StoreKey,
     symbols,
 };
 use mira_lexer::{Token, TokenType};
 
 use super::{
-    Expression, Parser, PathWithoutGenerics, module_resolution,
+    Expression, Parser, PathWithoutGenerics,
     types::{Generic, TypeRef},
 };
 use mira_spans::{Ident, Span, SpanData};
@@ -700,27 +696,7 @@ impl<'arena> Parser<'_, 'arena> {
         let name = self.expect_identifier()?;
         let semicolon_span = self.expect(TokenType::Semicolon)?.span;
 
-        let file = module_resolution::resolve_module(
-            self.ctx.span_interner(),
-            name,
-            &self.file,
-            self.ctx.source_map(),
-            span,
-            semicolon_span,
-        )?;
-        let reserved_key = self.modules.write().reserve_key();
-        self.parser_queue.write().push(ParserQueueEntry {
-            file,
-            package: self.file.package,
-            reserved_key,
-            loaded_file: None,
-        });
         let span = span.combine_with([semicolon_span, name.span()], self.ctx.span_interner());
-        self.add_import(
-            name,
-            span,
-            Import::Resolved(ModuleScopeValue::Module(reserved_key)),
-        )?;
         Ok(Statement::Mod { span, name, public })
     }
 
