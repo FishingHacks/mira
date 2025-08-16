@@ -1,124 +1,37 @@
 use std::{
     error::Error,
-    ffi::OsString,
-    fmt::Debug,
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use clap::{Args, ValueEnum};
+use mira_argparse::{CompileArgs, OptimizationMode, PathOrStdout};
 use mira_driver::{
     run_full_compilation_pipeline, Arena, EmitMethod, FullCompilationOptions, LibraryTree, Output,
     UnicodePrinter,
 };
 use mira_llvm_backend::CodegenConfig;
-use mira_target::{Target, NATIVE_TARGET};
+use mira_target::Target;
 use mira_typeck::GlobalContext;
 
 use crate::libfinder;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-#[value(rename_all = "PascalCase")]
-enum OptimizationMode {
-    Debugger,
-    Debug,
-    ReleaseSafe,
-    ReleaseFast,
-    ReleaseSmall,
-    ReleaseTiny,
-}
-
-impl OptimizationMode {
-    pub fn to_codegen_ops(self, target: Target, cpu_features: Option<&str>) -> CodegenConfig {
-        match self {
-            OptimizationMode::Debugger => CodegenConfig::new_debug_unoptimized(),
-            OptimizationMode::Debug => CodegenConfig::new_debug(),
-            OptimizationMode::ReleaseSafe => CodegenConfig::new_release_safe(),
-            OptimizationMode::ReleaseFast => CodegenConfig::new_release_fast(),
-            OptimizationMode::ReleaseSmall => CodegenConfig::new_release_small(),
-            OptimizationMode::ReleaseTiny => CodegenConfig::new_release_tiny(),
-        }
-        .cpu_features(cpu_features.unwrap_or(""))
-        .target(target)
+pub fn opt_mode_to_codegen_cfg(
+    mode: OptimizationMode,
+    target: Target,
+    cpu_features: Option<&str>,
+) -> CodegenConfig {
+    match mode {
+        OptimizationMode::Debugger => CodegenConfig::new_debug_unoptimized(),
+        OptimizationMode::Debug => CodegenConfig::new_debug(),
+        OptimizationMode::ReleaseSafe => CodegenConfig::new_release_safe(),
+        OptimizationMode::ReleaseFast => CodegenConfig::new_release_fast(),
+        OptimizationMode::ReleaseSmall => CodegenConfig::new_release_small(),
+        OptimizationMode::ReleaseTiny => CodegenConfig::new_release_tiny(),
     }
-}
-
-impl std::fmt::Display for OptimizationMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
-    }
-}
-
-//┌─┐└┘│├┬┴┼┤
-// ┌┬┐ ┌─┐
-// ├┼┤ │ │
-// └┴┘ └─┘
-//
-//┌──────────────┬───────────┬────────────────┐
-//│ Name         │ Opt level │ Runtime Checks │
-//├──────────────┼───────────┼────────────────┤
-//│ Debugger     │    -O0    │      true      │
-//│ Debug        │    -O2    │      true      │
-//│ ReleaseSafe  │    -O3    │      true      │
-//│ ReleaseFast  │    -O3    │      false     │
-//│ ReleaseSmall │    -Os    │      false     │
-//│ ReleaseTiny  │    -Oz    │      false     │
-//└──────────────┴───────────┴────────────────┘
-//┌──────────────┬───────────┬────────────────┐
-//│ Name         │ Opt level │ Runtime Checks │
-//┝━━━━━━━━━━━━━━┿━━━━━━━━━━━┿━━━━━━━━━━━━━━━━┥
-//│ Debugger     │    -O0    │      true      │
-//│ Debug        │    -O2    │      true      │
-//│ ReleaseSafe  │    -O3    │      true      │
-//│ ReleaseFast  │    -O3    │      false     │
-//│ ReleaseSmall │    -Os    │      false     │
-//│ ReleaseTiny  │    -Oz    │      false     │
-//└──────────────┴───────────┴────────────────┘
-//┌──────────────┬───────────┬────────────────┐
-//│ Name         │ Opt level │ Runtime Checks │
-//╞══════════════╪═══════════╪════════════════╡
-//│ Debugger     │    -O0    │      true      │
-//│ Debug        │    -O2    │      true      │
-//│ ReleaseSafe  │    -O3    │      true      │
-//│ ReleaseFast  │    -O3    │      false     │
-//│ ReleaseSmall │    -Os    │      false     │
-//│ ReleaseTiny  │    -Oz    │      false     │
-//└──────────────┴───────────┴────────────────┘
-
-/*
-`EmitMethod: Debug`
-`EmitMethod: Clone`
-`EmitMethod: ValueEnum`
-which is required by `&&&&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_ValueEnum`
-`EmitMethod: ValueParserFactory`
-which is required by `&&&&&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_ValueParserFactory`
-`EmitMethod: From<OsString>`
-which is required by `&&&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_From_OsString`
-`EmitMethod: From<&'s std::ffi::OsStr>`
-which is required by `&&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_From_OsStr`
-`EmitMethod: From<std::string::String>`
-which is required by `&&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_From_String`
-`EmitMethod: From<&'s str>`
-which is required by `&_infer_ValueParser_for<EmitMethod>: clap::builder::impl_prelude::_impls_From_str`
-`EmitMethod: FromStr`
-*/
-
-#[derive(Clone, Debug)]
-pub(super) enum PathOrStdout {
-    Stdout,
-    Path(Box<Path>),
-}
-
-impl From<OsString> for PathOrStdout {
-    fn from(value: OsString) -> Self {
-        if value == "-" {
-            Self::Stdout
-        } else {
-            Self::Path(PathBuf::from(value).into_boxed_path())
-        }
-    }
+    .cpu_features(cpu_features.unwrap_or(""))
+    .target(target)
 }
 
 pub(super) fn to_emit(value: Option<PathOrStdout>) -> EmitMethod {
@@ -127,67 +40,6 @@ pub(super) fn to_emit(value: Option<PathOrStdout>) -> EmitMethod {
         Some(PathOrStdout::Path(p)) => EmitMethod::file(p),
         None => EmitMethod::None,
     }
-}
-
-#[derive(Debug, Args)]
-pub struct CompileArgs {
-    /// The target to compile to
-    #[arg(short, long, default_value_t = NATIVE_TARGET)]
-    target: Target,
-    /// File to emit the ir to (or specify `-` for stdout)
-    #[arg(long)]
-    emit_ir: Option<PathOrStdout>,
-    /// File to emit the llvm ir to (or specify `-` for stdout)
-    #[arg(long)]
-    emit_llvm_ir: Option<PathOrStdout>,
-    /// File to emit the llvm bitcode to (or specify `-` for stdout)
-    #[arg(long)]
-    emit_llvm_bc: Option<PathOrStdout>,
-    /// File to emit the assembly to (or specify `-` for stdout)
-    #[arg(long)]
-    emit_asm: Option<PathOrStdout>,
-    /// The file to emit the object (.o) file to
-    #[arg(long)]
-    emit_obj: Option<PathBuf>,
-    /// The path to the linker script used by the linker
-    #[arg(long, short = 'l')]
-    linker_script: Option<PathBuf>,
-    /// The Optimization level of the compilation.
-    ///
-    /// ┌──────────────┬───────────┬────────────────┐
-    /// │ Name         │ Opt level │ Runtime Checks │
-    /// ┝━━━━━━━━━━━━━━┿━━━━━━━━━━━┿━━━━━━━━━━━━━━━━┥
-    /// │ Debugger     │    -O0    │      true      │
-    /// │ Debug        │    -O2    │      true      │
-    /// │ ReleaseSafe  │    -O3    │      true      │
-    /// │ ReleaseFast  │    -O3    │      false     │
-    /// │ ReleaseSmall │    -Os    │      false     │
-    /// │ ReleaseTiny  │    -Oz    │      false     │
-    /// └──────────────┴───────────┴────────────────┘
-    #[arg(long, short = 'o', default_value_t = OptimizationMode::ReleaseSafe, verbatim_doc_comment)]
-    opt: OptimizationMode,
-    /// A String representing the cpu features you want to enable
-    #[arg(long)]
-    cpu_features: Option<String>,
-    /// Additional arguments to pass to the linker
-    #[arg(long, short = 'L')]
-    linker_args: Vec<String>,
-    /// Prints out a lot of info about the compilation
-    #[arg(long)]
-    verbose: bool,
-    #[arg(long, short)]
-    run: bool,
-    /// Specify this flag if you don't want mirac to append the appropriate extension to your
-    /// binary file
-    #[arg(long)]
-    without_extension: bool,
-    /// Specify if you want to generate a shared file (.dll / .so / .dylib)
-    #[arg(long, short)]
-    shared: bool,
-    /// The mira file to compile
-    src: PathBuf,
-    /// The output file. Don't specify if you don't want to get a binary
-    out_file: Option<PathBuf>,
 }
 
 pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
@@ -217,10 +69,11 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
     libtree.main_library(mainlib);
     let mut opts = FullCompilationOptions::new(libtree);
     opts.set_target(args.target)
-        .set_codegen_opts(
-            args.opt
-                .to_codegen_ops(args.target, args.cpu_features.as_deref()),
-        )
+        .set_codegen_opts(opt_mode_to_codegen_cfg(
+            args.opt,
+            args.target,
+            args.cpu_features.as_deref(),
+        ))
         .set_linker_script(args.linker_script.as_deref())
         .set_verbose_printing(args.verbose)
         .shared_object(args.shared)

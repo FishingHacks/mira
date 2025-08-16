@@ -253,6 +253,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mira-argparse"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "mira-target",
+]
+
+[[package]]
 name = "mira-common"
 version = "0.1.0"
 dependencies = [
@@ -381,7 +389,7 @@ dependencies = [
 name = "mirac"
 version = "0.2.1"
 dependencies = [
- "clap",
+ "mira-argparse",
  "mira-driver",
  "mira-llvm-backend",
  "mira-target",

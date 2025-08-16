@@ -2,13 +2,8 @@ mod commands;
 mod editor;
 mod libfinder;
 mod repl;
-use clap::{CommandFactory, Parser, Subcommand};
-use commands::{
-    about::print_about,
-    compile::{compile_main, CompileArgs},
-    expand::{expand_main, ExpandArgs},
-    repl::{repl_main, ReplArgs},
-};
+use commands::{about::print_about, compile::compile_main, expand::expand_main, repl::repl_main};
+use mira_argparse::{parse_args, print_help, Action};
 use mira_target::{Target, NATIVE_TARGET};
 use std::error::Error;
 
@@ -22,42 +17,14 @@ const COMMIT: Option<&str> = option_env!("MIRAC_COMMIT_HASH");
 const COMMIT_SHORT: Option<&str> = option_env!("MIRAC_COMMIT_HASH_SHORT");
 const COMMIT_DATE: Option<&str> = option_env!("MIRAC_COMMIT_DATE");
 
-#[derive(Parser, Debug)]
-#[command(arg_required_else_help(true))]
-struct Args {
-    #[arg(short, long)]
-    version: bool,
-    #[arg(long)]
-    about: bool,
-    #[command(subcommand)]
-    cmd: Option<Action>,
-}
-
-#[derive(Subcommand, Debug)]
-#[allow(clippy::large_enum_variant)]
-enum Action {
-    /// Prints the current mira and mirac version
-    Version,
-    /// Displays some information about mira and mirac
-    About,
-    /// Compile a mira program
-    Compile(CompileArgs),
-    /// Print supported targets
-    Targets,
-    /// Launches a repl to edit, compile and run your code in.
-    Repl(ReplArgs),
-    /// Print out all the tokens after running macro expansion on a file
-    Expand(ExpandArgs),
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
-    let args = Args::parse();
+    let args = parse_args();
     if args.about || args.version {
         print_about();
         return Ok(());
     }
     let Some(action) = args.cmd else {
-        <Args as CommandFactory>::command().print_help()?;
+        print_help()?;
         return Ok(());
     };
     match action {

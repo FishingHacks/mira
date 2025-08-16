@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
 };
 
-use clap::{Args, ValueEnum};
+use mira_argparse::{EditorMode, ReplArgs};
 use mira_driver::{
     run_full_compilation_pipeline, Arena, EmitMethod, FullCompilationOptions, LibraryTree, Output,
     UnicodePrinter,
@@ -22,21 +22,6 @@ use mira_target::{Target, NATIVE_TARGET};
 use mira_typeck::GlobalContext;
 
 use super::about::print_about;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum EditorMode {
-    Cli,
-    Editor,
-}
-
-#[derive(Debug, Args)]
-pub struct ReplArgs {
-    #[arg(value_enum, short = 'm', long = "mode")]
-    /// The mode to start the repl in, editor causes your favorite cli-based editor to open.
-    mode: Option<EditorMode>,
-    /// Specify the file to load, if any
-    file: Option<PathBuf>,
-}
 
 pub fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
     let Some(libmirastd) = libfinder::find_library("mirastd") else {
