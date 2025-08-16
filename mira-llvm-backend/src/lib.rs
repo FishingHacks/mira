@@ -723,7 +723,7 @@ fn build_deref<'ctx, 'arena>(
                         "",
                     )
                 }?;
-                let element_val = build_deref(offset_val, ty, ctx, volatile)?;
+                let element_val = build_deref(offset_val, *typ, ctx, volatile)?;
                 value = ctx
                     .build_insert_value(value, element_val, i as u32, "")?
                     .into_array_value();
