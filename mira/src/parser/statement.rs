@@ -41,6 +41,7 @@ pub struct Trait<'arena> {
     pub span: Span<'arena>,
     pub annotations: Annotations<'arena>,
     pub module: StoreKey<Module<'arena>>,
+    pub public: bool,
 }
 
 impl Display for Trait<'_> {
@@ -75,6 +76,15 @@ impl Display for Trait<'_> {
 }
 
 #[derive(Clone, Debug)]
+pub struct Variable<'arena> {
+    pub name: Ident<'arena>,
+    pub value: Expression<'arena>,
+    pub ty: Option<TypeRef<'arena>>,
+    pub span: Span<'arena>,
+    pub annotations: Annotations<'arena>,
+}
+
+#[derive(Clone, Debug)]
 pub enum Statement<'arena> {
     If {
         condition: Expression<'arena>,
@@ -98,24 +108,20 @@ pub enum Statement<'arena> {
     },
     Return(Option<Expression<'arena>>, Span<'arena>),
     Block(Box<[Statement<'arena>]>, Span<'arena>, Annotations<'arena>),
-    Var(
-        Ident<'arena>,
-        Expression<'arena>,
-        Option<TypeRef<'arena>>,
-        Span<'arena>,
-        Annotations<'arena>,
-    ),
+    Var(Variable<'arena>),
     Expression(Expression<'arena>),
-    Function(
-        FunctionContract<'arena>,
-        Box<Statement<'arena>>,
-        Span<'arena>,
-    ),
-    ExternalFunction(
-        FunctionContract<'arena>,
-        Option<Box<Statement<'arena>>>,
-        Span<'arena>,
-    ),
+    Function {
+        contract: FunctionContract<'arena>,
+        body: Box<Statement<'arena>>,
+        span: Span<'arena>,
+        public: bool,
+    },
+    ExternalFunction {
+        contract: FunctionContract<'arena>,
+        body: Option<Box<Statement<'arena>>>,
+        span: Span<'arena>,
+        public: bool,
+    },
     Struct {
         name: Ident<'arena>,
         elements: Vec<(Ident<'arena>, TypeRef<'arena>)>,
@@ -129,11 +135,14 @@ pub enum Statement<'arena> {
         )>,
         generics: Vec<Generic<'arena>>,
         annotations: Annotations<'arena>,
+        public: bool,
     },
     Trait(Trait<'arena>),
-    /// key (the name of the thing in the module), export key (the name during import), location
-    Export(Ident<'arena>, Ident<'arena>, Span<'arena>),
     ModuleAsm(Span<'arena>, String),
+    Static {
+        var: Variable<'arena>,
+        public: bool,
+    },
 
     Use {
         span: Span<'arena>,
@@ -158,16 +167,16 @@ impl<'arena> Statement<'arena> {
     pub fn span(&self) -> Span<'arena> {
         match self {
             Self::Expression(expr) => expr.span(),
-            Self::ExternalFunction(.., span)
-            | Self::Function(.., span)
-            | Self::Export(_, _, span)
+            Self::Static { var, .. } => var.span,
+            Self::ExternalFunction { span, .. }
+            | Self::Function { span, .. }
             | Self::Block(_, span, _)
             | Self::ModuleAsm(span, _)
             | Self::For { span, .. }
             | Self::If { span, .. }
             | Self::Return(_, span)
             | Self::Struct { span, .. }
-            | Self::Var(_, _, _, span, _)
+            | Self::Var(Variable { span, .. })
             | Self::BakedFunction(_, span)
             | Self::BakedExternalFunction(_, span)
             | Self::BakedStruct(_, span)
@@ -193,20 +202,20 @@ impl<'arena> Statement<'arena> {
             | Self::BakedStatic(..)
             | Self::BakedStruct(..)
             | Self::Return(None, ..)
-            | Self::Export(..)
             | Self::ModuleAsm(..)
             | Self::Trait { .. } => (),
-            Self::ExternalFunction(..) => {
+            Self::ExternalFunction { .. } => {
                 unreachable!("external function in a non-top-level scope")
             }
             Self::Use { .. } => unreachable!("use in a non-top-level scope"),
             Self::Mod { .. } => unreachable!("mod in a non-top-level scope"),
             Self::Struct { .. } => unreachable!("struct in a non-top-level scope"),
-            Self::Function(..) => unreachable!("function in a non-top-level scope"),
+            Self::Function { .. } => unreachable!("function in a non-top-level scope"),
             Self::Block(statements, ..) => statements
                 .iter_mut()
                 .for_each(|stmt| stmt.bake_functions(module, module_key, context)),
-            Self::Var(_, stmt, ..) => stmt.bake_functions(module, module_key, context),
+            Self::Var(Variable { value, .. }) => value.bake_functions(module, module_key, context),
+            Self::Static { var, .. } => var.value.bake_functions(module, module_key, context),
             Self::Expression(expr) => expr.bake_functions(module, module_key, context),
             Self::For {
                 iterator, child, ..
@@ -249,11 +258,29 @@ impl Display for Statement<'_> {
             Self::BakedTrait(id, _) => f.write_fmt(format_args!("(module-trait {id})")),
 
             Self::Trait(r#trait) => Display::fmt(&r#trait, f),
-            Self::Var(left_hand, right_hand, None, ..) => {
-                f.write_fmt(format_args!("(var-assign {left_hand} {right_hand})"))
-            }
-            Self::Var(left_hand, right_hand, Some(typ), ..) => {
-                f.write_fmt(format_args!("(var-assign {left_hand} {typ} {right_hand})"))
+            Self::Var(Variable {
+                name,
+                value,
+                ty: None,
+                ..
+            }) => f.write_fmt(format_args!("(var-assign {name} {value})")),
+            Self::Var(Variable {
+                name,
+                value,
+                ty: Some(ty),
+                ..
+            }) => f.write_fmt(format_args!("(var-assign {name} {ty} {value})")),
+            Self::Static { var, public, .. } => {
+                f.write_char('(')?;
+                if *public {
+                    f.write_str("pub ")?;
+                }
+                f.write_fmt(format_args!("static {} ", var.name))?;
+                match &var.ty {
+                    Some(v) => Display::fmt(v, f)?,
+                    None => f.write_str("missing-ty")?,
+                }
+                f.write_fmt(format_args!(" {})", var.value))
             }
             Self::Block(stmts, _, annotations) => {
                 Display::fmt(annotations, f)?;
@@ -346,29 +373,38 @@ impl Display for Statement<'_> {
 
                 f.write_str("}")
             }
-            Self::Function(contract, body, _) => {
+            Self::Function {
+                contract,
+                body,
+                public,
+                ..
+            } => {
+                f.write_str(public.then_some("pub ").unwrap_or_default())?;
                 display_contract(f, contract, false)?;
                 f.write_char(' ')?;
                 Display::fmt(body, f)?;
                 f.write_char(')')
             }
-            Self::ExternalFunction(contract, None, _) => {
+            Self::ExternalFunction {
+                contract,
+                body: None,
+                public,
+                ..
+            } => {
+                f.write_str(public.then_some("pub ").unwrap_or_default())?;
                 display_contract(f, contract, true)?;
                 f.write_char(')')
             }
-            Self::ExternalFunction(contract, Some(body), _) => {
+            Self::ExternalFunction {
+                contract,
+                body: Some(body),
+                public,
+                ..
+            } => {
+                f.write_str(public.then_some("pub ").unwrap_or_default())?;
                 display_contract(f, contract, true)?;
                 f.write_char(' ')?;
                 Display::fmt(body, f)?;
-                f.write_char(')')
-            }
-            Self::Export(name, exported_name, _) => {
-                f.write_str("(export ")?;
-                Display::fmt(name, f)?;
-                if name != exported_name {
-                    f.write_str(" as ")?;
-                    Display::fmt(exported_name, f)?;
-                }
                 f.write_char(')')
             }
             Self::ModuleAsm(_, asm) => {
@@ -542,7 +578,6 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Struct if !is_global => invalid_kw!("struct definition"),
             TokenType::Use if !is_global => invalid_kw!("use"),
             TokenType::Mod if !is_global => invalid_kw!("mod"),
-            TokenType::Export if !is_global => invalid_kw!("export"),
             TokenType::Trait if !is_global => invalid_kw!("trait"),
             TokenType::Pub if !is_global => invalid_kw!("pub"),
 
@@ -563,11 +598,17 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Struct => self.parse_struct().map(Some),
             TokenType::Fn => self
                 .parse_callable(false)
-                .and_then(|(contract, body, span)| {
-                    contract
+                .and_then(|(callable, body)| {
+                    callable
+                        .contract
                         .annotations
                         .are_annotations_valid_for(AnnotationReceiver::Function)?;
-                    Ok(Statement::Function(contract, Box::new(body), span))
+                    Ok(Statement::Function {
+                        contract: callable.contract,
+                        body: Box::new(body),
+                        span: callable.span,
+                        public: callable.public,
+                    })
                 })
                 .map(Some),
             TokenType::AnnotationIntroducer => {
@@ -580,7 +621,6 @@ impl<'arena> Parser<'_, 'arena> {
             }
             TokenType::Use => self.parse_use(false).map(Some),
             TokenType::Mod => self.parse_mod(false).map(Some),
-            TokenType::Export => self.parse_export().map(Some),
             TokenType::Pub => self.parse_pub().map(Some),
             _ if is_global => {
                 return Err(ParsingError::ExpressionAtTopLevel(self.peek().span));
@@ -600,41 +640,31 @@ impl<'arena> Parser<'_, 'arena> {
 
     fn parse_pub(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
         self.dismiss();
-        let stmt = match self.peek().typ {
-            TokenType::Fn => self
-                .parse_callable(false)
-                .and_then(|(contract, body, span)| {
-                    contract
-                        .annotations
-                        .are_annotations_valid_for(AnnotationReceiver::Function)?;
-                    Ok(Statement::Function(contract, Box::new(body), span))
-                })?,
-
-            TokenType::Let => self.parse_let_stmt(true)?,
-            TokenType::Struct => self.parse_struct()?,
-            TokenType::Extern => self.parse_external()?,
-            TokenType::Trait => self.parse_trait()?,
-            TokenType::Use => return self.parse_use(true),
-            TokenType::Mod => return self.parse_mod(true),
-            _ => {
-                return Err(ParsingError::ExpectedElementForPub {
-                    loc: self.peek().span,
-                    tok: self.peek(),
-                });
-            }
-        };
-        let ident = match &stmt {
-            Statement::Function(c, ..) | Statement::ExternalFunction(c, ..) => {
-                c.name.expect("global functions should always have a name")
-            }
-            Statement::Trait(Trait { name, .. })
-            | Statement::Var(name, ..)
-            | Statement::Struct { name, .. } => *name,
-            _ => unreachable!(),
-        };
-        self.add_export(ident)?;
-
-        Ok(stmt)
+        match self.peek().typ {
+            TokenType::Fn => self.parse_callable(false).and_then(|(callable, body)| {
+                assert!(callable.public);
+                callable
+                    .contract
+                    .annotations
+                    .are_annotations_valid_for(AnnotationReceiver::Function)?;
+                Ok(Statement::Function {
+                    contract: callable.contract,
+                    body: Box::new(body),
+                    span: callable.span,
+                    public: true,
+                })
+            }),
+            TokenType::Let => self.parse_let_stmt(true),
+            TokenType::Struct => self.parse_struct(),
+            TokenType::Extern => self.parse_external(),
+            TokenType::Trait => self.parse_trait(),
+            TokenType::Use => self.parse_use(true),
+            TokenType::Mod => self.parse_mod(true),
+            _ => Err(ParsingError::ExpectedElementForPub {
+                loc: self.peek().span,
+                tok: self.peek(),
+            }),
+        }
     }
 
     pub fn join_spans(&self, left: Span<'arena>, right: Span<'arena>) -> Span<'arena> {
@@ -665,18 +695,6 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(Statement::ModuleAsm(self.span_from(span), strn))
     }
 
-    fn parse_export(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let span = self.eat().span;
-        let name = self.expect_identifier()?;
-        let exported_name = if self.match_tok(TokenType::As) {
-            self.expect_identifier()?
-        } else {
-            name
-        };
-        self.consume_semicolon()?;
-        Ok(Statement::Export(name, exported_name, self.span_from(span)))
-    }
-
     fn parse_mod(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let span = self.eat().span;
         let name = self.expect_identifier()?;
@@ -697,9 +715,6 @@ impl<'arena> Parser<'_, 'arena> {
             reserved_key,
             loaded_file: None,
         });
-        if public {
-            self.add_export(name)?
-        }
         let span = span.combine_with([semicolon_span, name.span()], self.ctx.span_interner());
         self.add_import(
             name,
@@ -718,9 +733,6 @@ impl<'arena> Parser<'_, 'arena> {
                 .span
                 .combine_with([span], self.ctx.span_interner());
             let alias = path.entries[path.entries.len() - 1];
-            if public {
-                self.add_export(alias)?;
-            }
             self.add_import(alias, span, Import::Unresolved(path.clone()))?;
             return Ok(Statement::Use {
                 span,
@@ -735,9 +747,6 @@ impl<'arena> Parser<'_, 'arena> {
             .expect(TokenType::Semicolon)?
             .span
             .combine_with([span], self.ctx.span_interner());
-        if public {
-            self.add_export(alias)?;
-        }
         self.add_import(alias, span, Import::Unresolved(path.clone()))?;
         Ok(Statement::Use {
             alias: Some(alias),
@@ -805,7 +814,13 @@ impl<'arena> Parser<'_, 'arena> {
     }
 
     fn parse_trait(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let span = self.eat().span; // skip `trait`
+        let public = self.current().typ == TokenType::Pub;
+        let span = if public {
+            self.current().span
+        } else {
+            self.peek().span
+        };
+        self.expect(TokenType::Trait)?;
         let name = self.expect_identifier()?;
 
         self.expect(TokenType::CurlyLeft)?;
@@ -831,6 +846,7 @@ impl<'arena> Parser<'_, 'arena> {
             span: self.span_from(span),
             annotations,
             module: self.key,
+            public,
         }))
     }
 
@@ -844,9 +860,16 @@ impl<'arena> Parser<'_, 'arena> {
         &mut self,
         is_static: bool,
     ) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        // let <identifier>;
-        // let <identifier> = <expr>;
-        let span = self.eat().span; // skip `let`
+        // pub only when in global scope
+        // [pub] let <identifier>;
+        // [pub] let <identifier> = <expr>;
+        let public = is_static && self.current().typ == TokenType::Pub;
+        let span = if public {
+            self.current().span
+        } else {
+            self.peek().span
+        };
+        self.expect(TokenType::Let)?;
 
         let annotations = std::mem::take(&mut self.current_annotations);
         annotations.are_annotations_valid_for(if is_static {
@@ -857,23 +880,30 @@ impl<'arena> Parser<'_, 'arena> {
 
         let name = self.expect_identifier()?;
 
-        let typ = if self.match_tok(TokenType::Colon) {
+        let ty = if self.match_tok(TokenType::Colon) {
             Some(TypeRef::parse(self)?)
+        } else if is_static {
+            self.expect(TokenType::Colon)?;
+            None
         } else {
             None
         };
 
         self.expect(TokenType::Equal)?;
 
-        let expr = self.parse_expression()?;
+        let value = self.parse_expression()?;
         self.consume_semicolon()?;
-        Ok(Statement::Var(
+        let var = Variable {
             name,
-            expr,
-            typ,
-            self.span_from(span),
+            value,
+            ty,
+            span: self.span_from(span),
             annotations,
-        ))
+        };
+        match is_static {
+            true => Ok(Statement::Static { var, public }),
+            false => Ok(Statement::Var(var)),
+        }
     }
     fn parse_block_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let annotations = std::mem::take(&mut self.current_annotations);
@@ -983,11 +1013,18 @@ impl<'arena> Parser<'_, 'arena> {
         let annotations = std::mem::take(&mut self.current_annotations);
         annotations.are_annotations_valid_for(AnnotationReceiver::Struct)?;
 
+        let public = self.current().typ == TokenType::Pub;
+
         // struct Name { ... fields ...; implementation area }
         // fields: field: type,[...]
         // implementation area: fn implementation area | impl TraitName { implementation area no trait } implementation area | ""
         // implementation area no trait: fn implementation area no trait | ""
-        let span = self.eat().span; // skip over `struct`
+        let span = if public {
+            self.current().span
+        } else {
+            self.peek().span
+        };
+        self.expect(TokenType::Struct)?;
         let name = self.expect_identifier()?;
 
         let mut generics = vec![];
@@ -1042,6 +1079,7 @@ impl<'arena> Parser<'_, 'arena> {
                         let func = self.parse_callable(false)?;
                         let name = func
                             .0
+                            .contract
                             .name
                             .as_ref()
                             .cloned()
@@ -1053,7 +1091,7 @@ impl<'arena> Parser<'_, 'arena> {
                                 first_func_loc: other_func.0.span,
                             });
                         }
-                        global_impl.insert(name, (func.0, func.1));
+                        global_impl.insert(name, (func.0.contract, func.1));
                     }
                     TokenType::Impl => {
                         let loc = self.eat().span;
@@ -1075,6 +1113,7 @@ impl<'arena> Parser<'_, 'arena> {
                             let func = self.parse_callable(false)?;
                             let name = func
                                 .0
+                                .contract
                                 .name
                                 .as_ref()
                                 .cloned()
@@ -1086,7 +1125,7 @@ impl<'arena> Parser<'_, 'arena> {
                                     first_func_loc: other_func.0.span,
                                 });
                             }
-                            current_impl.insert(name, (func.0, func.1));
+                            current_impl.insert(name, (func.0.contract, func.1));
                         }
                         impls.push((trait_name, current_impl, loc));
                     }
@@ -1109,6 +1148,7 @@ impl<'arena> Parser<'_, 'arena> {
             impls,
             annotations,
             generics,
+            public,
         })
     }
 
@@ -1231,54 +1271,55 @@ arguments => list of argument seperated by comma, trailing comma allowed, the la
 => also arguments can have `copy` in front to indicate we'll copy them into a new variable before calling the function
 */
 
+pub(super) struct Callable<'arena> {
+    pub contract: FunctionContract<'arena>,
+    pub span: Span<'arena>,
+    /// never set if parse_callable is called with `anonymous` set to true
+    pub public: bool,
+}
+
 impl<'arena> Parser<'_, 'arena> {
     pub fn parse_external(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let location = self.eat().span;
         self.parse_any_callable(false, false, false)
-            .and_then(|(mut contract, body, span)| {
-                contract
+            .and_then(|(mut callable, body)| {
+                callable
+                    .contract
                     .annotations
                     .are_annotations_valid_for(AnnotationReceiver::ExternalFunction)?;
-                contract.span = location;
-                Ok(Statement::ExternalFunction(
-                    contract,
-                    body.map(Box::new),
-                    span,
-                ))
+                callable.contract.span = location;
+                Ok(Statement::ExternalFunction {
+                    contract: callable.contract,
+                    body: body.map(Box::new),
+                    span: callable.span,
+                    public: callable.public,
+                })
             })
     }
 
-    pub fn parse_callable(
+    pub(super) fn parse_callable(
         &mut self,
         anonymous: bool,
-    ) -> Result<(FunctionContract<'arena>, Statement<'arena>, Span<'arena>), ParsingError<'arena>>
-    {
+    ) -> Result<(Callable<'arena>, Statement<'arena>), ParsingError<'arena>> {
         self.parse_any_callable(anonymous, true, true)
-            .map(|(contract, body, span)| {
-                (
-                    contract,
-                    body.expect("there should always exist a body"),
-                    span,
-                )
-            })
+            .map(|(callable, body)| (callable, body.expect("there should always exist a body")))
     }
 
-    pub fn parse_any_callable(
+    fn parse_any_callable(
         &mut self,
         anonymous: bool,
         needs_body: bool,
         can_have_generics: bool,
-    ) -> Result<
-        (
-            FunctionContract<'arena>,
-            Option<Statement<'arena>>,
-            Span<'arena>,
-        ),
-        ParsingError<'arena>,
-    > {
+    ) -> Result<(Callable<'arena>, Option<Statement<'arena>>), ParsingError<'arena>> {
         let annotations = std::mem::take(&mut self.current_annotations);
 
-        let span = self.expect(TokenType::Fn)?.span;
+        let public = self.current().typ == TokenType::Pub;
+        let span = if public {
+            self.current().span
+        } else {
+            self.peek().span
+        };
+        self.expect(TokenType::Fn)?;
 
         let name = if anonymous {
             self.expect_identifier().ok()
@@ -1348,17 +1389,21 @@ impl<'arena> Parser<'_, 'arena> {
         };
 
         let span = self.span_from(span);
+        let contract = FunctionContract {
+            name,
+            arguments,
+            return_type,
+            span,
+            annotations,
+            generics,
+        };
         Ok((
-            FunctionContract {
-                name,
-                arguments,
-                return_type,
+            Callable {
+                contract,
                 span,
-                annotations,
-                generics,
+                public,
             },
             body,
-            span,
         ))
     }
 

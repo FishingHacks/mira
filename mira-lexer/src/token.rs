@@ -73,7 +73,6 @@ token_type! {
     Extern = "extern",
     Use = "use",
     Mod = "mod",
-    Export = "export",
     If = "if",
     Else = "else",
     Asm = "asm",

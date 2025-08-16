@@ -458,8 +458,9 @@ fn typecheck_statement<'arena>(
                 Ok(always_returns)
             }
         }
-        Statement::Var(name, expression, type_ref, location, _) => {
-            let expected_typ = type_ref
+        Statement::Var(var) | Statement::Static { var, .. } => {
+            let expected_typ = var
+                .ty
                 .as_ref()
                 .map(|v| context.resolve_type(module, v, &[]))
                 .transpose()
@@ -469,7 +470,7 @@ fn typecheck_statement<'arena>(
                 context,
                 module,
                 scope,
-                expression,
+                &var.value,
                 exprs,
                 expected_typ
                     .as_ref()
@@ -481,7 +482,7 @@ fn typecheck_statement<'arena>(
 
             if let Some(expected_typ) = expected_typ {
                 if expected_typ != typ {
-                    errs.add_mismatching_type(*location, expected_typ, typ);
+                    errs.add_mismatching_type(var.span, expected_typ, typ);
                     return Err(());
                 }
             }
@@ -490,16 +491,16 @@ fn typecheck_statement<'arena>(
                 TypedLiteral::Dynamic(id) => id,
                 _ => {
                     let id = scope.push(typ);
-                    exprs.push(TypecheckedExpression::Literal(expression.span(), id, expr));
+                    exprs.push(TypecheckedExpression::Literal(var.value.span(), id, expr));
                     id
                 }
             };
-            scope.insert(*name, id);
+            scope.insert(var.name, id);
             exprs.push(TypecheckedExpression::DeclareVariable(
-                *location,
+                var.span,
                 id,
                 typ,
-                name.symbol(),
+                var.name.symbol(),
             ));
             scope.make_stack_allocated(id);
             Ok(false)
@@ -517,12 +518,11 @@ fn typecheck_statement<'arena>(
         Statement::Use { .. }
         | Statement::Mod { .. }
         | Statement::BakedFunction(..)
-        | Statement::Function(..)
-        | Statement::ExternalFunction(..)
+        | Statement::Function { .. }
+        | Statement::ExternalFunction { .. }
         | Statement::BakedStruct(..)
         | Statement::BakedStatic(..)
         | Statement::Struct { .. }
-        | Statement::Export(..)
         | Statement::ModuleAsm(..)
         | Statement::Trait(_)
         | Statement::BakedTrait(..)

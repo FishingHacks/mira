@@ -129,12 +129,11 @@ impl Debug for Module<'_> {
 impl<'arena> Module<'arena> {
     pub fn new(
         imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
-        exports: HashSet<Ident<'arena>>,
         file: Arc<SourceFile>,
     ) -> Self {
         Self {
             imports,
-            exports,
+            exports: HashSet::new(),
             file,
             scope: HashMap::new(),
             assembly: Vec::new(),
@@ -181,6 +180,12 @@ impl<'arena> Module<'arena> {
         self.scope.contains_key(name) || self.imports.contains_key(name)
     }
 
+    fn maybe_add_export(&mut self, public: bool, name: Ident<'arena>) {
+        if public {
+            debug_assert!(self.exports.insert(name));
+        }
+    }
+
     pub fn push_statement(
         &mut self,
         statement: Statement<'arena>,
@@ -188,7 +193,12 @@ impl<'arena> Module<'arena> {
         context: &ModuleContext<'arena>,
     ) -> Result<(), ProgramFormingError<'arena>> {
         match statement {
-            Statement::Function(contract, body, _) => {
+            Statement::Function {
+                contract,
+                body,
+                public,
+                ..
+            } => {
                 let Some(name) = contract.name else {
                     return Err(ProgramFormingError::AnonymousFunctionAtGlobalLevel(
                         contract.span,
@@ -204,8 +214,10 @@ impl<'arena> Module<'arena> {
 
                 let fn_id = self.push_fn(contract, *body, module_id, context);
                 self.scope.insert(name, ModuleScopeValue::Function(fn_id));
+                self.maybe_add_export(public, name);
             }
             Statement::Trait(mut r#trait) => {
+                let public = r#trait.public;
                 r#trait.module = module_id;
                 if self.is_defined(&r#trait.name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
@@ -218,6 +230,7 @@ impl<'arena> Module<'arena> {
                 let name = r#trait.name;
                 let key = writer.insert(r#trait);
                 self.scope.insert(name, ModuleScopeValue::Trait(key));
+                self.maybe_add_export(public, name);
             }
             Statement::Struct {
                 name,
@@ -227,6 +240,7 @@ impl<'arena> Module<'arena> {
                 impls,
                 annotations,
                 generics,
+                public,
             } => {
                 if self.is_defined(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
@@ -265,26 +279,36 @@ impl<'arena> Module<'arena> {
                 let mut writer = context.structs.write();
                 let key = writer.insert(baked_struct);
                 self.scope.insert(name, ModuleScopeValue::Struct(key));
+                self.maybe_add_export(public, name);
             }
-            Statement::Var(_, _, None, span, _) => {
-                return Err(ProgramFormingError::GlobalValueNoType(span))
-            }
-            Statement::Var(name, expr, Some(typ), span, annotations) => {
-                if self.is_defined(&name) {
+            Statement::Static { var, public } => {
+                if self.is_defined(&var.name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
-                        span,
-                        name.symbol(),
+                        var.span,
+                        var.name.symbol(),
                     ));
                 }
 
-                let Expression::Literal(value, _) = expr else {
-                    return Err(ProgramFormingError::GlobalValueNoLiteral(expr.span()));
+                let Expression::Literal(value, _) = var.value else {
+                    return Err(ProgramFormingError::GlobalValueNoLiteral(var.value.span()));
                 };
                 let mut writer = context.statics.write();
-                let key = writer.insert((typ, value, module_id, span, annotations));
-                self.scope.insert(name, ModuleScopeValue::Static(key));
+                let key = writer.insert((
+                    var.ty.expect("static needs to have a type"),
+                    value,
+                    module_id,
+                    var.span,
+                    var.annotations,
+                ));
+                self.scope.insert(var.name, ModuleScopeValue::Static(key));
+                self.maybe_add_export(public, var.name);
             }
-            Statement::ExternalFunction(contract, mut body, _) => {
+            Statement::ExternalFunction {
+                contract,
+                mut body,
+                public,
+                ..
+            } => {
                 let Some(name) = contract.name else {
                     return Err(ProgramFormingError::AnonymousFunctionAtGlobalLevel(
                         contract.span,
@@ -305,14 +329,20 @@ impl<'arena> Module<'arena> {
                 let key = writer.insert((contract, body.map(|v| *v), module_id));
                 self.scope
                     .insert(name, ModuleScopeValue::ExternalFunction(key));
+                self.maybe_add_export(public, name);
             }
             Statement::ModuleAsm(span, strn) => self.assembly.push((span, strn)),
-            // these are handled by the parser itself
-            Statement::Use { .. } | Statement::Mod { .. } => {}
+            Statement::Use {
+                path,
+                alias,
+                public,
+                ..
+            } => self.maybe_add_export(public, alias.unwrap_or(*path.entries.last().unwrap())),
+            Statement::Mod { public, name, .. } => self.maybe_add_export(public, name),
             _ => {
                 return Err(ProgramFormingError::NoCodeOutsideOfFunctions(
                     statement.span(),
-                ))
+                ));
             }
         }
 

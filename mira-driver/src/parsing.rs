@@ -95,11 +95,7 @@ fn parse_single<'arena>(
         format!("Processing {}", file.path.display()).into_boxed_str(),
     );
 
-    let mut module = Module::new(
-        current_parser.imports,
-        current_parser.exports,
-        current_parser.file,
-    );
+    let mut module = Module::new(current_parser.imports, current_parser.file);
     _ = current_parser;
     if let Err(errs) = module.push_all(statements, key, &module_context) {
         errors

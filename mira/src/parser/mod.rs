@@ -1,6 +1,6 @@
 use parking_lot::RwLock;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ops::{Deref, DerefMut},
     sync::Arc,
 };
@@ -48,8 +48,6 @@ pub struct Parser<'a, 'arena> {
     pub modules: &'a RwLock<Store<Module<'arena>>>,
     /// all imports
     pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
-    /// all the `pub _` exports
-    pub exports: HashSet<Ident<'arena>>,
     pub key: StoreKey<Module<'arena>>,
 }
 
@@ -105,19 +103,7 @@ impl<'a, 'arena> Parser<'a, 'arena> {
             file,
             key,
             imports: HashMap::new(),
-            exports: HashSet::new(),
         }
-    }
-
-    fn add_export(&mut self, ident: Ident<'arena>) -> Result<(), ParsingError<'arena>> {
-        if !self.exports.insert(ident) {
-            return Err(ParsingError::ItemAlreadyDefined {
-                loc: ident.span(),
-                name: ident.symbol(),
-                first: self.exports.get(&ident).unwrap().span(),
-            });
-        }
-        Ok(())
     }
 
     fn add_import(

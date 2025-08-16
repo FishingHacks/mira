@@ -653,7 +653,6 @@ impl<'arena> Lexer<'arena> {
             "trait" => Some(TokenType::Trait),
             "use" => Some(TokenType::Use),
             "mod" => Some(TokenType::Mod),
-            "export" => Some(TokenType::Export),
             _ => None,
         }
     }
