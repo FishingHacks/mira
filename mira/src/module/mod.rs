@@ -137,12 +137,9 @@ pub struct ParserQueueEntry<'arena> {
 }
 
 impl<'arena> Module<'arena> {
-    pub fn new(
-        imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
-        file: Arc<SourceFile>,
-    ) -> Self {
+    pub fn new(file: Arc<SourceFile>) -> Self {
         Self {
-            imports,
+            imports: HashMap::new(),
             exports: HashSet::new(),
             file,
             scope: HashMap::new(),
@@ -352,8 +349,12 @@ impl<'arena> Module<'arena> {
                 path,
                 alias,
                 public,
-                ..
-            } => self.maybe_add_export(public, alias.unwrap_or(*path.entries.last().unwrap())),
+                span,
+            } => {
+                let name = alias.unwrap_or(*path.entries.last().unwrap());
+                self.imports.insert(name, (span, Import::Unresolved(path)));
+                self.maybe_add_export(public, name);
+            }
             Statement::Mod { public, name, span } => {
                 if self.is_defined(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(

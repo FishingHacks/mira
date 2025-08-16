@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     ops::{Deref, DerefMut},
     sync::Arc,
 };
@@ -7,8 +6,7 @@ use std::{
 use crate::{
     annotations::Annotations,
     context::SharedContext,
-    error::ParsingError,
-    module::{Import, Module},
+    module::Module,
     store::StoreKey,
     tokenstream::{BorrowedTokenStream, TokenStream},
 };
@@ -17,7 +15,7 @@ pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
 use mira_lexer::{Token, TokenType};
-use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData};
+use mira_spans::{BytePos, SourceFile, SpanData};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, Struct, TypeRef};
 
@@ -33,7 +31,7 @@ pub struct Parser<'a, 'arena> {
     stream: BorrowedTokenStream<'arena, 'a>,
     current_annotations: Annotations<'arena>,
     /// all imports
-    pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
+    // pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
     pub key: StoreKey<Module<'arena>>,
 }
 
@@ -43,7 +41,7 @@ impl std::fmt::Debug for Parser<'_, '_> {
             .field("file", &self.file.path)
             .field("root_directory", &self.file.package_root)
             .field("current_annotations", &self.current_annotations)
-            .field("imports", &self.imports)
+            // .field("imports", &self.imports)
             .finish()
     }
 }
@@ -74,26 +72,26 @@ impl<'a, 'arena> Parser<'a, 'arena> {
             current_annotations: Default::default(),
             file,
             key,
-            imports: HashMap::new(),
+            // imports: HashMap::new(),
         }
     }
 
-    fn add_import(
-        &mut self,
-        ident: Ident<'arena>,
-        span: Span<'arena>,
-        import: Import<'arena>,
-    ) -> Result<(), ParsingError<'arena>> {
-        if let Some((first, _)) = self.imports.get(&ident) {
-            return Err(ParsingError::ItemAlreadyDefined {
-                loc: ident.span(),
-                name: ident.symbol(),
-                first: *first,
-            });
-        }
-        self.imports.insert(ident, (span, import));
-        Ok(())
-    }
+    // fn add_import(
+    //     &mut self,
+    //     ident: Ident<'arena>,
+    //     span: Span<'arena>,
+    //     import: Import<'arena>,
+    // ) -> Result<(), ParsingError<'arena>> {
+    //     if let Some((first, _)) = self.imports.get(&ident) {
+    //         return Err(ParsingError::ItemAlreadyDefined {
+    //             loc: ident.span(),
+    //             name: ident.symbol(),
+    //             first: *first,
+    //         });
+    //     }
+    //     self.imports.insert(ident, (span, import));
+    //     Ok(())
+    // }
 
     // gets to the next sensical expression/type boundary
     pub fn bail(&mut self) {

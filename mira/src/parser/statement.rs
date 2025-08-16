@@ -6,7 +6,7 @@ use std::{
 use crate::{
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
-    module::{BakedStruct, ExternalFunction, Function, Import, Module, ModuleContext, Static},
+    module::{BakedStruct, ExternalFunction, Function, Module, ModuleContext, Static},
     store::StoreKey,
     symbols,
 };
@@ -708,8 +708,6 @@ impl<'arena> Parser<'_, 'arena> {
                 .current()
                 .span
                 .combine_with([span], self.ctx.span_interner());
-            let alias = path.entries[path.entries.len() - 1];
-            self.add_import(alias, span, Import::Unresolved(path.clone()))?;
             return Ok(Statement::Use {
                 span,
                 path,
@@ -723,7 +721,6 @@ impl<'arena> Parser<'_, 'arena> {
             .expect(TokenType::Semicolon)?
             .span
             .combine_with([span], self.ctx.span_interner());
-        self.add_import(alias, span, Import::Unresolved(path.clone()))?;
         Ok(Statement::Use {
             alias: Some(alias),
             path,
