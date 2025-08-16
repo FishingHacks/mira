@@ -6,7 +6,7 @@ Mira is a general purpose programming language designed to make interoperability
 
 # Documentation
 
-You can look at the [Language Reference](./langref.md), the [standard library documentation](./std_docs.md).
+You can look at the [Language Reference](./langref.md).
 
 # Installation
 
@@ -34,17 +34,12 @@ This allows you to unpack the installation anywhere. This also does support havi
 Ensure you have the following dependencies:
 
 - System C/C++ Toolchain
-- LLVM development libraries == 19.1.x (Other versions might work. You can change the llvm feature of the `inkwell` dependency in ./mira/Cargo.toml file)
+- LLVM development libraries (either 18.0, 19.1 or 20.1, configurable in [the local config](./config.sh) or [the example config](./config.example.sh) if you're using cargo.sh or by specifying `--no-default-features -F llvm<version>` as arguments during the `cargo` invocation. you may also need to set the llvm prefix, doable by setting `LLVM_PREFIX` in either of the cargo.sh configs or `LLVM_SYS_180_PREFIX`, `LLVM_SYS_191_PREFIX`, or `LLVM_SYS_201_PREFIX` environment variable depending on the llvm version you're using.)
 - Cargo
 
-In case you have the llvm binaries not exposed, you can set the environment variable `LLVM_SYS_170_PREFIX` to the build directory of llvm (the one where bin/llc or bin/opt is in).
+Then run `cargo build`, or if you're using cargo.sh to have config.example.sh or config.sh configuration applied, use `./cargo.sh build`
 
-Then building mirac is pretty easy:
-
-```
-$ cargo build           // <- for debug mode (you probably don't want that)
-$ cargo build --release // <- for release mode, allows for more aggressive optimizations. This is recommended and the mode the prebuilt binaries are built with
-```
+If you are interested in a release build, use either `cargo build --release` or `./cargo.sh build --release`, or use `./release.sh`, which will invoke cargo.sh and put all the required files for a mira installation into `./release/mira` and compress them into `./release/mira-x86_64.tar.gz`.
 
 # Syntax Highlighting
 
