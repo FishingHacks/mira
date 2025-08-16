@@ -1,25 +1,25 @@
 use crate::editor::{get_path, run_editor};
 use crate::repl::Repl;
-use crate::{libfinder, VER};
+use crate::{libfinder, VERSION};
 
+use std::str::FromStr;
 use std::time::Instant;
 use std::{
     error::Error,
     io::ErrorKind,
     path::{Path, PathBuf},
     process::Command,
-    str::FromStr,
     sync::Arc,
 };
 
 use clap::{Args, ValueEnum};
-use mira::{
-    context::GlobalContext,
-    target::{Target, NATIVE_TARGET},
-    Arena, Output, UnicodePrinter,
+use mira_driver::{
+    run_full_compilation_pipeline, Arena, EmitMethod, FullCompilationOptions, LibraryTree, Output,
+    UnicodePrinter,
 };
-use mira_driver::{run_full_compilation_pipeline, EmitMethod, FullCompilationOptions, LibraryTree};
 use mira_llvm_backend::CodegenConfig;
+use mira_target::{Target, NATIVE_TARGET};
+use mira_typeck::GlobalContext;
 
 use super::about::print_about;
 
@@ -179,9 +179,9 @@ fn print_help(editor_mode: bool) {
     println!("│ --verbose          │ Output what the compiler is doing           │");
     let _ = ("└─ [ mira vN.N.N ]───┴─────────────────────────────────────────────┘",);
     // prints line as shown above
-    assert!(VER.len() <= 7);
-    print!("└─ [ mira v{VER} ]");
-    for _ in 0..(7 - VER.len()) {
+    assert!(VERSION.len() <= 7);
+    print!("└─ [ mira v{VERSION} ]");
+    for _ in 0..(7 - VERSION.len()) {
         print!("─");
     }
     println!("─┴─────────────────────────────────────────────┘");
@@ -371,7 +371,7 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     {
         let arena = Arena::new();
         let ctx = GlobalContext::new(&arena);
-        let s_ctx = ctx.share();
+        let s_ctx = ctx.ty_ctx();
         let mut res = run_full_compilation_pipeline(s_ctx, compilation_opts);
         if let Err(e) = &mut res {
             println!("Failed to compile:");

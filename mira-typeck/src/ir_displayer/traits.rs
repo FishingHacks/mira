@@ -1,4 +1,4 @@
-use crate::typechecking::{default_types, TypedTrait};
+use crate::{TypedTrait, default_types};
 
 use super::Formatter;
 

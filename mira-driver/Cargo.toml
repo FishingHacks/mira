@@ -10,12 +10,14 @@ llvm19-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm19-1"]
 llvm18-0 = ["mira-llvm-backend", "mira-llvm-backend/llvm18-0"]
 
 [dependencies]
-mira.workspace = true
+mira-typeck.workspace = true
 mira-errors.workspace = true
 mira-progress-bar.workspace = true
 mira-spans.workspace = true
 mira-lexer.workspace = true
 mira-parser.workspace = true
+mira-target.workspace = true
+mira-linking.workspace = true
 mira-common.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true

@@ -1,4 +1,4 @@
-use crate::typechecking::{
+use crate::{
     TypecheckedFunctionContract, TypedFunction, default_types,
     expression::{TypecheckedExpression, TypedLiteral},
 };

@@ -9,7 +9,7 @@ use mira_spans::{
     interner::{SpanInterner, SymbolInterner},
 };
 
-use crate::typechecking::{Ty, TyKind, TyList, TypeInterner, TypeListInterner};
+use crate::{Ty, TyKind, TyList, TypeInterner, TypeListInterner};
 
 pub struct GlobalContext<'arena> {
     arena: &'arena Arena,
@@ -38,7 +38,25 @@ impl<'arena> GlobalContext<'arena> {
         }
     }
 
-    pub fn share(&'arena self) -> TypeCtx<'arena> {
+    pub fn make_diagnostic_formatter<P: StyledPrinter>(
+        &self,
+        printer: P,
+        output: Output,
+    ) -> DiagnosticFormatter<'_, P> {
+        let styles = match std::env::var("MIRA_COLOR").ok().as_deref() {
+            Some("0" | "none" | "no") => Styles::NO_COLORS,
+            Some("1" | "yes") => Styles::DEFAULT,
+            _ if std::io::stdout().is_terminal() => Styles::DEFAULT,
+            _ => Styles::NO_COLORS,
+        };
+        DiagnosticFormatter::new(&self.source_map, output, printer, styles)
+    }
+
+    pub fn ctx(&'arena self) -> SharedCtx<'arena> {
+        SharedCtx::new(&self.string_interner, &self.span_interner, &self.source_map)
+    }
+
+    pub fn ty_ctx(&'arena self) -> TypeCtx<'arena> {
         TypeCtx(self)
     }
 }

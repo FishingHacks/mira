@@ -1,4 +1,4 @@
-use crate::typechecking::TypedStruct;
+use crate::TypedStruct;
 
 use super::Formatter;
 

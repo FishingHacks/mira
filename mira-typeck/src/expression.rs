@@ -3,7 +3,7 @@ use std::{
     ops::BitAnd,
 };
 
-use crate::typechecking::types::FunctionType;
+use crate::types::FunctionType;
 use mira_common::store::StoreKey;
 use mira_parser::annotations::Annotations;
 use mira_parser::std_annotations::intrinsic::Intrinsic;

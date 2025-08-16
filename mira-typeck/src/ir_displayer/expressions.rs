@@ -1,4 +1,4 @@
-use crate::typechecking::expression::{TypecheckedExpression, TypedLiteral};
+use crate::expression::{TypecheckedExpression, TypedLiteral};
 
 use super::{formatter::Formatter, typed_literal::Tld};
 

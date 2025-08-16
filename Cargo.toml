@@ -4,12 +4,14 @@ version = "0.2.1"
 edition = "2021"
 
 [workspace]
-members = ["mira", "mira-common", "mira-driver", "mira-error-codes", "mira-errors", "mira-lexer", "mira-llvm-backend", "mira-macros", "mira-parser", "mira-progress-bar", "mira-spans"]
+members = ["mira-common", "mira-driver", "mira-error-codes", "mira-errors", "mira-lexer", "mira-linking", "mira-llvm-backend", "mira-macros", "mira-parser", "mira-progress-bar", "mira-spans", "mira-target", "mira-typeck"]
 
 [workspace.dependencies]
-mira = { path = "./mira" }
+mira-typeck = { path = "./mira-typeck" }
 mira-error-codes = { path = "./mira-error-codes" }
 mira-driver = { path = "./mira-driver", default-features = false }
+mira-target = { path = "./mira-target" }
+mira-linking = { path = "./mira-linking" }
 mira-parser = { path = "./mira-parser" }
 mira-common = { path = "./mira-common" }
 mira-errors = { path = "./mira-errors" }
@@ -36,10 +38,11 @@ llvm18-0 = ["mira-driver/llvm18-0"]
 
 [dependencies]
 parking_lot.workspace = true
-mira.workspace = true
-mira-driver . workspace = true 
+mira-typeck.workspace = true
+mira-driver.workspace = true 
 clap.workspace = true
 mira-llvm-backend.workspace = true
+mira-target.workspace = true
 
 [profile.release]
 strip = true

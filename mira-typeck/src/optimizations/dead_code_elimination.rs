@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::typechecking::{
+use crate::{
     TypecheckingContext, TypedFunction, TypedStatic,
     expression::{TypecheckedExpression, TypedLiteral},
 };

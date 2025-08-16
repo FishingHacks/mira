@@ -1,4 +1,4 @@
-use crate::typechecking::TypedStatic;
+use crate::TypedStatic;
 use mira_common::store::StoreKey;
 
 use super::Formatter;

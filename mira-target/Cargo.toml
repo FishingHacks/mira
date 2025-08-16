@@ -1,7 +1,7 @@
 [package]
-name = "mira-common"
+name = "mira-target"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crossbeam-channel.workspace = true
+cfg-if.workspace = true

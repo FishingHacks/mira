@@ -3,7 +3,7 @@ use mira_lexer::token::IdentDisplay;
 use std::fmt::{Debug, Display};
 
 use crate::context::TypeCtx;
-use crate::typechecking::{
+use crate::{
     FunctionList, Ty, TyKind, TypecheckedFunctionContract, TypecheckingContext,
     TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct, TypedTrait, default_types,
 };

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{context::TypeCtx, typechecking::typed_resolve_import};
+use crate::{context::TypeCtx, typed_resolve_import};
 use mira_common::store::StoreKey;
 use mira_errors::{Diagnostic, Diagnostics};
 use mira_lexer::NumberType;

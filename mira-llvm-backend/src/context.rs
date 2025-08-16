@@ -34,21 +34,19 @@ use inkwell::{
     values::{FunctionValue, GlobalValue},
 };
 
-use mira::{
-    target::{NATIVE_TARGET, Target},
-    typechecking::{
-        Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
-        TypedStruct, TypedTrait, default_types,
-        expression::{TypecheckedExpression, TypedLiteral},
-        typechecking::ScopeTypeMetadata,
-    },
-};
 use mira_common::store::{AssociatedStore, StoreKey};
 use mira_parser::std_annotations::{
     alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
     intrinsic::IntrinsicAnnotation, noinline::Noinline, section::SectionAnnotation,
 };
 use mira_spans::interner::Symbol;
+use mira_target::{NATIVE_TARGET, Target};
+use mira_typeck::{
+    Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
+    TypedStruct, TypedTrait, default_types,
+    expression::{TypecheckedExpression, TypedLiteral},
+    typechecking::ScopeTypeMetadata,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct DefaultTypes<'ctx> {

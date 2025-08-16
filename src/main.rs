@@ -9,13 +9,10 @@ use commands::{
     expand::{expand_main, ExpandArgs},
     repl::{repl_main, ReplArgs},
 };
-use mira::{
-    target::{Target, NATIVE_TARGET},
-    VERSION as VER,
-};
+use mira_target::{Target, NATIVE_TARGET};
 use std::error::Error;
 
-const MIRAC_VERSION: &str = const {
+const VERSION: &str = const {
     match option_env!("MIRAC_PKG_OVERRIDE") {
         Some(v) => v,
         None => env!("CARGO_PKG_VERSION"),

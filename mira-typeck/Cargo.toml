@@ -1,5 +1,5 @@
 [package]
-name = "mira"
+name = "mira-typeck"
 version = "0.2.1"
 edition = "2024"
 
@@ -7,12 +7,9 @@ edition = "2024"
 
 [dependencies]
 parking_lot.workspace = true
-cfg-if.workspace = true
 mira-errors.workspace = true
 mira-macros.workspace = true
 mira-spans.workspace = true
-mira-progress-bar.workspace = true
-crossbeam-channel.workspace = true
 mira-lexer.workspace = true
 mira-parser.workspace = true
 mira-common.workspace = true

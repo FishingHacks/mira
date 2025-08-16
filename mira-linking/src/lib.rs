@@ -5,7 +5,7 @@ use std::{
 
 use mira_macros::ErrorData;
 
-use crate::target::{Abi, Arch, Os, Target};
+use mira_target::{Abi, Arch, Os, Target};
 
 #[derive(Debug)]
 pub enum LinkerInput {

@@ -1,0 +1,10 @@
+[package]
+name = "mira-linking"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mira-target.workspace = true
+mira-macros.workspace = true
+mira-errors.workspace = true
+mira-spans.workspace = true

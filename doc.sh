@@ -6,6 +6,8 @@ cargo doc --open --no-deps \
  -p mira \
  -p mira-driver \
  -p mira-error-codes \
+ -p mira-target \
+ -p mira-linking \
  -p mira-errors \
  -p mira-lexer \
  -p mira-macros \

@@ -1,11 +1,8 @@
 use std::fmt::{Arguments, Debug, Display, Write};
 
 use crate::{
-    lang_items::LangItems,
-    typechecking::{
-        TypecheckedFunctionContract, TypecheckedModule, TypedStatic, TypedStruct, TypedTrait,
-        expression::TypecheckedExpression,
-    },
+    TypecheckedFunctionContract, TypecheckedModule, TypedStatic, TypedStruct, TypedTrait,
+    expression::TypecheckedExpression, lang_items::LangItems,
 };
 use mira_common::store::{AssociatedStore, Store};
 use mira_parser::module::Module;

@@ -5,15 +5,15 @@ use mira_errors::Diagnostics;
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
 
-use mira::{context::TypeCtx, threadpool::ThreadPool};
 use mira_common::store::{Store, StoreKey};
+use mira_common::threadpool::ThreadPool;
 use mira_errors::IoReadError;
 use mira_lexer::{Lexer, LexingError};
 use mira_parser::{
     Parser, ParsingError, ProgramFormingError,
     module::{Module, ModuleContext, ParserQueueEntry},
 };
-use mira_spans::SourceFile;
+use mira_spans::{SharedCtx, SourceFile};
 
 use crate::EmitMethod;
 
@@ -107,15 +107,15 @@ fn parse_single<'arena>(
 /// `source` - The source that will be parsed
 #[allow(clippy::too_many_arguments)]
 pub fn parse_all<'arena>(
-    ctx: TypeCtx<'arena>,
+    ctx: SharedCtx<'arena>,
     progress_bar: ProgressBarThread,
     parsing_item: ProgressItemRef,
 ) -> Result<Arc<ModuleContext<'arena>>, Diagnostics<'arena>> {
     let errors = Arc::new(RwLock::new(Diagnostics::new()));
     let mut module_store = Store::new();
-    let files = ctx.source_map().files();
+    let files = ctx.source_map.files();
     let parsing_queue = ctx
-        .source_map()
+        .source_map
         .packages()
         .iter()
         .map(|p| {
@@ -134,7 +134,7 @@ pub fn parse_all<'arena>(
         .iter()
         .map(|e| (e.package, e.module_key))
         .collect();
-    let module_context = Arc::new(ModuleContext::new(packages, module_store, ctx.into()));
+    let module_context = Arc::new(ModuleContext::new(packages, module_store, ctx));
     let parsing_queue = Arc::new(RwLock::new(parsing_queue));
     let (finish_sender, finish_receiver) = bounded::<()>(1);
 
@@ -153,8 +153,8 @@ pub fn parse_all<'arena>(
             let package = entry.package;
 
             let source = match entry.loaded_file {
-                Some(fid) => ctx.source_map().get_file(fid).unwrap(),
-                None => match ctx.source_map().load_file(file.clone(), package) {
+                Some(fid) => ctx.source_map.get_file(fid).unwrap(),
+                None => match ctx.source_map.load_file(file.clone(), package) {
                     Ok(v) => v,
                     Err(e) => {
                         errors.write().add_err(IoReadError(file.to_path_buf(), e));
@@ -209,12 +209,12 @@ pub fn parse_all<'arena>(
 }
 
 pub fn expand_macros<'a>(
-    ctx: TypeCtx<'a>,
+    ctx: SharedCtx<'a>,
     file: Arc<Path>,
     mut output: EmitMethod,
 ) -> Result<(), Diagnostics<'a>> {
     let mut diags = Diagnostics::new();
-    let f = match ctx.source_map().add_package_load(
+    let f = match ctx.source_map.add_package_load(
         file.parent().unwrap().into(),
         file.clone(),
         HashMap::new(),
@@ -225,14 +225,14 @@ pub fn expand_macros<'a>(
             return Err(diags);
         }
     };
-    let mut lexer = Lexer::new(ctx.into(), f);
+    let mut lexer = Lexer::new(ctx, f);
     _ = lexer
         .scan_tokens()
         .map_err(|e| diags.extend(e.into_iter().map(LexingError::to_error)));
 
     let file = lexer.file.clone();
     let tokens = lexer.into_tokens();
-    let tokens = match mira_parser::expand_tokens(ctx.into(), file.clone(), tokens, &mut diags) {
+    let tokens = match mira_parser::expand_tokens(ctx, file.clone(), tokens, &mut diags) {
         Some(v) => v,
         None => return Err(diags),
     };

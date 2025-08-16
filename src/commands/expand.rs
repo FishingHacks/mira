@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use clap::Args;
-use mira::{context::GlobalContext, Arena};
-use mira::{Output, UnicodePrinter};
+use mira_driver::{Arena, Output, UnicodePrinter};
+use mira_typeck::GlobalContext;
 
 use super::compile::{to_emit, PathOrStdout};
 
@@ -17,10 +17,9 @@ pub struct ExpandArgs {
 pub fn expand_main(args: ExpandArgs) {
     let arena = Arena::new();
     let ctx = GlobalContext::new(&arena);
-    let s_ctx = ctx.share();
-    let res = mira_driver::expand_macros(s_ctx, args.file.into(), to_emit(args.output));
+    let res = mira_driver::expand_macros(ctx.ctx(), args.file.into(), to_emit(args.output));
     if let Err(e) = res {
-        let mut formatter = s_ctx.make_diagnostic_formatter(UnicodePrinter::new(), Output::Stderr);
+        let mut formatter = ctx.make_diagnostic_formatter(UnicodePrinter::new(), Output::Stderr);
         for err in e {
             formatter
                 .display_diagnostic(err)

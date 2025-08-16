@@ -10,10 +10,11 @@ llvm19-1 = ["inkwell/llvm19-1-prefer-static"]
 llvm18-0 = ["inkwell/llvm18-0-prefer-static"]
 
 [dependencies]
-mira.workspace = true
+mira-typeck.workspace = true
 mira-errors.workspace = true
 mira-macros.workspace = true
 mira-spans.workspace = true
 mira-parser.workspace = true
 mira-common.workspace = true
 inkwell.workspace = true
+mira-target.workspace = true

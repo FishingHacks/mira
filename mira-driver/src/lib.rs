@@ -17,21 +17,21 @@ mod parsing;
 pub use parsing::expand_macros;
 use parsing::parse_all;
 
-use mira::{
-    context::TypeCtx,
-    linking::{self, LinkOptions, LinkerErrorDiagnosticsExt as _, LinkerInput},
-    optimizations,
-    target::Target,
-    typechecking::{
-        TypecheckingContext,
-        ir_displayer::{Formatter, ReadOnlyTypecheckingContext, TCContextDisplay},
-        typechecking::{typecheck_external_function, typecheck_function, typecheck_static},
-    },
-};
 use mira_common::store::AssociatedStore;
+use mira_linking::{self, LinkOptions, LinkerErrorDiagnosticsExt as _, LinkerInput};
 use mira_parser::std_annotations::intrinsic::IntrinsicAnnotation;
+use mira_target::Target;
+use mira_typeck::{
+    TypeCtx, TypecheckingContext,
+    ir_displayer::{Formatter, ReadOnlyTypecheckingContext, TCContextDisplay},
+    optimizations,
+    typechecking::{typecheck_external_function, typecheck_function, typecheck_static},
+};
 // TODO: This should be abstracted away so we don't have to handle different configs.
 use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder, CodegenError, Optimizations};
+
+pub use mira_errors::{AsciiPrinter, DiagnosticFormatter, Output, UnicodePrinter};
+pub use mira_spans::Arena;
 
 #[derive(Clone, Debug)]
 pub enum LibraryInput {
@@ -388,7 +388,7 @@ pub fn run_full_compilation_pipeline<'arena>(
     let _deferred = DeferFn::new(move || _ = thread.join());
     let parser_item = progress_bar.add_item("Parsing".into());
 
-    let module_context = parse_all(ctx, progress_bar.clone(), parser_item);
+    let module_context = parse_all(ctx.into(), progress_bar.clone(), parser_item);
     progress_bar.remove(parser_item);
     let typechecking_item = progress_bar.add_item("Typechecking".into());
     let type_resolution_item = progress_bar.add_item("Type Resolution".into());
@@ -620,7 +620,7 @@ pub fn run_full_compilation_pipeline<'arena>(
     };
 
     let Some((linker, linker_path)) =
-        linking::search_for_linker(opts.link_with_crt, opts.additional_linker_directories)
+        mira_linking::search_for_linker(opts.link_with_crt, opts.additional_linker_directories)
     else {
         errs.add_unable_to_locate_linker();
         return Err(errs);

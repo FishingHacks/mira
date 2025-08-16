@@ -13,7 +13,7 @@ use type_resolution::ResolvingState;
 use expression::{TypecheckedExpression, TypedLiteral};
 use types::{FunctionType, resolve_primitive_type, with_refcount};
 
-use crate::{context::TypeCtx, lang_items::LangItems};
+use crate::lang_items::LangItems;
 use mira_common::store::{AssociatedStore, Store, StoreKey};
 use mira_parser::{
     Trait, TypeRef,
@@ -28,12 +28,15 @@ use mira_spans::{
     interner::{Symbol, symbols},
 };
 
+mod context;
+mod lang_items;
+pub mod optimizations;
+pub use context::{GlobalContext, TypeCtx};
 mod error;
 pub mod expression;
 pub mod intrinsics;
 pub mod ir_displayer;
 mod type_resolution;
-#[allow(clippy::module_inception)]
 pub mod typechecking;
 mod types;
 pub use error::{FunctionList, TypecheckingError, TypecheckingErrorDiagnosticsExt};

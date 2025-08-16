@@ -9,13 +9,13 @@ use std::{
 };
 
 use clap::{Args, ValueEnum};
-use mira::{
-    context::GlobalContext,
-    target::{Target, NATIVE_TARGET},
-    Arena, Output, UnicodePrinter,
+use mira_driver::{
+    run_full_compilation_pipeline, Arena, EmitMethod, FullCompilationOptions, LibraryTree, Output,
+    UnicodePrinter,
 };
-use mira_driver::{run_full_compilation_pipeline, EmitMethod, FullCompilationOptions, LibraryTree};
 use mira_llvm_backend::CodegenConfig;
+use mira_target::{Target, NATIVE_TARGET};
+use mira_typeck::GlobalContext;
 
 use crate::libfinder;
 
@@ -250,7 +250,7 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
     let exec_path = {
         let arena = Arena::new();
         let ctx = GlobalContext::new(&arena);
-        let s_ctx = ctx.share();
+        let s_ctx = ctx.ty_ctx();
         let mut res = run_full_compilation_pipeline(s_ctx, opts);
         let path = match &mut res {
             Err(e) => {

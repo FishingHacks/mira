@@ -16,16 +16,13 @@ use inkwell::{
     module::{FlagBehavior, Module},
     values::PointerValue,
 };
-use mira::{
-    context::TypeCtx,
-    typechecking::{
-        Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedExternalFunction, TypedFunction,
-        TypedStruct, default_types,
-    },
-};
 use mira_common::store::{AssociatedStore, Store, StoreKey};
 use mira_parser::std_annotations::intrinsic::IntrinsicAnnotation;
 use mira_spans::{Span, interner::Symbol};
+use mira_typeck::{
+    Ty, TyKind, TypeCtx, TypecheckedModule, TypecheckingContext, TypedExternalFunction,
+    TypedFunction, TypedStruct, default_types,
+};
 
 use super::{
     context::DefaultTypes,
