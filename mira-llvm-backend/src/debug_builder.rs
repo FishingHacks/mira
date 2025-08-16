@@ -17,13 +17,14 @@ use inkwell::{
     values::PointerValue,
 };
 use mira::{
-    context::SharedContext,
-    store::{AssociatedStore, Store, StoreKey},
+    context::TypeCtx,
     typechecking::{
         Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedExternalFunction, TypedFunction,
-        TypedStruct, default_types, intrinsics::IntrinsicAnnotation,
+        TypedStruct, default_types,
     },
 };
+use mira_common::store::{AssociatedStore, Store, StoreKey};
+use mira_parser::std_annotations::intrinsic::IntrinsicAnnotation;
 use mira_spans::{Span, interner::Symbol};
 
 use super::{
@@ -41,7 +42,7 @@ pub mod BasicTypeEncoding {
 }
 
 pub struct DebugContext<'ctx, 'arena> {
-    ctx: SharedContext<'arena>,
+    ctx: TypeCtx<'arena>,
     pub(super) builder: DebugInfoBuilder<'ctx>,
     global_scope: DIScope<'ctx>,
     root_file: DIFile<'ctx>,
@@ -138,7 +139,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         tc_ctx: &TypecheckingContext<'arena>,
         root_path: &Path,
         optimizations: bool,
-        ctx: SharedContext<'arena>,
+        ctx: TypeCtx<'arena>,
     ) -> Self {
         module.add_basic_value_flag(
             "Debug Info Version",

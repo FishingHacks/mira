@@ -8,16 +8,15 @@ use std::{
 use mira_errors::Diagnostic;
 use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_macros::{Display, ErrorData};
-use mira_spans::{Ident, SourceFile, Span, Symbol};
+use mira_spans::{Ident, SharedCtx, SourceFile, Span, Symbol};
 mod builtin_macros;
 mod macro_expander;
 mod pat_parser;
 
 pub use macro_expander::expand_tokens;
 
-use crate::{
-    context::SharedContext, error::ParsingError, store::StoreKey, tokenstream::BorrowedTokenStream,
-};
+use crate::{error::ParsingError, tokenstream::BorrowedTokenStream};
+use mira_common::store::StoreKey;
 
 use super::Parser;
 
@@ -108,12 +107,12 @@ macro_rules! parse_res {
 }
 
 struct ExpandContext<'arena> {
-    ctx: SharedContext<'arena>,
+    ctx: SharedCtx<'arena>,
     file: Arc<SourceFile>,
 }
 
 impl<'arena> ExpandContext<'arena> {
-    fn new(ctx: SharedContext<'arena>, file: Arc<SourceFile>) -> Self {
+    fn new(ctx: SharedCtx<'arena>, file: Arc<SourceFile>) -> Self {
         Self { ctx, file }
     }
 }

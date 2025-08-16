@@ -2,13 +2,13 @@ use std::fmt::{Arguments, Debug, Display, Write};
 
 use crate::{
     lang_items::LangItems,
-    module::Module,
-    store::{AssociatedStore, Store},
     typechecking::{
-        expression::TypecheckedExpression, TypecheckedFunctionContract, TypecheckedModule,
-        TypedStatic, TypedStruct, TypedTrait,
+        TypecheckedFunctionContract, TypecheckedModule, TypedStatic, TypedStruct, TypedTrait,
+        expression::TypecheckedExpression,
     },
 };
+use mira_common::store::{AssociatedStore, Store};
+use mira_parser::module::Module;
 
 pub const INDENT_STR: &str = "    ";
 

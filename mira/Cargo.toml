@@ -15,3 +15,5 @@ mira-spans.workspace = true
 mira-progress-bar.workspace = true
 crossbeam-channel.workspace = true
 mira-lexer.workspace = true
+mira-parser.workspace = true
+mira-common.workspace = true

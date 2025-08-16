@@ -14,4 +14,6 @@ mira.workspace = true
 mira-errors.workspace = true
 mira-macros.workspace = true
 mira-spans.workspace = true
+mira-parser.workspace = true
+mira-common.workspace = true
 inkwell.workspace = true

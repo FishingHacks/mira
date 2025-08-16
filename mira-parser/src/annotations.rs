@@ -5,10 +5,7 @@ use std::{
     sync::LazyLock,
 };
 
-use crate::{
-    error::ParsingError, lang_items::LangItemAnnotation, std_annotations, tokenstream::TokenStream,
-    typechecking::intrinsics::IntrinsicAnnotation,
-};
+use crate::{error::ParsingError, std_annotations, tokenstream::TokenStream};
 use mira_lexer::Token;
 use mira_spans::Span;
 
@@ -80,16 +77,6 @@ static ANNOTATIONS_REGISTRY: LazyLock<HashMap<&'static str, AnnotationParser>> =
     LazyLock::new(|| {
         let mut hashmap: HashMap<&'static str, AnnotationParser> = HashMap::new();
 
-        macro_rules! annotations {
-            ($($name:literal => $func:path),* $(,)?) => {
-                $(hashmap.insert($name, Box::new(|stream| Ok(Box::new($func(stream)?))));)*
-            };
-        }
-
-        annotations!(
-            "lang" => LangItemAnnotation::parse,
-            "intrinsic" => IntrinsicAnnotation::parse,
-        );
         std_annotations::add_annotations(&mut hashmap);
 
         hashmap

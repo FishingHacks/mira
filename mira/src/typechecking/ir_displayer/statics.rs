@@ -1,8 +1,8 @@
-use crate::store::StoreKey;
 use crate::typechecking::TypedStatic;
+use mira_common::store::StoreKey;
 
-use super::typed_literal::Tld;
 use super::Formatter;
+use super::typed_literal::Tld;
 
 pub struct StaticDisplay<'a>(pub &'a TypedStatic<'a>);
 

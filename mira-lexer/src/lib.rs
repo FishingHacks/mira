@@ -1,10 +1,8 @@
-use lexing_context::LexingContext;
-use mira_spans::{BytePos, SourceFile, Span, SpanData};
+use mira_spans::{BytePos, SharedCtx, SourceFile, Span, SpanData};
 use std::str::FromStr;
 use std::sync::Arc;
 
 mod error;
-pub mod lexing_context;
 pub mod token;
 pub use error::LexingError;
 pub use token::{Literal, NumberType, Token, TokenType};
@@ -22,11 +20,11 @@ pub struct Lexer<'arena> {
     tokens: Vec<Token<'arena>>,
     start: usize,
     current: usize,
-    ctx: LexingContext<'arena>,
+    ctx: SharedCtx<'arena>,
 }
 
 impl<'arena> Lexer<'arena> {
-    pub fn new(ctx: LexingContext<'arena>, file: Arc<SourceFile>) -> Self {
+    pub fn new(ctx: SharedCtx<'arena>, file: Arc<SourceFile>) -> Self {
         Self {
             source: file.source.chars().collect(),
             file,
@@ -708,7 +706,7 @@ mod test {
     }
 
     fn get_tokens<'arena>(
-        ctx: LexingContext<'arena>,
+        ctx: SharedCtx<'arena>,
         src: &str,
     ) -> (Vec<Token<'arena>>, Vec<LexingError<'arena>>) {
         let mut tokenizer = Lexer::new(
@@ -730,7 +728,7 @@ mod test {
     fn assert_token_eq(
         src: &str,
         expected_tokens: &[(TokenType, Option<Literal>)],
-        ctx: LexingContext,
+        ctx: SharedCtx,
     ) {
         let eof_token = (TokenType::Eof, None);
         let (tokens, errs) = get_tokens(ctx, src);
@@ -756,7 +754,7 @@ mod test {
             let span_interner = SpanInterner::new(&arena);
             let string_interner = Mutex::new(SymbolInterner::new(&arena));
             let source_map = SourceMap::new();
-            let ctx = LexingContext::new(&string_interner, &span_interner, &source_map);
+            let ctx = SharedCtx::new(&string_interner, &span_interner, &source_map);
             let (_, errs) = get_tokens(ctx, $str);
             $(
                 if i >= errs.len() {
@@ -803,7 +801,7 @@ mod test {
         let span_interner = SpanInterner::new(&arena);
         let string_interner = Mutex::new(SymbolInterner::new(&arena));
         let source_map = SourceMap::new();
-        let ctx = LexingContext::new(&string_interner, &span_interner, &source_map);
+        let ctx = SharedCtx::new(&string_interner, &span_interner, &source_map);
         assert_token_eq(
             r#"
 "a b c";
@@ -830,7 +828,7 @@ mod test {
         let span_interner = SpanInterner::new(&arena);
         let string_interner = Mutex::new(SymbolInterner::new(&arena));
         let source_map = SourceMap::new();
-        let ctx = LexingContext::new(&string_interner, &span_interner, &source_map);
+        let ctx = SharedCtx::new(&string_interner, &span_interner, &source_map);
         assert_token_eq(
             "jkhdfgkjhdf",
             &[tok!(ctx, IdentifierLiteral, jkhdfgkjhdf)],
@@ -851,7 +849,7 @@ mod test {
         let span_interner = SpanInterner::new(&arena);
         let string_interner = Mutex::new(SymbolInterner::new(&arena));
         let source_map = SourceMap::new();
-        let ctx = LexingContext::new(&string_interner, &span_interner, &source_map);
+        let ctx = SharedCtx::new(&string_interner, &span_interner, &source_map);
         assert_token_eq(
             "12; -23; 23.9; -29.3; 0x1; -0x1;",
             &[

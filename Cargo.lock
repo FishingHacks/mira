@@ -259,13 +259,19 @@ dependencies = [
  "cfg-if",
  "crossbeam-channel",
  "inkwell",
+ "mira-common",
  "mira-errors",
  "mira-lexer",
  "mira-macros",
+ "mira-parser",
  "mira-progress-bar",
  "mira-spans",
  "parking_lot",
 ]
+
+[[package]]
+name = "mira-common"
+version = "0.1.0"
 
 [[package]]
 name = "mira-driver"
@@ -273,9 +279,11 @@ version = "0.2.1"
 dependencies = [
  "crossbeam-channel",
  "mira",
+ "mira-common",
  "mira-errors",
  "mira-lexer",
  "mira-llvm-backend",
+ "mira-parser",
  "mira-progress-bar",
  "mira-spans",
  "parking_lot",
@@ -308,8 +316,10 @@ version = "0.2.1"
 dependencies = [
  "inkwell",
  "mira",
+ "mira-common",
  "mira-errors",
  "mira-macros",
+ "mira-parser",
  "mira-spans",
 ]
 
@@ -320,6 +330,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "mira-parser"
+version = "0.1.0"
+dependencies = [
+ "mira-common",
+ "mira-errors",
+ "mira-lexer",
+ "mira-macros",
+ "mira-spans",
+ "parking_lot",
 ]
 
 [[package]]

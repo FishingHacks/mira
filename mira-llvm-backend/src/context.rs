@@ -35,19 +35,18 @@ use inkwell::{
 };
 
 use mira::{
-    std_annotations::{
-        alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
-        noinline::Noinline, section::SectionAnnotation,
-    },
-    store::{AssociatedStore, StoreKey},
     target::{NATIVE_TARGET, Target},
     typechecking::{
         Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
         TypedStruct, TypedTrait, default_types,
         expression::{TypecheckedExpression, TypedLiteral},
-        intrinsics::IntrinsicAnnotation,
         typechecking::ScopeTypeMetadata,
     },
+};
+use mira_common::store::{AssociatedStore, StoreKey};
+use mira_parser::std_annotations::{
+    alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
+    intrinsic::IntrinsicAnnotation, noinline::Noinline, section::SectionAnnotation,
 };
 use mira_spans::interner::Symbol;
 

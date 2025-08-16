@@ -3,9 +3,13 @@ use std::{
     fmt::{Display, Write},
 };
 
-use crate::{error::ParsingError, module::Function, store::StoreKey, symbols};
+use crate::{error::ParsingError, module::Function};
+use mira_common::store::StoreKey;
 use mira_lexer::TokenType;
-use mira_spans::{Ident, Span, interner::Symbol};
+use mira_spans::{
+    Ident, Span,
+    interner::{Symbol, symbols},
+};
 
 use super::{Parser, Path, expression::PathWithoutGenerics};
 

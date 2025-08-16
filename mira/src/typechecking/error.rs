@@ -1,11 +1,11 @@
-use std::sync::Arc;
-
-use crate::{
-    error::FunctionList,
-    parser::{Path, PathWithoutGenerics},
+use std::{
+    fmt::{Display, Write},
+    sync::Arc,
 };
+
 use mira_lexer::token::IdentDisplay;
 use mira_macros::ErrorData;
+use mira_parser::{Path, PathWithoutGenerics};
 use mira_spans::{Span, interner::Symbol};
 
 use super::{ScopeKind, Ty};
@@ -332,4 +332,19 @@ pub enum TypecheckingError<'arena> {
         expected: Ty<'arena>,
         found: Ty<'arena>,
     },
+}
+
+pub struct FunctionList<'a>(pub &'a [Ty<'a>]);
+
+impl Display for FunctionList<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("fn(")?;
+        for i in 0..self.0.len() {
+            if i != 0 {
+                f.write_str(", ")?;
+            }
+            Display::fmt(&self.0[i], f)?;
+        }
+        f.write_char(')')
+    }
 }

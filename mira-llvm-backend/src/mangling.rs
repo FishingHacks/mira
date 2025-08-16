@@ -1,9 +1,9 @@
-use mira::module::ModuleScopeValue;
-use mira::std_annotations::alias::ExternAliasAnnotation;
-use mira::store::StoreKey;
 use mira::typechecking::{
     TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
 };
+use mira_common::store::StoreKey;
+use mira_parser::module::ModuleScopeValue;
+use mira_parser::std_annotations::alias::ExternAliasAnnotation;
 use std::fmt::Write;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;

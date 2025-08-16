@@ -1,12 +1,12 @@
 use mira_errors::{Diagnostics, ErrorData};
 use mira_lexer::{Literal, NumberType, Token, TokenType, token::IdentDisplay};
-use mira_spans::{Span, SpanData, Symbol};
+use mira_spans::{SharedCtx, Span, SpanData, Symbol};
 use std::fmt::Write;
 
-use crate::{context::SharedContext, tokenstream::BorrowedTokenStream};
+use crate::tokenstream::BorrowedTokenStream;
 
 type MacroFn<'arena> = fn(
-    SharedContext<'arena>,
+    SharedCtx<'arena>,
     Span<'arena>,
     &[Token<'arena>],
     diagnostics: &mut Diagnostics<'arena>,
@@ -48,7 +48,7 @@ struct NoArgMacro<'arena>(&'static str, #[primary_label("")] Span<'arena>);
 #[error("Environment variable {} is not defined", IdentDisplay(*_0))]
 struct UndefinedEnvVar<'arena>(Symbol<'arena>, #[primary_label("")] Span<'arena>);
 
-fn eof_span<'arena>(ctx: SharedContext<'arena>, span: Span<'arena>) -> Span<'arena> {
+fn eof_span<'arena>(ctx: SharedCtx<'arena>, span: Span<'arena>) -> Span<'arena> {
     let data = span.get_span_data();
     ctx.intern_span(SpanData::new(data.pos + data.len - 1, 1, data.file))
 }
@@ -60,7 +60,7 @@ macro_rules! err {
 }
 
 fn macro_env<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: SharedCtx<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
     diagnostics: &mut Diagnostics<'arena>,
@@ -96,7 +96,7 @@ fn macro_env<'arena>(
 }
 
 fn macro_concat<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: SharedCtx<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
     diagnostics: &mut Diagnostics<'arena>,
@@ -140,7 +140,7 @@ fn macro_concat<'arena>(
 }
 
 fn macro_concat_idents<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: SharedCtx<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
     diagnostics: &mut Diagnostics<'arena>,
@@ -170,7 +170,7 @@ fn macro_concat_idents<'arena>(
 }
 
 fn macro_line<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: SharedCtx<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
     diagnostics: &mut Diagnostics<'arena>,
@@ -181,7 +181,7 @@ fn macro_line<'arena>(
     }
     let data = span.get_span_data();
     let line = ctx
-        .source_map()
+        .source_map
         .lookup_line(data.file, data.pos)
         .map(|v| v + 1)
         .unwrap_or_default();
@@ -193,7 +193,7 @@ fn macro_line<'arena>(
 }
 
 fn macro_column<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: SharedCtx<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
     diagnostics: &mut Diagnostics<'arena>,
@@ -203,7 +203,7 @@ fn macro_column<'arena>(
         return Err(());
     }
     let data = span.get_span_data();
-    let column = ctx.source_map().lookup_file_pos(data.file, data.pos).1;
+    let column = ctx.source_map.lookup_file_pos(data.file, data.pos).1;
     Ok(vec![Token {
         span,
         literal: Some(Literal::UInt(column as u64, NumberType::U32)),
@@ -212,7 +212,7 @@ fn macro_column<'arena>(
 }
 
 fn macro_file<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: SharedCtx<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
     diagnostics: &mut Diagnostics<'arena>,
@@ -225,7 +225,7 @@ fn macro_file<'arena>(
         span,
         literal: Some(Literal::String(
             ctx.intern_str(
-                &ctx.source_map()
+                &ctx.source_map
                     .get_file(span.get_span_data().file)
                     .unwrap()
                     .path
@@ -238,7 +238,7 @@ fn macro_file<'arena>(
 }
 
 fn macro_compile_error<'arena>(
-    _: SharedContext<'arena>,
+    _: SharedCtx<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
     diagnostics: &mut Diagnostics<'arena>,
@@ -262,7 +262,7 @@ fn macro_compile_error<'arena>(
 struct CompileError<'arena>(String, #[primary_label("")] Span<'arena>);
 
 fn macro_stringify<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: SharedCtx<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
     _: &mut Diagnostics<'arena>,

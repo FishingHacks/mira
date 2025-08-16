@@ -1,60 +1,15 @@
 use mira_errors::{Diagnostic, Diagnostics};
 use mira_lexer::token::IdentDisplay;
-use std::fmt::{Debug, Display, Write};
+use std::fmt::{Debug, Display};
 
-use crate::context::SharedContext;
-use crate::store::StoreKey;
+use crate::context::TypeCtx;
 use crate::typechecking::{
-    Ty, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct, default_types,
+    FunctionList, Ty, TyKind, TypecheckedFunctionContract, TypecheckingContext,
+    TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct, TypedTrait, default_types,
 };
-use crate::{
-    annotations::{Annotation, AnnotationReceiver, Annotations},
-    error::{FunctionList, ParsingError},
-    tokenstream::TokenStream,
-    typechecking::{TyKind, TypecheckedFunctionContract, TypecheckingContext, TypedTrait},
-};
+use mira_common::store::StoreKey;
 use mira_macros::ErrorData;
 use mira_spans::{Span, interner::Symbol};
-
-#[derive(Clone, Debug)]
-pub struct LangItemAnnotation(String);
-
-impl Annotation for LangItemAnnotation {
-    fn get_name(&self) -> &'static str {
-        "lang"
-    }
-
-    fn is_valid_for(&self, thing: AnnotationReceiver, _: &Annotations) -> bool {
-        matches!(
-            thing,
-            AnnotationReceiver::Function
-                | AnnotationReceiver::ExternalFunction
-                | AnnotationReceiver::Struct
-                | AnnotationReceiver::Trait
-                | AnnotationReceiver::Static
-        )
-    }
-}
-
-impl LangItemAnnotation {
-    pub fn get_langitem(&self) -> &str {
-        &self.0
-    }
-
-    pub fn parse(mut tokens: TokenStream) -> Result<Self, ParsingError> {
-        let (item, _) = tokens.expect_string()?;
-        tokens.finish()?;
-        Ok(LangItemAnnotation(item.to_string()))
-    }
-}
-
-impl Display for LangItemAnnotation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("@lang(")?;
-        Debug::fmt(&self.0, f)?;
-        f.write_char(')')
-    }
-}
 
 struct LangItemTrait<'arena> {
     funcs: Vec<(Symbol<'arena>, LangItemFunction<'arena>)>,
@@ -81,12 +36,12 @@ macro_rules! lang_item_def {
     ($($lang_item: ident => $ty: ident),* $(,)?) => {
         #[derive(Debug)]
         pub struct LangItems<'arena> {
-            ctx: SharedContext<'arena>,
+            ctx: TypeCtx<'arena>,
             $(pub $lang_item: Option<lang_item_def!(underlying_typ $ty)>,)*
         }
 
         impl<'arena> LangItems<'arena> {
-            pub fn new(ctx: SharedContext<'arena>) -> Self {
+            pub fn new(ctx: TypeCtx<'arena>) -> Self {
                 Self {
                     ctx,
                     $($lang_item: None),*
@@ -173,6 +128,8 @@ macro_rules! lang_item_def {
 }
 
 #[derive(Debug, Clone, Copy)]
+// TODO: remove after adding a function langitem
+#[allow(dead_code)]
 pub enum FunctionLangItem<'arena> {
     External(StoreKey<TypedExternalFunction<'arena>>),
     Internal(StoreKey<TypedFunction<'arena>>),

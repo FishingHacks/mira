@@ -5,16 +5,14 @@ use mira_errors::Diagnostics;
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
 
-use mira::{
-    context::SharedContext,
-    error::{ParsingError, ProgramFormingError},
-    module::{Module, ModuleContext, ParserQueueEntry},
-    parser::Parser,
-    store::{Store, StoreKey},
-    threadpool::ThreadPool,
-};
+use mira::{context::TypeCtx, threadpool::ThreadPool};
+use mira_common::store::{Store, StoreKey};
 use mira_errors::IoReadError;
 use mira_lexer::{Lexer, LexingError};
+use mira_parser::{
+    Parser, ParsingError, ProgramFormingError,
+    module::{Module, ModuleContext, ParserQueueEntry},
+};
 use mira_spans::SourceFile;
 
 use crate::EmitMethod;
@@ -37,8 +35,7 @@ fn parse_single<'arena>(
         parsing_item,
         format!("Tokenizing {}", file.path.display()).into_boxed_str(),
     );
-    let lexing_ctx = module_context.ctx.into();
-    let mut lexer = Lexer::new(lexing_ctx, file.clone());
+    let mut lexer = Lexer::new(module_context.ctx, file.clone());
 
     if let Err(errs) = lexer.scan_tokens() {
         errors
@@ -56,12 +53,8 @@ fn parse_single<'arena>(
     let tokens = lexer.into_tokens();
     let tokens = {
         let mut diagnostics = Diagnostics::new();
-        match mira::parser::expand_tokens(
-            module_context.ctx,
-            file.clone(),
-            tokens,
-            &mut diagnostics,
-        ) {
+        match mira_parser::expand_tokens(module_context.ctx, file.clone(), tokens, &mut diagnostics)
+        {
             Some(v) => v,
             None => {
                 errors.write().extend(diagnostics);
@@ -114,7 +107,7 @@ fn parse_single<'arena>(
 /// `source` - The source that will be parsed
 #[allow(clippy::too_many_arguments)]
 pub fn parse_all<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: TypeCtx<'arena>,
     progress_bar: ProgressBarThread,
     parsing_item: ProgressItemRef,
 ) -> Result<Arc<ModuleContext<'arena>>, Diagnostics<'arena>> {
@@ -141,7 +134,7 @@ pub fn parse_all<'arena>(
         .iter()
         .map(|e| (e.package, e.module_key))
         .collect();
-    let module_context = Arc::new(ModuleContext::new(packages, module_store, ctx));
+    let module_context = Arc::new(ModuleContext::new(packages, module_store, ctx.into()));
     let parsing_queue = Arc::new(RwLock::new(parsing_queue));
     let (finish_sender, finish_receiver) = bounded::<()>(1);
 
@@ -216,7 +209,7 @@ pub fn parse_all<'arena>(
 }
 
 pub fn expand_macros<'a>(
-    ctx: SharedContext<'a>,
+    ctx: TypeCtx<'a>,
     file: Arc<Path>,
     mut output: EmitMethod,
 ) -> Result<(), Diagnostics<'a>> {
@@ -239,7 +232,7 @@ pub fn expand_macros<'a>(
 
     let file = lexer.file.clone();
     let tokens = lexer.into_tokens();
-    let tokens = match mira::parser::expand_tokens(ctx, file.clone(), tokens, &mut diags) {
+    let tokens = match mira_parser::expand_tokens(ctx.into(), file.clone(), tokens, &mut diags) {
         Some(v) => v,
         None => return Err(diags),
     };

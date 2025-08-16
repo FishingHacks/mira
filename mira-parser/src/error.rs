@@ -1,16 +1,15 @@
 use std::{
-    fmt::{Debug, Display, Write},
+    fmt::{Debug, Display},
     path::PathBuf,
 };
 
-pub use mira_errors::{Diagnostic, Diagnostics};
 use mira_macros::ErrorData;
 
-use crate::{annotations::AnnotationReceiver, typechecking::Ty};
+use crate::annotations::AnnotationReceiver;
 use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_spans::{Span, interner::Symbol};
-
 struct ExpectedOneOfDisplay<'a, T>(&'a [T]);
+
 impl<T: Display> Display for ExpectedOneOfDisplay<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.0.is_empty() {
@@ -245,19 +244,4 @@ pub enum ProgramFormingError<'arena> {
         "if there is a `mod {_0}` elsewhere in the package, import it with `use crate::...` instead", _0 = IdentDisplay(*_0)
     )]
     FileNotFoundErr(Symbol<'arena>, #[primary_label("")] Span<'arena>, PathBuf),
-}
-
-pub struct FunctionList<'a>(pub &'a [Ty<'a>]);
-
-impl Display for FunctionList<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("fn(")?;
-        for i in 0..self.0.len() {
-            if i != 0 {
-                f.write_str(", ")?;
-            }
-            Display::fmt(&self.0[i], f)?;
-        }
-        f.write_char(')')
-    }
 }

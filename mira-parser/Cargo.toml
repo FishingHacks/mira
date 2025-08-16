@@ -1,0 +1,12 @@
+[package]
+name = "mira-parser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mira-lexer.workspace = true
+mira-spans.workspace = true
+mira-common.workspace = true
+mira-errors.workspace = true
+mira-macros.workspace = true
+parking_lot.workspace = true

@@ -6,16 +6,11 @@ use std::{
 };
 
 use crate::{
-    annotations::Annotations,
-    context::SharedContext,
-    error::ProgramFormingError,
-    parser::{
-        Expression, FunctionContract, Generic, LiteralValue, PathWithoutGenerics, Statement, Trait,
-        TypeRef,
-    },
-    store::{Store, StoreKey},
+    Expression, FunctionContract, Generic, LiteralValue, PathWithoutGenerics, Statement, Trait,
+    TypeRef, annotations::Annotations, error::ProgramFormingError,
 };
-use mira_spans::{FileId, Ident, PackageId, SourceFile, Span};
+use mira_common::store::{Store, StoreKey};
+use mira_spans::{FileId, Ident, PackageId, SharedCtx, SourceFile, Span};
 
 mod module_resolution;
 
@@ -64,7 +59,7 @@ pub type Static<'arena> = (
 );
 
 pub struct ModuleContext<'arena> {
-    pub ctx: SharedContext<'arena>,
+    pub ctx: SharedCtx<'arena>,
     pub modules: RwLock<Store<Module<'arena>>>,
     pub packages: HashMap<PackageId, StoreKey<Module<'arena>>>,
     pub functions: RwLock<Store<Function<'arena>>>,
@@ -78,7 +73,7 @@ impl<'arena> ModuleContext<'arena> {
     pub fn new(
         packages: HashMap<PackageId, StoreKey<Module<'arena>>>,
         modules: Store<Module<'arena>>,
-        ctx: SharedContext<'arena>,
+        ctx: SharedCtx<'arena>,
     ) -> Self {
         Self {
             ctx,
@@ -363,12 +358,12 @@ impl<'arena> Module<'arena> {
                     ));
                 }
                 let file = module_resolution::resolve_module(
-                    context.ctx.span_interner(),
+                    context.ctx.span_interner,
                     name,
                     &self.file,
-                    context.ctx.source_map(),
+                    context.ctx.source_map,
                     span,
-                    span.last(context.ctx.span_interner()),
+                    span.last(context.ctx.span_interner),
                 )?;
                 let module_key = modules.write().reserve_key();
                 parser_queue.write().push(ParserQueueEntry {

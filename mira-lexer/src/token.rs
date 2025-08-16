@@ -186,10 +186,16 @@ impl<'arena> From<Token<'arena>> for Ident<'arena> {
 }
 
 pub struct IdentDisplay<'a>(pub Symbol<'a>);
+pub struct StrIdentDisplay<'a>(pub &'a str);
 
-impl Display for IdentDisplay<'_> {
+impl Display for StrIdentDisplay<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         display_ident(f, self.0)
+    }
+}
+impl Display for IdentDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        display_ident(f, self.0.to_str())
     }
 }
 
@@ -217,11 +223,11 @@ impl Display for TokenType {
     }
 }
 
-fn display_ident(f: &mut std::fmt::Formatter, ident: Symbol) -> std::fmt::Result {
+fn display_ident(f: &mut std::fmt::Formatter, ident: &str) -> std::fmt::Result {
     // only idents that are >= 1 character and only alphanumeric + #, $, _ and don't start with a
     // number can be printed without a string
     let needs_str = matches!(ident.chars().next(), Some('0'..='9') | None)
-        || Lexer::try_token_from_keyword(ident.to_str()).is_some()
+        || Lexer::try_token_from_keyword(ident).is_some()
         || ident
             .chars()
             .any(|c| !matches!(c, 'a'..='z'|'A'..='Z'|'0'..='9'|'#'|'$'|'_'));
@@ -232,7 +238,7 @@ fn display_ident(f: &mut std::fmt::Formatter, ident: Symbol) -> std::fmt::Result
         }
         f.write_char('`')
     } else {
-        f.write_str(&ident)
+        f.write_str(ident)
     }
 }
 
@@ -247,7 +253,7 @@ impl Display for Token<'_> {
                 _ => f.write_str("bool(malformed data)"),
             },
             TokenType::IdentifierLiteral => match &self.literal {
-                Some(Literal::String(v)) => display_ident(f, *v),
+                Some(Literal::String(v)) => display_ident(f, v),
                 _ => f.write_str("identifier(malformed data)"),
             },
             TokenType::FloatLiteral => match self.literal {
@@ -268,7 +274,7 @@ impl Display for Token<'_> {
             },
             TokenType::MacroInvocation => match &self.literal {
                 Some(Literal::String(v)) => {
-                    display_ident(f, *v)?;
+                    display_ident(f, v)?;
                     f.write_char('!')
                 }
                 _ => f.write_str("macro_invocation(malformed data)!"),

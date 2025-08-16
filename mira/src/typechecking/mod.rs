@@ -13,16 +13,15 @@ use type_resolution::ResolvingState;
 use expression::{TypecheckedExpression, TypedLiteral};
 use types::{FunctionType, resolve_primitive_type, with_refcount};
 
-use crate::{
+use crate::{context::TypeCtx, lang_items::LangItems};
+use mira_common::store::{AssociatedStore, Store, StoreKey};
+use mira_parser::{
+    Trait, TypeRef,
     annotations::Annotations,
-    context::SharedContext,
-    lang_items::LangItems,
     module::{
         BakedStruct, ExternalFunction, Function, Import, Module, ModuleContext, ModuleScopeValue,
         Static,
     },
-    parser::{Trait, TypeRef},
-    store::{AssociatedStore, Store, StoreKey},
 };
 use mira_spans::{
     ArenaList, Ident, Span,
@@ -37,7 +36,7 @@ mod type_resolution;
 #[allow(clippy::module_inception)]
 pub mod typechecking;
 mod types;
-pub use error::{TypecheckingError, TypecheckingErrorDiagnosticsExt};
+pub use error::{FunctionList, TypecheckingError, TypecheckingErrorDiagnosticsExt};
 pub use types::{Ty, TyKind, TyList, TypeInterner, TypeListInterner, default_types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,7 +155,7 @@ pub struct TypecheckingContext<'arena> {
     pub traits: RwLock<Store<TypedTrait<'arena>>>,
     pub lang_items: RwLock<LangItems<'arena>>,
     pub main_function: OnceLock<StoreKey<TypedFunction<'arena>>>,
-    pub ctx: SharedContext<'arena>,
+    pub ctx: TypeCtx<'arena>,
 }
 
 pub struct TypecheckedModule<'arena> {
@@ -178,7 +177,7 @@ impl Debug for TypecheckedModule<'_> {
 impl<'arena> TypecheckingContext<'arena> {
     pub fn validate_main_function(
         &self,
-        ctx: SharedContext<'arena>,
+        ctx: TypeCtx<'arena>,
         module_ctx: &ModuleContext<'arena>,
     ) -> Result<(), TypecheckingError<'arena>> {
         let main_package = ctx.source_map().main_package();
@@ -201,10 +200,7 @@ impl<'arena> TypecheckingContext<'arena> {
         Ok(())
     }
 
-    pub fn new(
-        ctx: SharedContext<'arena>,
-        module_context: Arc<ModuleContext<'arena>>,
-    ) -> Arc<Self> {
+    pub fn new(ctx: TypeCtx<'arena>, module_context: Arc<ModuleContext<'arena>>) -> Arc<Self> {
         let traits_reader = module_context.traits.read();
         let structs_reader = module_context.structs.read();
         let statics_reader = module_context.statics.read();
@@ -879,7 +875,7 @@ fn resolve_import<'arena>(
         }
     } else if let Some(package) = context
         .ctx
-        .source_map()
+        .source_map
         .get_package(package)
         .dependencies
         .get(&*import[0])

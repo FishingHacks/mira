@@ -1,12 +1,10 @@
 use std::collections::HashSet;
 
-use crate::{
-    store::StoreKey,
-    typechecking::{
-        expression::{TypecheckedExpression, TypedLiteral},
-        TypecheckingContext, TypedFunction, TypedStatic,
-    },
+use crate::typechecking::{
+    TypecheckingContext, TypedFunction, TypedStatic,
+    expression::{TypecheckedExpression, TypedLiteral},
 };
+use mira_common::store::StoreKey;
 
 struct DceContext<'tc, 'arena> {
     used_functions: HashSet<StoreKey<TypedFunction<'arena>>>,

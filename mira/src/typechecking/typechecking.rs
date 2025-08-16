@@ -1,22 +1,20 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{
-    context::SharedContext,
-    module::{ModuleContext, ModuleScopeValue},
-    parser::{ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp},
-    std_annotations::ext_vararg::ExternVarArg,
-    store::StoreKey,
-    typechecking::typed_resolve_import,
-};
+use crate::{context::TypeCtx, typechecking::typed_resolve_import};
+use mira_common::store::StoreKey;
 use mira_errors::{Diagnostic, Diagnostics};
 use mira_lexer::NumberType;
+use mira_parser::{
+    ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp,
+    module::{ModuleContext, ModuleScopeValue},
+    std_annotations::{ext_vararg::ExternVarArg, intrinsic::IntrinsicAnnotation},
+};
 use mira_spans::{ArenaList, Ident, Span};
 
 use super::{
     TypecheckedModule, TypecheckingContext, TypecheckingError, TypecheckingErrorDiagnosticsExt,
     TypedExternalFunction, TypedFunction, TypedStatic, TypedTrait, default_types,
     expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
-    intrinsics::IntrinsicAnnotation,
     types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
 };
 
@@ -983,7 +981,7 @@ fn typecheck_expression<'arena>(
             inputs,
         } => {
             let name = match output {
-                crate::parser::TypeRef::Reference { type_name, .. } => Some(type_name.entries[0].0),
+                mira_parser::TypeRef::Reference { type_name, .. } => Some(type_name.entries[0].0),
                 _ => None,
             };
             // this should never fail unless this is an incompatible type (non-primitive)
@@ -2152,7 +2150,7 @@ fn make_reference<'arena>(
     typ: Ty<'arena>,
     mut typed_literal: TypedLiteral<'arena>,
     loc: Span<'arena>,
-    ctx: SharedContext<'arena>,
+    ctx: TypeCtx<'arena>,
 ) -> TypedLiteral<'arena> {
     match typed_literal {
         TypedLiteral::Void | TypedLiteral::Static(_) => {}

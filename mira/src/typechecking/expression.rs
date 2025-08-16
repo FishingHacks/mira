@@ -3,13 +3,15 @@ use std::{
     ops::BitAnd,
 };
 
-use crate::{annotations::Annotations, store::StoreKey, typechecking::types::FunctionType};
+use crate::typechecking::types::FunctionType;
+use mira_common::store::StoreKey;
+use mira_parser::annotations::Annotations;
+use mira_parser::std_annotations::intrinsic::Intrinsic;
 use mira_spans::{Span, interner::Symbol};
 
 use super::{
     Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
     TypedStruct, TypedTrait, default_types,
-    intrinsics::Intrinsic,
     typechecking::{ScopeTypeMetadata, ScopeValueId},
 };
 

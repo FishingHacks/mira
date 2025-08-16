@@ -3,35 +3,36 @@ use std::{
     sync::Arc,
 };
 
-use crate::{
-    annotations::Annotations,
-    context::SharedContext,
-    module::Module,
-    store::StoreKey,
-    tokenstream::{BorrowedTokenStream, TokenStream},
-};
+use annotations::Annotations;
+pub use error::{ParsingError, ProgramFormingError};
 pub use expand::expand_tokens;
 pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
+use mira_common::store::StoreKey;
 use mira_lexer::{Token, TokenType};
-use mira_spans::{BytePos, SourceFile, SpanData};
+use mira_spans::{BytePos, SharedCtx, SourceFile, SpanData};
+use module::Module;
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
+use tokenstream::{BorrowedTokenStream, TokenStream};
 pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, TypeRef};
 
+pub mod annotations;
+mod error;
 mod expand;
 mod expression;
+pub mod module;
 mod statement;
+pub mod std_annotations;
+pub mod tokenstream;
 mod types;
 
 pub struct Parser<'a, 'arena> {
-    pub ctx: SharedContext<'arena>,
+    pub ctx: SharedCtx<'arena>,
     pub file: Arc<SourceFile>,
 
     stream: BorrowedTokenStream<'arena, 'a>,
     current_annotations: Annotations<'arena>,
-    /// all imports
-    // pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
     pub key: StoreKey<Module<'arena>>,
 }
 
@@ -41,14 +42,13 @@ impl std::fmt::Debug for Parser<'_, '_> {
             .field("file", &self.file.path)
             .field("root_directory", &self.file.package_root)
             .field("current_annotations", &self.current_annotations)
-            // .field("imports", &self.imports)
             .finish()
     }
 }
 
 impl<'a, 'arena> Parser<'a, 'arena> {
     pub fn from_tokens(
-        ctx: SharedContext<'arena>,
+        ctx: SharedCtx<'arena>,
         tokens: &'a [Token<'arena>],
         file: Arc<SourceFile>,
         key: StoreKey<Module<'arena>>,
@@ -59,7 +59,7 @@ impl<'a, 'arena> Parser<'a, 'arena> {
     }
 
     pub fn new(
-        ctx: SharedContext<'arena>,
+        ctx: SharedCtx<'arena>,
         stream: BorrowedTokenStream<'arena, 'a>,
         file: Arc<SourceFile>,
         key: StoreKey<Module<'arena>>,
@@ -75,23 +75,6 @@ impl<'a, 'arena> Parser<'a, 'arena> {
             // imports: HashMap::new(),
         }
     }
-
-    // fn add_import(
-    //     &mut self,
-    //     ident: Ident<'arena>,
-    //     span: Span<'arena>,
-    //     import: Import<'arena>,
-    // ) -> Result<(), ParsingError<'arena>> {
-    //     if let Some((first, _)) = self.imports.get(&ident) {
-    //         return Err(ParsingError::ItemAlreadyDefined {
-    //             loc: ident.span(),
-    //             name: ident.symbol(),
-    //             first: *first,
-    //         });
-    //     }
-    //     self.imports.insert(ident, (span, import));
-    //     Ok(())
-    // }
 
     // gets to the next sensical expression/type boundary
     pub fn bail(&mut self) {

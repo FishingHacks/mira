@@ -7,8 +7,8 @@ use crate::{
     annotations::AnnotationReceiver,
     error::ParsingError,
     module::{Function, Module, ModuleContext},
-    store::StoreKey,
 };
+use mira_common::store::StoreKey;
 use mira_lexer::{Literal, NumberType, Token, TokenType};
 use mira_spans::{
     Ident, Span,
@@ -110,7 +110,7 @@ impl<'arena> Path<'arena> {
 
             path.push(subpath, generics);
         }
-        path.readjust_self_span(parser.ctx.span_interner());
+        path.readjust_self_span(parser.ctx.span_interner);
 
         Ok(path)
     }
@@ -153,7 +153,7 @@ impl<'arena> PathWithoutGenerics<'arena> {
             path.push(name);
         }
 
-        path.readjust_self_span(parser.ctx.span_interner());
+        path.readjust_self_span(parser.ctx.span_interner);
         Ok(path)
     }
 
@@ -312,9 +312,10 @@ impl<'arena> LiteralValue<'arena> {
             }),
             TokenType::VoidLiteral => Some(LiteralValue::Void),
             TokenType::IdentifierLiteral => match value.literal {
-                Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(
-                    crate::parser::Path::new(Ident::new(*v, value.span), Vec::new()),
-                )),
+                Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(crate::Path::new(
+                    Ident::new(*v, value.span),
+                    Vec::new(),
+                ))),
                 _ => None,
             },
             _ => None,
@@ -857,7 +858,7 @@ impl<'arena> Parser<'_, 'arena> {
             asm.replace_range(occurence..occurence + to_replace.len(), value);
         }
         Ok(Expression::Asm {
-            span: span1.combine_with([span2], self.ctx.span_interner()),
+            span: span1.combine_with([span2], self.ctx.span_interner),
             asm,
             volatile,
             output,
@@ -895,7 +896,7 @@ impl<'arena> Parser<'_, 'arena> {
             expr = Expression::binary(
                 op,
                 expr.span()
-                    .combine_with([right.span()], self.ctx.span_interner()),
+                    .combine_with([right.span()], self.ctx.span_interner),
                 expr,
                 right,
             );
@@ -920,7 +921,7 @@ impl<'arena> Parser<'_, 'arena> {
                     expr = Expression::FunctionCall {
                         identifier,
                         arguments,
-                        span: span.combine_with([expr_span], self.ctx.span_interner()),
+                        span: span.combine_with([expr_span], self.ctx.span_interner),
                     };
                 }
                 e => return Err(ParsingError::ExpectedFunctionCall { loc: e.span() }),
@@ -961,7 +962,7 @@ impl<'arena> Parser<'_, 'arena> {
             let right = self.factor()?;
             let span = expr
                 .span()
-                .combine_with([right.span()], self.ctx.span_interner());
+                .combine_with([right.span()], self.ctx.span_interner);
 
             match operator.typ {
                 TokenType::PlusAssign => {
@@ -1003,7 +1004,7 @@ impl<'arena> Parser<'_, 'arena> {
             let right = self.unary()?;
             let span = expr
                 .span()
-                .combine_with([right.span()], self.ctx.span_interner());
+                .combine_with([right.span()], self.ctx.span_interner);
             if self.match_tok(TokenType::Equal) {
                 assign_set!(expr, right, op, span);
             } else {
@@ -1030,7 +1031,7 @@ impl<'arena> Parser<'_, 'arena> {
             };
             let span = self.current().span;
             let next = self.unary()?;
-            let span = span.combine_with([next.span()], self.ctx.span_interner());
+            let span = span.combine_with([next.span()], self.ctx.span_interner);
             return Ok(Expression::unary(operator, span, next));
         }
 
@@ -1043,7 +1044,7 @@ impl<'arena> Parser<'_, 'arena> {
             let value = self.parse_expression()?;
             let span = expr
                 .span()
-                .combine_with([value.span()], self.ctx.span_interner());
+                .combine_with([value.span()], self.ctx.span_interner);
             return Ok(Expression::Assignment {
                 left_side: Box::new(expr),
                 right_side: Box::new(value),
@@ -1060,7 +1061,7 @@ impl<'arena> Parser<'_, 'arena> {
             let new_type = TypeRef::parse(self)?;
             let span = expr
                 .span()
-                .combine_with([new_type.span()], self.ctx.span_interner());
+                .combine_with([new_type.span()], self.ctx.span_interner);
             expr = Expression::TypeCast {
                 left_side: Box::new(expr),
                 new_type,
@@ -1076,7 +1077,7 @@ impl<'arena> Parser<'_, 'arena> {
             let right = self.references()?;
             let span = right
                 .span()
-                .combine_with([self.current().span], self.ctx.span_interner());
+                .combine_with([self.current().span], self.ctx.span_interner);
             Ok(Expression::Unary {
                 operator: UnaryOp::Reference,
                 span,
@@ -1086,7 +1087,7 @@ impl<'arena> Parser<'_, 'arena> {
             let right = self.references()?;
             let span = right
                 .span()
-                .combine_with([self.current().span], self.ctx.span_interner());
+                .combine_with([self.current().span], self.ctx.span_interner);
             let expr = Expression::Unary {
                 operator: UnaryOp::Reference,
                 span,
@@ -1101,7 +1102,7 @@ impl<'arena> Parser<'_, 'arena> {
             let right = self.references()?;
             let span = right
                 .span()
-                .combine_with([self.current().span], self.ctx.span_interner());
+                .combine_with([self.current().span], self.ctx.span_interner);
             Ok(Expression::Unary {
                 operator: UnaryOp::Dereference,
                 span,
@@ -1150,7 +1151,7 @@ impl<'arena> Parser<'_, 'arena> {
                         span: self
                             .current()
                             .span
-                            .combine_with([expr.span()], self.ctx.span_interner()),
+                            .combine_with([expr.span()], self.ctx.span_interner),
                         identifier: Box::new(expr),
                         arguments,
                     };
@@ -1165,7 +1166,7 @@ impl<'arena> Parser<'_, 'arena> {
                         span: self
                             .current()
                             .span
-                            .combine_with([span], self.ctx.span_interner()),
+                            .combine_with([span], self.ctx.span_interner),
                         identifier: index
                             .pop()
                             .expect("member access did not access any members"),
@@ -1180,7 +1181,7 @@ impl<'arena> Parser<'_, 'arena> {
                         span: self
                             .current()
                             .span
-                            .combine_with([expr.span()], self.ctx.span_interner()),
+                            .combine_with([expr.span()], self.ctx.span_interner),
                         identifier: Box::new(expr),
                         arguments,
                     };
@@ -1193,7 +1194,7 @@ impl<'arena> Parser<'_, 'arena> {
                     span: self
                         .current()
                         .span
-                        .combine_with([expr.span()], self.ctx.span_interner()),
+                        .combine_with([expr.span()], self.ctx.span_interner),
                     left_side: Box::new(expr),
                     right_side: Box::new(indexing_expr),
                 };
@@ -1207,7 +1208,7 @@ impl<'arena> Parser<'_, 'arena> {
                     span: self
                         .current()
                         .span
-                        .combine_with([expr.span()], self.ctx.span_interner()),
+                        .combine_with([expr.span()], self.ctx.span_interner),
                     left_side: Box::new(expr),
                     index: vec![name],
                 };
@@ -1246,7 +1247,7 @@ impl<'arena> Parser<'_, 'arena> {
                 let span = self
                     .current()
                     .span
-                    .combine_with([span1], self.ctx.span_interner());
+                    .combine_with([span1], self.ctx.span_interner);
                 return Ok(Expression::Literal(LiteralValue::Tuple(elements), span));
             } else if typ == TokenType::CurlyLeft {
                 return self
@@ -1256,7 +1257,7 @@ impl<'arena> Parser<'_, 'arena> {
                     .map(move |v| Expression::Literal(v, self
                         .current()
                         .span
-                        .combine_with([span1], self.ctx.span_interner())));
+                        .combine_with([span1], self.ctx.span_interner)));
             } else {
                 unreachable!()
             }
@@ -1357,7 +1358,7 @@ impl<'arena> Parser<'_, 'arena> {
             let span = self
                 .peek()
                 .span
-                .combine_with([span], self.ctx.span_interner());
+                .combine_with([span], self.ctx.span_interner);
             Ok(Some(Expression::Literal(
                 LiteralValue::Array(ArrayLiteral::Values(arr)),
                 span,

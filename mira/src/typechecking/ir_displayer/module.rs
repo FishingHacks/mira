@@ -1,4 +1,6 @@
-use crate::{module::ModuleScopeValue, store::StoreKey, typechecking::TypecheckedModule};
+use crate::typechecking::TypecheckedModule;
+use mira_common::store::StoreKey;
+use mira_parser::module::ModuleScopeValue;
 
 use super::formatter::Formatter;
 

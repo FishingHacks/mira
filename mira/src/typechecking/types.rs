@@ -2,10 +2,10 @@ use mira_spans::{Arena, ArenaList, extra_traits, interner, owned_intern};
 use std::fmt::{Debug, Display, Write};
 use std::hash::Hash;
 
-use crate::context::SharedContext;
-use crate::parser::TypeRef;
-use crate::store::{Store, StoreKey};
+use crate::context::TypeCtx;
+use mira_common::store::{Store, StoreKey};
 use mira_lexer::NumberType;
+use mira_parser::TypeRef;
 use mira_spans::Ident;
 
 use super::{TypecheckingContext, TypedStruct, TypedTrait};
@@ -130,7 +130,7 @@ pub enum TyKind<'arena> {
 /// e.g.(u8, 6) -> &&&&&&u8
 /// e.g. (&&u8, 2) -> &&&&u8
 pub fn with_refcount<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: TypeCtx<'arena>,
     mut ty: Ty<'arena>,
     mut refcount: u8,
 ) -> Ty<'arena> {
@@ -142,7 +142,7 @@ pub fn with_refcount<'arena>(
 }
 
 pub fn resolve_primitive_type<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: TypeCtx<'arena>,
     typ: &TypeRef<'arena>,
 ) -> Option<Ty<'arena>> {
     match typ {
@@ -216,7 +216,7 @@ impl<'arena> Ty<'arena> {
         self
     }
 
-    pub fn take_ref(self, ctx: SharedContext<'arena>) -> Self {
+    pub fn take_ref(self, ctx: TypeCtx<'arena>) -> Self {
         if self == default_types::never {
             self
         } else {
@@ -224,7 +224,7 @@ impl<'arena> Ty<'arena> {
         }
     }
 
-    pub fn with_num_refs(mut self, num_refs: u8, ctx: SharedContext<'arena>) -> Self {
+    pub fn with_num_refs(mut self, num_refs: u8, ctx: TypeCtx<'arena>) -> Self {
         let refcount = self.refcount();
         if refcount == num_refs {
             return self;

@@ -1,17 +1,17 @@
-use mira_spans::{
+use crate::{
     SourceMap, Span, SpanData, Symbol,
     interner::{SpanInterner, SymbolInterner},
 };
 use parking_lot::Mutex;
 
 #[derive(Clone, Copy)]
-pub struct LexingContext<'arena> {
+pub struct SharedCtx<'arena> {
     string_interner: &'arena Mutex<SymbolInterner<'arena>>,
     pub span_interner: &'arena SpanInterner<'arena>,
     pub source_map: &'arena SourceMap,
 }
 
-impl<'arena> LexingContext<'arena> {
+impl<'arena> SharedCtx<'arena> {
     pub fn new(
         string_interner: &'arena Mutex<SymbolInterner<'arena>>,
         span_interner: &'arena SpanInterner<'arena>,

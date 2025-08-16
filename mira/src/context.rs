@@ -1,7 +1,7 @@
 use std::{fmt::Debug, io::IsTerminal};
 
 use mira_errors::{DiagnosticFormatter, Output, StyledPrinter, Styles};
-use mira_lexer::lexing_context::LexingContext;
+use mira_spans::SharedCtx;
 use parking_lot::Mutex;
 
 use mira_spans::{
@@ -38,15 +38,15 @@ impl<'arena> GlobalContext<'arena> {
         }
     }
 
-    pub fn share(&'arena self) -> SharedContext<'arena> {
-        SharedContext(self)
+    pub fn share(&'arena self) -> TypeCtx<'arena> {
+        TypeCtx(self)
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SharedContext<'arena>(&'arena GlobalContext<'arena>);
+pub struct TypeCtx<'arena>(&'arena GlobalContext<'arena>);
 
-impl<'arena> SharedContext<'arena> {
+impl<'arena> TypeCtx<'arena> {
     pub fn arena(self) -> &'arena Arena {
         self.0.arena
     }
@@ -94,9 +94,9 @@ impl<'arena> SharedContext<'arena> {
     }
 }
 
-impl<'arena> From<SharedContext<'arena>> for LexingContext<'arena> {
-    fn from(value: SharedContext<'arena>) -> Self {
-        LexingContext::new(
+impl<'arena> From<TypeCtx<'arena>> for SharedCtx<'arena> {
+    fn from(value: TypeCtx<'arena>) -> Self {
+        SharedCtx::new(
             &value.0.string_interner,
             &value.0.span_interner,
             &value.0.source_map,

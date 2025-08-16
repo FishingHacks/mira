@@ -7,9 +7,11 @@ use std::{
 use mira_errors::{Diagnostic, Diagnostics, pluralize};
 use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_macros::ErrorData;
-use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData, Symbol, interner::SpanInterner};
+use mira_spans::{
+    BytePos, Ident, SharedCtx, SourceFile, Span, SpanData, Symbol, interner::SpanInterner,
+};
 
-use crate::{context::SharedContext, tokenstream::BorrowedTokenStream};
+use crate::tokenstream::BorrowedTokenStream;
 
 use super::{
     ExpandContext, Macro, MacroError, MacroErrorDiagnosticsExt, MacroParser, MatcherLoc,
@@ -20,7 +22,7 @@ use super::{
 
 /// returns None if any errors occurred, which will be put into `diagnostics`.
 pub fn expand_tokens<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: SharedCtx<'arena>,
     file: Arc<SourceFile>,
     tokens: Vec<Token<'arena>>,
     diagnostics: &mut Diagnostics<'arena>,
@@ -40,7 +42,7 @@ struct MacroExpander<'arena> {
 }
 
 impl<'arena> MacroExpander<'arena> {
-    fn new(ctx: SharedContext<'arena>, file: Arc<SourceFile>) -> Self {
+    fn new(ctx: SharedCtx<'arena>, file: Arc<SourceFile>) -> Self {
         Self {
             macros: HashMap::new(),
             ctx: ExpandContext::new(ctx, file),
@@ -98,7 +100,7 @@ impl<'arena> MacroExpander<'arena> {
                     Ident::new(name, name_span),
                     BorrowedTokenStream::new(content, tokens.current().span),
                     diagnostics,
-                    self.ctx.ctx.span_interner(),
+                    self.ctx.ctx.span_interner,
                 ) {
                     Ok(v) if can_define_macros => _ = self.macros.insert(name, v),
                     Ok(_) => {}
@@ -132,7 +134,7 @@ impl<'arena> MacroExpander<'arena> {
                             tokens
                                 .current()
                                 .span
-                                .combine_with([name_span], self.ctx.ctx.span_interner()),
+                                .combine_with([name_span], self.ctx.ctx.span_interner),
                             &content,
                             diagnostics,
                         );

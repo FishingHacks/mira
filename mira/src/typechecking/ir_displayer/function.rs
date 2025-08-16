@@ -1,11 +1,8 @@
-use crate::{
-    store::StoreKey,
-    typechecking::{
-        default_types,
-        expression::{TypecheckedExpression, TypedLiteral},
-        TypecheckedFunctionContract, TypedFunction,
-    },
+use crate::typechecking::{
+    TypecheckedFunctionContract, TypedFunction, default_types,
+    expression::{TypecheckedExpression, TypedLiteral},
 };
+use mira_common::store::StoreKey;
 
 use super::{expressions::write_implicit_block, formatter::Formatter};
 

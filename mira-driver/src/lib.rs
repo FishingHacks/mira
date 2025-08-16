@@ -18,18 +18,18 @@ pub use parsing::expand_macros;
 use parsing::parse_all;
 
 use mira::{
-    context::SharedContext,
+    context::TypeCtx,
     linking::{self, LinkOptions, LinkerErrorDiagnosticsExt as _, LinkerInput},
     optimizations,
-    store::AssociatedStore,
     target::Target,
     typechecking::{
         TypecheckingContext,
-        intrinsics::IntrinsicAnnotation,
         ir_displayer::{Formatter, ReadOnlyTypecheckingContext, TCContextDisplay},
         typechecking::{typecheck_external_function, typecheck_function, typecheck_static},
     },
 };
+use mira_common::store::AssociatedStore;
+use mira_parser::std_annotations::intrinsic::IntrinsicAnnotation;
 // TODO: This should be abstracted away so we don't have to handle different configs.
 use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder, CodegenError, Optimizations};
 
@@ -321,7 +321,7 @@ impl<'a> FullCompilationOptions<'a> {
 /// Runs the pipeline to turn a source file into an executable or shared object.
 /// Returns the path to the executable
 pub fn run_full_compilation_pipeline<'arena>(
-    ctx: SharedContext<'arena>,
+    ctx: TypeCtx<'arena>,
     mut opts: FullCompilationOptions,
 ) -> Result<Option<PathBuf>, Diagnostics<'arena>> {
     if opts.add_extension_to_exe && opts.exec_path.is_some() {

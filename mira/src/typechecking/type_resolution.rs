@@ -6,19 +6,19 @@ use std::{
 use mira_errors::Diagnostics;
 use mira_spans::ArenaList;
 
-use crate::{
-    lang_items::LangItemAnnotation,
+use mira_common::store::StoreKey;
+use mira_parser::{
+    Trait, TypeRef,
     module::{BakedStruct, ExternalFunction, Function, ModuleContext, ModuleScopeValue, Static},
-    parser::{Trait, TypeRef},
-    store::StoreKey,
+    std_annotations::lang_item::LangItemAnnotation,
 };
 
 use super::{
-    expression::TypedLiteral,
-    resolve_import,
-    types::{default_types, with_refcount, TyKind},
     TypecheckedFunctionContract, TypecheckingContext, TypecheckingErrorDiagnosticsExt,
     TypedGeneric, TypedStatic, TypedTrait,
+    expression::TypedLiteral,
+    resolve_import,
+    types::{TyKind, default_types, with_refcount},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]

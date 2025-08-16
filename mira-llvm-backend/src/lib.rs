@@ -4,15 +4,13 @@ use debug_builder::DebugContext;
 use intrinsics::LLVMIntrinsics;
 use std::{collections::HashMap, ops::Deref};
 
-use mira::{
-    store::StoreKey,
-    typechecking::{
-        Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedTrait, default_types,
-        expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
-        intrinsics::Intrinsic,
-        typechecking::ScopeTypeMetadata,
-    },
+use mira::typechecking::{
+    Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedTrait, default_types,
+    expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
+    typechecking::ScopeTypeMetadata,
 };
+use mira_common::store::StoreKey;
+use mira_parser::std_annotations::intrinsic::Intrinsic;
 use mira_spans::interner::Symbol;
 pub mod mangling;
 pub use context::{CodegenConfig, CodegenContext, CodegenContextBuilder, Optimizations};

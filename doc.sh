@@ -11,6 +11,8 @@ cargo doc --open --no-deps \
  -p mira-macros \
  -p mira-progress-bar \
  -p mira-spans \
+ -p mira-parser \
+ -p mira-common \
  -p parking_lot \
  -p inkwell \
  -p termsize \

@@ -7,10 +7,10 @@ use crate::{
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
     module::{BakedStruct, ExternalFunction, Function, Module, ModuleContext, Static},
-    store::StoreKey,
-    symbols,
 };
+use mira_common::store::StoreKey;
 use mira_lexer::{Token, TokenType};
+use mira_spans::interner::symbols;
 
 use super::{
     Expression, Parser, PathWithoutGenerics,
@@ -664,7 +664,7 @@ impl<'arena> Parser<'_, 'arena> {
     }
 
     pub fn join_spans(&self, left: Span<'arena>, right: Span<'arena>) -> Span<'arena> {
-        left.combine_with([right], self.ctx.span_interner())
+        left.combine_with([right], self.ctx.span_interner)
     }
 
     pub fn span_from(&self, previous: Span<'arena>) -> Span<'arena> {
@@ -696,7 +696,7 @@ impl<'arena> Parser<'_, 'arena> {
         let name = self.expect_identifier()?;
         let semicolon_span = self.expect(TokenType::Semicolon)?.span;
 
-        let span = span.combine_with([semicolon_span, name.span()], self.ctx.span_interner());
+        let span = span.combine_with([semicolon_span, name.span()], self.ctx.span_interner);
         Ok(Statement::Mod { span, name, public })
     }
 
@@ -707,7 +707,7 @@ impl<'arena> Parser<'_, 'arena> {
             let span = self
                 .current()
                 .span
-                .combine_with([span], self.ctx.span_interner());
+                .combine_with([span], self.ctx.span_interner);
             return Ok(Statement::Use {
                 span,
                 path,
@@ -720,7 +720,7 @@ impl<'arena> Parser<'_, 'arena> {
         let span = self
             .expect(TokenType::Semicolon)?
             .span
-            .combine_with([span], self.ctx.span_interner());
+            .combine_with([span], self.ctx.span_interner);
         Ok(Statement::Use {
             alias: Some(alias),
             path,
