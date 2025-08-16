@@ -39,7 +39,6 @@ mira-driver.workspace = true
 clap.workspace = true
 mira-llvm-backend.workspace = true
 
-[profile.release-tiny]
+[profile.release]
 strip = true
 lto = "thin"
-inherits = "release"

@@ -15,7 +15,15 @@ use mira::{
 };
 use std::error::Error;
 
-const MIRAC_VERSION: &str = env!("CARGO_PKG_VERSION");
+const MIRAC_VERSION: &str = const {
+    match option_env!("MIRAC_PKG_OVERRIDE") {
+        Some(v) => v,
+        None => env!("CARGO_PKG_VERSION"),
+    }
+};
+const COMMIT: Option<&str> = option_env!("MIRAC_COMMIT_HASH");
+const COMMIT_SHORT: Option<&str> = option_env!("MIRAC_COMMIT_HASH_SHORT");
+const COMMIT_DATE: Option<&str> = option_env!("MIRAC_COMMIT_DATE");
 
 #[derive(Parser, Debug)]
 #[command(arg_required_else_help(true))]

@@ -2,3 +2,4 @@ target/
 *.o
 *.s
 tree-sitter-mira/
+/config.sh
