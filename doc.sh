@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 # generate clap alone -- bunching clap in with other dependencies for some reason stops cargo from being able to find it.
 cargo doc --no-deps -p clap
