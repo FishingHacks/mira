@@ -10,11 +10,11 @@ pub struct ModuleDisplay<'a>(pub &'a TypecheckedModule<'a>);
 impl ModuleDisplay<'_> {
     pub fn fmt(&self, f: &mut Formatter, id: StoreKey<TypecheckedModule>) -> std::fmt::Result {
         f.write_str("@root_path(")?;
-        f.write_debug(&self.0.root)?;
+        f.write_debug(&self.0.file.package_root)?;
         f.write_str(")\nmodule mod_")?;
         f.write_value(&id)?;
         f.write_char(' ')?;
-        f.write_debug(&self.0.path)?;
+        f.write_debug(&self.0.file.path)?;
         f.write_str(" {")?;
         f.push_indent();
 

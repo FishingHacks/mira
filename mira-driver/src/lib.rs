@@ -478,7 +478,10 @@ pub fn run_full_compilation_pipeline<'arena>(
         _ = TCContextDisplay.fmt(&mut formatter);
     }
 
-    let file = typechecking_context.modules.read()[main_mod].path.clone();
+    let file = typechecking_context.modules.read()[main_mod]
+        .file
+        .path
+        .clone();
     let filename = file
         .file_name()
         .expect("file should have a filename")

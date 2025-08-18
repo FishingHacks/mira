@@ -5,7 +5,6 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
     hash::{Hash, Hasher},
-    path::Path,
     sync::{Arc, OnceLock},
 };
 use type_resolution::ResolvingState;
@@ -23,7 +22,7 @@ use mira_parser::{
     },
 };
 use mira_spans::{
-    ArenaList, Ident, Span,
+    ArenaList, Ident, SourceFile, Span,
     interner::{Symbol, symbols},
 };
 
@@ -163,8 +162,7 @@ pub struct TypecheckingContext<'arena> {
 pub struct TypecheckedModule<'arena> {
     scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
     exports: HashSet<Ident<'arena>>,
-    pub path: Arc<Path>,
-    pub root: Arc<Path>,
+    pub file: Arc<SourceFile>,
     pub assembly: Vec<(Span<'arena>, String)>,
 }
 
@@ -185,7 +183,9 @@ impl<'arena> TypecheckingContext<'arena> {
         let Some(ModuleScopeValue::Function(main_fn)) =
             module.scope.get(&symbols::DefaultIdents::main)
         else {
-            return Err(TypecheckingError::MainFuncNotFound(module.path.clone()));
+            return Err(TypecheckingError::MainFuncNotFound(
+                module.file.path.clone(),
+            ));
         };
         let func = &self.functions.read()[main_fn.cast()].0;
         if !func.arguments.is_empty() || func.return_type != default_types::void {
@@ -321,8 +321,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 TypecheckedModule {
                     scope,
                     exports: module_reader[key].exports.clone(),
-                    path: module_reader[key].file.path.clone(),
-                    root: module_reader[key].file.package_root.clone(),
+                    file: module_reader[key].file.clone(),
                     assembly: module_reader[key].assembly.clone(),
                 },
             );

@@ -191,14 +191,15 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             ctx,
         };
         for (key, module) in module_reader.index_value_iter() {
-            let file = if *module.path == *root_path {
+            let file = if *module.file.path == *root_path {
                 root_file
             } else {
-                me.get_file(&module.path)
+                me.get_file(&module.file.path)
             };
             let namespace = me.builder.create_namespace(
                 file.as_debug_info_scope(),
                 &module
+                    .file
                     .path
                     .file_name()
                     .map(|v| v.to_string_lossy())

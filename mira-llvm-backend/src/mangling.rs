@@ -61,9 +61,10 @@ pub fn mangle_function<'arena>(
     let module_id = fn_reader[id].0.module_id;
     let v = &module_reader[module_id.cast()];
     let path = v
+        .file
         .path
-        .strip_prefix(v.root.parent().unwrap_or(&v.root))
-        .unwrap_or(&v.path);
+        .strip_prefix(v.file.package_root.parent().unwrap_or(&v.file.package_root))
+        .unwrap_or(&v.file.path);
     let mut mangled_name = "_ZN".to_string();
     mangle_path(path, &mut mangled_name);
 
@@ -112,9 +113,16 @@ pub fn mangle_struct<'arena>(
     let structure = &struct_reader[id];
     let module = &module_reader[structure.module_id.cast()];
     let path = module
+        .file
         .path
-        .strip_prefix(module.root.parent().unwrap_or(&module.root))
-        .unwrap_or(&module.path);
+        .strip_prefix(
+            module
+                .file
+                .package_root
+                .parent()
+                .unwrap_or(&module.file.package_root),
+        )
+        .unwrap_or(&module.file.path);
     let mut name = path.display().to_string();
     name.push_str("::");
     name.push_str(&structure.name);
