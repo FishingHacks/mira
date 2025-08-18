@@ -1,7 +1,7 @@
-use super::ProgramFormingError;
+use super::{Module, ProgramFormingError};
 use std::{path::Path, sync::Arc};
 
-use mira_spans::{Ident, SourceFile, SourceMap, Span, interner::SpanInterner};
+use mira_spans::{Ident, SourceMap, Span, interner::SpanInterner};
 
 // if $current_file is the $package's root file or is called "mod.mr":
 //   -> if "${current_file.path.parent}/$name.mr" exists, return that
@@ -16,7 +16,7 @@ use mira_spans::{Ident, SourceFile, SourceMap, Span, interner::SpanInterner};
 pub fn resolve_module<'arena>(
     span_interner: &SpanInterner<'arena>,
     name: Ident<'arena>,
-    current_file: &SourceFile,
+    module: &Module<'arena>,
     source_map: &SourceMap,
     mod_span: Span<'arena>,
     semicolon_span: Span<'arena>,
@@ -28,7 +28,7 @@ pub fn resolve_module<'arena>(
         let pos = Span::new(data, span_interner);
         return Err(ProgramFormingError::InvalidFileNameErr(name.symbol(), pos));
     }
-    let package = source_map.get_package(current_file.package);
+    let current_file = &module.file;
     let mut searchdir = current_file
         .path
         .parent()
@@ -36,7 +36,7 @@ pub fn resolve_module<'arena>(
         .to_path_buf();
     // if this is the package root or ends in `mod.mr`, use the current directory.
     // otherwise, use $cwd/$stem.
-    if package.root_file != current_file.id
+    if module.package_root != module.parent
         && current_file
             .path
             .file_name()

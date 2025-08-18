@@ -2,7 +2,6 @@ use crate::interner::SpanInterner;
 use monotonic::MonotonicVec;
 use parking_lot::{RwLock, RwLockReadGuard};
 use std::{
-    collections::HashMap,
     fmt::{Debug, Display},
     hash::Hash,
     io::{self, ErrorKind, Read},
@@ -276,7 +275,6 @@ impl FileId {
 pub struct SourceFile {
     pub path: Arc<Path>,
     pub package_root: Arc<Path>,
-    pub package: PackageId,
     pub source: Arc<str>,
     lines: OnceLock<Box<[BytePos]>>,
     pub source_len: BytePos,
@@ -286,13 +284,7 @@ pub struct SourceFile {
 impl SourceFile {
     pub const MAX_SIZE: usize = u32::MAX as usize;
 
-    pub fn new(
-        id: FileId,
-        path: Arc<Path>,
-        package_root: Arc<Path>,
-        source: Arc<str>,
-        package: PackageId,
-    ) -> Self {
+    pub fn new(id: FileId, path: Arc<Path>, package_root: Arc<Path>, source: Arc<str>) -> Self {
         assert!(source.len() <= u32::MAX as usize);
         Self {
             package_root,
@@ -301,7 +293,6 @@ impl SourceFile {
             path,
             source,
             id,
-            package,
         }
     }
 
@@ -391,43 +382,6 @@ impl Index<Range<BytePos>> for SourceFile {
     fn index(&self, index: Range<BytePos>) -> &Self::Output {
         &self.source[index.start.min(self.source_len).to_usize()
             ..index.end.to_usize().min(self.source_len.to_usize())]
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct PackageId(u32);
-
-impl PackageId {
-    #[cfg(test)]
-    pub const ZERO: PackageId = PackageId(0);
-}
-
-#[derive(Debug)]
-pub struct Package {
-    pub root: Arc<Path>,
-    pub id: PackageId,
-    pub files: RwLock<MonotonicVec<FileId>>,
-    pub root_file: FileId,
-    pub dependencies: HashMap<Arc<str>, PackageId>,
-}
-
-impl Package {
-    pub fn new(
-        root_dir: Arc<Path>,
-        root_file: FileId,
-        id: PackageId,
-        dependencies: HashMap<Arc<str>, PackageId>,
-    ) -> Self {
-        let mut files = MonotonicVec::new();
-        files.push(root_file);
-        Self {
-            root: root_dir,
-            id,
-            files: files.into(),
-            root_file,
-            dependencies,
-        }
     }
 }
 
@@ -524,27 +478,21 @@ fn read_into_uninit(buf: &mut [MaybeUninit<u8>], reader: &mut impl Read) -> io::
 
 pub struct SourceMap {
     files: RwLock<MonotonicVec<Arc<SourceFile>>>,
-    packages: RwLock<MonotonicVec<Arc<Package>>>,
     file_loader: Box<dyn FileLoader + Send + Sync>,
-    main_package: OnceLock<PackageId>,
 }
 
 impl SourceMap {
     pub fn new() -> Self {
         Self {
             files: Default::default(),
-            packages: Default::default(),
             file_loader: Box::new(RealFileLoader),
-            main_package: OnceLock::new(),
         }
     }
 
     pub fn new_with(file_loader: Box<dyn FileLoader + Send + Sync + 'static>) -> Self {
         Self {
             files: Default::default(),
-            packages: Default::default(),
             file_loader,
-            main_package: OnceLock::new(),
         }
     }
 
@@ -559,95 +507,49 @@ impl SourceMap {
         self.file_loader.is_dir(path)
     }
 
-    pub fn new_file(
-        &self,
-        file: Arc<Path>,
-        package: PackageId,
-        source: Arc<str>,
-    ) -> Arc<SourceFile> {
+    pub fn testing_new_file(&self, source: Arc<str>) -> Arc<SourceFile> {
+        self.new_file(
+            std::path::PathBuf::from(format!("root/file-{}.mr", self.files().len())).into(),
+            Path::new("root").into(),
+            source,
+        )
+    }
+
+    pub fn new_file(&self, file: Arc<Path>, root: Arc<Path>, source: Arc<str>) -> Arc<SourceFile> {
+        if let Some(f) = self.files.read().iter().find(|v| v.path == file) {
+            if f.package_root != root {
+                eprintln!(
+                    "soft-err: new_file: loading {}, found in cache, but package root is mismatching (expected {}, found {})",
+                    file.display(),
+                    root.display(),
+                    f.package_root.display()
+                );
+            }
+            if f.source != source {
+                eprintln!(
+                    "soft-err: new_file: loading {}, found in cache, but the source is mismatching",
+                    file.display(),
+                );
+            }
+            return Arc::clone(f);
+        }
         let mut files = self.files.write();
         let id = FileId(files.len() as u32);
-        let packages = self.packages.read();
-        let file = Arc::new(SourceFile::new(
-            id,
-            file,
-            packages[package.0 as usize].root.clone(),
-            source,
-            package,
-        ));
+        let file = Arc::new(SourceFile::new(id, file, root, source));
         files.push(file.clone());
-        packages[package.0 as usize].files.write().push(id);
         file
     }
 
-    pub fn load_path(&self, path: &Path) -> io::Result<Arc<str>> {
-        if let Some(f) = self.files.read().iter().find(|v| &*v.path == path) {
-            return Ok(f.source.clone());
+    pub fn load_file(&self, path: Arc<Path>, root: Arc<Path>) -> io::Result<Arc<SourceFile>> {
+        if let Some(f) = self.files.read().iter().find(|v| v.path == path) {
+            return Ok(Arc::clone(f));
         }
-        self.file_loader.read_file(path).map(Into::into)
-    }
-
-    pub fn load_file(&self, path: Arc<Path>, package: PackageId) -> io::Result<Arc<SourceFile>> {
-        let source = self.load_path(&path)?;
-        Ok(self.new_file(path, package, source))
-    }
-
-    pub fn add_package(
-        &self,
-        root: Arc<Path>,
-        root_file_path: Arc<Path>,
-        root_file_source: Arc<str>,
-        dependencies: HashMap<Arc<str>, PackageId>,
-    ) -> (Arc<Package>, Arc<SourceFile>) {
-        let mut files = self.files.write();
-        let mut packages = self.packages.write();
-        assert!(files.len() <= u32::MAX as usize, "too many files");
-        assert!(packages.len() <= u32::MAX as usize, "too many packages");
-        let file_id = FileId(files.len() as u32);
-        let package_id = PackageId(packages.len() as u32);
-        let file = Arc::new(SourceFile::new(
-            file_id,
-            root_file_path,
-            root.clone(),
-            root_file_source,
-            package_id,
-        ));
-        let package = Arc::new(Package::new(root, file_id, package_id, dependencies));
-        files.push(file.clone());
-        packages.push(package.clone());
-        (package, file)
-    }
-
-    pub fn add_package_load(
-        &self,
-        root: Arc<Path>,
-        root_file_path: Arc<Path>,
-        dependencies: HashMap<Arc<str>, PackageId>,
-    ) -> io::Result<(Arc<Package>, Arc<SourceFile>)> {
-        let source = self.load_path(&root_file_path)?;
-        Ok(self.add_package(root, root_file_path, source, dependencies))
+        let source = self.file_loader.read_file(&path)?.into();
+        Ok(self.new_file(path, root, source))
     }
 
     pub fn files<'a>(&'a self) -> RwLockReadGuard<'a, MonotonicVec<Arc<SourceFile>>> {
         self.files.read()
-    }
-
-    pub fn packages<'a>(&'a self) -> RwLockReadGuard<'a, MonotonicVec<Arc<Package>>> {
-        self.packages.read()
-    }
-
-    pub fn get_package(&self, package: PackageId) -> Arc<Package> {
-        self.packages.read()[package.0 as usize].clone()
-    }
-
-    pub fn set_main_package(&self, main_lib: PackageId) {
-        self.main_package
-            .set(main_lib)
-            .expect("main package has already been set")
-    }
-
-    pub fn main_package(&self) -> PackageId {
-        *self.main_package.get().expect("main package has to be set")
     }
 }
 
@@ -731,7 +633,7 @@ mod test {
             #[test]
             fn $fn() {
                 let src = "aaa\nbbbb\ncccc";
-                let file = SourceFile::new(FileId::ZERO, Path::new("file").into(), Path::new("root").into(), src.into(), PackageId::ZERO);
+                let file = SourceFile::new(FileId::ZERO, Path::new("file").into(), Path::new("root").into(), src.into());
 
                 $(assert_eq!(file.$fn($($value),*), $expected);)*
             }

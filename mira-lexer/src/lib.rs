@@ -671,8 +671,6 @@ impl<'arena> Lexer<'arena> {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, path::Path};
-
     use mira_spans::{
         Arena, SourceMap,
         interner::{SpanInterner, SymbolInterner},
@@ -709,17 +707,7 @@ mod test {
         ctx: SharedCtx<'arena>,
         src: &str,
     ) -> (Vec<Token<'arena>>, Vec<LexingError<'arena>>) {
-        let mut tokenizer = Lexer::new(
-            ctx,
-            ctx.source_map
-                .add_package(
-                    Path::new("root").into(),
-                    Path::new("root/file.mr").into(),
-                    src.into(),
-                    HashMap::new(),
-                )
-                .1,
-        );
+        let mut tokenizer = Lexer::new(ctx, ctx.source_map.testing_new_file(src.into()));
         let errs = tokenizer.scan_tokens().err().unwrap_or_default();
         check_tokens(tokenizer.get_tokens());
         (tokenizer.tokens, errs)

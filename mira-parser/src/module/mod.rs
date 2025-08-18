@@ -9,8 +9,8 @@ use crate::{
     Expression, FunctionContract, Generic, LiteralValue, PathWithoutGenerics, Statement, Trait,
     TypeRef, annotations::Annotations, error::ProgramFormingError,
 };
-use mira_common::store::{Store, StoreKey};
-use mira_spans::{FileId, Ident, PackageId, SharedCtx, SourceFile, Span};
+use mira_common::store::{AssociatedStore, Store, StoreKey};
+use mira_spans::{FileId, Ident, SharedCtx, SourceFile, Span};
 
 mod module_resolution;
 
@@ -58,10 +58,12 @@ pub type Static<'arena> = (
     Annotations<'arena>,
 );
 
+pub type DependencyMap<'arena> = HashMap<Arc<str>, StoreKey<Module<'arena>>>;
+
 pub struct ModuleContext<'arena> {
     pub ctx: SharedCtx<'arena>,
+    pub dependencies: AssociatedStore<DependencyMap<'arena>, Module<'arena>>,
     pub modules: RwLock<Store<Module<'arena>>>,
-    pub packages: HashMap<PackageId, StoreKey<Module<'arena>>>,
     pub functions: RwLock<Store<Function<'arena>>>,
     pub external_functions: RwLock<Store<ExternalFunction<'arena>>>,
     pub statics: RwLock<Store<Static<'arena>>>, // TODO: const-eval for statics
@@ -71,14 +73,14 @@ pub struct ModuleContext<'arena> {
 
 impl<'arena> ModuleContext<'arena> {
     pub fn new(
-        packages: HashMap<PackageId, StoreKey<Module<'arena>>>,
         modules: Store<Module<'arena>>,
         ctx: SharedCtx<'arena>,
+        dependencies: AssociatedStore<DependencyMap<'arena>, Module<'arena>>,
     ) -> Self {
         Self {
             ctx,
+            dependencies,
             modules: modules.into(),
-            packages,
             functions: Default::default(),
             external_functions: Default::default(),
             statics: Default::default(),
@@ -99,17 +101,21 @@ impl Debug for ModuleContext<'_> {
     }
 }
 
-#[derive(Debug)]
-pub enum Import<'arena> {
-    Unresolved(PathWithoutGenerics<'arena>),
-    Resolved(ModuleScopeValue<'arena>),
-}
+pub type Import<'arena> = PathWithoutGenerics<'arena>;
+// #[derive(Debug)]
+// pub enum Import<'arena> {
+//     Unresolved(PathWithoutGenerics<'arena>),
+//     Resolved(ModuleScopeValue<'arena>),
+// }
 
 pub struct Module<'arena> {
     pub scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
     pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
     pub exports: HashSet<Ident<'arena>>,
     pub file: Arc<SourceFile>,
+    pub package_root: StoreKey<Module<'arena>>,
+    /// if this parent is the same as the package_root, it means this module is the package root.
+    pub parent: StoreKey<Module<'arena>>,
     pub assembly: Vec<(Span<'arena>, String)>,
 }
 
@@ -126,19 +132,28 @@ impl Debug for Module<'_> {
 #[derive(Clone, Debug)]
 pub struct ParserQueueEntry<'arena> {
     pub file: Arc<std::path::Path>,
+    pub file_root: Arc<std::path::Path>,
     pub loaded_file: Option<FileId>,
-    pub package: PackageId,
+    pub package_root: StoreKey<Module<'arena>>,
+    /// if this parent is the same as the package_root, it means this module is the package root.
+    pub parent: StoreKey<Module<'arena>>,
     pub module_key: StoreKey<Module<'arena>>,
 }
 
 impl<'arena> Module<'arena> {
-    pub fn new(file: Arc<SourceFile>) -> Self {
+    pub fn new(
+        file: Arc<SourceFile>,
+        package_root: StoreKey<Self>,
+        parent: StoreKey<Self>,
+    ) -> Self {
         Self {
             imports: HashMap::new(),
             exports: HashSet::new(),
             file,
             scope: HashMap::new(),
             assembly: Vec::new(),
+            parent,
+            package_root,
         }
     }
 
@@ -347,7 +362,7 @@ impl<'arena> Module<'arena> {
                 span,
             } => {
                 let name = alias.unwrap_or(*path.entries.last().unwrap());
-                self.imports.insert(name, (span, Import::Unresolved(path)));
+                self.imports.insert(name, (span, path));
                 self.maybe_add_export(public, name);
             }
             Statement::Mod { public, name, span } => {
@@ -360,7 +375,7 @@ impl<'arena> Module<'arena> {
                 let file = module_resolution::resolve_module(
                     context.ctx.span_interner,
                     name,
-                    &self.file,
+                    self,
                     context.ctx.source_map,
                     span,
                     span.last(context.ctx.span_interner),
@@ -368,9 +383,11 @@ impl<'arena> Module<'arena> {
                 let module_key = modules.write().reserve_key();
                 parser_queue.write().push(ParserQueueEntry {
                     file,
-                    package: self.file.package,
+                    file_root: self.file.package_root.clone(),
                     module_key,
                     loaded_file: None,
+                    parent: module_id,
+                    package_root: self.package_root,
                 });
                 self.scope
                     .insert(name, ModuleScopeValue::Module(module_key));

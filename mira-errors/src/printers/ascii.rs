@@ -194,8 +194,6 @@ impl StyledPrinter for AsciiPrinter {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
-
     use mira_spans::{Arena, BytePos, FileId, SourceMap, Span, SpanData, interner::SpanInterner};
 
     use super::*;
@@ -212,11 +210,10 @@ nya mwrrrp purrr mreaow
 
     fn assert_err_eq(diagnostic: Diagnostic<'_>, err: &str) {
         let sourcemap = SourceMap::new();
-        let (_, file) = sourcemap.add_package(
-            Path::new("/").into(),
+        let file = sourcemap.new_file(
             Path::new("/file.mr").into(),
+            Path::new("/").into(),
             SOURCE.into(),
-            HashMap::new(),
         );
         assert_eq!(file.id, ZERO_FILE_ID);
         let mut formatter = DiagnosticFormatter::new(

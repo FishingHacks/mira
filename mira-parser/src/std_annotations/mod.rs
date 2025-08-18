@@ -7,12 +7,14 @@ use std::collections::HashMap;
 use std::fmt::{Display, Write};
 
 macro_rules! annotations {
-    ($($name:ident),* $(,)?) => {
+    ($($name:ident $(= $annotation_name:literal)?),* $(,)?) => {
         $(pub mod $name;)*
         pub fn add_annotations(hashmap: &mut HashMap<&'static str, AnnotationParser>) {
-            $(hashmap.insert(stringify!($name), Box::new(|stream| Ok(Box::new($name::parse(stream)?))));)*
+            $(hashmap.insert(annotations!(@annotation_name $name $(= $annotation_name)?), Box::new(|stream| Ok(Box::new($name::parse(stream)?))));)*
         }
     };
+    (@annotation_name $name:ident) => { stringify!($name) };
+    (@annotation_name $name:ident = $actual_name:literal) => { $actual_name };
 }
 
 annotations!(
@@ -22,6 +24,6 @@ annotations!(
     function_attr,
     noinline,
     section,
-    lang_item,
+    lang_item = "lang",
     intrinsic,
 );

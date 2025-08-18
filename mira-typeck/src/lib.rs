@@ -19,8 +19,7 @@ use mira_parser::{
     Trait, TypeRef,
     annotations::Annotations,
     module::{
-        BakedStruct, ExternalFunction, Function, Import, Module, ModuleContext, ModuleScopeValue,
-        Static,
+        BakedStruct, ExternalFunction, Function, Module, ModuleContext, ModuleScopeValue, Static,
     },
 };
 use mira_spans::{
@@ -180,12 +179,9 @@ impl Debug for TypecheckedModule<'_> {
 impl<'arena> TypecheckingContext<'arena> {
     pub fn validate_main_function(
         &self,
-        ctx: TypeCtx<'arena>,
-        module_ctx: &ModuleContext<'arena>,
-    ) -> Result<(), TypecheckingError<'arena>> {
-        let main_package = ctx.source_map().main_package();
-        let module = module_ctx.packages[&main_package];
-        let module = &self.modules.read()[module];
+        main_pkg: StoreKey<Module<'arena>>,
+    ) -> Result<StoreKey<TypedFunction<'arena>>, TypecheckingError<'arena>> {
+        let module = &self.modules.read()[main_pkg];
         let Some(ModuleScopeValue::Function(main_fn)) =
             module.scope.get(&symbols::DefaultIdents::main)
         else {
@@ -200,7 +196,7 @@ impl<'arena> TypecheckingContext<'arena> {
         self.main_function
             .set(main_fn.cast())
             .expect("validate_main_function called multiple times");
-        Ok(())
+        Ok(main_fn.cast())
     }
 
     pub fn new(ctx: TypeCtx<'arena>, module_context: Arc<ModuleContext<'arena>>) -> Arc<Self> {
@@ -344,12 +340,13 @@ impl<'arena> TypecheckingContext<'arena> {
         let module_reader = context.modules.read();
         for key in module_reader.indices() {
             for (name, (location, import)) in module_reader[key].imports.iter() {
-                let res = match import {
-                    Import::Unresolved(path) => {
-                        resolve_import(&context, key, &path.entries, *location, &mut HashSet::new())
-                    }
-                    Import::Resolved(module_scope_value) => Ok(*module_scope_value),
-                };
+                let res = resolve_import(
+                    &context,
+                    key,
+                    &import.entries,
+                    *location,
+                    &mut HashSet::new(),
+                );
                 match res {
                     Err(e) => _ = errors.add(e),
                     Ok(k) => {
@@ -854,36 +851,22 @@ fn resolve_import<'arena>(
     }
 
     let module_reader = context.modules.read();
-    let package = module_reader[current_module].file.package;
+    let cur_mod = &module_reader[current_module];
     let thing;
     if &*import[0] == "pkg" {
-        thing = ModuleScopeValue::Module(context.packages[&package]);
-    } else if let Some(value) = module_reader[current_module].scope.get(&import[0].symbol()) {
+        thing = ModuleScopeValue::Module(cur_mod.package_root);
+    } else if let Some(value) = cur_mod.scope.get(&import[0].symbol()) {
         thing = *value;
-    } else if let Some((location, import)) = module_reader[current_module]
-        .imports
-        .get(&import[0].symbol())
-    {
-        match import {
-            Import::Unresolved(path) => {
-                thing = resolve_import(
-                    context,
-                    current_module,
-                    &path.entries,
-                    *location,
-                    already_included,
-                )?
-            }
-            Import::Resolved(value) => thing = *value,
-        }
-    } else if let Some(package) = context
-        .ctx
-        .source_map
-        .get_package(package)
-        .dependencies
-        .get(&*import[0])
-    {
-        thing = ModuleScopeValue::Module(context.packages[package]);
+    } else if let Some((location, import)) = cur_mod.imports.get(&import[0].symbol()) {
+        thing = resolve_import(
+            context,
+            current_module,
+            &import.entries,
+            *location,
+            already_included,
+        )?
+    } else if let Some(package) = context.dependencies[cur_mod.package_root].get(&*import[0]) {
+        thing = ModuleScopeValue::Module(*package);
     } else {
         return Err(TypecheckingError::ItemNotFound {
             location,

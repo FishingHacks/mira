@@ -5,7 +5,7 @@ use mira_errors::Diagnostics;
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
 
-use mira_common::store::{Store, StoreKey};
+use mira_common::store::{AssociatedStore, Store, StoreKey};
 use mira_common::threadpool::ThreadPool;
 use mira_errors::IoReadError;
 use mira_lexer::{Lexer, LexingError};
@@ -15,7 +15,7 @@ use mira_parser::{
 };
 use mira_spans::{SharedCtx, SourceFile};
 
-use crate::EmitMethod;
+use crate::{EmitMethod, LibraryId, LibraryInput, LibraryTree};
 
 #[allow(clippy::too_many_arguments)]
 fn parse_single<'arena>(
@@ -25,8 +25,8 @@ fn parse_single<'arena>(
     finish_sender: Sender<()>,
     errors: Arc<RwLock<Diagnostics<'arena>>>,
     parsing_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
+    cur_entry: ParserQueueEntry<'arena>,
     module_context: Arc<ModuleContext<'arena>>,
-    key: StoreKey<Module<'arena>>,
 ) {
     // ┌──────────────┐
     // │ Tokenization │
@@ -65,7 +65,12 @@ fn parse_single<'arena>(
     // ┌─────────┐
     // │ Parsing │
     // └─────────┘
-    let mut current_parser = Parser::from_tokens(module_context.ctx, &tokens, file.clone(), key);
+    let mut current_parser = Parser::from_tokens(
+        module_context.ctx,
+        &tokens,
+        file.clone(),
+        cur_entry.module_key,
+    );
 
     let (statements, parsing_errors) = current_parser.parse_all();
     errors
@@ -81,11 +86,15 @@ fn parse_single<'arena>(
         format!("Processing {}", file.path.display()).into_boxed_str(),
     );
 
-    let mut module = Module::new(current_parser.file);
+    let mut module = Module::new(
+        current_parser.file,
+        cur_entry.package_root,
+        cur_entry.parent,
+    );
     _ = current_parser;
     if let Err(errs) = module.push_all(
         statements,
-        key,
+        cur_entry.module_key,
         &module_context,
         &parsing_queue,
         &module_context.modules,
@@ -94,7 +103,10 @@ fn parse_single<'arena>(
             .write()
             .extend(errs.into_iter().map(ProgramFormingError::to_error));
     }
-    module_context.modules.write().insert_reserved(key, module);
+    module_context
+        .modules
+        .write()
+        .insert_reserved(cur_entry.module_key, module);
     progress_bar.remove(item);
 
     _ = finish_sender.send(())
@@ -105,36 +117,59 @@ fn parse_single<'arena>(
 /// `file` - The file the source came from. Used to evaluate relative imports
 /// `root_directory` - The path the import `@root/` points to
 /// `source` - The source that will be parsed
+///
+/// Returns the parsed module context as well as the main module.
 #[allow(clippy::too_many_arguments)]
 pub fn parse_all<'arena>(
     ctx: SharedCtx<'arena>,
     progress_bar: ProgressBarThread,
     parsing_item: ProgressItemRef,
-) -> Result<Arc<ModuleContext<'arena>>, Diagnostics<'arena>> {
+    libtree: &LibraryTree,
+) -> Result<(Arc<ModuleContext<'arena>>, StoreKey<Module<'arena>>), Diagnostics<'arena>> {
     let errors = Arc::new(RwLock::new(Diagnostics::new()));
     let mut module_store = Store::new();
-    let files = ctx.source_map.files();
-    let parsing_queue = ctx
-        .source_map
-        .packages()
+    let mut parsing_queue = Vec::with_capacity(libtree.libraries.len());
+    let mut dependencies = AssociatedStore::new();
+    let mut lib_id_to_module = HashMap::new();
+    for (lib_id, lib) in libtree
+        .libraries
         .iter()
-        .map(|p| {
-            let file = &files[p.root_file.to_inner() as usize];
-            assert_eq!(file.package, p.id);
-            ParserQueueEntry {
-                file: file.path.clone(),
-                package: p.id,
-                module_key: module_store.reserve_key(),
-                loaded_file: Some(p.root_file),
-            }
-        })
-        .collect::<Vec<_>>();
-    drop(files);
-    let packages = parsing_queue
-        .iter()
-        .map(|e| (e.package, e.module_key))
-        .collect();
-    let module_context = Arc::new(ModuleContext::new(packages, module_store, ctx));
+        .enumerate()
+        .map(|(k, v)| (LibraryId(k), v))
+    {
+        let modid = module_store.reserve_key();
+        lib_id_to_module.insert(lib_id, modid);
+        dependencies.insert(modid, HashMap::with_capacity(lib.dependencies.len()));
+        let deps = &mut dependencies[modid];
+        for (k, v) in lib.dependencies.iter() {
+            deps.insert(k.clone(), lib_id_to_module[v]);
+        }
+
+        let loaded_file = match &lib.input {
+            LibraryInput::Path => None,
+            LibraryInput::String(s) => Some(
+                ctx.source_map
+                    .new_file(lib.root_file_path.clone(), lib.root.clone(), s.clone())
+                    .id,
+            ),
+        };
+        parsing_queue.push(ParserQueueEntry {
+            file: lib.root_file_path.clone(),
+            file_root: lib.root.clone(),
+            loaded_file,
+            package_root: modid,
+            parent: modid,
+            module_key: modid,
+        });
+    }
+    let main_mod = libtree
+        .main
+        .expect("error: configured no package as the `main` package on the library tree.");
+    let main_mod = lib_id_to_module
+        .get(&main_mod)
+        .expect("the `main` package appears to not be in the library tree");
+    let module_context = Arc::new(ModuleContext::new(module_store, ctx, dependencies));
+
     let parsing_queue = Arc::new(RwLock::new(parsing_queue));
     let (finish_sender, finish_receiver) = bounded::<()>(1);
 
@@ -148,16 +183,18 @@ pub fn parse_all<'arena>(
                 break;
             }
             let entry = parsing_queue.write().remove(0);
-            let key = entry.module_key;
-            let file = entry.file;
-            let package = entry.package;
 
             let source = match entry.loaded_file {
                 Some(fid) => ctx.source_map.get_file(fid).unwrap(),
-                None => match ctx.source_map.load_file(file.clone(), package) {
+                None => match ctx
+                    .source_map
+                    .load_file(entry.file.clone(), entry.file_root.clone())
+                {
                     Ok(v) => v,
                     Err(e) => {
-                        errors.write().add_err(IoReadError(file.to_path_buf(), e));
+                        errors
+                            .write()
+                            .add_err(IoReadError(entry.file.to_path_buf(), e));
                         break 'outer_loop;
                     }
                 },
@@ -177,8 +214,8 @@ pub fn parse_all<'arena>(
                     finish_sender,
                     errors,
                     _parsing_queue,
+                    entry,
                     _module_context,
-                    key,
                 );
             });
 
@@ -200,7 +237,7 @@ pub fn parse_all<'arena>(
     });
 
     if errors.read().is_empty() {
-        Ok(module_context)
+        Ok((module_context, *main_mod))
     } else {
         Err(Arc::into_inner(errors)
             .expect("more than one reference to errors")
@@ -214,12 +251,11 @@ pub fn expand_macros<'a>(
     mut output: EmitMethod,
 ) -> Result<(), Diagnostics<'a>> {
     let mut diags = Diagnostics::new();
-    let f = match ctx.source_map.add_package_load(
-        file.parent().unwrap().into(),
-        file.clone(),
-        HashMap::new(),
-    ) {
-        Ok(v) => v.1,
+    let f = match ctx
+        .source_map
+        .load_file(file.clone(), file.parent().unwrap().into())
+    {
+        Ok(v) => v,
         Err(e) => {
             diags.add_err(IoReadError(file.to_path_buf(), e));
             return Err(diags);

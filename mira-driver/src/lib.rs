@@ -8,8 +8,7 @@ use std::{
 };
 
 use mira_errors::{
-    CurrentDirError, Diagnostic, Diagnostics, FileOpenError, IoReadError, IoWriteError,
-    StdoutWriteError,
+    CurrentDirError, Diagnostic, Diagnostics, FileOpenError, IoWriteError, StdoutWriteError,
 };
 use mira_progress_bar::ProgressBarStyle;
 
@@ -354,46 +353,28 @@ pub fn run_full_compilation_pipeline<'arena>(
         println!("Assuming cpu features: {}", opts.codegen_opts.cpu_features);
     }
 
-    let source_map = ctx.source_map();
     assert!(
         opts.library_tree.main.is_some(),
         "No library was selected as the main one"
     );
-    let main_lib_id = opts.library_tree.main.unwrap();
-    let mut packages = Vec::new();
-
-    for library in opts.library_tree.libraries.into_iter() {
-        let deps = library
-            .dependencies
-            .into_iter()
-            .map(|(k, v)| (k, packages[v.0]))
-            .collect();
-        let (package, _) = match library.input {
-            LibraryInput::Path => source_map
-                .add_package_load(library.root, library.root_file_path.clone(), deps)
-                .map_err(|e| IoReadError(library.root_file_path.to_path_buf(), e).to_error())?,
-            LibraryInput::String(s) => {
-                source_map.add_package(library.root, library.root_file_path, s, deps)
-            }
-        };
-        packages.push(package.id);
-    }
-    let main_lib = packages[main_lib_id.0];
-    drop(packages);
-    drop(opts.library_tree.names);
-    ctx.source_map().set_main_package(main_lib);
 
     let (thread, mut progress_bar) =
         mira_progress_bar::print_thread::start_thread(ProgressBarStyle::Normal);
     let _deferred = DeferFn::new(move || _ = thread.join());
     let parser_item = progress_bar.add_item("Parsing".into());
 
-    let module_context = parse_all(ctx.into(), progress_bar.clone(), parser_item);
+    let module_context = parse_all(
+        ctx.into(),
+        progress_bar.clone(),
+        parser_item,
+        &opts.library_tree,
+    );
+    drop(opts.library_tree.names);
     progress_bar.remove(parser_item);
     let typechecking_item = progress_bar.add_item("Typechecking".into());
     let type_resolution_item = progress_bar.add_item("Type Resolution".into());
 
-    let module_context = module_context?;
+    let (module_context, main_mod) = module_context?;
     let typechecking_context = TypecheckingContext::new(ctx, module_context.clone());
     let errs = typechecking_context.resolve_imports(module_context.clone());
     if !errs.is_empty() {
@@ -467,7 +448,7 @@ pub fn run_full_compilation_pipeline<'arena>(
 
     progress_bar.remove(typechecking_item);
 
-    if let Err(err) = typechecking_context.validate_main_function(ctx, &module_context) {
+    if let Err(err) = typechecking_context.validate_main_function(main_mod) {
         errs.add_err(err);
     }
 
@@ -497,8 +478,7 @@ pub fn run_full_compilation_pipeline<'arena>(
         _ = TCContextDisplay.fmt(&mut formatter);
     }
 
-    let root_file = ctx.source_map().packages()[0].root_file;
-    let file = ctx.source_map().get_file(root_file).unwrap().path.clone();
+    let file = typechecking_context.modules.read()[main_mod].path.clone();
     let filename = file
         .file_name()
         .expect("file should have a filename")
