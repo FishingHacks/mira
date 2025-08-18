@@ -41,6 +41,7 @@ pub enum TypedLiteral<'arena> {
     ISize(isize),
     Bool(bool),
     Intrinsic(Intrinsic, Vec<Ty<'arena>>),
+    LLVMIntrinsic(Symbol<'arena>),
 }
 
 impl<'arena> TypedLiteral<'arena> {
@@ -107,7 +108,8 @@ impl<'arena> TypedLiteral<'arena> {
             TypedLiteral::I64(_) => default_types::i64,
             TypedLiteral::ISize(_) => default_types::isize,
             TypedLiteral::Bool(_) => default_types::bool,
-            TypedLiteral::Intrinsic(..) => panic!("intrinsic is no type"),
+            TypedLiteral::Intrinsic(..) => panic!("intrinsic cannot have a type"),
+            TypedLiteral::LLVMIntrinsic(_) => panic!("llvm intrinsic cannot have a type"),
         }
     }
 
@@ -146,6 +148,7 @@ impl<'arena> TypedLiteral<'arena> {
             | TypedLiteral::Tuple(..)
             | TypedLiteral::Function(..)
             | TypedLiteral::Intrinsic(..)
+            | TypedLiteral::LLVMIntrinsic(_)
             | TypedLiteral::ExternalFunction(..) => None,
         }
     }
@@ -159,9 +162,10 @@ impl<'arena> TypedLiteral<'arena> {
                 .map(TypedLiteral::is_entirely_literal)
                 .fold(true, BitAnd::bitand),
             TypedLiteral::ArrayInit(_, elem, amount) => *amount == 0 || elem.is_entirely_literal(),
-            TypedLiteral::Static(_) | TypedLiteral::Dynamic(_) | TypedLiteral::Intrinsic(..) => {
-                false
-            }
+            TypedLiteral::Static(_)
+            | TypedLiteral::Dynamic(_)
+            | TypedLiteral::Intrinsic(..)
+            | TypedLiteral::LLVMIntrinsic(_) => false,
             TypedLiteral::String(_)
             | TypedLiteral::Function(..)
             | TypedLiteral::ExternalFunction(..)
@@ -267,13 +271,20 @@ pub enum TypecheckedExpression<'arena> {
         StoreKey<TypedExternalFunction<'arena>>,
         Vec<TypedLiteral<'arena>>,
     ),
-    // _1 = intrinsic(_3.1, _3.2)
+    // _1 = intrinsic(_3.1, _3.2, ...)
     IntrinsicCall(
         Span<'arena>,
         ScopeValueId,
         Intrinsic,
         Vec<TypedLiteral<'arena>>,
         Vec<Ty<'arena>>,
+    ),
+    // _1 = llvm_intrinsic._2(_3.1, _3.2, ...)
+    LLVMIntrinsicCall(
+        Span<'arena>,
+        ScopeValueId,
+        Symbol<'arena>,
+        Vec<TypedLiteral<'arena>>,
     ),
     // _1 = +_2
     Pos(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
@@ -479,6 +490,7 @@ impl<'arena> TypecheckedExpression<'arena> {
             | TypecheckedExpression::While { span, .. }
             | TypecheckedExpression::AttachVtable(span, ..)
             | TypecheckedExpression::DeclareVariable(span, ..)
+            | TypecheckedExpression::LLVMIntrinsicCall(span, ..)
             | TypecheckedExpression::IntrinsicCall(span, ..)
             | TypecheckedExpression::DirectCall(span, ..)
             | TypecheckedExpression::DirectExternCall(span, ..)

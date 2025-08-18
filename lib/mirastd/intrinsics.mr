@@ -1,13 +1,13 @@
 @intrinsic("unreachable")
 pub fn unreachable() -> ! { while(true) {} }
 
-@intrinsic("trap")
+@llvm_intrinsic("trap")
 pub fn trap() -> ! { while(true) {} }
 
-@intrinsic("breakpoint")
+@llvm_intrinsic("debugtrap")
 pub fn breakpoint(){}
 
-@intrinsic("return_address")
+@llvm_intrinsic("returnaddress")
 pub fn return_address() -> usize = 0;
 
 @intrinsic("size_of")

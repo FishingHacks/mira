@@ -12,7 +12,7 @@ use super::{
     TyKindExt,
     debug_builder::DebugContext,
     error::CodegenError,
-    intrinsics::LLVMIntrinsics,
+    intrinsics::Intrinsics,
     mangling::{mangle_function, mangle_static, mangle_string, mangle_struct},
 };
 use inkwell::{
@@ -37,7 +37,8 @@ use inkwell::{
 use mira_common::store::{AssociatedStore, StoreKey};
 use mira_parser::std_annotations::{
     alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
-    intrinsic::IntrinsicAnnotation, noinline::Noinline, section::SectionAnnotation,
+    intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation, noinline::Noinline,
+    section::SectionAnnotation,
 };
 use mira_spans::interner::Symbol;
 use mira_target::{NATIVE_TARGET, Target};
@@ -100,7 +101,6 @@ pub struct CodegenContext<'ctx, 'arena> {
     pub(super) builder: Builder<'ctx>,
     pub(super) context: &'ctx Context,
     pub(super) default_types: DefaultTypes<'ctx>,
-    pub(super) retaddr: FunctionValue<'ctx>,
     pub module: Module<'ctx>,
     pub machine: TargetMachine,
     pub triple: TargetTriple,
@@ -110,7 +110,7 @@ pub struct CodegenContext<'ctx, 'arena> {
     pub(super) statics: StaticsStore<'ctx, 'arena>,
     pub(super) string_map: HashMap<Symbol<'arena>, GlobalValue<'ctx>>,
     pub(super) debug_ctx: DebugContext<'ctx, 'arena>,
-    pub(super) intrinsics: LLVMIntrinsics,
+    pub(super) intrinsics: Intrinsics<'ctx, 'arena>,
     pub(super) vtables: HashMap<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
     pub(super) config: CodegenConfig<'ctx>,
 }
@@ -608,13 +608,6 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         drop(struct_reader);
         drop(vtables);
 
-        let retaddr = module.add_function(
-            "llvm.returnaddress",
-            default_types
-                .ptr
-                .fn_type(&[default_types.i32.into()], false),
-            None,
-        );
         Ok(Self {
             context,
             module,
@@ -629,8 +622,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             triple,
             tc_ctx: ctx,
             debug_ctx,
-            intrinsics: LLVMIntrinsics::init(),
-            retaddr,
+            intrinsics: Intrinsics::new(context),
             vtables: vtable_map,
             config,
         })
@@ -668,6 +660,9 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             let contract = &fn_reader[fn_id].0;
             if !contract.generics.is_empty()
                 || contract.annotations.has_annotation::<IntrinsicAnnotation>()
+                || contract
+                    .annotations
+                    .has_annotation::<LLVMIntrinsicAnnotation>()
             {
                 return Ok(());
             }
@@ -833,6 +828,7 @@ fn collect_strings_for_expressions<'arena>(
             TypecheckedExpression::DirectCall(.., args, _)
             | TypecheckedExpression::DynCall(.., args, _)
             | TypecheckedExpression::DirectExternCall(.., args)
+            | TypecheckedExpression::LLVMIntrinsicCall(.., args)
             | TypecheckedExpression::IntrinsicCall(.., args, _) => {
                 for v in args {
                     collect_strings_for_typed_literal(v, strings);

@@ -1,3 +1,5 @@
+use mira_lexer::token::IdentDisplay;
+
 use crate::expression::TypedLiteral;
 
 use super::formatter::Formatter;
@@ -90,6 +92,9 @@ impl Tld<'_> {
             TypedLiteral::I64(v) => f.write_value(v),
             TypedLiteral::ISize(v) => f.write_value(v),
             TypedLiteral::Bool(v) => f.write_value(v),
+            TypedLiteral::LLVMIntrinsic(intrinsic) => {
+                f.write_fmt(format_args!("llvm::{}", IdentDisplay(*intrinsic)))
+            }
             TypedLiteral::Intrinsic(intrinsic, _) => {
                 f.write_str("Intrinsic::")?;
                 f.write_value(intrinsic)

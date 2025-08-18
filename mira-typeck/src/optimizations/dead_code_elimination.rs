@@ -69,7 +69,6 @@ fn run_fn<'arena>(func: StoreKey<TypedFunction<'arena>>, ctx: &mut DceContext<'_
 fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceContext<'_, 'arena>) {
     for expr in block {
         match expr {
-            // === Blocks ===
             TypecheckedExpression::If {
                 cond,
                 if_block,
@@ -93,8 +92,6 @@ fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceConte
                 run_block(&body.0, ctx);
             }
             TypecheckedExpression::Block(_, block, _) => run_block(block, ctx),
-
-            // === Direct call ===
             TypecheckedExpression::DirectCall(_, _, func, lits, _) => {
                 if !ctx.used_functions.contains(func) {
                     ctx.funcs_left.insert(*func);
@@ -103,15 +100,12 @@ fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceConte
                     run_literal(lit, ctx);
                 }
             }
-            // === call ===
             TypecheckedExpression::Call(_, _, lit1, lits) => {
                 run_literal(lit1, ctx);
                 for lit in lits {
                     run_literal(lit, ctx);
                 }
             }
-
-            // === single literal ===
             TypecheckedExpression::Reference(_, _, lit)
             | TypecheckedExpression::Dereference(_, _, lit)
             | TypecheckedExpression::Offset(_, _, lit, _)
@@ -130,7 +124,6 @@ fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceConte
             | TypecheckedExpression::Neg(_, _, lit)
             | TypecheckedExpression::LNot(_, _, lit)
             | TypecheckedExpression::BNot(_, _, lit) => run_literal(lit, ctx),
-            // === double literal ===
             TypecheckedExpression::Range {
                 lhs: lit1,
                 rhs: lit2,
@@ -158,16 +151,14 @@ fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceConte
                 run_literal(lit1, ctx);
                 run_literal(lit2, ctx);
             }
-            // === mutli literal ===
             TypecheckedExpression::DirectExternCall(_, _, _, lits)
             | TypecheckedExpression::DynCall(_, _, lits, _)
+            | TypecheckedExpression::LLVMIntrinsicCall(_, _, _, lits)
             | TypecheckedExpression::IntrinsicCall(_, _, _, lits, _) => {
                 for lit in lits {
                     run_literal(lit, ctx);
                 }
             }
-
-            // === no literals ===
             TypecheckedExpression::Asm { .. }
             | TypecheckedExpression::DeclareVariable(..)
             | TypecheckedExpression::Empty(..)

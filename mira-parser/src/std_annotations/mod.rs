@@ -26,4 +26,5 @@ annotations!(
     section,
     lang_item = "lang",
     intrinsic,
+    llvm_intrinsic,
 );

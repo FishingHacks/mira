@@ -7,7 +7,10 @@ use mira_lexer::NumberType;
 use mira_parser::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp,
     module::{ModuleContext, ModuleScopeValue},
-    std_annotations::{ext_vararg::ExternVarArg, intrinsic::IntrinsicAnnotation},
+    std_annotations::{
+        ext_vararg::ExternVarArg, intrinsic::IntrinsicAnnotation,
+        llvm_intrinsic::LLVMIntrinsicAnnotation,
+    },
 };
 use mira_spans::{ArenaList, Ident, Span};
 
@@ -200,7 +203,11 @@ fn inner_typecheck_function<'arena>(
     } else {
         let reader = context.functions.read();
         let contract = &reader[function_id].0;
-        if contract.annotations.has_annotation::<IntrinsicAnnotation>() {
+        if contract.annotations.has_annotation::<IntrinsicAnnotation>()
+            || contract
+                .annotations
+                .has_annotation::<LLVMIntrinsicAnnotation>()
+        {
             let loc = contract.span;
             drop(reader);
             context.functions.write()[function_id].1 =
@@ -562,6 +569,8 @@ fn signed_number_to_literal<'arena>(
         NumberType::I32 => (default_types::i32, TypedLiteral::I32(v as i32)),
         NumberType::I64 => (default_types::i64, TypedLiteral::I64(v)),
         NumberType::Isize => (default_types::isize, TypedLiteral::ISize(v as isize)),
+        NumberType::F32 => (default_types::f32, TypedLiteral::F32(v as f32)),
+        NumberType::F64 => (default_types::f64, TypedLiteral::F64(v as f64)),
         NumberType::None => match expected {
             TypeSuggestion::Number(
                 number_typ @ (NumberType::I8
@@ -572,7 +581,7 @@ fn signed_number_to_literal<'arena>(
             ) => signed_number_to_literal(v, number_typ, TypeSuggestion::Unknown),
             _ => (default_types::i32, TypedLiteral::I32(v as i32)),
         },
-        _ => unreachable!("this should never be a float or unsigned number"),
+        _ => unreachable!("this should never be an unsigned number"),
     }
 }
 
@@ -592,6 +601,8 @@ fn unsigned_number_to_literal<'arena>(
         NumberType::I32 => (default_types::i32, TypedLiteral::I32(v as i32)),
         NumberType::I64 => (default_types::i64, TypedLiteral::I64(v as i64)),
         NumberType::Isize => (default_types::isize, TypedLiteral::ISize(v as isize)),
+        NumberType::F32 => (default_types::f32, TypedLiteral::F32(v as f32)),
+        NumberType::F64 => (default_types::f64, TypedLiteral::F64(v as f64)),
         NumberType::None => match expected {
             TypeSuggestion::Number(NumberType::F32 | NumberType::F64) => {
                 (default_types::i32, TypedLiteral::I32(v as i32))
@@ -601,7 +612,6 @@ fn unsigned_number_to_literal<'arena>(
             }
             _ => (default_types::i32, TypedLiteral::I32(v as i32)),
         },
-        _ => unreachable!("this should never be a float or signed number"),
     }
 }
 
@@ -916,14 +926,23 @@ fn typecheck_expression<'arena>(
                             return_type,
                         };
 
-                        let literal = match reader
+                        let literal = if let Some(intrinsic) = reader
                             .0
                             .annotations
                             .get_first_annotation::<IntrinsicAnnotation>()
                             .map(IntrinsicAnnotation::get)
                         {
-                            Some(intrinsic) => TypedLiteral::Intrinsic(intrinsic, generic_types),
-                            None => TypedLiteral::Function(id.cast(), generic_types),
+                            TypedLiteral::Intrinsic(intrinsic, generic_types)
+                        } else if let Some(llvm_intrinsic) = reader
+                            .0
+                            .annotations
+                            .get_first_annotation::<LLVMIntrinsicAnnotation>()
+                            .map(LLVMIntrinsicAnnotation::get)
+                        {
+                            let sym = ctx.intern_str(llvm_intrinsic);
+                            TypedLiteral::LLVMIntrinsic(sym)
+                        } else {
+                            TypedLiteral::Function(id.cast(), generic_types)
                         };
                         Ok((ctx.intern_ty(TyKind::Function(function_ty)), literal))
                     }
@@ -1268,6 +1287,16 @@ fn typecheck_expression<'arena>(
                     intrinsic,
                     typed_arguments,
                     generics,
+                ));
+                Ok((typ, TypedLiteral::Dynamic(id)))
+            } else if let TypedLiteral::LLVMIntrinsic(intrinsic) = function_expr {
+                let typ = function_type.return_type;
+                let id = scope.push(typ);
+                exprs.push(TypecheckedExpression::LLVMIntrinsicCall(
+                    identifier.span(),
+                    id,
+                    intrinsic,
+                    typed_arguments,
                 ));
                 Ok((typ, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::Function(fn_id, generics) = function_expr {

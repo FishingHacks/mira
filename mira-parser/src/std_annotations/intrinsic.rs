@@ -7,7 +7,7 @@ pub struct IntrinsicAnnotation(Intrinsic);
 
 impl Display for IntrinsicAnnotation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("IntrinsicAnnotation(")?;
+        f.write_str("@intrinsic(")?;
         Display::fmt(&self.0, f)?;
         f.write_char(')')
     }
@@ -76,8 +76,6 @@ intrinsics! {
     Forget => forget, // <T>(v: T), causes the value to not be dropped
     SizeOf => size_of, // <T>() -> usize, returns the size of T in bytes
     SizeOfVal => size_of_val, // <unsized T>(v: &T) -> usize, returns the size of v in bytes
-    Breakpoint => breakpoint, // () -> void
-    Trap => trap, // () -> !
     Offset => offset, // <unsized T>(v: &T, off: usize) -> &T, offsets a pointer
     GetMetadata => get_metadata, // <unsized T>(v: &T) -> usize, returns the metadata of a fat
     // pointer or 0 for a thin pointer
@@ -88,30 +86,7 @@ intrinsics! {
     Read => read, // <T>(v: &T) -> T, reads a memory location even if T is not Copy
     Write => write, // <T>(v: &T, value: T), writes a memory location without dropping the value
     // that was previously there
-    ReturnAddress => return_address, // (level: i32) -> usize, returns the address a "return" would
     Select => select, // <T>(cond: bool, a: T, b: T) -> T, equivalent to cond ? a : b
     VolatileRead => volatile_read, // <T>(ptr: &T) -> T
     VolatileWrite => volatile_write, // <T>(ptr: &T, val: T);
-    // ### INTEGER INTRINSICS ###
-    // The following are *only* valid for ints
-    ByteSwap => byte_swap, // <T>(v: T) -> T
-    BitReverse => reverse_bits, // <T>(v: T) -> T
-    CountLeadingZeros => count_leading_zeros, // <T>(v: T) -> u32
-    CountTrailingZeros => count_trailing_zeros, // <T>(v: T) -> u32
-    CountOnes => count_ones, // <T>(v: T) -> u32
-    AddWithOverflow => add_with_overflow, // <T>(a: T, b: T) -> T
-    SubWithOverflow => sub_with_overflow, // <T>(a: T, b: T) -> T
-    MulWithOverflow => mul_with_overflow, // <T>(a: T, b: T) -> T
-    WrappingAdd => wrapping_add, // <T>(a: T, b: T) -> T
-    WrappingSub => wrapping_sub, // <T>(a: T, b: T) -> T
-    WrappingMul => wrapping_mul, // <T>(a: T, b: T) -> T
-    SaturatingAdd => saturating_add, // <T>(a: T, b: T) -> T
-    SaturatingSub => saturating_sub, // <T>(a: T, b: T) -> T
-    UncheckedAdd => unchecked_add, // <T>(a: T, b: T) -> T
-    UncheckedSub => unchecked_sub, // <T>(a: T, b: T) -> T
-    UncheckedMul => unchecked_mul, // <T>(a: T, b: T) -> T
-    UncheckedDiv => unchecked_div, // <T>(a: T, b: T) -> T
-    UncheckedMod => unchecked_mod, // <T>(a: T, b: T) -> T
-    UncheckedShl => unchecked_shl, // <T>(a: T, b: T) -> T
-    UncheckedShr => unchecked_shr, // <T>(a: T, b: T) -> T
 }

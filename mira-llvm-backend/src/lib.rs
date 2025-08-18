@@ -1,7 +1,7 @@
 use context::{DefaultTypes, ExternalFunctionsStore, FunctionsStore, StaticsStore, StructsStore};
 use core::panic;
 use debug_builder::DebugContext;
-use intrinsics::LLVMIntrinsics;
+use intrinsics::Intrinsics;
 use std::{collections::HashMap, ops::Deref};
 
 use mira_common::store::StoreKey;
@@ -59,9 +59,8 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             vtables: &self.vtables,
             debug_ctx: &mut self.debug_ctx,
             machine: &self.machine,
-            intrinsics: &self.intrinsics,
+            intrinsics: &mut self.intrinsics,
             module: &self.module,
-            retaddr: self.retaddr,
             current_block: bb,
             pointer_size: self.default_types.isize.get_bit_width() as u64 / 8,
         }
@@ -100,11 +99,10 @@ pub struct FunctionCodegenContext<'ctx, 'arena, 'cg> {
     vtables: &'cg HashMap<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
     debug_ctx: &'cg mut DebugContext<'ctx, 'arena>,
     machine: &'cg TargetMachine,
-    intrinsics: &'cg LLVMIntrinsics,
-    retaddr: FunctionValue<'ctx>,
     module: &'cg Module<'ctx>,
     current_block: BasicBlock<'ctx>,
     pointer_size: u64,
+    intrinsics: &'cg mut Intrinsics<'ctx, 'arena>,
 }
 
 impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
@@ -571,7 +569,7 @@ fn to_basic_value<'ctx, 'arena>(
         TypedLiteral::I64(v) => default_types.i64.const_int(*v as u64, false).into(),
         TypedLiteral::ISize(v) => default_types.isize.const_int(*v as u64, false).into(),
         TypedLiteral::Bool(v) => default_types.bool.const_int(*v as u64, false).into(),
-        TypedLiteral::Intrinsic(..) => {
+        TypedLiteral::LLVMIntrinsic(..) | TypedLiteral::Intrinsic(..) => {
             unreachable!("intrinsics can only be used as part of intrinsic call")
         }
     }
@@ -1211,6 +1209,9 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             }
             TypecheckedExpression::DirectCall(_, dst, func, args, _) => {
                 self.codegen_directcall(self.functions[*func], *dst, args)
+            }
+            TypecheckedExpression::LLVMIntrinsicCall(_, dst, intrinsic, args) => {
+                self.codegen_llvm_intrinsic(*dst, *intrinsic, args)
             }
             TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, args, generics) => {
                 self.codegen_intrinsic(*dst, *intrinsic, args, generics)
@@ -1992,6 +1993,35 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
         Ok(())
     }
 
+    fn codegen_llvm_intrinsic(
+        &mut self,
+        dst: usize,
+        intrinsic: Symbol<'arena>,
+        args: &[TypedLiteral<'arena>],
+    ) -> Result<(), BuilderError> {
+        let func = self.intrinsics.get_intrinsic(
+            intrinsic,
+            args.iter().map(|v| v.to_type(&self.tc_scope, self.tc_ctx)),
+            self.tc_scope[dst].0,
+            &self.default_types,
+            self.structs,
+            self.module,
+        );
+        let val = self.build_direct_call(
+            func,
+            &args
+                .iter()
+                .map(|v| self.lit_to_basic_value(v).into())
+                .collect::<Vec<_>>(),
+            "",
+        )?;
+        self.push_value(
+            dst,
+            val.try_as_basic_value()
+                .left_or_else(|_| self.default_types.empty_struct.const_zero().into()),
+        );
+        Ok(())
+    }
     fn codegen_intrinsic(
         &mut self,
         dst: usize,
@@ -2015,31 +2045,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             Intrinsic::Unreachable => {
                 self.build_unreachable()?;
                 self.push_value(dst, self.default_types.empty_struct.const_zero().into());
-            }
-            Intrinsic::Trap => {
-                self.intrinsics
-                    .trap
-                    .build_call(self.module, self, &[], &[])?;
-                self.push_value(dst, self.default_types.empty_struct.const_zero().into());
-            }
-            Intrinsic::Breakpoint => {
-                self.intrinsics
-                    .breakpoint
-                    .build_call(self.module, self, &[], &[])?;
-                self.push_value(dst, self.default_types.empty_struct.const_zero().into());
-            }
-            Intrinsic::ReturnAddress => {
-                let ret = self.build_direct_call(
-                    self.retaddr,
-                    &[self.default_types.i32.const_zero().into()],
-                    "",
-                )?;
-
-                self.push_value(
-                    dst,
-                    ret.try_as_basic_value()
-                        .expect_left("returnaddress is (i32) -> ptr, and ptr is a basic value"),
-                );
             }
             Intrinsic::SizeOf => {
                 let size = generics[0]
@@ -2138,26 +2143,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             }
 
             Intrinsic::Select => todo!(),
-            Intrinsic::ByteSwap => todo!(),
-            Intrinsic::BitReverse => todo!(),
-            Intrinsic::CountLeadingZeros => todo!(),
-            Intrinsic::CountTrailingZeros => todo!(),
-            Intrinsic::CountOnes => todo!(),
-            Intrinsic::AddWithOverflow => todo!(),
-            Intrinsic::SubWithOverflow => todo!(),
-            Intrinsic::MulWithOverflow => todo!(),
-            Intrinsic::WrappingAdd => todo!(),
-            Intrinsic::WrappingSub => todo!(),
-            Intrinsic::WrappingMul => todo!(),
-            Intrinsic::SaturatingAdd => todo!(),
-            Intrinsic::SaturatingSub => todo!(),
-            Intrinsic::UncheckedAdd => todo!(),
-            Intrinsic::UncheckedSub => todo!(),
-            Intrinsic::UncheckedMul => todo!(),
-            Intrinsic::UncheckedDiv => todo!(),
-            Intrinsic::UncheckedMod => todo!(),
-            Intrinsic::UncheckedShl => todo!(),
-            Intrinsic::UncheckedShr => todo!(),
 
             // TODO: raii
             Intrinsic::Drop => todo!(),

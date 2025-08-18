@@ -181,6 +181,20 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
+            TypecheckedExpression::LLVMIntrinsicCall(_, dst, intrinsic, vec) => {
+                f.write_char('_')?;
+                f.write_value(dst)?;
+                f.write_str(" = ")?;
+                Tld(&TypedLiteral::LLVMIntrinsic(*intrinsic)).fmt(f)?;
+                f.write_char('(')?;
+                for (idx, arg) in vec.iter().enumerate() {
+                    if idx != 0 {
+                        f.write_str(", ")?;
+                    }
+                    Tld(arg).fmt(f)?;
+                }
+                f.write_char(')')
+            }
             TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, vec, _) => {
                 f.write_char('_')?;
                 f.write_value(dst)?;

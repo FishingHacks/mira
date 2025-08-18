@@ -14,11 +14,7 @@ pub trait IntrinsicExt {
 
 fn generic_count(intrinsic: Intrinsic) -> usize {
     match intrinsic {
-        Intrinsic::Breakpoint
-        | Intrinsic::Trap
-        | Intrinsic::Unreachable
-        | Intrinsic::CallMain
-        | Intrinsic::ReturnAddress => 0,
+        Intrinsic::Unreachable | Intrinsic::CallMain => 0,
         _ => 1,
     }
 }
@@ -54,40 +50,10 @@ impl IntrinsicExt for Intrinsic {
                 .is_sized()
                 .then_some(())
                 .ok_or_else(|| TypecheckingError::NonSizedType(loc, generics[0])),
-            // ┌────────────────────┐
-            // │ Integer Intrinsics │
-            // └────────────────────┘
-            Intrinsic::ByteSwap
-            | Intrinsic::BitReverse
-            | Intrinsic::CountLeadingZeros
-            | Intrinsic::CountTrailingZeros
-            | Intrinsic::CountOnes
-            | Intrinsic::AddWithOverflow
-            | Intrinsic::SubWithOverflow
-            | Intrinsic::MulWithOverflow
-            | Intrinsic::WrappingAdd
-            | Intrinsic::WrappingSub
-            | Intrinsic::WrappingMul
-            | Intrinsic::SaturatingAdd
-            | Intrinsic::SaturatingSub
-            | Intrinsic::UncheckedAdd
-            | Intrinsic::UncheckedSub
-            | Intrinsic::UncheckedMul
-            | Intrinsic::UncheckedDiv
-            | Intrinsic::UncheckedMod
-            | Intrinsic::UncheckedShl
-            | Intrinsic::UncheckedShr => generics[0]
-                .is_int_like()
-                .then_some(())
-                .ok_or_else(|| TypecheckingError::IntOnlyIntrinsic(loc, generics[0])),
             // ┌────────────────────────┐
             // │ Genericless Intrinsics │
             // └────────────────────────┘
-            Intrinsic::Unreachable
-            | Intrinsic::CallMain
-            | Intrinsic::Breakpoint
-            | Intrinsic::Trap
-            | Intrinsic::ReturnAddress => Ok(()),
+            Intrinsic::Unreachable | Intrinsic::CallMain => Ok(()),
             // ┌──────────────────────┐
             // │ All-types Intrinsics │
             // └──────────────────────┘

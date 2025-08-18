@@ -1,50 +1,51 @@
-use inkwell::builder::{Builder, BuilderError};
-use inkwell::intrinsics::Intrinsic as LLVMIntrinsic;
-use inkwell::module::Module;
-use inkwell::types::BasicTypeEnum;
-use inkwell::values::{BasicMetadataValueEnum, CallSiteValue, FunctionValue};
+use std::collections::HashMap;
 
-pub(super) struct Intrinsic(LLVMIntrinsic);
+use inkwell::{context::Context, module::Module, types::BasicType, values::FunctionValue};
+use mira_spans::Symbol;
+use mira_typeck::{Ty, default_types};
 
-impl Intrinsic {
-    pub fn build_call<'ctx>(
-        &self,
-        module: &Module<'ctx>,
-        builder: &Builder<'ctx>,
-        values: &[BasicMetadataValueEnum<'ctx>],
-        types: &[BasicTypeEnum<'ctx>],
-    ) -> Result<CallSiteValue<'ctx>, BuilderError> {
-        builder.build_direct_call(self.get_decl(module, types), values, "")
+use crate::{DefaultTypes, TyKindExt, context::StructsStore};
+
+pub(super) struct Intrinsics<'ctx, 'arena> {
+    values: HashMap<Symbol<'arena>, FunctionValue<'ctx>>,
+    ctx: &'ctx Context,
+}
+
+impl<'ctx, 'tctx> Intrinsics<'ctx, 'tctx> {
+    pub fn new(ctx: &'ctx Context) -> Self {
+        Self {
+            values: HashMap::new(),
+            ctx,
+        }
     }
 
-    pub fn get_decl<'ctx>(
-        &self,
+    pub fn get_intrinsic(
+        &mut self,
+        sym: Symbol<'tctx>,
+        types: impl Iterator<Item = Ty<'tctx>>,
+        ret_ty: Ty<'tctx>,
+        default_types: &DefaultTypes<'ctx>,
+        structs: &StructsStore<'ctx, 'tctx>,
         module: &Module<'ctx>,
-        types: &[BasicTypeEnum<'ctx>],
     ) -> FunctionValue<'ctx> {
-        self.0
-            .get_declaration(module, types)
-            .expect("could not get declaration for known intrinsic")
+        if let Some(v) = self.values.get(&sym) {
+            return *v;
+        }
+        let params = types
+            .map(|v| {
+                v.to_llvm_basic_type(default_types, structs, self.ctx)
+                    .into()
+            })
+            .collect::<Vec<_>>();
+        let ty = if ret_ty == default_types::void || ret_ty == default_types::never {
+            self.ctx.void_type().fn_type(&params, false)
+        } else {
+            ret_ty
+                .to_llvm_basic_type(default_types, structs, self.ctx)
+                .fn_type(&params, false)
+        };
+        let v = module.add_function(sym.to_str(), ty, None);
+        self.values.insert(sym, v);
+        v
     }
-}
-
-macro_rules! llvm_intrinsics {
-    ($($intrinsic: ident $name:literal),* $(,)?) => {
-        pub(super) struct LLVMIntrinsics {
-            $(pub $intrinsic: Intrinsic),*
-        }
-
-        impl LLVMIntrinsics {
-            pub fn init() -> Self {
-                Self {
-                    $($intrinsic: Intrinsic(LLVMIntrinsic::find(concat!("llvm.", $name)).expect(concat!("failed to get intrinsic llvm.", $name)))),*
-                }
-            }
-        }
-    };
-}
-
-llvm_intrinsics! {
-    trap "trap",
-    breakpoint "debugtrap",
 }
