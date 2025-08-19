@@ -3,61 +3,75 @@ use pkg::print_char;
 use pkg::print_newline;
 use pkg::intrinsics::get_metadata;
 
-pub fn print_u64(val: u64) {
-    if (val == 0) {
-        return print_str("0");
-    }
-    let chars: [u8; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let char_idx = 0usize;
+macro! print_impl {
+    (unsigned $ty:ident $size:tok) => {
+        pub fn concat_idents!(print_, $ty) (val: $ty) {
+            if (val == 0) {
+                return print_str("0");
+            }
+            let chars = [0u8; $size];
+            let char_idx = 0usize;
 
-    while (val > 0) {
-        chars[char_idx] = (val % 10) as u8 + 48; // 48 = '0'
-        val = val / 10;
-        char_idx += 1;
-    }
+            while (val > 0) {
+                chars[char_idx] = (val % 10) as u8 + 48; // 48 = '0'
+                val = val / 10;
+                char_idx += 1;
+            }
 
-    while (char_idx > 0) {
-        char_idx -= 1;
-        print_char(chars[char_idx]);
-    }
+            while (char_idx > 0) {
+                char_idx -= 1;
+                print_char(chars[char_idx]);
+            }
+        }
+    };
+
+    (signed $ty:ident $size:tok) => {
+        pub fn concat_idents!(print_, $ty) (val: $ty) {
+            if (val == 0) {
+                return print_str("0");
+            }
+            let chars = [0u8; $size];
+            let char_idx = 0usize;
+            let is_neg = val < 0;
+            if (is_neg) val = -val;
+            while (val > 0) {
+                chars[char_idx] = (val % 10) as u8 + 48; // 48 = '0'
+                val = val / 10;
+                char_idx += 1;
+            }
+
+            if (is_neg) print_char(45); // b'-'
+            while (char_idx > 0) {
+                char_idx -= 1;
+                print_char(chars[char_idx]);
+            }
+        }
+    };
 }
-pub fn print_i64(val: i64) {
-    if (val == 0) {
-        return print_str("0");
-    }
-    let chars: [u8; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let char_idx = 0usize;
-    let is_neg = val < 0;
-    if (is_neg) val = -val;
-    while (val > 0) {
-        chars[char_idx] = (val % 10) as u8 + 48; // 48 = '0'
-        val = val / 10;
-        char_idx += 1;
-    }
 
-    if (is_neg) print_char(45); // b'-'
-    while (char_idx > 0) {
-        char_idx -= 1;
-        print_char(chars[char_idx]);
-    }
-}
-
-
+print_impl!(unsigned u64 20)
+print_impl!(unsigned u32 10)
+print_impl!(unsigned u16 5)
+print_impl!(unsigned u8 3)
+print_impl!(signed i64 19)
+print_impl!(signed i32 10)
+print_impl!(signed i16 5)
+print_impl!(signed i8 3)
 
 @lang("u8")
 struct u8_t {;
-    fn print(self: u8) = print_u64(self as u64);
-    fn println(self: u8) { print_u64(self as u64); print_newline(); }
+    fn print(self: u8) = print_u8(self);
+    fn println(self: u8) { print_u8(self); print_newline(); }
 }
 @lang("u16")
 struct u16_t {;
-    fn print(self: u16) = print_u64(self as u64);
-    fn println(self: u16) { print_u64(self as u64); print_newline(); }
+    fn print(self: u16) = print_u16(self);
+    fn println(self: u16) { print_u16(self); print_newline(); }
 }
 @lang("u32")
 struct u32_t {;
-    fn print(self: u32) = print_u64(self as u64);
-    fn println(self: u32) { print_u64(self as u64); print_newline(); }
+    fn print(self: u32) = print_u32(self);
+    fn println(self: u32) { print_u32(self); print_newline(); }
 }
 @lang("u64")
 struct u64_t {;
@@ -72,18 +86,18 @@ struct usize_t {;
 
 @lang("i8")
 struct i8_t {;
-    fn print(self: i8) = print_i64(self as i64);
-    fn println(self: i8) { print_i64(self as i64); print_newline(); }
+    fn print(self: i8) = print_i8(self);
+    fn println(self: i8) { print_i8(self); print_newline(); }
 }
 @lang("i16")
 struct i16_t {;
-    fn print(self: i16) = print_i64(self as i64);
-    fn println(self: i16) { print_i64(self as i64); print_newline(); }
+    fn print(self: i16) = print_i16(self);
+    fn println(self: i16) { print_i16(self); print_newline(); }
 }
 @lang("i32")
 struct i32_t {;
-    fn print(self: i32) = print_i64(self as i64);
-    fn println(self: i32) { print_i64(self as i64); print_newline(); }
+    fn print(self: i32) = print_i32(self);
+    fn println(self: i32) { print_i32(self); print_newline(); }
 }
 @lang("i64")
 struct i64_t {;

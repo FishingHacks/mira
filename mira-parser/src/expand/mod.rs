@@ -283,7 +283,7 @@ impl<'arena> MacroParser<'arena> {
                 // unexpected token
                 (0, 0) => {
                     return ParseResult::Failure(
-                        MacroError::UnexpectedToken(parser.current().span).to_error(),
+                        MacroError::UnexpectedToken(parser.peek().span).to_error(),
                         approx_pos,
                     );
                 }
