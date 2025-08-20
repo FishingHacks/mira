@@ -1,21 +1,8 @@
 use pkg::os::exit;
 use pkg::intrinsics::call_main;
 
-@callconv(naked)
-extern fn _start() {
-    asm(
-        ".cfi_undefined %rip",
-        "xorl %ebp, %ebp",
-        "popq %rdi",
-        "movq %rsp, %rsi",
-        "andq $$-16, %rsp",
-        "call __mira_main",
-        : : : "ebp", "rdi", "rsp", "rsi"
-    );
-}
-
 @callconv(c)
-extern fn __mira_main(argc: usize, argv: &&u8) -> ! {
+extern fn main(argc: usize, argv: &&u8) -> ! {
     call_main();
 
     // exit with exit_code 0

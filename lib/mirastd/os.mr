@@ -1,76 +1,8 @@
-pub fn syscall1(num: u32, arg1: usize) -> usize {
-    return asm volatile ("syscall",
-        : [ret] "={rax}" (usize)
-        : [number] "{rax}" (num),
-          [arg1] "{rdi}" (arg1),
-        : "rcx", "r11", "memory"
-    );
-}
+@alias("exit")
+extern fn c_exit(code: u32) -> !;
 
-pub fn syscall2(num: u32, arg1: usize, arg2: usize) -> usize {
-    return asm volatile ("syscall",
-        : [ret] "={rax}" (usize)
-        : [number] "{rax}" (num),
-          [arg1] "{rdi}" (num),
-          [arg2] "{rsi}" (arg1),
-        : "rcx", "r11", "memory"
-    );
-}
+@alias("write")
+extern fn c_write(fd: i32, buf: &u8, size: usize) -> isize;
 
-pub fn syscall3(num: u32, arg1: usize, arg2: usize, arg3: usize) -> usize {
-    return asm volatile ("syscall",
-        : [ret] "={rax}" (usize)
-        : [number] "{rax}" (num),
-          [arg1] "{rdi}" (arg1),
-          [arg2] "{rsi}" (arg2),
-          [arg3] "{rdx}" (arg3),
-        : "rcx", "r11", "memory"
-    );
-}
-
-pub fn syscall4(num: u32, arg1: usize, arg2: usize, arg3: usize, arg4: usize) -> usize {
-    return asm volatile ("syscall",
-        : [ret] "={rax}" (usize)
-        : [number] "{rax}" (num),
-          [arg1] "{rdi}" (arg1),
-          [arg2] "{rsi}" (arg2),
-          [arg3] "{rdx}" (arg3),
-          [arg4] "{r10}" (arg4),
-        : "rcx", "r11", "memory"
-    );
-}
-
-pub fn syscall5(num: u32, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> usize {
-    return asm volatile ("syscall",
-        : [ret] "={rax}" (usize)
-        : [number] "{rax}" (num),
-          [arg1] "{rdi}" (arg1),
-          [arg2] "{rsi}" (arg2),
-          [arg3] "{rdx}" (arg3),
-          [arg4] "{r10}" (arg4),
-          [arg5] "{r8}" (arg5),
-        : "rcx", "r11", "memory"
-    );
-}
-
-pub fn syscall6(num: u32, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize, arg6: usize) -> usize {
-    return asm volatile ("syscall",
-        : [ret] "={rax}" (usize)
-        : [number] "{rax}" (num),
-          [arg1] "{rdi}" (arg1),
-          [arg2] "{rsi}" (arg2),
-          [arg3] "{rdx}" (arg3),
-          [arg4] "{r10}" (arg4),
-          [arg5] "{r8}" (arg5),
-          [arg6] "{r9}" (arg6),
-        : "rcx", "r11", "memory"
-    );
-}
-
-pub fn exit(code: u32) -> ! {
-    syscall1(60, code as usize);
-    while (true) {}
-}
-pub fn write(fd: u32, buf: &u8, size: usize) {
-    syscall3(1 /* sys_write */, fd as usize, buf as &void as usize, size);
-}
+pub fn exit(code: u32) -> ! = c_exit(code);
+pub fn write(fd: i32, buf: &u8, size: usize) { c_write(fd, buf, size); }

@@ -215,12 +215,6 @@ pub struct FullCompilationOptions<'a> {
     pub exec_path: Option<PathBuf>,
     /// The codegen options such as target, optimization level, etc
     pub codegen_opts: CodegenConfig<'a>,
-    /// Set to true if you want to link with the c runtime. This will automatically invoke the
-    /// `main` symbol and fail to link if it can't find a main symbol.
-    ///
-    /// Definition of main:
-    /// extern fn main(argc: usize, argv: &&u8) -> int
-    pub link_with_crt: bool,
     /// Additional arguments that are being passed to the linker
     pub additional_linker_args: &'a [String],
     /// Additional directories to search for the linker binary
@@ -260,7 +254,6 @@ impl<'a> FullCompilationOptions<'a> {
             add_extension_to_exe: false,
             exec_path: None,
             codegen_opts: CodegenConfig::new_debug(),
-            link_with_crt: false,
             additional_linker_args: &[],
             additional_linker_directories: &[],
             verbose: false,
@@ -275,7 +268,6 @@ impl<'a> FullCompilationOptions<'a> {
         shared_object => shared_object: bool,
         set_linker_script => linker_script: Option<&'a Path>,
         set_object_path => obj_path: Option<PathBuf>,
-        link_with_c_runtime => link_with_crt: bool,
         set_additional_linker_args => additional_linker_args: &'a [String],
         set_additional_linker_searchdirs => additional_linker_directories: &'a [PathBuf],
         set_verbose_printing => verbose: bool,
@@ -592,9 +584,10 @@ pub fn run_full_compilation_pipeline<'arena>(
         return Ok(opts.exec_path);
     };
 
-    let Some((linker, linker_path)) =
-        mira_linking::search_for_linker(opts.link_with_crt, opts.additional_linker_directories)
-    else {
+    let Some((linker, linker_path)) = mira_linking::search_for_linker(
+        opts.codegen_opts.target.needs_crt(),
+        opts.additional_linker_directories,
+    ) else {
         errs.add_unable_to_locate_linker();
         return Err(errs);
     };
@@ -609,7 +602,7 @@ pub fn run_full_compilation_pipeline<'arena>(
             ],
             output: &exec_path,
             args: opts.additional_linker_args,
-            link_crt: opts.link_with_crt,
+            link_crt: opts.codegen_opts.target.needs_crt(),
             debug_info: opts.with_debug_info,
             verbose: opts.verbose,
             linker_script: opts.linker_script,

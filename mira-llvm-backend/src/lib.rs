@@ -905,8 +905,9 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 Ok(())
             }
             TypedExpression::Return(_, typed_literal) => {
-                if typed_literal.to_primitive_type(self.tc_scope, self.tc_ctx)
-                    == Some(default_types::void)
+                let primitive_ty = typed_literal.to_primitive_type(self.tc_scope, self.tc_ctx);
+                if primitive_ty == Some(default_types::void)
+                    || primitive_ty == Some(default_types::never)
                 {
                     let bb = self
                         .get_insert_block()

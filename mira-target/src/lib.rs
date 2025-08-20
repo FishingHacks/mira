@@ -117,6 +117,10 @@ impl Abi {
             Abi::None | Abi::Gnu => self.to_str(),
         }
     }
+
+    pub fn needs_crt(&self) -> bool {
+        matches!(self, Abi::Gnu)
+    }
 }
 
 str_enum! {
@@ -199,6 +203,10 @@ impl Target {
 
     pub fn from_name(name: &str) -> Self {
         Target::from_str(name).expect("failed to parse target")
+    }
+
+    pub fn needs_crt(&self) -> bool {
+        self.abi.needs_crt()
     }
 
     pub fn targets() -> &'static [Target] {
