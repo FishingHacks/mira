@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::types::FunctionType;
-use mira_common::store::StoreKey;
+use mira_common::store::{StoreKey, VecStore};
 use mira_parser::annotations::Annotations;
 use mira_parser::std_annotations::intrinsic::Intrinsic;
 use mira_spans::{Span, interner::Symbol};
@@ -12,13 +12,13 @@ use mira_spans::{Span, interner::Symbol};
 use super::{
     Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
     TypedStruct, TypedTrait, default_types,
-    typechecking::{ScopeTypeMetadata, ScopeValueId},
+    typechecking::{ScopeEntry, ScopeValueId},
 };
 
 #[derive(Debug, Clone)]
 pub enum TypedLiteral<'arena> {
     Void,
-    Dynamic(ScopeValueId),
+    Dynamic(ScopeValueId<'arena>),
     Function(StoreKey<TypedFunction<'arena>>, Vec<Ty<'arena>>),
     ExternalFunction(StoreKey<TypedExternalFunction<'arena>>),
     Static(StoreKey<TypedStatic<'arena>>),
@@ -47,12 +47,12 @@ pub enum TypedLiteral<'arena> {
 impl<'arena> TypedLiteral<'arena> {
     pub fn to_type<'a>(
         &self,
-        scope: &'a [(Ty<'arena>, ScopeTypeMetadata)],
+        scope: &'a VecStore<ScopeEntry<'arena>>,
         ctx: &TypecheckingContext<'arena>,
     ) -> Ty<'arena> {
         match self {
             TypedLiteral::Void => default_types::void,
-            TypedLiteral::Dynamic(id) => scope[*id].0,
+            TypedLiteral::Dynamic(id) => scope[*id].ty,
             TypedLiteral::Function(id, _) => {
                 let contract = &ctx.functions.read()[*id].0;
                 let fn_type = FunctionType {
@@ -115,7 +115,7 @@ impl<'arena> TypedLiteral<'arena> {
 
     pub fn to_primitive_type(
         &self,
-        scope: &[(Ty<'arena>, ScopeTypeMetadata)],
+        scope: &VecStore<ScopeEntry<'arena>>,
         ctx: &TypecheckingContext<'arena>,
     ) -> Option<Ty<'arena>> {
         match self {
@@ -135,7 +135,7 @@ impl<'arena> TypedLiteral<'arena> {
             TypedLiteral::String(_) => Some(default_types::str_ref),
             TypedLiteral::Void => Some(default_types::void),
             TypedLiteral::Dynamic(id) => {
-                let ty = scope[*id].0;
+                let ty = scope[*id].ty;
                 ty.is_primitive().then_some(ty)
             }
             TypedLiteral::Static(id) => {
@@ -188,13 +188,13 @@ impl<'arena> TypedLiteral<'arena> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum OffsetValue {
+pub enum OffsetValue<'arena> {
     // its guaranteed the type of this is usize.
-    Dynamic(ScopeValueId),
+    Dynamic(ScopeValueId<'arena>),
     Static(usize),
 }
 
-impl Display for OffsetValue {
+impl Display for OffsetValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OffsetValue::Dynamic(id) => {
@@ -236,13 +236,13 @@ pub enum TypecheckedExpression<'arena> {
         lhs: TypedLiteral<'arena>,
         rhs: TypedLiteral<'arena>,
         inclusive: bool,
-        dst: ScopeValueId,
+        dst: ScopeValueId<'arena>,
     },
     // _1 = asm(...)
     Asm {
         span: Span<'arena>,
-        dst: ScopeValueId,
-        inputs: Vec<ScopeValueId>,
+        dst: ScopeValueId<'arena>,
+        inputs: Vec<ScopeValueId<'arena>>,
         registers: String,
         volatile: bool,
         asm: String,
@@ -252,14 +252,14 @@ pub enum TypecheckedExpression<'arena> {
     // _1 = _2(_3.1, _3.2, d, ...)
     Call(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         Vec<TypedLiteral<'arena>>,
     ),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectCall(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         StoreKey<TypedFunction<'arena>>,
         Vec<TypedLiteral<'arena>>,
         Vec<Ty<'arena>>,
@@ -267,14 +267,14 @@ pub enum TypecheckedExpression<'arena> {
     // _1 = func(_3.1, _3.2, d, ...)
     DirectExternCall(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         StoreKey<TypedExternalFunction<'arena>>,
         Vec<TypedLiteral<'arena>>,
     ),
     // _1 = intrinsic(_3.1, _3.2, ...)
     IntrinsicCall(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         Intrinsic,
         Vec<TypedLiteral<'arena>>,
         Vec<Ty<'arena>>,
@@ -282,169 +282,184 @@ pub enum TypecheckedExpression<'arena> {
     // _1 = llvm_intrinsic._2(_3.1, _3.2, ...)
     LLVMIntrinsicCall(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         Symbol<'arena>,
         Vec<TypedLiteral<'arena>>,
     ),
     // _1 = +_2
-    Pos(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    Pos(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // _1 = -_2
-    Neg(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    Neg(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // _1 = !_2
-    LNot(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    LNot(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // _1 = ~_2
-    BNot(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    BNot(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // _1 = _2 + _3
     Add(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 - _3
     Sub(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 * _3
     Mul(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 / _3
     Div(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 % _3
     Mod(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 & _3
     BAnd(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 | _3
     BOr(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 ^ _3
     BXor(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 > _2
     GreaterThan(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 > _2
     LessThan(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 && _2
     LAnd(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 || _2
     LOr(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 >= _2
     GreaterThanEq(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 <= _2
     LessThanEq(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 == _2
     Eq(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 != _2
     Neq(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 << _2
     LShift(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 >> _2
     RShift(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = &_1
     //                                v- guaranteed to either be `Dynamic`, `Static` or `Void`
-    Reference(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    Reference(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // _1 = *_1
-    Dereference(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    Dereference(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = &(*_2).a[3].c.d; This is required, because we will offset the _2 pointer by the required
     // offsets
     Offset(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
-        OffsetValue,
+        OffsetValue<'arena>,
     ),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = _2.a.b.c.d
-    OffsetNonPointer(Span<'arena>, ScopeValueId, TypedLiteral<'arena>, usize),
+    OffsetNonPointer(
+        Span<'arena>,
+        ScopeValueId<'arena>,
+        TypedLiteral<'arena>,
+        usize,
+    ),
     // Eq::val(&dyn Eq, ...)
     // The last value is the offset into the function pointer part of the vtable.
-    DynCall(Span<'arena>, ScopeValueId, Vec<TypedLiteral<'arena>>, u32),
+    DynCall(
+        Span<'arena>,
+        ScopeValueId<'arena>,
+        Vec<TypedLiteral<'arena>>,
+        u32,
+    ),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
-    Literal(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
-    DeclareVariable(Span<'arena>, ScopeValueId, Ty<'arena>, Symbol<'arena>),
+    Literal(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    DeclareVariable(
+        Span<'arena>,
+        ScopeValueId<'arena>,
+        Ty<'arena>,
+        Symbol<'arena>,
+    ),
     Empty(Span<'arena>),
     Unreachable(Span<'arena>),
     // ### CASTS ###
@@ -456,25 +471,30 @@ pub enum TypecheckedExpression<'arena> {
     // &[T] to (&T, usize)
     // &T to &[T; 1]
     // &A to &B
-    Alias(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    Alias(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // casting u_ to i_ (for integers of the same size)
-    Bitcast(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    Bitcast(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // i_ or u_ or f_ or bool to i_ or u_ or f_ or bool
-    IntCast(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    IntCast(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // casts &void to usize (only valid for thin pointers)
-    PtrToInt(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    PtrToInt(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // casts usize to &void (only valid for thin pointers)
-    IntToPtr(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    IntToPtr(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // Strips the metadata from a fat pointer, &[T] to &T
-    StripMetadata(Span<'arena>, ScopeValueId, TypedLiteral<'arena>),
+    StripMetadata(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
     // _2: &[_; _3]
     // let _1 = attach_metadata(_2, _3)
-    MakeUnsizedSlice(Span<'arena>, ScopeValueId, TypedLiteral<'arena>, usize),
+    MakeUnsizedSlice(
+        Span<'arena>,
+        ScopeValueId<'arena>,
+        TypedLiteral<'arena>,
+        usize,
+    ),
     // _2: &<value>
     // let _1 = attach_vtable(_2, trait_1, trait_2)
     AttachVtable(
         Span<'arena>,
-        ScopeValueId,
+        ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         (Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>),
     ),

@@ -42,6 +42,11 @@ impl<T: ?Sized> StoreKey<T> {
     pub fn undefined() -> Self {
         Self(usize::MAX, PhantomData)
     }
+
+    pub fn from_usize(v: usize) -> Self {
+        assert!(v < usize::MAX);
+        Self(v, PhantomData)
+    }
 }
 
 impl<T: ?Sized> Debug for StoreKey<T> {
@@ -55,6 +60,104 @@ impl<T: ?Sized> Debug for StoreKey<T> {
 impl<T: ?Sized> Display for StoreKey<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.0, f)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct VecStore<T> {
+    values: Vec<T>,
+}
+
+impl<T> Default for VecStore<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> VecStore<T> {
+    pub const fn new() -> Self {
+        Self { values: Vec::new() }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn insert(&mut self, value: T) -> StoreKey<T> {
+        self.values.push(value);
+        StoreKey(self.values.len() - 1, PhantomData)
+    }
+
+    pub fn get(&self, key: &StoreKey<T>) -> Option<&T> {
+        self.values.get(key.0)
+    }
+
+    pub fn get_mut(&mut self, key: &StoreKey<T>) -> Option<&mut T> {
+        self.values.get_mut(key.0)
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn index_value_iter(&self) -> impl ExactSizeIterator<Item = (StoreKey<T>, &T)> {
+        self.values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (StoreKey(i, PhantomData), v))
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &T> {
+        self.values.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl ExactSizeIterator<Item = &mut T> {
+        self.values.iter_mut()
+    }
+
+    pub fn indices(&self) -> impl ExactSizeIterator<Item = StoreKey<T>> {
+        (0..self.values.len()).map(|v| StoreKey(v, PhantomData))
+    }
+}
+
+impl<T> IntoIterator for VecStore<T> {
+    type Item = T;
+
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.into_iter()
+    }
+}
+
+impl<T> Index<StoreKey<T>> for VecStore<T> {
+    type Output = T;
+
+    fn index(&self, index: StoreKey<T>) -> &Self::Output {
+        self.get(&index).expect("indexed into empty value")
+    }
+}
+impl<T> Index<&StoreKey<T>> for VecStore<T> {
+    type Output = T;
+
+    fn index(&self, index: &StoreKey<T>) -> &Self::Output {
+        self.get(index).expect("indexed into empty value")
+    }
+}
+impl<T> IndexMut<StoreKey<T>> for VecStore<T> {
+    fn index_mut(&mut self, index: StoreKey<T>) -> &mut Self::Output {
+        self.get_mut(&index).expect("indexed into empty value")
+    }
+}
+impl<T> IndexMut<&StoreKey<T>> for VecStore<T> {
+    fn index_mut(&mut self, index: &StoreKey<T>) -> &mut Self::Output {
+        self.get_mut(index).expect("indexed into empty value")
     }
 }
 

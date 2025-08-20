@@ -1,4 +1,6 @@
 use crate::expression::{TypecheckedExpression, TypedLiteral};
+use crate::typechecking::ScopeEntry;
+use mira_common::store::StoreKey;
 
 use super::{formatter::Formatter, typed_literal::Tld};
 
@@ -7,7 +9,7 @@ pub struct ExpressionDisplay<'a>(pub &'a TypecheckedExpression<'a>);
 
 macro_rules! expr {
     (binary $f:ident, $dst:expr, $lhs:expr, $rhs:expr, $operator:literal) => {{
-        let _: &usize = $dst;
+        let _: &StoreKey<ScopeEntry> = $dst;
         let _: &TypedLiteral = $lhs;
         let _: &TypedLiteral = $rhs;
         $f.write_char('_')?;
@@ -19,7 +21,7 @@ macro_rules! expr {
     }};
 
     (unary $f:ident, $dst:expr, $lhs:expr, $operator:literal) => {{
-        let _: &usize = $dst;
+        let _: &StoreKey<ScopeEntry> = $dst;
         let _: &TypedLiteral = $lhs;
         $f.write_char('_')?;
         $f.write_value($dst)?;

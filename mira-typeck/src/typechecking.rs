@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{context::TypeCtx, typed_resolve_import};
-use mira_common::store::StoreKey;
+use mira_common::store::{StoreKey, VecStore};
 use mira_errors::{Diagnostic, Diagnostics};
 use mira_lexer::NumberType;
 use mira_parser::{
@@ -21,24 +21,28 @@ use super::{
     types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
 };
 
-pub type ScopeValueId = usize;
+pub type ScopeValueId<'arena> = StoreKey<ScopeEntry<'arena>>;
 
 #[derive(Clone, Copy)]
-pub struct ScopeTypeMetadata {
+pub struct ScopeEntry<'arena> {
     pub stack_allocated: bool,
+    pub ty: Ty<'arena>,
 }
 
-#[derive(Default)]
 pub struct Scopes<'arena> {
-    entries: Vec<HashMap<Ident<'arena>, ScopeValueId>>,
-    values: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
+    entries: Vec<HashMap<Ident<'arena>, ScopeValueId<'arena>>>,
+    values: VecStore<ScopeEntry<'arena>>,
 }
 
 impl<'arena> Scopes<'arena> {
-    pub fn get(
-        &self,
-        key: Ident<'arena>,
-    ) -> Option<((Ty<'arena>, ScopeTypeMetadata), ScopeValueId)> {
+    pub fn new() -> Self {
+        Self {
+            entries: vec![HashMap::new()],
+            values: VecStore::new(),
+        }
+    }
+
+    pub fn get(&self, key: Ident<'arena>) -> Option<(ScopeEntry<'arena>, ScopeValueId<'arena>)> {
         let len = self.entries.len();
         for i in 1..=len {
             if let Some(v) = self.entries[len - i].get(&key) {
@@ -48,41 +52,30 @@ impl<'arena> Scopes<'arena> {
         None
     }
 
-    pub fn make_stack_allocated(&mut self, id: usize) {
-        self.values[id].1.stack_allocated = true;
+    pub fn make_stack_allocated(&mut self, id: ScopeValueId<'arena>) {
+        self.values[id].stack_allocated = true;
     }
 
-    pub fn insert_value(
-        &mut self,
-        key: Ident<'arena>,
-        value: Ty<'arena>,
-    ) -> (ScopeValueId, Option<ScopeValueId>) {
+    pub fn insert_value(&mut self, key: Ident<'arena>, value: Ty<'arena>) -> ScopeValueId<'arena> {
         let id = self.push(value);
-        (id, self.insert(key, id))
+        self.insert(key, id);
+        id
     }
 
-    pub fn insert(&mut self, key: Ident<'arena>, value: ScopeValueId) -> Option<ScopeValueId> {
-        if self.entries.is_empty() {
-            self.push_scope();
-        }
+    pub fn insert(&mut self, key: Ident<'arena>, value: ScopeValueId<'arena>) {
+        debug_assert!(!self.entries.is_empty());
         let idx = self.entries.len() - 1;
-        self.entries[idx].insert(key, value)
+        self.entries[idx].insert(key, value);
     }
 
-    pub fn push(&mut self, value: Ty<'arena>) -> ScopeValueId {
-        if !value.is_sized() {
-            panic!("unsized type: {value:?}");
+    pub fn push(&mut self, ty: Ty<'arena>) -> ScopeValueId<'arena> {
+        if !ty.is_sized() {
+            panic!("unsized type: {ty:?}");
         }
-        if self.entries.is_empty() {
-            self.push_scope();
-        }
-        self.values.push((
-            value,
-            ScopeTypeMetadata {
-                stack_allocated: false,
-            },
-        ));
-        self.values.len() - 1
+        self.values.insert(ScopeEntry {
+            ty,
+            stack_allocated: false,
+        })
     }
 
     pub fn push_scope(&mut self) {
@@ -96,6 +89,12 @@ impl<'arena> Scopes<'arena> {
         }
         assert!(self.entries.pop().is_some(), "a scope should always exist");
         true
+    }
+}
+
+impl<'arena> Default for Scopes<'arena> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -117,7 +116,7 @@ pub fn typecheck_static<'arena>(
     match typecheck_expression(
         context,
         tc_module_reader[static_id].module,
-        &mut Scopes::default(),
+        &mut Scopes::new(),
         &Expression::Literal(expr, tc_module_reader[static_id].loc),
         &mut Vec::new(),
         TypeSuggestion::from_type(ty),
@@ -147,7 +146,7 @@ pub fn typecheck_external_function<'arena>(
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedExternalFunction<'arena>>,
     diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<(Ty<'arena>, ScopeTypeMetadata)>, ()> {
+) -> Result<VecStore<ScopeEntry<'arena>>, ()> {
     inner_typecheck_function(
         context,
         module_context,
@@ -163,7 +162,7 @@ pub fn typecheck_function<'arena>(
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedFunction<'arena>>,
     diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<(Ty<'arena>, ScopeTypeMetadata)>, ()> {
+) -> Result<VecStore<ScopeEntry<'arena>>, ()> {
     inner_typecheck_function(context, module_context, function_id, false, diagnostics)
 }
 
@@ -174,7 +173,7 @@ fn inner_typecheck_function<'arena>(
     function_id: StoreKey<TypedFunction<'arena>>,
     is_external: bool,
     errs: &mut Diagnostics<'arena>,
-) -> Result<Vec<(Ty<'arena>, ScopeTypeMetadata)>, ()> {
+) -> Result<VecStore<ScopeEntry<'arena>>, ()> {
     let errs_start_len = errs.len();
 
     let ext_fn_reader = module_context.external_functions.read();
@@ -184,14 +183,14 @@ fn inner_typecheck_function<'arena>(
         if let Some(statement) = statement {
             (statement, module_id)
         } else {
-            return Ok(Vec::new());
+            return Ok(VecStore::new());
         }
     } else {
         let (_, ref statement, module_id) = fn_reader[function_id.cast()];
         (statement, module_id)
     };
 
-    let mut scope = Scopes::default();
+    let mut scope = Scopes::new();
 
     let (return_type, args, loc) = if is_external {
         let contract = &context.external_functions.read()[function_id.cast()].0;
@@ -212,7 +211,7 @@ fn inner_typecheck_function<'arena>(
             drop(reader);
             context.functions.write()[function_id].1 =
                 Box::new([TypecheckedExpression::Unreachable(loc)]);
-            return Ok(Vec::new());
+            return Ok(VecStore::new());
         }
         (
             contract.return_type,
@@ -237,7 +236,7 @@ fn inner_typecheck_function<'arena>(
 
     let mut exprs = vec![];
     for arg in args {
-        let (id, _) = scope.insert_value(arg.0, arg.1);
+        let id = scope.insert_value(arg.0, arg.1);
         scope.make_stack_allocated(id);
     }
 
@@ -864,8 +863,8 @@ fn typecheck_expression<'arena>(
             LiteralValue::Bool(v) => Ok((default_types::bool, TypedLiteral::Bool(*v))),
             LiteralValue::Dynamic(path) => {
                 if path.entries.len() == 1 && path.entries[0].1.is_empty() {
-                    if let Some(((typ, _), id)) = scope.get(path.entries[0].0) {
-                        return Ok((typ, TypedLiteral::Dynamic(id)));
+                    if let Some((entry, id)) = scope.get(path.entries[0].0) {
+                        return Ok((entry.ty, TypedLiteral::Dynamic(id)));
                     }
                 }
                 let mut generics = Vec::new();
@@ -1013,16 +1012,16 @@ fn typecheck_expression<'arena>(
                 })?;
             let mut typed_inputs = Vec::with_capacity(inputs.len());
             for (span, name) in inputs {
-                let Some(((entry_ty, _), id)) = scope.get(*name) else {
+                let Some((entry, id)) = scope.get(*name) else {
                     return Err(TypecheckingError::CannotFindValue(
                         *span,
                         Path::new(*name, Vec::new()),
                     )
                     .to_error());
                 };
-                if !entry_ty.is_asm_primitive() {
+                if !entry.ty.is_asm_primitive() {
                     return Err(
-                        TypecheckingError::AsmNonNumericTypeResolved(*span, entry_ty).to_error(),
+                        TypecheckingError::AsmNonNumericTypeResolved(*span, entry.ty).to_error(),
                     );
                 }
                 typed_inputs.push(id);
@@ -2147,7 +2146,7 @@ fn indexing_resolve_rhs<'arena>(
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypecheckedExpression<'arena>>,
-) -> Result<OffsetValue, Diagnostic<'arena>> {
+) -> Result<OffsetValue<'arena>, Diagnostic<'arena>> {
     let (typ, rhs) = typecheck_expression(
         context,
         module,

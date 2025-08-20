@@ -34,7 +34,7 @@ use inkwell::{
     values::{FunctionValue, GlobalValue},
 };
 
-use mira_common::store::{AssociatedStore, StoreKey};
+use mira_common::store::{AssociatedStore, StoreKey, VecStore};
 use mira_parser::std_annotations::{
     alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
     intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation, noinline::Noinline,
@@ -46,7 +46,7 @@ use mira_typeck::{
     Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
     TypedStruct, TypedTrait, default_types,
     expression::{TypecheckedExpression, TypedLiteral},
-    typechecking::ScopeTypeMetadata,
+    typechecking::ScopeEntry,
 };
 
 #[derive(Clone, Copy)]
@@ -631,21 +631,21 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     pub fn compile_external_fn(
         &mut self,
         fn_id: StoreKey<TypedExternalFunction<'arena>>,
-        tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
+        tc_scope: VecStore<ScopeEntry<'arena>>,
     ) -> Result<(), BuilderError> {
         self.internal_compile_fn(fn_id.cast(), tc_scope, true)
     }
     pub fn compile_fn(
         &mut self,
         fn_id: StoreKey<TypedFunction<'arena>>,
-        tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
+        tc_scope: VecStore<ScopeEntry<'arena>>,
     ) -> Result<(), BuilderError> {
         self.internal_compile_fn(fn_id, tc_scope, false)
     }
     fn internal_compile_fn(
         &mut self,
         fn_id: StoreKey<TypedFunction<'arena>>,
-        tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
+        tc_scope: VecStore<ScopeEntry<'arena>>,
         is_external: bool,
     ) -> Result<(), BuilderError> {
         let ext_fn_reader = self.tc_ctx.external_functions.read();
@@ -714,12 +714,15 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         let mut param_idx = 0;
         for (idx, (name, arg)) in contract.arguments.iter().enumerate() {
             if *arg == default_types::void || *arg == default_types::never {
-                function_ctx.push_value(idx, void_arg);
+                function_ctx.push_value(StoreKey::from_usize(idx), void_arg);
             } else {
-                function_ctx.push_value(idx, func.get_nth_param(param_idx).unwrap());
+                function_ctx.push_value(
+                    StoreKey::from_usize(idx),
+                    func.get_nth_param(param_idx).unwrap(),
+                );
                 param_idx += 1;
             }
-            let ptr = function_ctx.get_value_ptr(idx);
+            let ptr = function_ctx.get_value_ptr(StoreKey::from_usize(idx));
             function_ctx.debug_ctx.declare_param(
                 ptr,
                 scope,

@@ -4,13 +4,13 @@ use debug_builder::DebugContext;
 use intrinsics::Intrinsics;
 use std::{collections::HashMap, ops::Deref};
 
-use mira_common::store::StoreKey;
+use mira_common::store::{AssociatedStore, StoreKey, VecStore};
 use mira_parser::std_annotations::intrinsic::Intrinsic;
 use mira_spans::interner::Symbol;
 use mira_typeck::{
     Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedTrait, default_types,
     expression::{OffsetValue, TypecheckedExpression, TypedLiteral},
-    typechecking::ScopeTypeMetadata,
+    typechecking::ScopeEntry,
 };
 pub mod mangling;
 pub use context::{CodegenConfig, CodegenContext, CodegenContextBuilder, Optimizations};
@@ -39,14 +39,14 @@ mod intrinsics;
 impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     pub fn make_function_codegen_context<'me>(
         &'me mut self,
-        tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
+        tc_scope: VecStore<ScopeEntry<'arena>>,
         current_fn: FunctionValue<'ctx>,
         bb: BasicBlock<'ctx>,
     ) -> FunctionCodegenContext<'ctx, 'arena, 'me> {
         FunctionCodegenContext {
             tc_scope,
             tc_ctx: &self.tc_ctx,
-            _scope: Vec::new(),
+            _scope: AssociatedStore::new(),
             builder: &self.builder,
             context: self.context,
             default_types: self.default_types,
@@ -84,9 +84,9 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_, '_> {
 
 /// 'cg: codegen
 pub struct FunctionCodegenContext<'ctx, 'arena, 'cg> {
-    tc_scope: Vec<(Ty<'arena>, ScopeTypeMetadata)>,
+    tc_scope: VecStore<ScopeEntry<'arena>>,
     tc_ctx: &'cg TypecheckingContext<'arena>,
-    _scope: Vec<BasicValueEnum<'ctx>>,
+    _scope: AssociatedStore<BasicValueEnum<'ctx>, ScopeEntry<'arena>>,
     builder: &'cg Builder<'ctx>,
     context: &'ctx Context,
     default_types: DefaultTypes<'ctx>,
@@ -108,30 +108,22 @@ pub struct FunctionCodegenContext<'ctx, 'arena, 'cg> {
 impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
     /// In case you already made an alloca for the value, as push_value does an alloca and store if
     /// the value is stack allocated.
-    pub fn push_value_raw(&mut self, id: usize, value: BasicValueEnum<'ctx>) {
-        if self._scope.len() != id {
-            panic!(
-                "inserting values out-of-order, expected value _{}, but got value _{id}",
-                self._scope.len()
-            );
-        }
-        self._scope.push(value);
+    pub fn push_value_raw(
+        &mut self,
+        id: StoreKey<ScopeEntry<'arena>>,
+        value: BasicValueEnum<'ctx>,
+    ) {
+        self._scope.insert(id, value);
     }
 
-    pub fn push_value(&mut self, id: usize, value: BasicValueEnum<'ctx>) {
-        if self._scope.len() != id {
-            panic!(
-                "inserting values out-of-order, expected value _{}, but got value _{id}",
-                self._scope.len()
-            );
-        }
-        if !self.tc_scope[id].1.stack_allocated {
-            self._scope.push(value);
+    pub fn push_value(&mut self, id: StoreKey<ScopeEntry<'arena>>, value: BasicValueEnum<'ctx>) {
+        if !self.tc_scope[id].stack_allocated {
+            self._scope.insert(id, value);
             return;
         }
         let allocated_value = self
             .build_alloca(
-                self.tc_scope[id].0.to_llvm_basic_type(
+                self.tc_scope[id].ty.to_llvm_basic_type(
                     &self.default_types,
                     self.structs,
                     self.context,
@@ -139,25 +131,22 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 "",
             )
             .expect("failed to build alloca for a stack allocated value");
-        build_ptr_store(allocated_value, value, self.tc_scope[id].0, self, false)
+        build_ptr_store(allocated_value, value, self.tc_scope[id].ty, self, false)
             .expect("failed to build store to store a basic value into a stack allocated value");
-        self._scope.push(allocated_value.into());
+        self._scope.insert(id, allocated_value.into());
     }
 
     // gets a scoped value, dereferencing it if it is stack allocated.
-    pub fn get_value(&self, id: usize) -> BasicValueEnum<'ctx> {
-        if self.tc_scope.len() <= id {
-            panic!(
-                "cannot get invalid value _{id} (len: {})",
-                self.tc_scope.len()
-            );
+    pub fn get_value(&self, id: StoreKey<ScopeEntry<'arena>>) -> BasicValueEnum<'ctx> {
+        if self.tc_scope.get(&id).is_none() {
+            panic!("cannot get invalid value _{id}");
         }
-        if self._scope.len() <= id {
+        if self._scope.get(&id).is_none() {
             panic!("cannot get not-yet-defined value _{id}");
         }
-        if self.tc_scope[id].1.stack_allocated {
+        if self.tc_scope[id].stack_allocated {
             let ptr = self._scope[id].into_pointer_value();
-            build_deref(ptr, self.tc_scope[id].0, self, false)
+            build_deref(ptr, self.tc_scope[id].ty, self, false)
                 .expect("failed to build a dereference for a stack allocated value")
         } else {
             self._scope[id]
@@ -165,14 +154,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
     }
 
     // gets the pointer to a stack allocated value and panics if the value isn't stack allocated
-    pub fn get_value_ptr(&self, id: usize) -> PointerValue<'ctx> {
-        if self.tc_scope.len() <= id {
+    pub fn get_value_ptr(&self, id: StoreKey<ScopeEntry<'arena>>) -> PointerValue<'ctx> {
+        if self.tc_scope.get(&id).is_none() {
             panic!("cannot get invalid value _{id}");
         }
-        if self._scope.len() <= id {
+        if self._scope.get(&id).is_none() {
             panic!("cannot get not-yet-defined value _{id}");
         }
-        if !self.tc_scope[id].1.stack_allocated {
+        if !self.tc_scope[id].stack_allocated {
             panic!("cannot get pointer to non-stackallocated value _{id}");
         }
         self._scope[id].into_pointer_value()
@@ -352,7 +341,7 @@ fn get_alignment(ty: BasicTypeEnum) -> u32 {
 #[allow(clippy::too_many_arguments)]
 fn to_basic_value<'ctx, 'arena>(
     ty: &TypedLiteral<'arena>,
-    scope_get_value: &dyn Fn(usize) -> BasicValueEnum<'ctx>,
+    scope_get_value: &dyn Fn(StoreKey<ScopeEntry<'arena>>) -> BasicValueEnum<'ctx>,
     default_types: &DefaultTypes<'ctx>,
     structs: &StructsStore<'ctx, 'arena>,
     builder: &Builder<'ctx>,
@@ -929,7 +918,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     return self.build_return(None).map(|_| ());
                 }
                 match typed_literal {
-                    TypedLiteral::Dynamic(id) if self.tc_scope[*id].0 == default_types::void => {
+                    TypedLiteral::Dynamic(id) if self.tc_scope[*id].ty == default_types::void => {
                         self.build_return(None)?
                     }
                     TypedLiteral::Static(id)
@@ -955,16 +944,16 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                     .iter()
                     .map(|v| {
                         self.tc_scope[*v]
-                            .0
+                            .ty
                             .to_llvm_basic_type(&self.default_types, self.structs, self.context)
                             .into()
                     })
                     .collect::<Vec<_>>();
-                let fn_ty = if self.tc_scope[*dst].0 == default_types::void {
+                let fn_ty = if self.tc_scope[*dst].ty == default_types::void {
                     self.context.void_type().fn_type(&input_types, false)
                 } else {
                     self.tc_scope[*dst]
-                        .0
+                        .ty
                         .to_llvm_basic_type(&self.default_types, self.structs, self.context)
                         .fn_type(&input_types, false)
                 };
@@ -1110,8 +1099,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::Range { .. } => todo!(),
             TypecheckedExpression::StoreAssignment(_, dst, src) => {
                 match src {
-                    TypedLiteral::Dynamic(id) if self.tc_scope[*id].1.stack_allocated => {
-                        let ty = &self.tc_scope[*id].0;
+                    TypedLiteral::Dynamic(id) if self.tc_scope[*id].stack_allocated => {
+                        let ty = &self.tc_scope[*id].ty;
                         let llvm_ty =
                             ty.to_llvm_basic_type(&self.default_types, self.structs, self.context);
                         let alignment = get_alignment(llvm_ty);
@@ -1157,7 +1146,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::Call(_, dst, fn_ptr, args) => {
                 let (fn_ty, fn_ptr) = match fn_ptr {
                     TypedLiteral::Dynamic(id) => (
-                        &self.tc_scope[*id].0,
+                        &self.tc_scope[*id].ty,
                         self.get_value(*id).into_pointer_value(),
                     ),
                     TypedLiteral::Static(id) => (
@@ -1185,8 +1174,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         .filter(|v| match v {
                             TypedLiteral::Void => false,
                             TypedLiteral::Dynamic(id) => {
-                                self.tc_scope[*id].0 != default_types::never
-                                    && self.tc_scope[*id].0 != default_types::void
+                                self.tc_scope[*id].ty != default_types::never
+                                    && self.tc_scope[*id].ty != default_types::void
                             }
                             _ => true,
                         })
@@ -1242,7 +1231,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::Add(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].0;
+                let typ = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
                     typ,
@@ -1259,7 +1248,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::Sub(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].0;
+                let typ = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
                     typ,
@@ -1276,7 +1265,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::Mul(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].0;
+                let typ = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
                     typ,
@@ -1293,7 +1282,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::Div(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].0;
+                let typ = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
                     typ,
@@ -1310,7 +1299,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::Mod(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].0;
+                let typ = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
                     typ,
@@ -1344,7 +1333,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::BOr(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].0;
+                let typ = &self.tc_scope[*dst].ty;
                 if typ.is_int_like() || *typ == default_types::bool {
                     self.push_value(
                         *dst,
@@ -1361,7 +1350,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::BXor(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].0;
+                let typ = &self.tc_scope[*dst].ty;
                 if typ.is_int_like() || *typ == default_types::bool {
                     self.push_value(
                         *dst,
@@ -1492,7 +1481,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::LShift(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].0;
+                let typ = &self.tc_scope[*dst].ty;
                 if typ.is_int_like() {
                     self.push_value(
                         *dst,
@@ -1507,7 +1496,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::RShift(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].0;
+                let typ = &self.tc_scope[*dst].ty;
                 if typ.is_int_like() {
                     self.push_value(
                         *dst,
@@ -1533,10 +1522,10 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             }
             TypecheckedExpression::Reference(_, dst, rhs) => {
                 let value = match rhs {
-                    TypedLiteral::Dynamic(id) if self.tc_scope[*id].0 == default_types::void => {
+                    TypedLiteral::Dynamic(id) if self.tc_scope[*id].ty == default_types::void => {
                         self.default_types.ptr.const_zero().into()
                     }
-                    TypedLiteral::Dynamic(id) if !self.tc_scope[*id].1.stack_allocated => {
+                    TypedLiteral::Dynamic(id) if !self.tc_scope[*id].stack_allocated => {
                         panic!("_{id} is not stack allocated (even tho it should have been)")
                     }
                     TypedLiteral::Dynamic(id) => self.get_value_ptr(*id).into(),
@@ -1561,8 +1550,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 Ok(())
             }
             TypecheckedExpression::Dereference(_, dst, rhs) => {
-                if self.tc_scope[*dst].1.stack_allocated {
-                    let ty = self.tc_scope[*dst].0.to_llvm_basic_type(
+                if self.tc_scope[*dst].stack_allocated {
+                    let ty = self.tc_scope[*dst].ty.to_llvm_basic_type(
                         &self.default_types,
                         self.structs,
                         self.context,
@@ -1583,7 +1572,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 }
                 let value = build_deref(
                     self.lit_to_basic_value(rhs).into_pointer_value(), // dst = *rhs
-                    self.tc_scope[*dst].0, // we take the type of lhs as it expects the type of the
+                    self.tc_scope[*dst].ty, // we take the type of lhs as it expects the type of the
                     // value *after* dereferencing as any pointer in llvm is represented as the
                     // same type, &i32 == &&u64 (`ptr`)
                     self,
@@ -1750,7 +1739,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                             .into()
                     }))
                     .collect::<Vec<_>>();
-                let fn_ty = match &**self.tc_scope[*dst].0 {
+                let fn_ty = match &**self.tc_scope[*dst].ty {
                     TyKind::PrimitiveNever | TyKind::PrimitiveVoid => {
                         self.context.void_type().fn_type(&param_types, false)
                     }
@@ -1768,7 +1757,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 Ok(())
             }
             TypecheckedExpression::Bitcast(_, new, old) => {
-                let new_typ = &self.tc_scope[*new].0;
+                let new_typ = &self.tc_scope[*new].ty;
                 let old_typ = old.to_type(&self.tc_scope, self.tc_ctx);
                 assert!(new_typ.refcount() == 0 || new_typ.is_thin_ptr());
                 assert!(old_typ.refcount() == 0 || old_typ.is_thin_ptr());
@@ -1783,9 +1772,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             TypecheckedExpression::Literal(_, dst, src)
             | TypecheckedExpression::Alias(_, dst, src) => {
                 if let TypedLiteral::Dynamic(id) = src {
-                    if self.tc_scope[*dst].1.stack_allocated && self.tc_scope[*id].1.stack_allocated
-                    {
-                        let ty = &self.tc_scope[*dst].0;
+                    if self.tc_scope[*dst].stack_allocated && self.tc_scope[*id].stack_allocated {
+                        let ty = &self.tc_scope[*dst].ty;
                         let llvm_ty =
                             ty.to_llvm_basic_type(&self.default_types, self.structs, self.context);
                         let alignment = get_alignment(llvm_ty);
@@ -1801,8 +1789,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         return Ok(());
                     }
                 } else if let TypedLiteral::Static(id) = src {
-                    if self.tc_scope[*dst].1.stack_allocated {
-                        let ty = &self.tc_scope[*dst].0;
+                    if self.tc_scope[*dst].stack_allocated {
+                        let ty = &self.tc_scope[*dst].ty;
                         let llvm_ty =
                             ty.to_llvm_basic_type(&self.default_types, self.structs, self.context);
                         let alignment = get_alignment(llvm_ty);
@@ -1825,7 +1813,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 let value = self.build_ptr_to_int(
                     self.lit_to_basic_value(src).into_pointer_value(),
                     self.tc_scope[*dst]
-                        .0
+                        .ty
                         .to_llvm_basic_type(&self.default_types, self.structs, self.context)
                         .into_int_type(),
                     "",
@@ -1844,7 +1832,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
             }
             TypecheckedExpression::StripMetadata(_, dst, src) => {
                 let (value, is_ptr) = if let TypedLiteral::Dynamic(src) = src {
-                    (self._scope[*src], self.tc_scope[*src].1.stack_allocated)
+                    (self._scope[*src], self.tc_scope[*src].stack_allocated)
                 } else if let TypedLiteral::Static(id) = src {
                     (self.statics[*id].as_pointer_value().into(), true)
                 } else {
@@ -1857,7 +1845,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                         0,
                         "",
                     )?;
-                    build_deref(pointer_pointer, self.tc_scope[*dst].0, self, false)?
+                    build_deref(pointer_pointer, self.tc_scope[*dst].ty, self, false)?
                 } else {
                     self.build_extract_value(value.into_struct_value(), 0, "")?
                 };
@@ -1868,7 +1856,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 let src_ty = src
                     .to_primitive_type(&self.tc_scope, self.tc_ctx)
                     .expect("can only cast primitive types");
-                let dst_ty = &self.tc_scope[*dst].0;
+                let dst_ty = &self.tc_scope[*dst].ty;
                 let src_value = self.lit_to_basic_value(src);
                 // u8 -> bool
                 if src_ty == default_types::u8 && *dst_ty == default_types::bool {
@@ -1965,7 +1953,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
     fn codegen_directcall(
         &mut self,
         function: FunctionValue<'ctx>,
-        dst: usize,
+        dst: StoreKey<ScopeEntry<'arena>>,
         args: &[TypedLiteral<'arena>],
     ) -> Result<(), BuilderError> {
         let val = self.build_direct_call(
@@ -1975,8 +1963,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
                 .filter(|v| match v {
                     TypedLiteral::Void => false,
                     TypedLiteral::Dynamic(id) => {
-                        self.tc_scope[*id].0 != default_types::never
-                            && self.tc_scope[*id].0 != default_types::void
+                        self.tc_scope[*id].ty != default_types::never
+                            && self.tc_scope[*id].ty != default_types::void
                     }
                     _ => true,
                 })
@@ -1995,14 +1983,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
 
     fn codegen_llvm_intrinsic(
         &mut self,
-        dst: usize,
+        dst: StoreKey<ScopeEntry<'arena>>,
         intrinsic: Symbol<'arena>,
         args: &[TypedLiteral<'arena>],
     ) -> Result<(), BuilderError> {
         let func = self.intrinsics.get_intrinsic(
             intrinsic,
             args.iter().map(|v| v.to_type(&self.tc_scope, self.tc_ctx)),
-            self.tc_scope[dst].0,
+            self.tc_scope[dst].ty,
             &self.default_types,
             self.structs,
             self.module,
@@ -2024,7 +2012,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_> {
     }
     fn codegen_intrinsic(
         &mut self,
-        dst: usize,
+        dst: StoreKey<ScopeEntry<'arena>>,
         intrinsic: Intrinsic,
         args: &[TypedLiteral<'arena>],
         generics: &[Ty<'arena>],
