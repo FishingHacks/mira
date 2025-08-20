@@ -634,7 +634,7 @@ fn build_deref<'ctx, 'arena>(
         return Ok(ctx.lit_to_basic_value(&TypedLiteral::Void));
     }
 
-    if ty.refcount() > 0 {
+    if ty.has_refs() {
         if ty.is_thin_ptr() {
             return Ok(make_volatile(
                 ctx.build_load(ctx.default_types.ptr, left_side, "")?,
@@ -748,7 +748,7 @@ fn build_ptr_store<'ctx, 'arena>(
     ctx: &FunctionCodegenContext<'ctx, 'arena, '_, '_>,
     volatile: bool,
 ) -> Result<(), BuilderError> {
-    if ty.refcount() > 0 {
+    if ty.has_refs() {
         if ty.is_thin_ptr() {
             ctx.build_store(left_side, right_side)?
                 .set_volatile(volatile)
@@ -1762,8 +1762,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::Bitcast(_, new, old) => {
                 let new_typ = &self.tc_scope[*new].ty;
                 let old_typ = old.to_type(self.tc_scope, self.tc_ctx);
-                assert!(new_typ.refcount() == 0 || new_typ.is_thin_ptr());
-                assert!(old_typ.refcount() == 0 || old_typ.is_thin_ptr());
+                assert!(!new_typ.has_refs() || new_typ.is_thin_ptr());
+                assert!(!old_typ.has_refs() || old_typ.is_thin_ptr());
                 let new_value = self.build_bit_cast(
                     self.lit_to_basic_value(old),
                     new_typ.to_llvm_basic_type(&self.default_types, self.structs, self.context),
@@ -2137,9 +2137,9 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             Intrinsic::Select => todo!(),
 
             // TODO: raii
-            Intrinsic::Drop => todo!(),
-            Intrinsic::DropInPlace => todo!(),
-            Intrinsic::Forget => todo!(),
+            Intrinsic::Drop | Intrinsic::DropInPlace | Intrinsic::Forget => {
+                unreachable!("these are handled by the dropck pass")
+            }
             // TODO: raii
             Intrinsic::Read => todo!(),
             Intrinsic::Write => todo!(),

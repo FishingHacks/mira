@@ -221,8 +221,7 @@ fn inner_typecheck_function<'arena>(
     };
 
     if is_external
-        && (!return_type.is_primitive()
-            || (return_type.refcount() > 0 && !return_type.is_thin_ptr()))
+        && (!return_type.is_primitive() || (return_type.has_refs() && !return_type.is_thin_ptr()))
     {
         errs.add_invalid_extern_return_type(loc);
     }
@@ -1649,7 +1648,7 @@ fn typecheck_dyn_membercall<'arena>(
     let ty = ctx.intern_ty(TyKind::DynType(trait_refs));
     let mut ty = with_refcount(ctx, ty, num_references);
     let mut lhs = lhs;
-    while ty.refcount() > 1 {
+    while ty.has_double_refs() {
         ty = ty.deref().expect("dereferencing &_ should never fail");
         let id = scope.push(ctx.intern_ty_ref(&ty));
         exprs.push(TypedExpression::Dereference(lhs_loc, id, lhs));
@@ -1930,7 +1929,7 @@ fn ref_resolve_indexing<'arena>(
                 false,
             )?;
             for element_name in index {
-                while typ_lhs.refcount() > 0 {
+                while typ_lhs.has_refs() {
                     let old_typ_lhs = typ_lhs;
                     typ_lhs = typ_lhs
                         .deref()
@@ -1943,7 +1942,7 @@ fn ref_resolve_indexing<'arena>(
                     ));
                     typed_literal_lhs = TypedLiteral::Dynamic(id);
                 }
-                assert_eq!(typ_lhs.refcount(), 0, "non-zero refcount after auto-deref");
+                assert!(!typ_lhs.has_refs(), "non-zero refcount after auto-deref");
                 match **typ_lhs {
                     TyKind::Struct { struct_id, .. } => {
                         let structure = &context.structs.read()[struct_id];
@@ -1998,7 +1997,7 @@ fn ref_resolve_indexing<'arena>(
                 TypeSuggestion::Array(Box::new(type_suggestion)),
                 false,
             )?;
-            while typ_lhs.refcount() > 0 {
+            while typ_lhs.has_refs() {
                 typ_lhs = typ_lhs
                     .deref()
                     .expect("&_ should never fail to dereference");
@@ -2010,7 +2009,7 @@ fn ref_resolve_indexing<'arena>(
                 ));
                 typed_literal_lhs = TypedLiteral::Dynamic(id);
             }
-            assert_eq!(typ_lhs.refcount(), 0, "non-zero refcount after auto-deref");
+            assert!(!typ_lhs.has_refs(), "non-zero refcount after auto-deref");
             let offset = indexing_resolve_rhs(context, module, scope, right_side, exprs)?;
             let typ = match &**typ_lhs {
                 TyKind::SizedArray { typ, .. } | TyKind::UnsizedArray(typ) => *typ,
@@ -2075,7 +2074,7 @@ fn ref_resolve_indexing<'arena>(
                 }
             }
 
-            if typ.refcount() > 0 && !increase_ref {
+            if typ.has_refs() && !increase_ref {
                 return Ok((
                     typ.deref()
                         .expect("&_ should never fail to be dereferenced"),
@@ -2216,7 +2215,7 @@ fn copy_resolve_indexing<'arena>(
             ) {
                 return Err(TypecheckingError::IndexNonArrayElem(expression.span(), typ).to_error());
             }
-            if typ.refcount() == 0 {
+            if !typ.has_refs() {
                 let new_typ = match &**typ {
                     TyKind::SizedArray { typ, .. } => *typ,
                     TyKind::Tuple(elements) => match offset {
@@ -2275,7 +2274,7 @@ fn copy_resolve_indexing<'arena>(
             } else {
                 let mut typ = typ;
                 let mut lhs = lhs;
-                while typ.refcount() > 1 {
+                while typ.has_double_refs() {
                     typ = typ.deref().expect("dereferencing &_ should never fail");
                     let new_id = scope.push(typ);
                     exprs.push(TypedExpression::Dereference(expression.span(), new_id, lhs));
@@ -2315,8 +2314,8 @@ fn copy_resolve_indexing<'arena>(
                 TypeSuggestion::Unknown,
             )?;
             for element_name in index {
-                let needs_deref = typ_lhs.refcount() > 0;
-                while typ_lhs.refcount() > 1 {
+                let needs_deref = typ_lhs.has_refs();
+                while typ_lhs.has_double_refs() {
                     typ_lhs = typ_lhs.deref().expect("dereferencing &_ should never fail");
                     let new_id = scope.push(typ_lhs);
                     exprs.push(TypedExpression::Dereference(

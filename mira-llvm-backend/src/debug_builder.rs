@@ -395,7 +395,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 _ => (),
             }
             // thin pointer
-            if ty.refcount() > 0 && ty.is_thin_ptr() {
+            if ty.has_refs() && ty.is_thin_ptr() {
                 let base_typ = self.get_type(ty.deref().unwrap(), structs);
                 let typ = self.builder.create_pointer_type(
                     &name,
@@ -406,7 +406,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 );
                 break 'out typ.as_type();
             // fat pointer
-            } else if ty.refcount() > 0 {
+            } else if ty.has_refs() {
                 // &&_ should always be a thin pointer
                 assert_eq!(ty.refcount(), 1);
                 let (metadata_type, pointer_type) =

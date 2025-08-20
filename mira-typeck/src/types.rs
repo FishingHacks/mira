@@ -406,6 +406,19 @@ impl<'arena> TyKind<'arena> {
         }
     }
 
+    /// returns if this type is &_
+    pub fn has_refs(&self) -> bool {
+        matches!(self, Self::Ref(_))
+    }
+
+    /// returns if this type is &&_
+    pub fn has_double_refs(&self) -> bool {
+        match self {
+            Self::Ref(c) => c.has_refs(),
+            _ => false,
+        }
+    }
+
     // TODO: deprecate this and replace uses of refcount() > 0 with some method that checks if it
     // has a ref or let TyKind::Ref(ty) = ty.
     pub fn refcount(&self) -> u8 {
@@ -419,7 +432,7 @@ impl<'arena> TyKind<'arena> {
     }
 
     pub fn is_sized(&self) -> bool {
-        if self.refcount() > 0 {
+        if self.has_refs() {
             return true;
         }
         match self {

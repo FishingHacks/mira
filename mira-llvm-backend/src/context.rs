@@ -451,7 +451,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                 })
                 .collect::<Vec<_>>();
             if !contract.return_type.is_primitive()
-                || (contract.return_type.refcount() > 0 && !contract.return_type.is_thin_ptr())
+                || (contract.return_type.has_refs() && !contract.return_type.is_thin_ptr())
                 || !contract.return_type.is_sized()
                 || contract.arguments.iter().any(|(_, v)| !v.is_sized())
             {
