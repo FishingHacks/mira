@@ -1,5 +1,6 @@
 use crate::TypecheckedModule;
 use mira_common::store::StoreKey;
+use mira_lexer::token::IdentDisplay;
 use mira_parser::module::ModuleScopeValue;
 
 use super::formatter::Formatter;
@@ -14,7 +15,7 @@ impl ModuleDisplay<'_> {
         f.write_str(")\nmodule mod_")?;
         f.write_value(&id)?;
         f.write_char(' ')?;
-        f.write_debug(&self.0.file.path)?;
+        f.write_value(&self.0.file.path.display())?;
         f.write_str(" {")?;
         f.push_indent();
 
@@ -23,7 +24,7 @@ impl ModuleDisplay<'_> {
             f.push_indent();
             for entry in self.0.scope.iter() {
                 f.write_char('\n')?;
-                f.write_value(&entry.0)?;
+                f.write_value(&IdentDisplay(entry.0.symbol()))?;
                 f.write_str(" : ")?;
                 fmt_module_scope_value(entry.1, f)?;
             }
@@ -35,7 +36,7 @@ impl ModuleDisplay<'_> {
             f.push_indent();
             for name in self.0.exports.iter() {
                 f.write_char('\n')?;
-                f.write_value(name)?;
+                f.write_value(&IdentDisplay(name.symbol()))?;
                 if let Some(value) = self.0.scope.get(name) {
                     f.write_str(" (")?;
                     fmt_module_scope_value(value, f)?;

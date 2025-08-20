@@ -16,7 +16,7 @@ impl Tld<'_> {
             TypedLiteral::Function(id, _) => {
                 if let Some(name) = &f.ctx.functions[*id].0.name {
                     f.write_str("@name(")?;
-                    f.write_debug(name)?;
+                    f.write_value(&IdentDisplay(name.symbol()))?;
                     f.write_str(") ")?;
                 }
                 f.write_str("fn_")?;
@@ -25,14 +25,14 @@ impl Tld<'_> {
             TypedLiteral::ExternalFunction(id) => {
                 if let Some(name) = &f.ctx.external_functions[*id].0.name {
                     f.write_str("@name(")?;
-                    f.write_debug(name)?;
+                    f.write_value(&IdentDisplay(name.symbol()))?;
                     f.write_str(") ")?;
                 }
                 f.write_str("ext_fn_")?;
                 f.write_value(id)
             }
             TypedLiteral::Static(id) => f.write_fmt(format_args!("static_{id}")),
-            TypedLiteral::String(global_str) => f.write_debug(global_str),
+            TypedLiteral::String(sym) => f.write_debug(sym),
             TypedLiteral::Array(_, elements) => {
                 f.write_char('[')?;
                 for (idx, v) in elements.iter().enumerate() {
@@ -52,7 +52,7 @@ impl Tld<'_> {
             }
             TypedLiteral::Struct(id, children) => {
                 f.write_str("@name(")?;
-                f.write_debug(&f.ctx.structs[*id].name)?;
+                f.write_value(&IdentDisplay(f.ctx.structs[*id].name.symbol()))?;
                 f.write_str(") struct_")?;
                 f.write_value(id)?;
                 f.write_str(" {")?;

@@ -3,6 +3,7 @@ use crate::{
     ir::{TypedExpression, TypedLiteral},
 };
 use mira_common::store::StoreKey;
+use mira_lexer::token::IdentDisplay;
 
 use super::{expressions::write_implicit_block, formatter::Formatter};
 
@@ -30,7 +31,7 @@ impl FuncDisplay<'_> {
         f.write_value(&id)?;
         if let Some(name) = &self.0.name {
             f.write_char(' ')?;
-            f.write_debug(name)?;
+            f.write_value(&IdentDisplay(name.symbol()))?;
         }
         f.write_char('(')?;
         for (idx, arg) in self.0.arguments.iter().enumerate() {

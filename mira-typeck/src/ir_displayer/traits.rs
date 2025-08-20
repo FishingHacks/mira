@@ -1,3 +1,5 @@
+use mira_lexer::token::IdentDisplay;
+
 use crate::{TypedTrait, default_types};
 
 use super::Formatter;
@@ -10,20 +12,20 @@ impl TraitDisplay<'_> {
         f.write_str("trait trait_")?;
         f.write_value(&self.0.id)?;
         f.write_char(' ')?;
-        f.write_debug(&self.0.name)?;
+        f.write_value(&IdentDisplay(self.0.name.symbol()))?;
         f.write_str(" {")?;
         f.push_indent();
         for (name, args, return_type, annotations, _) in self.0.functions.iter() {
             f.write_char('\n')?;
             f.write_value(annotations)?;
             f.write_str("fn ")?;
-            f.write_value(name)?;
+            f.write_value(&IdentDisplay(name.symbol()))?;
             f.write_char('(')?;
             for (idx, name, ty) in args.iter().enumerate().map(|(a, (b, c))| (a, b, c)) {
                 if idx != 0 {
                     f.write_str(", ")?;
                 }
-                f.write_value(name)?;
+                f.write_value(&IdentDisplay(name.symbol()))?;
                 f.write_str(": ")?;
                 f.write_value(ty)?;
             }
