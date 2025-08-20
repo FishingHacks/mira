@@ -104,7 +104,7 @@ pub trait ErrorData: Send + Sync {
     }
 
     #[allow(unused_variables)]
-    fn labeled_spans(&self, ctx: FormattingCtx<'_>) -> Vec<LabeledSpan> {
+    fn labeled_spans(&self, ctx: FormattingCtx<'_>) -> Vec<LabeledSpan<'_>> {
         Vec::new()
     }
 

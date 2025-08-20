@@ -12,7 +12,7 @@ type MacroFn<'arena> = fn(
     diagnostics: &mut Diagnostics<'arena>,
 ) -> Result<Vec<Token<'arena>>, ()>;
 
-pub fn get_builtin_macro(name: &str) -> Option<MacroFn> {
+pub fn get_builtin_macro(name: &str) -> Option<MacroFn<'_>> {
     match name {
         "concat" => Some(macro_concat),
         "concat_idents" => Some(macro_concat_idents),
