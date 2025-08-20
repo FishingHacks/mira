@@ -1,8 +1,8 @@
 use std::fmt::{Arguments, Debug, Display, Write};
 
 use crate::{
-    TypecheckedFunctionContract, TypecheckedModule, TypedStatic, TypedStruct, TypedTrait,
-    expression::TypecheckedExpression, lang_items::LangItems,
+    TypecheckedModule, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct, TypedTrait,
+    lang_items::LangItems,
 };
 use mira_common::store::{AssociatedStore, Store};
 use mira_parser::module::Module;
@@ -11,14 +11,8 @@ pub const INDENT_STR: &str = "    ";
 
 pub struct ReadOnlyTypecheckingContext<'a, 'arena> {
     pub modules: &'a AssociatedStore<TypecheckedModule<'arena>, Module<'arena>>,
-    pub functions: &'a Store<(
-        TypecheckedFunctionContract<'arena>,
-        Box<[TypecheckedExpression<'arena>]>,
-    )>,
-    pub external_functions: &'a Store<(
-        TypecheckedFunctionContract<'arena>,
-        Option<Box<[TypecheckedExpression<'arena>]>>,
-    )>,
+    pub functions: &'a Store<TypedFunction<'arena>>,
+    pub external_functions: &'a Store<TypedExternalFunction<'arena>>,
     pub statics: &'a Store<TypedStatic<'arena>>,
     pub structs: &'a Store<TypedStruct<'arena>>,
     pub traits: &'a Store<TypedTrait<'arena>>,

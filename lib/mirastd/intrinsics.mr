@@ -27,3 +27,6 @@ pub fn size_of_val<unsized T>(ptr: &T) -> usize = 0;
 
 @intrinsic("call_main")
 pub fn call_main() = void;
+
+@intrinsic("type_name")
+pub fn type_name<unsized T>() -> &str = "";

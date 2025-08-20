@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
     TypecheckingContext, TypedFunction, TypedStatic,
-    expression::{TypecheckedExpression, TypedLiteral},
+    ir::{TypedExpression, TypedLiteral},
 };
 use mira_common::store::StoreKey;
 
@@ -38,7 +38,7 @@ pub fn run_dce<'arena>(
     }
     for (_, ext_fn_body) in ctx.tc_ctx.external_functions.read().iter() {
         let Some(body) = ext_fn_body else { continue };
-        run_block(body, &mut ctx);
+        run_block(&body.exprs, &mut ctx);
     }
     while let Some(func) = ctx.funcs_left.iter().next().copied() {
         if !ctx.used_functions.contains(&func) {
@@ -63,13 +63,13 @@ fn run_fn<'arena>(func: StoreKey<TypedFunction<'arena>>, ctx: &mut DceContext<'_
     let Some((_, func_body)) = func_reader.get(&func) else {
         return;
     };
-    run_block(func_body, ctx);
+    run_block(&func_body.exprs, ctx);
 }
 
-fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceContext<'_, 'arena>) {
+fn run_block<'arena>(block: &[TypedExpression<'arena>], ctx: &mut DceContext<'_, 'arena>) {
     for expr in block {
         match expr {
-            TypecheckedExpression::If {
+            TypedExpression::If {
                 cond,
                 if_block,
                 else_block,
@@ -81,7 +81,7 @@ fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceConte
                     run_block(else_block, ctx);
                 }
             }
-            TypecheckedExpression::While {
+            TypedExpression::While {
                 cond_block,
                 cond,
                 body,
@@ -91,8 +91,8 @@ fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceConte
                 run_literal(cond, ctx);
                 run_block(&body.0, ctx);
             }
-            TypecheckedExpression::Block(_, block, _) => run_block(block, ctx),
-            TypecheckedExpression::DirectCall(_, _, func, lits, _) => {
+            TypedExpression::Block(_, block, _) => run_block(block, ctx),
+            TypedExpression::DirectCall(_, _, func, lits, _) => {
                 if !ctx.used_functions.contains(func) {
                     ctx.funcs_left.insert(*func);
                 }
@@ -100,70 +100,72 @@ fn run_block<'arena>(block: &[TypecheckedExpression<'arena>], ctx: &mut DceConte
                     run_literal(lit, ctx);
                 }
             }
-            TypecheckedExpression::Call(_, _, lit1, lits) => {
+            TypedExpression::Call(_, _, lit1, lits) => {
                 run_literal(lit1, ctx);
                 for lit in lits {
                     run_literal(lit, ctx);
                 }
             }
-            TypecheckedExpression::Reference(_, _, lit)
-            | TypecheckedExpression::Dereference(_, _, lit)
-            | TypecheckedExpression::Offset(_, _, lit, _)
-            | TypecheckedExpression::OffsetNonPointer(_, _, lit, _)
-            | TypecheckedExpression::Literal(_, _, lit)
-            | TypecheckedExpression::Alias(_, _, lit)
-            | TypecheckedExpression::Bitcast(_, _, lit)
-            | TypecheckedExpression::IntCast(_, _, lit)
-            | TypecheckedExpression::PtrToInt(_, _, lit)
-            | TypecheckedExpression::IntToPtr(_, _, lit)
-            | TypecheckedExpression::StripMetadata(_, _, lit)
-            | TypecheckedExpression::MakeUnsizedSlice(_, _, lit, _)
-            | TypecheckedExpression::AttachVtable(_, _, lit, _)
-            | TypecheckedExpression::Return(_, lit)
-            | TypecheckedExpression::Pos(_, _, lit)
-            | TypecheckedExpression::Neg(_, _, lit)
-            | TypecheckedExpression::LNot(_, _, lit)
-            | TypecheckedExpression::BNot(_, _, lit) => run_literal(lit, ctx),
-            TypecheckedExpression::Range {
+            TypedExpression::Reference(_, _, lit)
+            | TypedExpression::Dereference(_, _, lit)
+            | TypedExpression::Offset(_, _, lit, _)
+            | TypedExpression::OffsetNonPointer(_, _, lit, _)
+            | TypedExpression::Literal(_, _, lit)
+            | TypedExpression::Alias(_, _, lit)
+            | TypedExpression::Bitcast(_, _, lit)
+            | TypedExpression::IntCast(_, _, lit)
+            | TypedExpression::PtrToInt(_, _, lit)
+            | TypedExpression::IntToPtr(_, _, lit)
+            | TypedExpression::StripMetadata(_, _, lit)
+            | TypedExpression::MakeUnsizedSlice(_, _, lit, _)
+            | TypedExpression::AttachVtable(_, _, lit, _)
+            | TypedExpression::Return(_, lit)
+            | TypedExpression::Pos(_, _, lit)
+            | TypedExpression::Neg(_, _, lit)
+            | TypedExpression::LNot(_, _, lit)
+            | TypedExpression::BNot(_, _, lit) => run_literal(lit, ctx),
+            TypedExpression::Range {
                 lhs: lit1,
                 rhs: lit2,
                 ..
             }
-            | TypecheckedExpression::StoreAssignment(_, lit1, lit2)
-            | TypecheckedExpression::Add(_, _, lit1, lit2)
-            | TypecheckedExpression::Sub(_, _, lit1, lit2)
-            | TypecheckedExpression::Mul(_, _, lit1, lit2)
-            | TypecheckedExpression::Div(_, _, lit1, lit2)
-            | TypecheckedExpression::Mod(_, _, lit1, lit2)
-            | TypecheckedExpression::BAnd(_, _, lit1, lit2)
-            | TypecheckedExpression::BOr(_, _, lit1, lit2)
-            | TypecheckedExpression::BXor(_, _, lit1, lit2)
-            | TypecheckedExpression::GreaterThan(_, _, lit1, lit2)
-            | TypecheckedExpression::LessThan(_, _, lit1, lit2)
-            | TypecheckedExpression::LAnd(_, _, lit1, lit2)
-            | TypecheckedExpression::LOr(_, _, lit1, lit2)
-            | TypecheckedExpression::GreaterThanEq(_, _, lit1, lit2)
-            | TypecheckedExpression::LessThanEq(_, _, lit1, lit2)
-            | TypecheckedExpression::Eq(_, _, lit1, lit2)
-            | TypecheckedExpression::Neq(_, _, lit1, lit2)
-            | TypecheckedExpression::LShift(_, _, lit1, lit2)
-            | TypecheckedExpression::RShift(_, _, lit1, lit2) => {
+            | TypedExpression::StoreAssignment(_, lit1, lit2)
+            | TypedExpression::Add(_, _, lit1, lit2)
+            | TypedExpression::Sub(_, _, lit1, lit2)
+            | TypedExpression::Mul(_, _, lit1, lit2)
+            | TypedExpression::Div(_, _, lit1, lit2)
+            | TypedExpression::Mod(_, _, lit1, lit2)
+            | TypedExpression::BAnd(_, _, lit1, lit2)
+            | TypedExpression::BOr(_, _, lit1, lit2)
+            | TypedExpression::BXor(_, _, lit1, lit2)
+            | TypedExpression::GreaterThan(_, _, lit1, lit2)
+            | TypedExpression::LessThan(_, _, lit1, lit2)
+            | TypedExpression::LAnd(_, _, lit1, lit2)
+            | TypedExpression::LOr(_, _, lit1, lit2)
+            | TypedExpression::GreaterThanEq(_, _, lit1, lit2)
+            | TypedExpression::LessThanEq(_, _, lit1, lit2)
+            | TypedExpression::Eq(_, _, lit1, lit2)
+            | TypedExpression::Neq(_, _, lit1, lit2)
+            | TypedExpression::LShift(_, _, lit1, lit2)
+            | TypedExpression::RShift(_, _, lit1, lit2) => {
                 run_literal(lit1, ctx);
                 run_literal(lit2, ctx);
             }
-            TypecheckedExpression::DirectExternCall(_, _, _, lits)
-            | TypecheckedExpression::DynCall(_, _, lits, _)
-            | TypecheckedExpression::LLVMIntrinsicCall(_, _, _, lits)
-            | TypecheckedExpression::IntrinsicCall(_, _, _, lits, _) => {
+            TypedExpression::DirectExternCall(_, _, _, lits)
+            | TypedExpression::DynCall(_, _, lits, _)
+            | TypedExpression::LLVMIntrinsicCall(_, _, _, lits)
+            | TypedExpression::IntrinsicCall(_, _, _, lits, _) => {
                 for lit in lits {
                     run_literal(lit, ctx);
                 }
             }
-            TypecheckedExpression::Asm { .. }
-            | TypecheckedExpression::DeclareVariable(..)
-            | TypecheckedExpression::Empty(..)
-            | TypecheckedExpression::Unreachable(..)
-            | TypecheckedExpression::None => (),
+            TypedExpression::DropIf(..)
+            | TypedExpression::Drop(..)
+            | TypedExpression::Asm { .. }
+            | TypedExpression::DeclareVariable(..)
+            | TypedExpression::Empty(..)
+            | TypedExpression::Unreachable(..)
+            | TypedExpression::None => (),
         }
     }
 }

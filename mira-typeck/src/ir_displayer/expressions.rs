@@ -1,11 +1,12 @@
-use crate::expression::{TypecheckedExpression, TypedLiteral};
-use crate::typechecking::ScopeEntry;
+use crate::ir::ScopeEntry;
+use crate::ir::{TypedExpression, TypedLiteral};
+use crate::types::EMPTY_TYLIST;
 use mira_common::store::StoreKey;
 
 use super::{formatter::Formatter, typed_literal::Tld};
 
 #[repr(transparent)]
-pub struct ExpressionDisplay<'a>(pub &'a TypecheckedExpression<'a>);
+pub struct ExpressionDisplay<'a>(pub &'a TypedExpression<'a>);
 
 macro_rules! expr {
     (binary $f:ident, $dst:expr, $lhs:expr, $rhs:expr, $operator:literal) => {{
@@ -33,8 +34,8 @@ macro_rules! expr {
 impl ExpressionDisplay<'_> {
     pub fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self.0 {
-            TypecheckedExpression::Unreachable(_) => f.write_str("unreachable"),
-            TypecheckedExpression::DeclareVariable(_, id, typ, name) => {
+            TypedExpression::Unreachable(_) => f.write_str("unreachable"),
+            TypedExpression::DeclareVariable(_, id, typ, name) => {
                 // let <name>: <ty> = _<id>
                 f.write_str("declare ")?;
                 f.write_value(name)?;
@@ -43,7 +44,7 @@ impl ExpressionDisplay<'_> {
                 f.write_str(" = _")?;
                 f.write_value(id)
             }
-            TypecheckedExpression::Asm {
+            TypedExpression::Asm {
                 dst,
                 inputs,
                 registers,
@@ -82,15 +83,15 @@ impl ExpressionDisplay<'_> {
                 f.pop_indent();
                 f.write_str("\n)")
             }
-            TypecheckedExpression::Return(_, typed_literal) => {
+            TypedExpression::Return(_, typed_literal) => {
                 f.write_str("return ")?;
                 Tld(typed_literal).fmt(f)
             }
-            TypecheckedExpression::Block(_, exprs, annotations) => {
+            TypedExpression::Block(_, exprs, annotations) => {
                 f.write_value(annotations)?;
                 write_block(f, exprs)
             }
-            TypecheckedExpression::If {
+            TypedExpression::If {
                 cond,
                 if_block,
                 else_block,
@@ -106,7 +107,7 @@ impl ExpressionDisplay<'_> {
                 }
                 Ok(())
             }
-            TypecheckedExpression::While {
+            TypedExpression::While {
                 cond_block,
                 cond,
                 body,
@@ -119,7 +120,7 @@ impl ExpressionDisplay<'_> {
                 f.write_char(' ')?;
                 write_implicit_block(f, &body.0)
             }
-            TypecheckedExpression::Range {
+            TypedExpression::Range {
                 lhs,
                 rhs,
                 inclusive,
@@ -136,13 +137,13 @@ impl ExpressionDisplay<'_> {
                 }
                 Tld(rhs).fmt(f)
             }
-            TypecheckedExpression::StoreAssignment(_, lhs, rhs) => {
+            TypedExpression::StoreAssignment(_, lhs, rhs) => {
                 f.write_char('*')?;
                 Tld(lhs).fmt(f)?;
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)
             }
-            TypecheckedExpression::Call(_, lhs, rhs, vec) => {
+            TypedExpression::Call(_, lhs, rhs, vec) => {
                 f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = ")?;
@@ -155,11 +156,11 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypecheckedExpression::DirectCall(_, dst, func, vec, _) => {
+            TypedExpression::DirectCall(_, dst, func, vec, _) => {
                 f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
-                Tld(&TypedLiteral::Function(*func, Vec::new())).fmt(f)?;
+                Tld(&TypedLiteral::Function(*func, EMPTY_TYLIST)).fmt(f)?;
                 f.write_char('(')?;
                 for (idx, arg) in vec.iter().enumerate() {
                     if idx != 0 {
@@ -169,7 +170,7 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypecheckedExpression::DirectExternCall(_, dst, func, vec) => {
+            TypedExpression::DirectExternCall(_, dst, func, vec) => {
                 f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
@@ -183,7 +184,7 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypecheckedExpression::LLVMIntrinsicCall(_, dst, intrinsic, vec) => {
+            TypedExpression::LLVMIntrinsicCall(_, dst, intrinsic, vec) => {
                 f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
@@ -197,11 +198,11 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypecheckedExpression::IntrinsicCall(_, dst, intrinsic, vec, _) => {
+            TypedExpression::IntrinsicCall(_, dst, intrinsic, vec, _) => {
                 f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
-                Tld(&TypedLiteral::Intrinsic(*intrinsic, Vec::new())).fmt(f)?;
+                Tld(&TypedLiteral::Intrinsic(*intrinsic, EMPTY_TYLIST)).fmt(f)?;
                 f.write_char('(')?;
                 for (idx, arg) in vec.iter().enumerate() {
                     if idx != 0 {
@@ -211,39 +212,39 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypecheckedExpression::Pos(_, lhs, rhs) => expr!(unary f, lhs, rhs, "+"),
-            TypecheckedExpression::Neg(_, lhs, rhs) => expr!(unary f, lhs, rhs, "-"),
-            TypecheckedExpression::LNot(_, lhs, rhs) => expr!(unary f, lhs, rhs, "!"),
-            TypecheckedExpression::BNot(_, lhs, rhs) => expr!(unary f, lhs, rhs, "~"),
-            TypecheckedExpression::Add(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "+"),
-            TypecheckedExpression::Sub(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "-"),
-            TypecheckedExpression::Mul(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "*"),
-            TypecheckedExpression::Div(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "/"),
-            TypecheckedExpression::Mod(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "%"),
-            TypecheckedExpression::BAnd(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "&"),
-            TypecheckedExpression::BOr(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "|"),
-            TypecheckedExpression::BXor(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "^"),
-            TypecheckedExpression::GreaterThan(_, dst, lhs, rhs) => {
+            TypedExpression::Pos(_, lhs, rhs) => expr!(unary f, lhs, rhs, "+"),
+            TypedExpression::Neg(_, lhs, rhs) => expr!(unary f, lhs, rhs, "-"),
+            TypedExpression::LNot(_, lhs, rhs) => expr!(unary f, lhs, rhs, "!"),
+            TypedExpression::BNot(_, lhs, rhs) => expr!(unary f, lhs, rhs, "~"),
+            TypedExpression::Add(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "+"),
+            TypedExpression::Sub(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "-"),
+            TypedExpression::Mul(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "*"),
+            TypedExpression::Div(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "/"),
+            TypedExpression::Mod(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "%"),
+            TypedExpression::BAnd(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "&"),
+            TypedExpression::BOr(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "|"),
+            TypedExpression::BXor(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "^"),
+            TypedExpression::GreaterThan(_, dst, lhs, rhs) => {
                 expr!(binary f, dst, lhs, rhs, ">")
             }
-            TypecheckedExpression::LessThan(_, dst, lhs, rhs) => {
+            TypedExpression::LessThan(_, dst, lhs, rhs) => {
                 expr!(binary f, dst, lhs, rhs, "<")
             }
-            TypecheckedExpression::LAnd(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "&&"),
-            TypecheckedExpression::LOr(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "||"),
-            TypecheckedExpression::GreaterThanEq(_, dst, lhs, rhs) => {
+            TypedExpression::LAnd(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "&&"),
+            TypedExpression::LOr(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "||"),
+            TypedExpression::GreaterThanEq(_, dst, lhs, rhs) => {
                 expr!(binary f, dst, lhs, rhs, ">=")
             }
-            TypecheckedExpression::LessThanEq(_, dst, lhs, rhs) => {
+            TypedExpression::LessThanEq(_, dst, lhs, rhs) => {
                 expr!(binary f, dst, lhs, rhs, "<=")
             }
-            TypecheckedExpression::Eq(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "=="),
-            TypecheckedExpression::Neq(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "!="),
-            TypecheckedExpression::LShift(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "<<"),
-            TypecheckedExpression::RShift(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, ">>"),
-            TypecheckedExpression::Reference(_, lhs, rhs) => expr!(unary f, lhs, rhs, "&"),
-            TypecheckedExpression::Dereference(_, lhs, rhs) => expr!(unary f, lhs, rhs, "*"),
-            TypecheckedExpression::Offset(_, lhs, rhs, offsets) => {
+            TypedExpression::Eq(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "=="),
+            TypedExpression::Neq(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "!="),
+            TypedExpression::LShift(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "<<"),
+            TypedExpression::RShift(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, ">>"),
+            TypedExpression::Reference(_, lhs, rhs) => expr!(unary f, lhs, rhs, "&"),
+            TypedExpression::Dereference(_, lhs, rhs) => expr!(unary f, lhs, rhs, "*"),
+            TypedExpression::Offset(_, lhs, rhs, offsets) => {
                 f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = offset(")?;
@@ -252,7 +253,7 @@ impl ExpressionDisplay<'_> {
                 f.write_debug(offsets)?;
                 f.write_char(')')
             }
-            TypecheckedExpression::OffsetNonPointer(_, lhs, rhs, offset_value) => {
+            TypedExpression::OffsetNonPointer(_, lhs, rhs, offset_value) => {
                 f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = offset_non_ptr(")?;
@@ -261,7 +262,7 @@ impl ExpressionDisplay<'_> {
                 f.write_value(offset_value)?;
                 f.write_char(')')
             }
-            TypecheckedExpression::DynCall(_, dst, args, offset) => {
+            TypedExpression::DynCall(_, dst, args, offset) => {
                 f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = dyncall(")?;
@@ -272,25 +273,25 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypecheckedExpression::Bitcast(_, lhs, rhs)
-            | TypecheckedExpression::PtrToInt(_, lhs, rhs)
-            | TypecheckedExpression::IntToPtr(_, lhs, rhs)
-            | TypecheckedExpression::Alias(_, lhs, rhs)
-            | TypecheckedExpression::StripMetadata(_, lhs, rhs)
-            | TypecheckedExpression::IntCast(_, lhs, rhs) => {
+            TypedExpression::Bitcast(_, lhs, rhs)
+            | TypedExpression::PtrToInt(_, lhs, rhs)
+            | TypedExpression::IntToPtr(_, lhs, rhs)
+            | TypedExpression::Alias(_, lhs, rhs)
+            | TypedExpression::StripMetadata(_, lhs, rhs)
+            | TypedExpression::IntCast(_, lhs, rhs) => {
                 f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)?;
                 f.write_str(" as <unknown type T>")
             }
-            TypecheckedExpression::Literal(_, lhs, rhs) => {
+            TypedExpression::Literal(_, lhs, rhs) => {
                 f.write_str("_")?;
                 f.write_value(lhs)?;
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)
             }
-            TypecheckedExpression::AttachVtable(_, lhs, rhs, (_, traits)) => {
+            TypedExpression::AttachVtable(_, lhs, rhs, (_, traits)) => {
                 f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = attach_vtable(")?;
@@ -299,7 +300,7 @@ impl ExpressionDisplay<'_> {
                 f.write_debug(traits)?;
                 f.write_char(')')
             }
-            TypecheckedExpression::MakeUnsizedSlice(_, lhs, rhs, size) => {
+            TypedExpression::MakeUnsizedSlice(_, lhs, rhs, size) => {
                 f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = attach_size_metadata(")?;
@@ -308,13 +309,25 @@ impl ExpressionDisplay<'_> {
                 f.write_value(size)?;
                 f.write_char(')')
             }
-            TypecheckedExpression::Empty(_) => f.write_str("<removed>"),
-            TypecheckedExpression::None => f.write_str("<none>"),
+            TypedExpression::Drop(_, value) => {
+                f.write_str("drop(_")?;
+                f.write_value(value)?;
+                f.write_char(')')
+            }
+            TypedExpression::DropIf(_, value, cond) => {
+                f.write_str("if _")?;
+                f.write_value(cond)?;
+                f.write_str(" drop(_")?;
+                f.write_value(value)?;
+                f.write_char(')')
+            }
+            TypedExpression::Empty(_) => f.write_str("<removed>"),
+            TypedExpression::None => f.write_str("<none>"),
         }
     }
 }
 
-pub fn write_block(f: &mut Formatter, exprs: &[TypecheckedExpression]) -> std::fmt::Result {
+pub fn write_block(f: &mut Formatter, exprs: &[TypedExpression]) -> std::fmt::Result {
     f.write_char('{')?;
     f.push_indent();
     for expr in exprs {
@@ -327,11 +340,8 @@ pub fn write_block(f: &mut Formatter, exprs: &[TypecheckedExpression]) -> std::f
 
 // writes a block to `f` unless the block is a single expression of type
 // `TypecheckedExpression::Block`, in which case it will print the block.
-pub fn write_implicit_block(
-    f: &mut Formatter,
-    exprs: &[TypecheckedExpression],
-) -> std::fmt::Result {
-    if exprs.len() == 1 && matches!(exprs[0], TypecheckedExpression::Block(..)) {
+pub fn write_implicit_block(f: &mut Formatter, exprs: &[TypedExpression]) -> std::fmt::Result {
+    if exprs.len() == 1 && matches!(exprs[0], TypedExpression::Block(..)) {
         ExpressionDisplay(&exprs[0]).fmt(f)
     } else {
         write_block(f, exprs)

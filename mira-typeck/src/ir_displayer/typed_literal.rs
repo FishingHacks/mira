@@ -1,6 +1,6 @@
 use mira_lexer::token::IdentDisplay;
 
-use crate::expression::TypedLiteral;
+use crate::ir::TypedLiteral;
 
 use super::formatter::Formatter;
 

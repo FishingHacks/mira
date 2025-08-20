@@ -53,8 +53,14 @@ pub mod default_types {
     ];
 }
 
-interner!(TypeListInterner, TyList, [Ty<'arena>], |arena, types| arena
-    .alloc_slice(types));
+pub static EMPTY_TYLIST: TyList<'static> = TyList(&[]);
+interner!(
+    TypeListInterner,
+    TyList,
+    [Ty<'arena>],
+    |arena, types| arena.alloc_slice(types),
+    &[&EMPTY_TYLIST]
+);
 extra_traits!(for TyList impl debug);
 interner!(
     TypeInterner,
@@ -799,5 +805,16 @@ mod test {
         assert_eq!(default_types::u8.0, u8.0);
         assert_eq!(default_types::u16.0, u16.0);
         assert_eq!(default_types::u8_ref.0, u8ref.0);
+    }
+
+    #[test]
+    fn ty_list_interner_interns() {
+        let arena = Arena::new();
+        let mut interner = TypeListInterner::new(&arena);
+        let empty = interner.intern([]);
+        let one_el1 = interner.intern([default_types::u8]);
+        let one_el2 = interner.intern([default_types::u8]);
+        assert_eq!(empty, EMPTY_TYLIST);
+        assert_eq!(one_el1, one_el2);
     }
 }

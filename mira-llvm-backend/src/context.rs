@@ -34,7 +34,7 @@ use inkwell::{
     values::{FunctionValue, GlobalValue},
 };
 
-use mira_common::store::{AssociatedStore, StoreKey, VecStore};
+use mira_common::store::{AssociatedStore, StoreKey};
 use mira_parser::std_annotations::{
     alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
     intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation, noinline::Noinline,
@@ -45,8 +45,7 @@ use mira_target::{NATIVE_TARGET, Target};
 use mira_typeck::{
     Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
     TypedStruct, TypedTrait, default_types,
-    expression::{TypecheckedExpression, TypedLiteral},
-    typechecking::ScopeEntry,
+    ir::{TypedExpression, TypedLiteral},
 };
 
 #[derive(Clone, Copy)]
@@ -631,21 +630,18 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     pub fn compile_external_fn(
         &mut self,
         fn_id: StoreKey<TypedExternalFunction<'arena>>,
-        tc_scope: VecStore<ScopeEntry<'arena>>,
     ) -> Result<(), BuilderError> {
-        self.internal_compile_fn(fn_id.cast(), tc_scope, true)
+        self.internal_compile_fn(fn_id.cast(), true)
     }
     pub fn compile_fn(
         &mut self,
         fn_id: StoreKey<TypedFunction<'arena>>,
-        tc_scope: VecStore<ScopeEntry<'arena>>,
     ) -> Result<(), BuilderError> {
-        self.internal_compile_fn(fn_id, tc_scope, false)
+        self.internal_compile_fn(fn_id, false)
     }
     fn internal_compile_fn(
         &mut self,
         fn_id: StoreKey<TypedFunction<'arena>>,
-        tc_scope: VecStore<ScopeEntry<'arena>>,
         is_external: bool,
     ) -> Result<(), BuilderError> {
         let ext_fn_reader = self.tc_ctx.external_functions.read();
@@ -688,7 +684,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             self.debug_ctx.funcs[fn_id].as_debug_info_scope()
         };
 
-        let mut function_ctx = self.make_function_codegen_context(tc_scope, func, body_basic_block);
+        let mut function_ctx = self.make_function_codegen_context(func, body_basic_block);
         function_ctx.goto(body_basic_block);
         let function_reader = function_ctx.tc_ctx.functions.read();
         let ext_function_reader = function_ctx.tc_ctx.external_functions.read();
@@ -702,10 +698,11 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             let Some(v) = &ext_function_reader[fn_id.cast()].1 else {
                 unreachable!()
             };
-            &**v
+            v
         } else {
-            &*function_reader[fn_id].1
+            &function_reader[fn_id].1
         };
+        function_ctx.add_tc_scope(&body.values);
 
         function_ctx
             .builder
@@ -738,12 +735,10 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 
         drop(structs_reader);
 
-        for expr in body {
+        for expr in body.exprs.iter() {
             function_ctx.codegen(expr, scope, contract.module_id)?;
         }
 
-        drop(function_reader);
-        drop(ext_function_reader);
         let Some(insert_block) = function_ctx.builder.get_insert_block() else {
             unreachable!(
                 "builder does not have a basic block to insert into even though it just built a function"
@@ -776,11 +771,11 @@ fn collect_data<'arena>(
     let mut vtables = HashSet::new();
 
     for (_, body) in function_reader.iter() {
-        collect_strings_for_expressions(body, &mut strings, &mut vtables);
+        collect_strings_for_expressions(&body.exprs, &mut strings, &mut vtables);
     }
     for (_, body) in ext_function_reader.iter() {
         if let Some(body) = body {
-            collect_strings_for_expressions(body, &mut strings, &mut vtables);
+            collect_strings_for_expressions(&body.exprs, &mut strings, &mut vtables);
         }
     }
     for static_value in statics_reader.iter() {
@@ -791,16 +786,16 @@ fn collect_data<'arena>(
 }
 
 fn collect_strings_for_expressions<'arena>(
-    exprs: &[TypecheckedExpression<'arena>],
+    exprs: &[TypedExpression<'arena>],
     strings: &mut HashSet<Symbol<'arena>>,
     vtables: &mut HashSet<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
 ) {
     for expr in exprs {
         match expr {
-            TypecheckedExpression::Block(_, exprs, _) => {
+            TypedExpression::Block(_, exprs, _) => {
                 collect_strings_for_expressions(exprs, strings, vtables)
             }
-            TypecheckedExpression::If {
+            TypedExpression::If {
                 cond,
                 if_block,
                 else_block,
@@ -812,7 +807,7 @@ fn collect_strings_for_expressions<'arena>(
                     .as_ref()
                     .map(|v| collect_strings_for_expressions(&v.0, strings, vtables));
             }
-            TypecheckedExpression::While {
+            TypedExpression::While {
                 cond_block,
                 cond,
                 body,
@@ -822,72 +817,72 @@ fn collect_strings_for_expressions<'arena>(
                 collect_strings_for_expressions(&body.0, strings, vtables);
                 collect_strings_for_typed_literal(cond, strings);
             }
-            TypecheckedExpression::Call(_, _, lhs, args) => {
+            TypedExpression::Call(_, _, lhs, args) => {
                 collect_strings_for_typed_literal(lhs, strings);
                 for v in args {
                     collect_strings_for_typed_literal(v, strings);
                 }
             }
-            TypecheckedExpression::DirectCall(.., args, _)
-            | TypecheckedExpression::DynCall(.., args, _)
-            | TypecheckedExpression::DirectExternCall(.., args)
-            | TypecheckedExpression::LLVMIntrinsicCall(.., args)
-            | TypecheckedExpression::IntrinsicCall(.., args, _) => {
+            TypedExpression::DirectCall(.., args, _)
+            | TypedExpression::DynCall(.., args, _)
+            | TypedExpression::DirectExternCall(.., args)
+            | TypedExpression::LLVMIntrinsicCall(.., args)
+            | TypedExpression::IntrinsicCall(.., args, _) => {
                 for v in args {
                     collect_strings_for_typed_literal(v, strings);
                 }
             }
-            TypecheckedExpression::Range { lhs, rhs, .. }
-            | TypecheckedExpression::StoreAssignment(_, lhs, rhs)
-            | TypecheckedExpression::Add(.., lhs, rhs)
-            | TypecheckedExpression::Sub(.., lhs, rhs)
-            | TypecheckedExpression::Mul(.., lhs, rhs)
-            | TypecheckedExpression::Div(.., lhs, rhs)
-            | TypecheckedExpression::Mod(.., lhs, rhs)
-            | TypecheckedExpression::BAnd(.., lhs, rhs)
-            | TypecheckedExpression::BOr(.., lhs, rhs)
-            | TypecheckedExpression::BXor(.., lhs, rhs)
-            | TypecheckedExpression::GreaterThan(.., lhs, rhs)
-            | TypecheckedExpression::LessThan(.., lhs, rhs)
-            | TypecheckedExpression::LAnd(.., lhs, rhs)
-            | TypecheckedExpression::LOr(.., lhs, rhs)
-            | TypecheckedExpression::GreaterThanEq(.., lhs, rhs)
-            | TypecheckedExpression::LessThanEq(.., lhs, rhs)
-            | TypecheckedExpression::Eq(.., lhs, rhs)
-            | TypecheckedExpression::Neq(.., lhs, rhs)
-            | TypecheckedExpression::LShift(.., lhs, rhs)
-            | TypecheckedExpression::RShift(.., lhs, rhs) => {
+            TypedExpression::Range { lhs, rhs, .. }
+            | TypedExpression::StoreAssignment(_, lhs, rhs)
+            | TypedExpression::Add(.., lhs, rhs)
+            | TypedExpression::Sub(.., lhs, rhs)
+            | TypedExpression::Mul(.., lhs, rhs)
+            | TypedExpression::Div(.., lhs, rhs)
+            | TypedExpression::Mod(.., lhs, rhs)
+            | TypedExpression::BAnd(.., lhs, rhs)
+            | TypedExpression::BOr(.., lhs, rhs)
+            | TypedExpression::BXor(.., lhs, rhs)
+            | TypedExpression::GreaterThan(.., lhs, rhs)
+            | TypedExpression::LessThan(.., lhs, rhs)
+            | TypedExpression::LAnd(.., lhs, rhs)
+            | TypedExpression::LOr(.., lhs, rhs)
+            | TypedExpression::GreaterThanEq(.., lhs, rhs)
+            | TypedExpression::LessThanEq(.., lhs, rhs)
+            | TypedExpression::Eq(.., lhs, rhs)
+            | TypedExpression::Neq(.., lhs, rhs)
+            | TypedExpression::LShift(.., lhs, rhs)
+            | TypedExpression::RShift(.., lhs, rhs) => {
                 collect_strings_for_typed_literal(lhs, strings);
                 collect_strings_for_typed_literal(rhs, strings);
             }
-            TypecheckedExpression::Return(_, lit)
-            | TypecheckedExpression::Reference(.., lit)
-            | TypecheckedExpression::Dereference(.., lit)
-            | TypecheckedExpression::Offset(.., lit, _)
-            | TypecheckedExpression::OffsetNonPointer(.., lit, _)
-            | TypecheckedExpression::Literal(.., lit)
-            | TypecheckedExpression::MakeUnsizedSlice(.., lit, _)
-            | TypecheckedExpression::Pos(.., lit)
-            | TypecheckedExpression::Neg(.., lit)
-            | TypecheckedExpression::LNot(.., lit)
-            | TypecheckedExpression::Bitcast(.., lit)
-            | TypecheckedExpression::IntCast(.., lit)
-            | TypecheckedExpression::PtrToInt(.., lit)
-            | TypecheckedExpression::IntToPtr(.., lit)
-            | TypecheckedExpression::Alias(.., lit)
-            | TypecheckedExpression::StripMetadata(.., lit)
-            | TypecheckedExpression::BNot(.., lit) => {
-                collect_strings_for_typed_literal(lit, strings)
-            }
-            TypecheckedExpression::AttachVtable(_, _, lit, (ty, traits)) => {
+            TypedExpression::Return(_, lit)
+            | TypedExpression::Reference(.., lit)
+            | TypedExpression::Dereference(.., lit)
+            | TypedExpression::Offset(.., lit, _)
+            | TypedExpression::OffsetNonPointer(.., lit, _)
+            | TypedExpression::Literal(.., lit)
+            | TypedExpression::MakeUnsizedSlice(.., lit, _)
+            | TypedExpression::Pos(.., lit)
+            | TypedExpression::Neg(.., lit)
+            | TypedExpression::LNot(.., lit)
+            | TypedExpression::Bitcast(.., lit)
+            | TypedExpression::IntCast(.., lit)
+            | TypedExpression::PtrToInt(.., lit)
+            | TypedExpression::IntToPtr(.., lit)
+            | TypedExpression::Alias(.., lit)
+            | TypedExpression::StripMetadata(.., lit)
+            | TypedExpression::BNot(.., lit) => collect_strings_for_typed_literal(lit, strings),
+            TypedExpression::AttachVtable(_, _, lit, (ty, traits)) => {
                 collect_strings_for_typed_literal(lit, strings);
                 vtables.insert((*ty, traits.clone()));
             }
-            TypecheckedExpression::Empty(_)
-            | TypecheckedExpression::Unreachable(_)
-            | TypecheckedExpression::DeclareVariable(..)
-            | TypecheckedExpression::Asm { .. }
-            | TypecheckedExpression::None => (),
+            TypedExpression::Empty(_)
+            | TypedExpression::Unreachable(_)
+            | TypedExpression::DeclareVariable(..)
+            | TypedExpression::Drop(..)
+            | TypedExpression::DropIf(..)
+            | TypedExpression::Asm { .. }
+            | TypedExpression::None => (),
         }
     }
 }

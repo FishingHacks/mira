@@ -16,7 +16,6 @@ mod parsing;
 pub use parsing::expand_macros;
 use parsing::parse_all;
 
-use mira_common::store::AssociatedStore;
 use mira_linking::{self, LinkOptions, LinkerErrorDiagnosticsExt as _, LinkerInput};
 use mira_parser::std_annotations::intrinsic::IntrinsicAnnotation;
 use mira_target::Target;
@@ -404,8 +403,6 @@ pub fn run_full_compilation_pipeline<'arena>(
         .collect::<Vec<_>>();
 
     let mut errs = Diagnostics::new();
-    let mut scopes_fns = AssociatedStore::new();
-    let mut scopes_ext_fns = AssociatedStore::new();
 
     for key in function_keys {
         let item = progress_bar.add_child(
@@ -413,9 +410,11 @@ pub fn run_full_compilation_pipeline<'arena>(
             format!("Typechecking function {key}").into_boxed_str(),
         );
 
-        if let Ok(v) = typecheck_function(&typechecking_context, &module_context, key, &mut errs) {
-            scopes_fns.insert(key, v);
-        }
+        _ = typecheck_function(&typechecking_context, &module_context, key, &mut errs);
+        mira_typeck::ir::passes::run_passes(
+            &mut typechecking_context.functions.write()[key.cast()].1,
+            ctx,
+        );
 
         progress_bar.remove(item);
     }
@@ -426,10 +425,12 @@ pub fn run_full_compilation_pipeline<'arena>(
             format!("Typechecking external function {key}").into_boxed_str(),
         );
 
-        if let Ok(v) =
-            typecheck_external_function(&typechecking_context, &module_context, key, &mut errs)
+        _ = typecheck_external_function(&typechecking_context, &module_context, key, &mut errs);
+        if let Some(body) = typechecking_context.external_functions.write()[key]
+            .1
+            .as_mut()
         {
-            scopes_ext_fns.insert(key, v);
+            mira_typeck::ir::passes::run_passes(body, ctx);
         }
 
         progress_bar.remove(item);
@@ -509,10 +510,7 @@ pub fn run_full_compilation_pipeline<'arena>(
             format!("Codegening function #{fn_id}").into_boxed_str(),
         );
 
-        if let Err(e) = codegen_context.compile_fn(
-            fn_id,
-            scopes_fns.remove(&fn_id).expect("scope should be there"),
-        ) {
+        if let Err(e) = codegen_context.compile_fn(fn_id) {
             errs.add_err(CodegenError::from(e));
         }
         progress_bar.remove(item);
@@ -524,19 +522,11 @@ pub fn run_full_compilation_pipeline<'arena>(
             format!("Codegening external function #{fn_id}").into_boxed_str(),
         );
 
-        if let Err(e) = codegen_context.compile_external_fn(
-            fn_id,
-            scopes_ext_fns
-                .remove(&fn_id)
-                .expect("scope should be there"),
-        ) {
+        if let Err(e) = codegen_context.compile_external_fn(fn_id) {
             errs.add_err(CodegenError::from(e));
         }
         progress_bar.remove(item);
     }
-
-    drop(scopes_fns);
-    drop(scopes_ext_fns);
 
     progress_bar.add_child(codegen_item, "Optimizing".into());
 

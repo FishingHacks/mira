@@ -1,6 +1,6 @@
 use crate::{
     TypecheckedFunctionContract, TypedFunction, default_types,
-    expression::{TypecheckedExpression, TypedLiteral},
+    ir::{TypedExpression, TypedLiteral},
 };
 use mira_common::store::StoreKey;
 
@@ -8,7 +8,7 @@ use super::{expressions::write_implicit_block, formatter::Formatter};
 
 pub struct FuncDisplay<'a>(
     pub &'a TypecheckedFunctionContract<'a>,
-    pub Option<&'a [TypecheckedExpression<'a>]>,
+    pub Option<&'a [TypedExpression<'a>]>,
 );
 
 impl FuncDisplay<'_> {
@@ -53,7 +53,7 @@ impl FuncDisplay<'_> {
         };
         if exprs
             .last()
-            .map(|v| matches!(v, TypecheckedExpression::Return(_, TypedLiteral::Void)))
+            .map(|v| matches!(v, TypedExpression::Return(_, TypedLiteral::Void)))
             .unwrap_or(false)
         {
             exprs = &exprs[0..exprs.len() - 1];

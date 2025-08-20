@@ -9,11 +9,11 @@ use std::{
 };
 use type_resolution::ResolvingState;
 
-use expression::{TypecheckedExpression, TypedLiteral};
+use ir::TypedLiteral;
 use types::{FunctionType, resolve_primitive_type, with_refcount};
 
-use crate::lang_items::LangItems;
-use mira_common::store::{AssociatedStore, Store, StoreKey};
+use crate::{ir::IR, lang_items::LangItems};
+use mira_common::store::{AssociatedStore, Store, StoreKey, VecStore};
 use mira_parser::{
     Trait, TypeRef,
     annotations::Annotations,
@@ -31,8 +31,8 @@ mod lang_items;
 pub mod optimizations;
 pub use context::{GlobalContext, TypeCtx};
 mod error;
-pub mod expression;
 pub mod intrinsics;
+pub mod ir;
 pub mod ir_displayer;
 mod type_resolution;
 pub mod typechecking;
@@ -136,16 +136,9 @@ impl<'arena> TypedStatic<'arena> {
     }
 }
 
-pub type TypedFunction<'arena> = (
-    TypecheckedFunctionContract<'arena>,
-    Box<[TypecheckedExpression<'arena>]>,
-);
-pub type TypedExternalFunction<'arena> = (
-    TypecheckedFunctionContract<'arena>,
-    Option<Box<[TypecheckedExpression<'arena>]>>,
-);
+pub type TypedFunction<'arena> = (TypecheckedFunctionContract<'arena>, IR<'arena>);
+pub type TypedExternalFunction<'arena> = (TypecheckedFunctionContract<'arena>, Option<IR<'arena>>);
 
-#[derive(Debug)]
 #[allow(clippy::type_complexity)]
 pub struct TypecheckingContext<'arena> {
     pub modules: RwLock<AssociatedStore<TypecheckedModule<'arena>, Module<'arena>>>,
@@ -261,7 +254,7 @@ impl<'arena> TypecheckingContext<'arena> {
                         module_id: StoreKey::undefined(),
                         generics: Vec::new(),
                     },
-                    vec![].into_boxed_slice(),
+                    IR::new(Vec::new(), VecStore::new()),
                 ),
             );
         }

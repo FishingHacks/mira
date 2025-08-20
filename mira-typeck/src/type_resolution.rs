@@ -16,7 +16,7 @@ use mira_parser::{
 use super::{
     TypecheckedFunctionContract, TypecheckingContext, TypecheckingErrorDiagnosticsExt,
     TypedGeneric, TypedStatic, TypedTrait,
-    expression::TypedLiteral,
+    ir::TypedLiteral,
     resolve_import,
     types::{TyKind, default_types, with_refcount},
 };
