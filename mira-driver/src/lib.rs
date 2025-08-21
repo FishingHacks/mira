@@ -1,143 +1,52 @@
 use std::{
-    collections::{HashMap, HashSet},
+    fmt::Arguments,
     fs::File,
     io::Write,
-    mem::MaybeUninit,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
+use std::io::IsTerminal;
+
+use mira_common::store::StoreKey;
 use mira_errors::{
-    CurrentDirError, Diagnostic, Diagnostics, FileOpenError, IoWriteError, StdoutWriteError,
+    AsciiPrinter, Diagnostic, DiagnosticFormatter, Diagnostics, FileOpenError, IoWriteError,
+    Output, StdoutWriteError, StyledPrinter, Styles, UnicodePrinter,
 };
-use mira_progress_bar::ProgressBarStyle;
+use mira_spans::SharedCtx;
 
+mod libtree;
 mod parsing;
-pub use parsing::expand_macros;
-use parsing::parse_all;
+pub use libtree::*;
 
-use mira_linking::{self, LinkOptions, LinkerErrorDiagnosticsExt as _, LinkerInput};
-use mira_parser::std_annotations::intrinsic::IntrinsicAnnotation;
+#[cfg(feature = "progress-bar")]
+pub use mira_progress_bar::ProgressBarStyle;
+#[cfg(feature = "progress-bar")]
+use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
+#[cfg(feature = "progress-bar")]
+use std::thread::JoinHandle;
+
+#[cfg(feature = "macros")]
+use mira_lexer::Token;
+
+#[cfg(feature = "parsing")]
+use mira_parser::module::{Module, ModuleContext};
+
+#[cfg(feature = "typeck")]
+use mira_typeck::{TypeCtx, TypecheckingContext, TypedFunction, ir_displayer::Formatter};
+
+#[cfg(feature = "codegen")]
+use mira_llvm_backend::{CodegenConfig, CodegenContext, CodegenContextBuilder, CodegenError};
+
+#[cfg(feature = "linking")]
+use mira_linking::LinkerInput;
+#[cfg(feature = "linking")]
 use mira_target::Target;
-use mira_typeck::{
-    TypeCtx, TypecheckingContext,
-    ir_displayer::{Formatter, ReadOnlyTypecheckingContext, TCContextDisplay},
-    optimizations,
-    typechecking::{typecheck_external_function, typecheck_function, typecheck_static},
-};
-// TODO: This should be abstracted away so we don't have to handle different configs.
-use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder, CodegenError, Optimizations};
 
-pub use mira_errors::{AsciiPrinter, DiagnosticFormatter, Output, UnicodePrinter};
-pub use mira_spans::Arena;
-
-#[derive(Clone, Debug)]
-pub enum LibraryInput {
-    Path,
-    String(Arc<str>),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LibraryId(usize);
-
-#[derive(Default)]
-pub struct LibraryTree {
-    main: Option<LibraryId>,
-    libraries: Vec<Library>,
-    names: HashSet<Arc<str>>,
-}
-
-pub struct LibraryBuilder<'tree> {
-    tree: &'tree mut LibraryTree,
-    root: Arc<Path>,
-    root_file_path: Arc<Path>,
-    input: LibraryInput,
-    dependencies: HashMap<Arc<str>, LibraryId>,
-}
-
-impl<'tree> LibraryBuilder<'tree> {
-    #[must_use]
-    pub fn with_source(mut self, source: Arc<str>) -> Self {
-        self.input = LibraryInput::String(source);
-        self
-    }
-
-    #[must_use]
-    pub fn with_dependency(mut self, name: &str, id: LibraryId) -> Self {
-        self.dependencies.insert(self.tree.intern(name), id);
-        self
-    }
-
-    pub fn add_dependency(&mut self, name: &str, id: LibraryId) -> &mut Self {
-        self.dependencies.insert(self.tree.intern(name), id);
-        self
-    }
-
-    pub fn build(self) -> LibraryId {
-        let id = LibraryId(self.tree.libraries.len());
-        self.tree.libraries.push(Library {
-            root: self.root,
-            root_file_path: self.root_file_path,
-            input: self.input,
-            dependencies: self.dependencies,
-        });
-        id
-    }
-}
-
-impl LibraryTree {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub fn build_library(
-        &mut self,
-        module_root: Arc<Path>,
-        file_path: Arc<Path>,
-    ) -> LibraryBuilder {
-        LibraryBuilder {
-            tree: self,
-            root: module_root,
-            root_file_path: file_path,
-            input: LibraryInput::Path,
-            dependencies: HashMap::new(),
-        }
-    }
-
-    /// the "main" library, aka the executable/library that's currently being compiled
-    pub fn main_library(&mut self, library: LibraryId) {
-        assert!(
-            self.main.is_none(),
-            "Only one main library can exist at a time"
-        );
-        self.main = Some(library);
-    }
-
-    fn intern(&mut self, s: &str) -> Arc<str> {
-        if let Some(s) = self.names.get(s) {
-            return s.clone();
-        }
-        let s: Arc<str> = s.into();
-        self.names.insert(s.clone());
-        s
-    }
-}
-
-pub struct Library {
-    pub root: Arc<Path>,
-    pub root_file_path: Arc<Path>,
-    pub input: LibraryInput,
-    pub dependencies: HashMap<Arc<str>, LibraryId>,
-}
+#[cfg(feature = "progress-bar")]
+struct DropThreadJoin<T>(Option<JoinHandle<T>>);
 
 struct EmitMethodWithDiags<'a, 'b, 'arena>(&'a mut EmitMethod, &'b mut Diagnostics<'arena>);
-
-impl<'a, 'b, 'arena> EmitMethodWithDiags<'a, 'b, 'arena> {
-    pub fn new(method: &'a mut EmitMethod, diags: &'b mut Diagnostics<'arena>) -> Self {
-        Self(method, diags)
-    }
-}
 
 impl std::fmt::Write for EmitMethodWithDiags<'_, '_, '_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
@@ -150,15 +59,11 @@ impl std::fmt::Write for EmitMethodWithDiags<'_, '_, '_> {
 
 #[derive(Debug)]
 pub enum EmitMethod {
-    None,
     Stdout,
     File(Box<Path>, Option<File>),
 }
 
 impl EmitMethod {
-    pub const fn none() -> Self {
-        Self::None
-    }
     pub const fn stdout() -> Self {
         Self::Stdout
     }
@@ -166,13 +71,28 @@ impl EmitMethod {
         Self::File(path, None)
     }
 
-    pub fn is_void(&self) -> bool {
-        matches!(self, EmitMethod::None)
+    pub fn emit_fmt(&mut self, args: Arguments<'_>) -> Result<(), Diagnostic<'static>> {
+        match self {
+            EmitMethod::Stdout => std::io::stdout()
+                .write_fmt(args)
+                .map_err(|v| StdoutWriteError(v).to_error()),
+            EmitMethod::File(path, Some(f)) => f
+                .write_fmt(args)
+                .map_err(|v| IoWriteError(path.to_path_buf(), v).to_error()),
+            EmitMethod::File(path, f @ None) => {
+                let mut file = File::create(&path)
+                    .map_err(|v| FileOpenError(path.to_path_buf(), v).to_error())?;
+                let res = file
+                    .write_fmt(args)
+                    .map_err(|v| IoWriteError(path.to_path_buf(), v).to_error());
+                *f = Some(file);
+                res
+            }
+        }
     }
 
     pub fn emit(&mut self, data: &[u8]) -> Result<(), Diagnostic<'static>> {
         match self {
-            EmitMethod::None => Ok(()),
             EmitMethod::Stdout => std::io::stdout()
                 .write_all(data)
                 .map_err(|v| StdoutWriteError(v).to_error()),
@@ -197,448 +117,547 @@ impl EmitMethod {
     }
 }
 
-pub struct FullCompilationOptions<'a> {
-    /// the packages in this compilation
-    pub library_tree: LibraryTree,
-    /// Set to true if you need a shared object (.so / .dll)
-    pub shared_object: bool,
-    /// An Optional path to a linker script
-    pub linker_script: Option<&'a Path>,
-    /// The path to the obj (`.o`) file
-    /// if not specified, this won't generate the object file nor link it.
-    pub obj_path: Option<PathBuf>,
-    /// Set to true if you want the target-specific extension of the shared object / executable to
-    /// the exec_path.
-    pub add_extension_to_exe: bool,
-    /// The path to the resulting executable or dynamic library.
-    /// if not specified, this won't link the object file
-    pub exec_path: Option<PathBuf>,
-    /// The codegen options such as target, optimization level, etc
-    pub codegen_opts: CodegenConfig<'a>,
-    /// Additional arguments that are being passed to the linker
-    pub additional_linker_args: &'a [String],
-    /// Additional directories to search for the linker binary
-    pub additional_linker_directories: &'a [PathBuf],
-    /// Set to true if you want to print what is being currently done to stdout.
-    pub verbose: bool,
-    /// Set to true if you want the binary to have debug info
-    pub with_debug_info: bool,
-    /// Writer to write the intermediate representation to (this DOES NOT look good, use for
-    /// debugging purposes only. Expects user to have knowledge of compiler internals)
-    pub ir_writer: EmitMethod,
-    /// Writer to write the llvm intermediate representation to
-    pub llvm_ir_writer: EmitMethod,
-    /// Writer to write the llvm bitcode to
-    pub llvm_bc_writer: EmitMethod,
-    /// Writer to write the assembly to
-    pub asm_writer: EmitMethod,
-}
-
-macro_rules! setters {
-    ($($name:ident => $field:ident : $ty:ty),* $(,)?) => {
-        $(pub fn $name(&mut self, value: $ty) -> &mut Self {
-            self.$field = value;
-            self
-        })*
-    };
-}
-
-#[allow(dead_code)]
-impl<'a> FullCompilationOptions<'a> {
-    pub fn new(library_tree: LibraryTree) -> Self {
-        Self {
-            library_tree,
-            shared_object: false,
-            linker_script: None,
-            obj_path: None,
-            add_extension_to_exe: false,
-            exec_path: None,
-            codegen_opts: CodegenConfig::new_debug(),
-            additional_linker_args: &[],
-            additional_linker_directories: &[],
-            verbose: false,
-            with_debug_info: true,
-            ir_writer: EmitMethod::None,
-            llvm_ir_writer: EmitMethod::None,
-            llvm_bc_writer: EmitMethod::None,
-            asm_writer: EmitMethod::None,
-        }
-    }
-    setters![
-        shared_object => shared_object: bool,
-        set_linker_script => linker_script: Option<&'a Path>,
-        set_object_path => obj_path: Option<PathBuf>,
-        set_additional_linker_args => additional_linker_args: &'a [String],
-        set_additional_linker_searchdirs => additional_linker_directories: &'a [PathBuf],
-        set_verbose_printing => verbose: bool,
-        generate_debug_info => with_debug_info: bool,
-        ir_writer => ir_writer: EmitMethod,
-        llvm_ir_writer => llvm_ir_writer: EmitMethod,
-        llvm_bc_writer => llvm_bc_writer: EmitMethod,
-        asm_writer => asm_writer: EmitMethod,
-        set_codegen_opts => codegen_opts: CodegenConfig<'a>,
-    ];
-    pub fn library_tree(&mut self) -> &mut LibraryTree {
-        &mut self.library_tree
-    }
-    /// Set the path of the binary and if to add the target-dependent extension to it
-    pub fn set_binary_path(
-        &mut self,
-        executable_path: Option<PathBuf>,
-        add_target_specific_extension: bool,
-    ) -> &mut Self {
-        self.exec_path = executable_path;
-        self.add_extension_to_exe = add_target_specific_extension;
-        self
-    }
-    pub fn set_target(&mut self, target: Target) -> &mut Self {
-        self.codegen_opts.target = target;
-        self
-    }
-    pub fn set_optimizations(&mut self, optimizations: Optimizations) -> &mut Self {
-        self.codegen_opts.optimizations = optimizations;
-        self
-    }
-    pub fn set_runtime_safety(&mut self, runtime_safety: bool) -> &mut Self {
-        self.codegen_opts.runtime_safety = runtime_safety;
-        self
-    }
-    pub fn target(&self) -> Target {
-        self.codegen_opts.target
-    }
-}
-
-/// Runs the pipeline to turn a source file into an executable or shared object.
-/// Returns the path to the executable
-pub fn run_full_compilation_pipeline<'arena>(
-    ctx: TypeCtx<'arena>,
-    mut opts: FullCompilationOptions,
-) -> Result<Option<PathBuf>, Diagnostics<'arena>> {
-    if opts.add_extension_to_exe && opts.exec_path.is_some() {
-        let mut path = opts.exec_path.unwrap().into_os_string();
-        if opts.shared_object {
-            path.push(opts.codegen_opts.target.os.dynamic_lib_ext());
-        } else {
-            path.push(opts.codegen_opts.target.os.exe_file_ext());
-        }
-        let mut path = PathBuf::from(path);
-        if path.is_relative() {
-            path = match std::env::current_dir() {
-                Ok(v) => v,
-                Err(e) => return Err(CurrentDirError(e).to_error().into()),
-            }
-            .join(path);
-        }
-        opts.exec_path = Some(path);
-    }
-
-    if opts.verbose {
-        println!("Using target {}", opts.codegen_opts.target);
-        if opts.codegen_opts.runtime_safety {
-            println!("Runtime Safety: Enabled");
-        } else {
-            println!("Runtime Safety: Disabled");
-        }
-        println!("Optimizations: {:?}", opts.codegen_opts.optimizations);
-        println!("Relocation Mode: {:?}", opts.codegen_opts.reloc_mode);
-        println!("Assuming cpu features: {}", opts.codegen_opts.cpu_features);
-    }
-
-    assert!(
-        opts.library_tree.main.is_some(),
-        "No library was selected as the main one"
-    );
-
-    let (thread, mut progress_bar) =
-        mira_progress_bar::print_thread::start_thread(ProgressBarStyle::Normal);
-    let _deferred = DeferFn::new(move || _ = thread.join());
-    let parser_item = progress_bar.add_item("Parsing".into());
-
-    let module_context = parse_all(
-        ctx.into(),
-        progress_bar.clone(),
-        parser_item,
-        &opts.library_tree,
-    );
-    drop(opts.library_tree.names);
-    progress_bar.remove(parser_item);
-    let typechecking_item = progress_bar.add_item("Typechecking".into());
-    let type_resolution_item = progress_bar.add_item("Type Resolution".into());
-
-    let (module_context, main_mod) = module_context?;
-    let typechecking_context = TypecheckingContext::new(ctx, module_context.clone());
-    let errs = typechecking_context.resolve_imports(module_context.clone());
-    if !errs.is_empty() {
-        return Err(errs);
-    }
-    let errs = typechecking_context.resolve_types(module_context.clone());
-    if !errs.is_empty() {
-        return Err(errs);
-    }
-
-    progress_bar.remove(type_resolution_item);
-
-    let function_keys = typechecking_context
-        .functions
-        .read()
-        .indices()
-        .collect::<Vec<_>>();
-    let ext_function_keys = typechecking_context
-        .external_functions
-        .read()
-        .indices()
-        .collect::<Vec<_>>();
-    let static_keys = typechecking_context
-        .statics
-        .read()
-        .indices()
-        .collect::<Vec<_>>();
-
-    let mut errs = Diagnostics::new();
-
-    for key in function_keys {
-        let item = progress_bar.add_child(
-            typechecking_item,
-            format!("Typechecking function {key}").into_boxed_str(),
-        );
-
-        _ = typecheck_function(&typechecking_context, &module_context, key, &mut errs);
-        mira_typeck::ir::passes::run_passes(
-            &mut typechecking_context.functions.write()[key.cast()].1,
-            ctx,
-        );
-
-        progress_bar.remove(item);
-    }
-
-    for key in ext_function_keys {
-        let item = progress_bar.add_child(
-            typechecking_item,
-            format!("Typechecking external function {key}").into_boxed_str(),
-        );
-
-        _ = typecheck_external_function(&typechecking_context, &module_context, key, &mut errs);
-        if let Some(body) = typechecking_context.external_functions.write()[key]
-            .1
-            .as_mut()
-        {
-            mira_typeck::ir::passes::run_passes(body, ctx);
-        }
-
-        progress_bar.remove(item);
-    }
-
-    for key in static_keys {
-        let item = progress_bar.add_child(
-            typechecking_item,
-            format!("Typechecking static {key}").into_boxed_str(),
-        );
-
-        typecheck_static(&typechecking_context, &module_context, key, &mut errs);
-
-        progress_bar.remove(item);
-    }
-
-    progress_bar.remove(typechecking_item);
-
-    if let Err(err) = typechecking_context.validate_main_function(main_mod) {
-        errs.add_err(err);
-    }
-
-    let dce_item = progress_bar.add_item("Dead code elimination".into());
-
-    optimizations::dead_code_elimination::run_dce(&typechecking_context, &[], &[]);
-
-    progress_bar.remove(dce_item);
-
-    if !errs.is_empty() {
-        return Err(errs);
-    }
-
-    if !opts.ir_writer.is_void() {
-        let readonly_ctx = ReadOnlyTypecheckingContext {
-            modules: &typechecking_context.modules.read(),
-            functions: &typechecking_context.functions.read(),
-            external_functions: &typechecking_context.external_functions.read(),
-            statics: &typechecking_context.statics.read(),
-            structs: &typechecking_context.structs.read(),
-            traits: &typechecking_context.traits.read(),
-            lang_items: &typechecking_context.lang_items.read(),
-        };
-        let mut wrapper = EmitMethodWithDiags::new(&mut opts.ir_writer, &mut errs);
-        let mut formatter = Formatter::new(&mut wrapper, readonly_ctx);
-        // it is fine to dismiss errors because they got added to `errs` anyway.
-        _ = TCContextDisplay.fmt(&mut formatter);
-    }
-
-    let file = typechecking_context.modules.read()[main_mod]
-        .file
-        .path
-        .clone();
-    let filename = file
-        .file_name()
-        .expect("file should have a filename")
-        .to_string_lossy();
-    let ctx_builder = CodegenContextBuilder::new();
-    let mut codegen_context = ctx_builder
-        .build(
-            typechecking_context.clone(),
-            &filename,
-            file.clone(),
-            opts.codegen_opts,
-        )
-        .expect("failed to create the llvm context");
-
-    drop(module_context);
-
-    let codegen_item = progress_bar.add_item("Codegen".into());
-
-    for (fn_id, (contract, _)) in typechecking_context.functions.read().index_value_iter() {
-        if contract.annotations.has_annotation::<IntrinsicAnnotation>() {
-            continue;
-        }
-        let item = progress_bar.add_child(
-            codegen_item,
-            format!("Codegening function #{fn_id}").into_boxed_str(),
-        );
-
-        if let Err(e) = codegen_context.compile_fn(fn_id) {
-            errs.add_err(CodegenError::from(e));
-        }
-        progress_bar.remove(item);
-    }
-
-    for fn_id in typechecking_context.external_functions.read().indices() {
-        let item = progress_bar.add_child(
-            codegen_item,
-            format!("Codegening external function #{fn_id}").into_boxed_str(),
-        );
-
-        if let Err(e) = codegen_context.compile_external_fn(fn_id) {
-            errs.add_err(CodegenError::from(e));
-        }
-        progress_bar.remove(item);
-    }
-
-    progress_bar.add_child(codegen_item, "Optimizing".into());
-
-    if let Err(e) = codegen_context.finish() {
-        errs.add_err(CodegenError::from(e));
-    }
-
-    progress_bar.remove(codegen_item);
-
-    // emit llvm ir even in the case there are errors. LLVM errors are often more-or-less cryptic, and
-    // seeing what junk the compiler generated will probably help in diagnosing them.
-    // this hopefully should not error.
-    if !opts.llvm_ir_writer.is_void() {
-        let ir = codegen_context.gen_ir();
-        _ = opts.llvm_ir_writer.emit_diags(ir.to_bytes(), &mut errs);
-    }
-
-    if !errs.is_empty() {
-        return Err(errs);
-    }
-
-    if !opts.llvm_bc_writer.is_void() {
-        let bitcode = codegen_context.gen_bitcode();
-        _ = opts
-            .llvm_bc_writer
-            .emit_diags(bitcode.as_slice(), &mut errs);
-    }
-
-    if !opts.asm_writer.is_void() {
-        match codegen_context.gen_assembly() {
-            Ok(asm) => _ = opts.asm_writer.emit_diags(asm.as_slice(), &mut errs),
-            Err(e) => _ = errs.add_err(e),
-        }
-    }
-
-    let Some(obj_path) = opts.obj_path else {
-        drop(codegen_context);
-
-        return (errs.is_empty()).then_some(opts.exec_path).ok_or(errs);
-    };
-
-    let mut obj_file = match File::options()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&obj_path)
-        .map_err(|e| _ = errs.add_err(FileOpenError(obj_path.clone(), e)))
-    {
-        Ok(v) => v,
-        Err(()) => return Err(errs),
-    };
-
-    if let Err(e) = codegen_context.write_object(&mut obj_file) {
-        errs.add_err(e);
-    }
-    drop(obj_file);
-
-    if !errs.is_empty() {
-        return Err(errs);
-    }
-
-    let Some(exec_path) = opts.exec_path else {
-        return Ok(opts.exec_path);
-    };
-
-    let Some((linker, linker_path)) = mira_linking::search_for_linker(
-        opts.codegen_opts.target.needs_crt(),
-        opts.additional_linker_directories,
-    ) else {
-        errs.add_unable_to_locate_linker();
-        return Err(errs);
-    };
-
-    linker
-        .link(LinkOptions {
-            linker_path,
-            object_files: &[obj_path],
-            inputs: &[
-                LinkerInput::LinkLibrary("unwind".into()),
-                LinkerInput::LinkLibrary("unwind-x86_64".into()),
-            ],
-            output: &exec_path,
-            args: opts.additional_linker_args,
-            link_crt: opts.codegen_opts.target.needs_crt(),
-            debug_info: opts.with_debug_info,
-            verbose: opts.verbose,
-            linker_script: opts.linker_script,
-            create_dynamic_library: opts.shared_object,
-            target: opts.codegen_opts.target,
-        })
-        .map_err(move |v| {
-            errs.add_err(v);
-            errs
-        })?;
-
-    drop(codegen_context);
-
-    Ok(Some(exec_path))
-}
-
-struct DeferFn<F: FnOnce()>(MaybeUninit<F>);
-impl<F: FnOnce()> Drop for DeferFn<F> {
+#[cfg(feature = "progress-bar")]
+impl<T> Drop for DropThreadJoin<T> {
     fn drop(&mut self) {
-        // SAFETY: drop should only be called once, and this is the only place where we remove the
-        // function
-        let func = unsafe { self.0.assume_init_read() };
-        func()
-    }
-}
-impl<F: FnOnce()> DeferFn<F> {
-    pub fn new(f: F) -> Self {
-        Self(MaybeUninit::new(f))
+        let Some(handle) = self.0.take() else { return };
+        handle.join().expect("failed to join thread");
     }
 }
 
-#[cfg(not(feature = "mira-llvm-backend"))]
-compile_error!("you have to enable llvm20-1, llvm19-1 or llvm18-0");
+pub struct Context<'ctx> {
+    #[cfg(not(feature = "typeck"))]
+    ctx: SharedCtx,
+    #[cfg(feature = "typeck")]
+    ctx: TypeCtx<'ctx>,
+    #[cfg(feature = "progress-bar")]
+    progress_bar: ProgressBarThread,
+    #[cfg(feature = "progress-bar")]
+    _pbthread: DropThreadJoin<()>,
+}
+
+impl<'ctx> Context<'ctx> {
+    #[cfg(feature = "typeck")]
+    pub fn new(
+        ctx: TypeCtx<'ctx>,
+        #[cfg(feature = "progress-bar")] progress_bar_style: ProgressBarStyle,
+    ) -> Self {
+        #[cfg(feature = "progress-bar")]
+        let (thread, progress_bar) =
+            mira_progress_bar::print_thread::start_thread(progress_bar_style);
+        Self {
+            ctx,
+            #[cfg(feature = "progress-bar")]
+            progress_bar,
+            #[cfg(feature = "progress-bar")]
+            _pbthread: DropThreadJoin(Some(thread)),
+        }
+    }
+    #[cfg(not(feature = "typeck"))]
+    pub fn new(
+        ctx: SharedCtx<'ctx>,
+        #[cfg(feature = "progress-bar")] progress_bar_style: ProgressBarStyle,
+    ) -> Self {
+        #[cfg(feature = "progress-bar")]
+        let (thread, progress_bar) =
+            mira_progress_bar::print_thread::start_thread(progress_bar_style);
+        Self {
+            ctx,
+            #[cfg(feature = "progress-bar")]
+            progress_bar,
+            #[cfg(feature = "progress-bar")]
+            _pbthread: DropThreadJoin(Some(thread)),
+        }
+    }
+
+    fn shared_ctx(&self) -> SharedCtx<'ctx> {
+        #[cfg(feature = "typeck")]
+        return self.ctx.into();
+        #[cfg(not(feature = "typeck"))]
+        self.ctx
+    }
+
+    #[cfg(feature = "macros")]
+    pub fn expand_macros(
+        &mut self,
+        file: Arc<Path>,
+    ) -> Result<Vec<Token<'ctx>>, Diagnostics<'ctx>> {
+        use mira_errors::IoReadError;
+        use mira_lexer::{Lexer, LexingError};
+
+        let mut diags = Diagnostics::new();
+        let f = match self
+            .shared_ctx()
+            .source_map
+            .load_file(file.clone(), file.parent().unwrap().into())
+        {
+            Ok(v) => v,
+            Err(e) => {
+                diags.add_err(IoReadError(file.to_path_buf(), e));
+                return Err(diags);
+            }
+        };
+        let mut lexer = Lexer::new(self.shared_ctx(), f);
+        _ = lexer
+            .scan_tokens()
+            .map_err(|e| diags.extend(e.into_iter().map(LexingError::to_error)));
+
+        let file = lexer.file.clone();
+        let tokens = lexer.into_tokens();
+        match mira_parser::expand_tokens(self.shared_ctx(), file.clone(), tokens, &mut diags) {
+            Some(v) => Ok(v),
+            None => Err(diags),
+        }
+    }
+
+    #[cfg(feature = "macros")]
+    pub fn emit_tokens(
+        &self,
+        tokens: &[Token<'ctx>],
+        mut method: EmitMethod,
+    ) -> Result<(), Diagnostics<'ctx>> {
+        for tok in tokens {
+            method.emit_fmt(format_args!("{tok} "))?;
+        }
+        Ok(())
+    }
+
+    pub fn diagnostic_formatter(&self, output: Output) -> DiagnosticFormatter<'ctx> {
+        let styles = match std::env::var("MIRA_COLOR").ok().as_deref() {
+            Some("0" | "none" | "no") => Styles::NO_COLORS,
+            Some("1" | "yes") => Styles::DEFAULT,
+            _ if std::io::stdout().is_terminal() => Styles::DEFAULT,
+            _ => Styles::NO_COLORS,
+        };
+        let printer: Box<dyn StyledPrinter> = match std::env::var("MIRA_DIAG_STYLE").ok().as_deref()
+        {
+            Some("ascii" | "text") => Box::new(AsciiPrinter::new()),
+            _ => Box::new(UnicodePrinter::new()),
+        };
+        DiagnosticFormatter::new(self.shared_ctx().source_map, output, printer, styles)
+    }
+
+    #[cfg(feature = "parsing")]
+    /// Parses all files, returning a shared reference to the module context as well as the key to
+    /// the primary module of the library tree.
+    pub fn parse_all_files(
+        &mut self,
+        libtree: &LibraryTree,
+    ) -> Result<(Arc<ModuleContext<'ctx>>, StoreKey<Module<'ctx>>), Diagnostics<'ctx>> {
+        use crate::parsing::parse_all;
+
+        #[cfg(feature = "progress-bar")]
+        let parser_item = self.progress_bar.add_item("Parsing".into());
+
+        let res = parse_all(
+            self.shared_ctx(),
+            #[cfg(feature = "progress-bar")]
+            self.progress_bar.clone(),
+            #[cfg(feature = "progress-bar")]
+            parser_item,
+            libtree,
+        );
+        #[cfg(feature = "progress-bar")]
+        self.progress_bar.remove(parser_item);
+        res
+    }
+
+    #[cfg(feature = "progress-bar")]
+    pub fn add_progress_item(&mut self, item: impl Into<Box<str>>) -> ProgressItemRef {
+        self.progress_bar.add_item(item.into())
+    }
+
+    #[cfg(feature = "progress-bar")]
+    pub fn add_progress_item_child(
+        &mut self,
+        parent: ProgressItemRef,
+        item: impl Into<Box<str>>,
+    ) -> ProgressItemRef {
+        self.progress_bar.add_child(parent, item.into())
+    }
+
+    #[cfg(all(feature = "progress-bar", feature = "typeck"))]
+    pub fn add_typechecking_item(&mut self) -> ProgressItemRef {
+        self.add_progress_item("Typechecking")
+    }
+
+    #[cfg(all(feature = "progress-bar", feature = "codegen"))]
+    pub fn add_codegen_item(&mut self) -> ProgressItemRef {
+        self.add_progress_item("Codegen")
+    }
+
+    #[cfg(feature = "progress-bar")]
+    pub fn remove_progress_item(&mut self, item: ProgressItemRef) {
+        self.progress_bar.remove(item);
+    }
+
+    #[cfg(feature = "typeck")]
+    pub fn resolve_types(
+        &mut self,
+        module_ctx: &Arc<ModuleContext<'ctx>>,
+        #[cfg(feature = "progress-bar")] typechecking_item: ProgressItemRef,
+    ) -> Result<Arc<TypecheckingContext<'ctx>>, Diagnostics<'ctx>> {
+        use mira_typeck::TypecheckingContext;
+
+        #[cfg(feature = "progress-bar")]
+        let type_resolution_item =
+            self.add_progress_item_child(typechecking_item, "Type Resolution");
+
+        let typeck_ctx = TypecheckingContext::new(self.ctx, module_ctx.clone());
+        let errs = typeck_ctx.resolve_imports(module_ctx.clone());
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+        let errs = typeck_ctx.resolve_types(module_ctx.clone());
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+
+        #[cfg(feature = "progress-bar")]
+        self.remove_progress_item(type_resolution_item);
+        Ok(typeck_ctx)
+    }
+
+    #[cfg(feature = "typeck")]
+    pub fn typecheck_items(
+        &mut self,
+        module_ctx: &Arc<ModuleContext<'ctx>>,
+        typeck_ctx: &Arc<TypecheckingContext<'ctx>>,
+        #[cfg(feature = "progress-bar")] typechecking_item: ProgressItemRef,
+    ) -> Result<(), Diagnostics<'ctx>> {
+        let function_keys = typeck_ctx.functions.read().indices().collect::<Vec<_>>();
+        let ext_function_keys = typeck_ctx
+            .external_functions
+            .read()
+            .indices()
+            .collect::<Vec<_>>();
+        let static_keys = typeck_ctx.statics.read().indices().collect::<Vec<_>>();
+
+        let mut errs = Diagnostics::new();
+
+        for key in function_keys {
+            use mira_typeck::typechecking::typecheck_function;
+
+            #[cfg(feature = "progress-bar")]
+            let item = self
+                .add_progress_item_child(typechecking_item, format!("Typechecking function {key}"));
+
+            _ = typecheck_function(typeck_ctx, module_ctx, key, &mut errs);
+            mira_typeck::ir::passes::run_passes(
+                &mut typeck_ctx.functions.write()[key.cast()].1,
+                self.ctx,
+            );
+
+            #[cfg(feature = "progress-bar")]
+            self.remove_progress_item(item);
+        }
+
+        for key in ext_function_keys {
+            use mira_typeck::typechecking::typecheck_external_function;
+
+            #[cfg(feature = "progress-bar")]
+            let item = self.add_progress_item_child(
+                typechecking_item,
+                format!("Typechecking external function {key}"),
+            );
+
+            _ = typecheck_external_function(typeck_ctx, module_ctx, key, &mut errs);
+            if let Some(body) = typeck_ctx.external_functions.write()[key].1.as_mut() {
+                mira_typeck::ir::passes::run_passes(body, self.ctx);
+            }
+
+            #[cfg(feature = "progress-bar")]
+            self.remove_progress_item(item);
+        }
+
+        for key in static_keys {
+            use mira_typeck::typechecking::typecheck_static;
+
+            #[cfg(feature = "progress-bar")]
+            let item = self
+                .add_progress_item_child(typechecking_item, format!("Typechecking static {key}"));
+
+            typecheck_static(typeck_ctx, module_ctx, key, &mut errs);
+
+            #[cfg(feature = "progress-bar")]
+            self.remove_progress_item(item);
+        }
+
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "typeck")]
+    /// Checks that the main function exists in the main module, and verifies it has a valid
+    /// signature, then returns it.
+    pub fn validate_main_fn(
+        &mut self,
+        typeck_ctx: &Arc<TypecheckingContext<'ctx>>,
+        main_module: StoreKey<Module<'ctx>>,
+    ) -> Result<StoreKey<TypedFunction<'ctx>>, Diagnostic<'ctx>> {
+        typeck_ctx
+            .validate_main_function(main_module)
+            .map_err(|v| v.to_error())
+    }
+
+    #[cfg(feature = "typeck")]
+    pub fn run_dead_code_elimination(&mut self, typeck_ctx: &Arc<TypecheckingContext<'ctx>>) {
+        use mira_typeck::optimizations;
+
+        #[cfg(feature = "progress-bar")]
+        let item = self.add_progress_item("Dead code elimination");
+
+        optimizations::dead_code_elimination::run_dce(typeck_ctx, &[], &[]);
+
+        #[cfg(feature = "progress-bar")]
+        self.remove_progress_item(item);
+    }
+
+    #[cfg(feature = "typeck")]
+    pub fn emit_ir(
+        &self,
+        typeck_ctx: &TypecheckingContext<'ctx>,
+        mut method: EmitMethod,
+    ) -> Result<(), Diagnostics<'ctx>> {
+        use mira_typeck::ir_displayer::{ReadOnlyTypecheckingContext, TCContextDisplay};
+
+        use crate::EmitMethodWithDiags;
+
+        let readonly_ctx = ReadOnlyTypecheckingContext {
+            modules: &typeck_ctx.modules.read(),
+            functions: &typeck_ctx.functions.read(),
+            external_functions: &typeck_ctx.external_functions.read(),
+            statics: &typeck_ctx.statics.read(),
+            structs: &typeck_ctx.structs.read(),
+            traits: &typeck_ctx.traits.read(),
+            lang_items: &typeck_ctx.lang_items.read(),
+        };
+        let mut errs = Diagnostics::new();
+        let mut writer = EmitMethodWithDiags(&mut method, &mut errs);
+        let mut formatter = Formatter::new(&mut writer, readonly_ctx);
+        match TCContextDisplay.fmt(&mut formatter) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(errs),
+        }
+    }
+
+    #[cfg(feature = "codegen")]
+    pub fn codegen<'cg_ctx>(
+        &mut self,
+        typeck_ctx: &Arc<TypecheckingContext<'ctx>>,
+        main_module: StoreKey<Module<'ctx>>,
+        codegen_opts: CodegenConfig<'ctx>,
+        builder: &'cg_ctx CodegenContextBuilder,
+        #[cfg(feature = "progress-bar")] codegen_item: ProgressItemRef,
+    ) -> (CodegenContext<'cg_ctx, 'ctx>, Result<(), Diagnostics<'ctx>>)
+    where
+        'ctx: 'cg_ctx,
+    {
+        use mira_llvm_backend::CodegenError;
+
+        let file = typeck_ctx.modules.read()[main_module].file.path.clone();
+        let filename = file
+            .file_name()
+            .expect("file should have a filename")
+            .to_string_lossy();
+
+        let mut codegen_context = builder
+            .build(typeck_ctx.clone(), &filename, file.clone(), codegen_opts)
+            .expect("failed to create the llvm context");
+        let mut errs = Diagnostics::new();
+
+        for (fn_id, (contract, _)) in typeck_ctx.functions.read().index_value_iter() {
+            use mira_parser::std_annotations::{
+                intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation,
+            };
+
+            if contract.annotations.has_annotation::<IntrinsicAnnotation>()
+                || contract
+                    .annotations
+                    .has_annotation::<LLVMIntrinsicAnnotation>()
+            {
+                continue;
+            }
+            #[cfg(feature = "progress-bar")]
+            let item =
+                self.add_progress_item_child(codegen_item, format!("Codegening function #{fn_id}"));
+
+            if let Err(e) = codegen_context.compile_fn(fn_id) {
+                errs.add_err(CodegenError::from(e));
+            }
+            #[cfg(feature = "progress-bar")]
+            self.remove_progress_item(item);
+        }
+
+        for fn_id in typeck_ctx.external_functions.read().indices() {
+            #[cfg(feature = "progress-bar")]
+            let item = self.add_progress_item_child(
+                codegen_item,
+                format!("Codegening external function #{fn_id}"),
+            );
+
+            if let Err(e) = codegen_context.compile_external_fn(fn_id) {
+                errs.add_err(CodegenError::from(e));
+            }
+            #[cfg(feature = "progress-bar")]
+            self.remove_progress_item(item);
+        }
+
+        (codegen_context, (errs.is_empty()).then_some(()).ok_or(errs))
+    }
+
+    #[cfg(feature = "codegen")]
+    pub fn optimize(
+        &mut self,
+        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        #[cfg(feature = "progress-bar")] codegen_item: ProgressItemRef,
+    ) -> Result<(), Diagnostic<'ctx>> {
+        #[cfg(feature = "progress-bar")]
+        self.add_progress_item_child(codegen_item, "Optimizing");
+
+        if let Err(e) = codegen_ctx.finish() {
+            #[cfg(feature = "progress-bar")]
+            self.remove_progress_item(codegen_item);
+            return Err(CodegenError::from(e).to_error());
+        }
+
+        #[cfg(feature = "progress-bar")]
+        self.remove_progress_item(codegen_item);
+        Ok(())
+    }
+
+    #[cfg(feature = "codegen")]
+    pub fn emit_llvm_ir(
+        &self,
+        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        mut method: EmitMethod,
+    ) -> Result<(), Diagnostics<'ctx>> {
+        let ir = codegen_ctx.gen_ir();
+        let mut errs = Diagnostics::new();
+        if method.emit_diags(ir.to_bytes(), &mut errs) && errs.is_empty() {
+            Ok(())
+        } else {
+            Err(errs)
+        }
+    }
+
+    #[cfg(feature = "codegen")]
+    pub fn emit_llvm_bc(
+        &self,
+        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        mut method: EmitMethod,
+    ) -> Result<(), Diagnostics<'ctx>> {
+        let bitcode = codegen_ctx.gen_bitcode();
+        let mut errs = Diagnostics::new();
+        if method.emit_diags(bitcode.as_slice(), &mut errs) && errs.is_empty() {
+            Ok(())
+        } else {
+            Err(errs)
+        }
+    }
+
+    #[cfg(feature = "codegen")]
+    pub fn emit_asm(
+        &self,
+        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        mut method: EmitMethod,
+    ) -> Result<(), Diagnostics<'ctx>> {
+        let bitcode = codegen_ctx
+            .gen_assembly()
+            .map_err(|v| Diagnostics::from(v.to_error()))?;
+        let mut errs = Diagnostics::new();
+        if method.emit_diags(bitcode.as_slice(), &mut errs) && errs.is_empty() {
+            Ok(())
+        } else {
+            Err(errs)
+        }
+    }
+
+    #[cfg(feature = "codegen")]
+    pub fn emit_object(
+        &self,
+        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        path: &Path,
+    ) -> Result<(), Diagnostic<'ctx>> {
+        use mira_errors::FileOpenError;
+        use std::fs::File;
+
+        let mut obj_file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .map_err(|e| FileOpenError(path.to_path_buf(), e).to_error())?;
+
+        codegen_ctx
+            .write_object(&mut obj_file)
+            .map_err(CodegenError::to_error)
+    }
+
+    #[cfg(feature = "linking")]
+    pub fn link(&self, mut opts: LinkOpts) -> Result<(), Diagnostic<'ctx>> {
+        use mira_linking::{LinkOptions, LinkerError};
+
+        let Some((linker, linker_path)) = mira_linking::search_for_linker(
+            opts.target.needs_crt(),
+            opts.additional_linker_searchdir,
+        ) else {
+            return Err(LinkerError::UnableToLocateLinker.to_error());
+        };
+
+        opts.input.push(LinkerInput::LinkLibrary("unwind".into()));
+        opts.input
+            .push(LinkerInput::LinkLibrary("unwind-x86_64".into()));
+        linker
+            .link(LinkOptions {
+                linker_path,
+                object_files: opts.obj_path,
+                inputs: &opts.input,
+                output: opts.output_path,
+                args: opts.additional_args,
+                link_crt: opts.target.needs_crt(),
+                debug_info: opts.debug_info,
+                verbose: opts.verbose,
+                linker_script: opts.link_script,
+                create_dynamic_library: opts.shared_obj,
+                target: opts.target,
+            })
+            .map_err(move |v| v.to_error())
+    }
+}
+
+#[cfg(feature = "linking")]
+pub struct LinkOpts<'a> {
+    /// additional directories to searcher linkers in
+    pub additional_linker_searchdir: &'a [PathBuf],
+    /// additional arguments to pass to the linker
+    pub additional_args: &'a [String],
+    /// emit debug info
+    pub debug_info: bool,
+    /// make the linker verbose
+    pub verbose: bool,
+    /// link script
+    pub link_script: Option<&'a Path>,
+    /// emit a shared objectg
+    pub shared_obj: bool,
+    /// the target
+    pub target: Target,
+    /// the output path
+    pub output_path: &'a Path,
+    /// the object paths
+    pub obj_path: &'a [PathBuf],
+    /// additional linker input
+    pub input: Vec<LinkerInput>,
+}
+
+#[cfg(all(not(feature = "mira-llvm-backend"), feature = "codegen"))]
+compile_error!("you have to enable llvm20-1, llvm19-1 or llvm18-0 when codegen is enabled");
 #[cfg(any(
-    all(feature = "llvm20-1", feature = "llvm19-1"),
-    all(feature = "llvm20-1", feature = "llvm18-0"),
-    all(feature = "llvm19-1", feature = "llvm18-0"),
+    all(feature = "llvm20-1", feature = "llvm19-1", feature = "codegen"),
+    all(feature = "llvm20-1", feature = "llvm18-0", feature = "codegen"),
+    all(feature = "llvm19-1", feature = "llvm18-0", feature = "codegen"),
 ))]
 compile_error!("only one of llvm20-1, llvm19-1 or llvm18-0 are allowed to be enabled");

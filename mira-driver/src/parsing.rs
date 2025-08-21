@@ -1,7 +1,8 @@
-use std::{collections::HashMap, fmt::Write, path::Path, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use crossbeam_channel::{Sender, bounded};
 use mira_errors::Diagnostics;
+#[cfg(feature = "progress-bar")]
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
 
@@ -15,13 +16,13 @@ use mira_parser::{
 };
 use mira_spans::{SharedCtx, SourceFile};
 
-use crate::{EmitMethod, LibraryId, LibraryInput, LibraryTree};
+use crate::{LibraryId, LibraryInput, LibraryTree};
 
 #[allow(clippy::too_many_arguments)]
 fn parse_single<'arena>(
     file: Arc<SourceFile>,
-    mut progress_bar: ProgressBarThread,
-    parsing_item: ProgressItemRef,
+    #[cfg(feature = "progress-bar")] mut progress_bar: ProgressBarThread,
+    #[cfg(feature = "progress-bar")] parsing_item: ProgressItemRef,
     finish_sender: Sender<()>,
     errors: Arc<RwLock<Diagnostics<'arena>>>,
     parsing_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
@@ -31,6 +32,7 @@ fn parse_single<'arena>(
     // ┌──────────────┐
     // │ Tokenization │
     // └──────────────┘
+    #[cfg(feature = "progress-bar")]
     let mut item = progress_bar.add_child(
         parsing_item,
         format!("Tokenizing {}", file.path.display()).into_boxed_str(),
@@ -43,11 +45,15 @@ fn parse_single<'arena>(
             .extend(errs.into_iter().map(LexingError::to_error));
     }
 
+    #[cfg(feature = "progress-bar")]
     progress_bar.remove(item);
-    item = progress_bar.add_child(
-        parsing_item,
-        format!("Parsing {}", file.path.display()).into_boxed_str(),
-    );
+    #[cfg(feature = "progress-bar")]
+    {
+        item = progress_bar.add_child(
+            parsing_item,
+            format!("Parsing {}", file.path.display()).into_boxed_str(),
+        );
+    }
 
     let file = lexer.file.clone();
     let tokens = lexer.into_tokens();
@@ -80,11 +86,15 @@ fn parse_single<'arena>(
     // ┌─────────────────┐
     // │ Program Forming │
     // └─────────────────┘
+    #[cfg(feature = "progress-bar")]
     progress_bar.remove(item);
-    item = progress_bar.add_child(
-        parsing_item,
-        format!("Processing {}", file.path.display()).into_boxed_str(),
-    );
+    #[cfg(feature = "progress-bar")]
+    {
+        item = progress_bar.add_child(
+            parsing_item,
+            format!("Processing {}", file.path.display()).into_boxed_str(),
+        );
+    }
 
     let mut module = Module::new(
         current_parser.file,
@@ -107,6 +117,7 @@ fn parse_single<'arena>(
         .modules
         .write()
         .insert_reserved(cur_entry.module_key, module);
+    #[cfg(feature = "progress-bar")]
     progress_bar.remove(item);
 
     _ = finish_sender.send(())
@@ -122,8 +133,8 @@ fn parse_single<'arena>(
 #[allow(clippy::too_many_arguments)]
 pub fn parse_all<'arena>(
     ctx: SharedCtx<'arena>,
-    progress_bar: ProgressBarThread,
-    parsing_item: ProgressItemRef,
+    #[cfg(feature = "progress-bar")] progress_bar: ProgressBarThread,
+    #[cfg(feature = "progress-bar")] parsing_item: ProgressItemRef,
     libtree: &LibraryTree,
 ) -> Result<(Arc<ModuleContext<'arena>>, StoreKey<Module<'arena>>), Diagnostics<'arena>> {
     let errors = Arc::new(RwLock::new(Diagnostics::new()));
@@ -200,6 +211,7 @@ pub fn parse_all<'arena>(
                 },
             };
 
+            #[cfg(feature = "progress-bar")]
             let progress_bar = progress_bar.clone();
             let errors = errors.clone();
             let finish_sender = finish_sender.clone();
@@ -209,7 +221,9 @@ pub fn parse_all<'arena>(
             handle.spawn(move || {
                 parse_single(
                     source,
+                    #[cfg(feature = "progress-bar")]
                     progress_bar,
+                    #[cfg(feature = "progress-bar")]
                     parsing_item,
                     finish_sender,
                     errors,
@@ -243,43 +257,4 @@ pub fn parse_all<'arena>(
             .expect("more than one reference to errors")
             .into_inner())
     }
-}
-
-pub fn expand_macros<'a>(
-    ctx: SharedCtx<'a>,
-    file: Arc<Path>,
-    mut output: EmitMethod,
-) -> Result<(), Diagnostics<'a>> {
-    let mut diags = Diagnostics::new();
-    let f = match ctx
-        .source_map
-        .load_file(file.clone(), file.parent().unwrap().into())
-    {
-        Ok(v) => v,
-        Err(e) => {
-            diags.add_err(IoReadError(file.to_path_buf(), e));
-            return Err(diags);
-        }
-    };
-    let mut lexer = Lexer::new(ctx, f);
-    _ = lexer
-        .scan_tokens()
-        .map_err(|e| diags.extend(e.into_iter().map(LexingError::to_error)));
-
-    let file = lexer.file.clone();
-    let tokens = lexer.into_tokens();
-    let tokens = match mira_parser::expand_tokens(ctx, file.clone(), tokens, &mut diags) {
-        Some(v) => v,
-        None => return Err(diags),
-    };
-    let mut s = String::with_capacity(10);
-    for token in tokens {
-        s.write_fmt(format_args!("{token} ")).unwrap();
-        if !output.emit_diags(s.as_bytes(), &mut diags) {
-            return Err(diags);
-        }
-        s.clear();
-    }
-
-    Ok(())
 }

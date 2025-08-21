@@ -4,21 +4,29 @@ version = "0.2.1"
 edition = "2024"
 
 [features]
-default = ["llvm20-1"]
-llvm20-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm20-1"]
-llvm19-1 = ["mira-llvm-backend", "mira-llvm-backend/llvm19-1"]
-llvm18-0 = ["mira-llvm-backend", "mira-llvm-backend/llvm18-0"]
+default = ["llvm20-1", "linking", "progress-bar"]
+lexing = ["mira-lexer"]
+macros = ["lexing", "mira-parser"]
+parsing = ["macros"]
+typeck = ["parsing", "mira-typeck"]
+codegen = ["typeck", "mira-target"]
+linking = ["codegen", "mira-linking"]
+llvm20-1 = ["mira-llvm-backend", "codegen", "mira-llvm-backend/llvm20-1"]
+llvm19-1 = ["mira-llvm-backend", "codegen", "mira-llvm-backend/llvm19-1"]
+llvm18-0 = ["mira-llvm-backend", "codegen", "mira-llvm-backend/llvm18-0"]
+progress-bar = ["mira-progress-bar"]
 
 [dependencies]
-mira-typeck.workspace = true
-mira-errors.workspace = true
-mira-progress-bar.workspace = true
-mira-spans.workspace = true
-mira-lexer.workspace = true
-mira-parser.workspace = true
-mira-target.workspace = true
-mira-linking.workspace = true
+mira-typeck = { workspace = true, optional = true }
+mira-lexer = { workspace = true, optional = true }
+mira-parser = { workspace = true, optional = true }
+mira-target = { workspace = true, optional = true }
+mira-linking = { workspace = true, optional = true }
+mira-llvm-backend = { workspace = true, optional = true }
+mira-progress-bar = { workspace = true , optional = true }
+
 mira-common.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
-mira-llvm-backend = { workspace = true, optional = true }
+mira-errors.workspace = true
+mira-spans.workspace = true

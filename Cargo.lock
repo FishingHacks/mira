@@ -402,7 +402,9 @@ version = "0.2.1"
 dependencies = [
  "mira-argparse",
  "mira-driver",
+ "mira-errors",
  "mira-llvm-backend",
+ "mira-spans",
  "mira-target",
  "mira-typeck",
  "parking_lot",

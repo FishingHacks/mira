@@ -166,16 +166,21 @@ impl<'arena> Diagnostics<'arena> {
     }
 }
 
-pub struct DiagnosticFormatter<'arena, P: StyledPrinter> {
+pub struct DiagnosticFormatter<'arena> {
     source_map: &'arena SourceMap,
     unicode: bool,
     output: Output,
-    printer: P,
+    printer: Box<dyn StyledPrinter>,
     styles: Styles,
 }
 
-impl<'arena, P: StyledPrinter> DiagnosticFormatter<'arena, P> {
-    pub fn new(source_map: &'arena SourceMap, output: Output, printer: P, styles: Styles) -> Self {
+impl<'arena> DiagnosticFormatter<'arena> {
+    pub fn new(
+        source_map: &'arena SourceMap,
+        output: Output,
+        printer: Box<dyn StyledPrinter>,
+        styles: Styles,
+    ) -> Self {
         Self {
             source_map,
             unicode: false,
@@ -214,7 +219,7 @@ impl<'arena, P: StyledPrinter> DiagnosticFormatter<'arena, P> {
             Self::print_diagnostic(
                 &mut value,
                 &mut Formatter::new(ctx, writer),
-                &mut self.printer,
+                &mut *self.printer,
                 self.styles,
             )
         })
@@ -223,7 +228,7 @@ impl<'arena, P: StyledPrinter> DiagnosticFormatter<'arena, P> {
     fn print_diagnostic(
         diagnostic: &mut DiagnosticInner<'arena, dyn ErrorData + 'arena>,
         f: &mut Formatter<'_>,
-        printer: &mut P,
+        printer: &mut dyn StyledPrinter,
         styles: Styles,
     ) -> std::fmt::Result {
         let ctx = f.ctx;
@@ -287,7 +292,7 @@ impl<'arena, P: StyledPrinter> DiagnosticFormatter<'arena, P> {
         file: Arc<SourceFile>,
         locs: &[Loc],
         f: &mut Formatter<'_>,
-        printer: &P,
+        printer: &dyn StyledPrinter,
     ) -> std::fmt::Result {
         // header [[ascii]]:
         //   --> src/main.mr:12:13

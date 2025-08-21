@@ -1,3 +1,4 @@
+use super::compile::compile;
 use crate::editor::{get_path, run_editor};
 use crate::repl::Repl;
 use crate::{libfinder, VERSION};
@@ -13,13 +14,9 @@ use std::{
 };
 
 use mira_argparse::{EditorMode, ReplArgs};
-use mira_driver::{
-    run_full_compilation_pipeline, Arena, EmitMethod, FullCompilationOptions, LibraryTree, Output,
-    UnicodePrinter,
-};
+use mira_driver::{EmitMethod, LibraryTree};
 use mira_llvm_backend::CodegenConfig;
 use mira_target::{Target, NATIVE_TARGET};
-use mira_typeck::GlobalContext;
 
 use super::about::print_about;
 
@@ -36,12 +33,10 @@ pub fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
         Some(EditorMode::Editor) => true,
         None => editor_path.is_some(),
     };
-    let buf = args.file.map(std::fs::read_to_string).unwrap_or_else(|| {
-        // pub fn main(argc: usize, argv: &&u8) {
-        //     "Hello, World".println();
-        // }
-        Ok("pub fn main() {\n    \"Hello, World\".println();\n}".into())
-    })?;
+    let buf = args
+        .file
+        .map(std::fs::read_to_string)
+        .unwrap_or_else(|| Ok("pub fn main() {\n    \"Hello, World\".println();\n}".into()))?;
 
     let mut repl = Repl::<Data>::new(
         vec![
@@ -230,10 +225,10 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
     }
 
     let mut opts = parse_opts(rest);
-    let mut llvm_ir_writer: EmitMethod = EmitMethod::None;
-    let mut llvm_bc_writer: EmitMethod = EmitMethod::None;
-    let mut asm_writer: EmitMethod = EmitMethod::None;
-    let mut ir_writer: EmitMethod = EmitMethod::None;
+    let mut llvm_ir_writer = None;
+    let mut llvm_bc_writer = None;
+    let mut asm_writer = None;
+    let mut ir_writer = None;
     let mut obj_file = None;
     let mut exec_file = None;
     let mut target = Target::from_name("x86_64-linux");
@@ -249,36 +244,36 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
                 opts.remove(i);
                 if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
-                    llvm_ir_writer = EmitMethod::file(PathBuf::from(file).into_boxed_path());
+                    llvm_ir_writer = Some(EmitMethod::file(PathBuf::from(file).into_boxed_path()));
                 } else {
-                    llvm_ir_writer = EmitMethod::stdout();
+                    llvm_ir_writer = Some(EmitMethod::stdout());
                 }
             }
             "--llvm-bc" => {
                 opts.remove(i);
                 if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
-                    llvm_bc_writer = EmitMethod::file(PathBuf::from(file).into_boxed_path());
+                    llvm_bc_writer = Some(EmitMethod::file(PathBuf::from(file).into_boxed_path()));
                 } else {
-                    llvm_bc_writer = EmitMethod::stdout();
+                    llvm_bc_writer = Some(EmitMethod::stdout());
                 }
             }
             "--asm" => {
                 opts.remove(i);
                 if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
-                    asm_writer = EmitMethod::file(PathBuf::from(file).into_boxed_path());
+                    asm_writer = Some(EmitMethod::file(PathBuf::from(file).into_boxed_path()));
                 } else {
-                    asm_writer = EmitMethod::stdout();
+                    asm_writer = Some(EmitMethod::stdout());
                 }
             }
             "--ir" => {
                 opts.remove(i);
                 if opts.get(i).filter(|v| !v.starts_with('-')).is_some() {
                     let file = opts.remove(i);
-                    ir_writer = EmitMethod::file(PathBuf::from(file).into_boxed_path());
+                    ir_writer = Some(EmitMethod::file(PathBuf::from(file).into_boxed_path()));
                 } else {
-                    ir_writer = EmitMethod::stdout();
+                    ir_writer = Some(EmitMethod::stdout());
                 }
             }
             "--obj" => {
@@ -340,36 +335,21 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         .with_dependency("std", libstd)
         .build();
     libtree.main_library(mainlib);
-    let mut compilation_opts = FullCompilationOptions::new(libtree);
-    compilation_opts
-        .set_binary_path(exec_file.clone(), false)
-        .set_object_path(obj_file)
-        .set_additional_linker_args(&opts)
-        .set_verbose_printing(verbose)
-        .ir_writer(ir_writer)
-        .llvm_ir_writer(llvm_ir_writer)
-        .llvm_bc_writer(llvm_bc_writer)
-        .asm_writer(asm_writer)
-        .codegen_opts
-        .optimizations_of(CodegenConfig::new_release_safe());
 
-    {
-        let arena = Arena::new();
-        let ctx = GlobalContext::new(&arena);
-        let s_ctx = ctx.ty_ctx();
-        let mut res = run_full_compilation_pipeline(s_ctx, compilation_opts);
-        if let Err(e) = &mut res {
-            println!("Failed to compile:");
-
-            let mut fmt = s_ctx.make_diagnostic_formatter(UnicodePrinter::new(), Output::Stderr);
-            for e in std::mem::take(e) {
-                fmt.display_diagnostic(e)
-                    .expect("failed to display diagnostic");
-            }
-            return;
-        }
-        drop(res);
-    }
+    let Ok(()) = compile(
+        &libtree,
+        CodegenConfig::new_release_safe(),
+        llvm_ir_writer,
+        llvm_bc_writer,
+        asm_writer,
+        ir_writer,
+        obj_file,
+        exec_file.as_deref(),
+        &opts,
+        verbose,
+    ) else {
+        return;
+    };
 
     if !run {
         return;

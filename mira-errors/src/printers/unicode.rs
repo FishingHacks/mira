@@ -216,7 +216,7 @@ nya mwrrrp purrr mreaow
         let mut formatter = DiagnosticFormatter::new(
             &sourcemap,
             Output::Custom(Box::new(String::new())),
-            UnicodePrinter::new(),
+            Box::new(UnicodePrinter::new()),
             Styles::NO_COLORS,
         );
         formatter.display_diagnostic(diagnostic).unwrap();

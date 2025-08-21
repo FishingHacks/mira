@@ -38,18 +38,18 @@ impl<'arena> GlobalContext<'arena> {
         }
     }
 
-    pub fn make_diagnostic_formatter<P: StyledPrinter>(
+    pub fn make_diagnostic_formatter<P: StyledPrinter + 'static>(
         &self,
         printer: P,
         output: Output,
-    ) -> DiagnosticFormatter<'_, P> {
+    ) -> DiagnosticFormatter<'_> {
         let styles = match std::env::var("MIRA_COLOR").ok().as_deref() {
             Some("0" | "none" | "no") => Styles::NO_COLORS,
             Some("1" | "yes") => Styles::DEFAULT,
             _ if std::io::stdout().is_terminal() => Styles::DEFAULT,
             _ => Styles::NO_COLORS,
         };
-        DiagnosticFormatter::new(&self.source_map, output, printer, styles)
+        DiagnosticFormatter::new(&self.source_map, output, Box::new(printer), styles)
     }
 
     pub fn ctx(&'arena self) -> SharedCtx<'arena> {
@@ -97,18 +97,12 @@ impl<'arena> TypeCtx<'arena> {
         &self.0.source_map
     }
 
-    pub fn make_diagnostic_formatter<P: StyledPrinter>(
+    pub fn make_diagnostic_formatter<P: StyledPrinter + 'static>(
         &self,
         printer: P,
         output: Output,
-    ) -> DiagnosticFormatter<'_, P> {
-        let styles = match std::env::var("MIRA_COLOR").ok().as_deref() {
-            Some("0" | "none" | "no") => Styles::NO_COLORS,
-            Some("1" | "yes") => Styles::DEFAULT,
-            _ if std::io::stdout().is_terminal() => Styles::DEFAULT,
-            _ => Styles::NO_COLORS,
-        };
-        DiagnosticFormatter::new(self.source_map(), output, printer, styles)
+    ) -> DiagnosticFormatter<'_> {
+        self.0.make_diagnostic_formatter(printer, output)
     }
 }
 
