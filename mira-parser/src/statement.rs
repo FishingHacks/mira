@@ -584,16 +584,16 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::For if is_global => invalid_kw!("for loop"),
 
             TokenType::Asm if is_global => self.parse_global_asm().map(Some),
-            TokenType::Trait => self.parse_trait().map(Some),
-            TokenType::Let => self.parse_let_stmt(is_global).map(Some),
+            TokenType::Trait => self.parse_trait(false).map(Some),
+            TokenType::Let => self.parse_let_stmt(is_global, false).map(Some),
             TokenType::CurlyLeft => self.parse_block_stmt().map(Some),
             TokenType::Return => self.parse_return_stmt().map(Some),
             TokenType::If => self.parse_if_stmt().map(Some),
             TokenType::While => self.parse_while_stmt().map(Some),
             TokenType::For => self.parse_for_stmt().map(Some),
-            TokenType::Struct => self.parse_struct().map(Some),
+            TokenType::Struct => self.parse_struct(false).map(Some),
             TokenType::Fn => self
-                .parse_callable(false)
+                .parse_callable(false, false)
                 .and_then(|(callable, body)| {
                     callable
                         .contract
@@ -611,7 +611,7 @@ impl<'arena> Parser<'_, 'arena> {
                 self.parse_annotation()?;
                 Ok(None)
             }
-            TokenType::Extern => self.parse_external().map(Some),
+            TokenType::Extern => self.parse_external(false).map(Some),
             TokenType::Eof => {
                 return Err(ParsingError::ExpectedStatement(self.peek().span));
             }
@@ -637,23 +637,25 @@ impl<'arena> Parser<'_, 'arena> {
     fn parse_pub(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
         self.dismiss();
         match self.peek().typ {
-            TokenType::Fn => self.parse_callable(false).and_then(|(callable, body)| {
-                assert!(callable.public);
-                callable
-                    .contract
-                    .annotations
-                    .are_annotations_valid_for(AnnotationReceiver::Function)?;
-                Ok(Statement::Function {
-                    contract: callable.contract,
-                    body: Box::new(body),
-                    span: callable.span,
-                    public: true,
-                })
-            }),
-            TokenType::Let => self.parse_let_stmt(true),
-            TokenType::Struct => self.parse_struct(),
-            TokenType::Extern => self.parse_external(),
-            TokenType::Trait => self.parse_trait(),
+            TokenType::Fn => self
+                .parse_callable(false, true)
+                .and_then(|(callable, body)| {
+                    assert!(callable.public);
+                    callable
+                        .contract
+                        .annotations
+                        .are_annotations_valid_for(AnnotationReceiver::Function)?;
+                    Ok(Statement::Function {
+                        contract: callable.contract,
+                        body: Box::new(body),
+                        span: callable.span,
+                        public: true,
+                    })
+                }),
+            TokenType::Let => self.parse_let_stmt(true, true),
+            TokenType::Struct => self.parse_struct(true),
+            TokenType::Extern => self.parse_external(true),
+            TokenType::Trait => self.parse_trait(true),
             TokenType::Use => self.parse_use(true),
             TokenType::Mod => self.parse_mod(true),
             _ => Err(ParsingError::ExpectedElementForPub {
@@ -786,8 +788,7 @@ impl<'arena> Parser<'_, 'arena> {
         ))
     }
 
-    fn parse_trait(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let public = self.current().typ == TokenType::Pub;
+    fn parse_trait(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let span = if public {
             self.current().span
         } else {
@@ -832,11 +833,14 @@ impl<'arena> Parser<'_, 'arena> {
     fn parse_let_stmt(
         &mut self,
         is_static: bool,
+        public: bool,
     ) -> Result<Statement<'arena>, ParsingError<'arena>> {
         // pub only when in global scope
         // [pub] let <identifier>;
         // [pub] let <identifier> = <expr>;
-        let public = is_static && self.current().typ == TokenType::Pub;
+        if public {
+            assert!(is_static);
+        }
         let span = if public {
             self.current().span
         } else {
@@ -982,11 +986,9 @@ impl<'arena> Parser<'_, 'arena> {
             annotations,
         })
     }
-    fn parse_struct(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_struct(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let annotations = std::mem::take(&mut self.current_annotations);
         annotations.are_annotations_valid_for(AnnotationReceiver::Struct)?;
-
-        let public = self.current().typ == TokenType::Pub;
 
         // struct Name { ... fields ...; implementation area }
         // fields: field: type,[...]
@@ -1049,7 +1051,7 @@ impl<'arena> Parser<'_, 'arena> {
             while !self.match_tok(TokenType::CurlyRight) {
                 match self.peek().typ {
                     TokenType::Fn => {
-                        let func = self.parse_callable(false)?;
+                        let func = self.parse_callable(false, false)?;
                         let name = func
                             .0
                             .contract
@@ -1083,7 +1085,7 @@ impl<'arena> Parser<'_, 'arena> {
                                     is_trait_impl: true,
                                 });
                             }
-                            let func = self.parse_callable(false)?;
+                            let func = self.parse_callable(false, false)?;
                             let name = func
                                 .0
                                 .contract
@@ -1252,9 +1254,12 @@ pub(super) struct Callable<'arena> {
 }
 
 impl<'arena> Parser<'_, 'arena> {
-    pub fn parse_external(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    pub fn parse_external(
+        &mut self,
+        public: bool,
+    ) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let location = self.eat().span;
-        self.parse_any_callable(false, false, false)
+        self.parse_any_callable(false, false, false, public)
             .and_then(|(mut callable, body)| {
                 callable
                     .contract
@@ -1273,8 +1278,9 @@ impl<'arena> Parser<'_, 'arena> {
     pub(super) fn parse_callable(
         &mut self,
         anonymous: bool,
+        public: bool,
     ) -> Result<(Callable<'arena>, Statement<'arena>), ParsingError<'arena>> {
-        self.parse_any_callable(anonymous, true, true)
+        self.parse_any_callable(anonymous, true, true, public)
             .map(|(callable, body)| (callable, body.expect("there should always exist a body")))
     }
 
@@ -1283,10 +1289,10 @@ impl<'arena> Parser<'_, 'arena> {
         anonymous: bool,
         needs_body: bool,
         can_have_generics: bool,
+        public: bool,
     ) -> Result<(Callable<'arena>, Option<Statement<'arena>>), ParsingError<'arena>> {
         let annotations = std::mem::take(&mut self.current_annotations);
 
-        let public = self.current().typ == TokenType::Pub;
         let span = if public {
             self.current().span
         } else {

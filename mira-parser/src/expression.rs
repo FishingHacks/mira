@@ -1272,16 +1272,17 @@ impl<'arena> Parser<'_, 'arena> {
         if self.peek().typ == TokenType::Fn {
             let loc = self.peek().span;
             return Ok(Expression::Literal(
-                self.parse_callable(true).and_then(|(callable, body)| {
-                    callable
-                        .contract
-                        .annotations
-                        .are_annotations_valid_for(AnnotationReceiver::Function)?;
-                    Ok(LiteralValue::AnonymousFunction(
-                        callable.contract,
-                        Box::new(body),
-                    ))
-                })?,
+                self.parse_callable(true, false)
+                    .and_then(|(callable, body)| {
+                        callable
+                            .contract
+                            .annotations
+                            .are_annotations_valid_for(AnnotationReceiver::Function)?;
+                        Ok(LiteralValue::AnonymousFunction(
+                            callable.contract,
+                            Box::new(body),
+                        ))
+                    })?,
                 loc,
             ));
         }
