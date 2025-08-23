@@ -1,6 +1,7 @@
 let settings_window;
 let searchbar;
 let search_results;
+let settings_button;
 let main_content;
 let last_search = "";
 let running_search = false;
@@ -131,10 +132,23 @@ function keypress(e) {
     }
 }
 
+function handle_settings_blur_click(e) {
+    if (!e.target || settings_window.classList.contains("hidden")) return;
+    let target = e.target;
+    if (e.target == settings_window || e.target == settings_button) return;
+    while (target) {
+        target = target.parentElement;
+        if (target == settings_window || target == settings_button) return;
+    }
+    e.preventDefault();
+    settings_window.classList.add("hidden")
+}
+
 function onload() {
     let colorscheme = localStorage.getItem("colorscheme");
     settings_window = document.getElementsByClassName("settings-popup")[0];
-    document.getElementsByClassName("settings-button")[0].addEventListener("click", open_close_settings);
+    settings_button = document.getElementsByClassName("settings-button")[0];
+    settings_button.addEventListener("click", open_close_settings);
     if (!["ayu", "dark", "light", "preference"].includes(colorscheme)) {
         colorscheme = "preference";
         localStorage.setItem("colorscheme", colorscheme);
@@ -152,6 +166,7 @@ function onload() {
     searchbar.addEventListener("focus", focus_search);
     searchbar.addEventListener("blur", blur_search);
     window.addEventListener("keydown", keypress);
+    window.addEventListener("click", handle_settings_blur_click);
 
     search_results = document.getElementsByClassName("search-results")[0];
     main_content = document.getElementsByClassName("main-content")[0];
