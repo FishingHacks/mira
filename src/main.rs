@@ -1,6 +1,5 @@
 mod commands;
 mod editor;
-mod libfinder;
 mod repl;
 use commands::{about::print_about, compile::compile_main, expand::expand_main, repl::repl_main};
 use mira_argparse::{parse_args, print_help, Action};

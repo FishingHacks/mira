@@ -100,6 +100,7 @@ fn parse_single<'arena>(
         current_parser.file,
         cur_entry.package_root,
         cur_entry.parent,
+        cur_entry.name,
     );
     _ = current_parser;
     if let Err(errs) = module.push_all(
@@ -166,10 +167,11 @@ pub fn parse_all<'arena>(
         };
         parsing_queue.push(ParserQueueEntry {
             file: lib.root_file_path.clone(),
+            name: ctx.intern_str(&lib.name),
             file_root: lib.root.clone(),
             loaded_file,
             package_root: modid,
-            parent: modid,
+            parent: StoreKey::undefined(),
             module_key: modid,
         });
     }

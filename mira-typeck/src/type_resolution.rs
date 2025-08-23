@@ -473,6 +473,7 @@ impl<'arena> TypecheckingContext<'arena> {
     ) {
         let mut writer = context.statics.write();
         let span = writer[static_id].3;
+        let name = writer[static_id].5;
         let annotations = std::mem::take(&mut writer[static_id].4);
         let dummy_type = TypeRef::Void(writer[static_id].0.span(), 0);
         let typ = std::mem::replace(&mut writer[static_id].0, dummy_type);
@@ -480,8 +481,14 @@ impl<'arena> TypecheckingContext<'arena> {
         drop(writer);
         match self.resolve_type(module_id.cast(), &typ, &[]) {
             Ok(v) => {
-                self.statics.write()[static_id.cast()] =
-                    TypedStatic::new(v, TypedLiteral::Void, module_id.cast(), span, annotations);
+                self.statics.write()[static_id.cast()] = TypedStatic::new(
+                    v,
+                    TypedLiteral::Void,
+                    module_id.cast(),
+                    span,
+                    annotations,
+                    name,
+                );
             }
             Err(e) => _ = errors.add(e),
         }

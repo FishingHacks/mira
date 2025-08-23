@@ -36,7 +36,7 @@ pub fn resolve_module<'arena>(
         .to_path_buf();
     // if this is the package root or ends in `mod.mr`, use the current directory.
     // otherwise, use $cwd/$stem.
-    if module.package_root != module.parent
+    if !module.parent.is_undefined()
         && current_file
             .path
             .file_name()

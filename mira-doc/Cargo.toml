@@ -5,7 +5,9 @@ edition = "2024"
 
 [dependencies]
 mira-spans.workspace = true
-mira-lexer.workspace = true
-mira-parser.workspace = true
 mira-typeck.workspace = true
+mira-errors.workspace = true
+mira-common.workspace = true
+mira-parser.workspace = true
+mira-driver = { workspace = true, features = ["typeck", "progress-bar"] }
 parking_lot.workspace = true

@@ -10,7 +10,7 @@ use crate::{
     TypeRef, annotations::Annotations, error::ProgramFormingError,
 };
 use mira_common::store::{AssociatedStore, Store, StoreKey};
-use mira_spans::{FileId, Ident, SharedCtx, SourceFile, Span};
+use mira_spans::{FileId, Ident, SharedCtx, SourceFile, Span, Symbol};
 
 mod module_resolution;
 
@@ -56,6 +56,7 @@ pub type Static<'arena> = (
     StoreKey<Module<'arena>>,
     Span<'arena>,
     Annotations<'arena>,
+    Ident<'arena>,
 );
 
 pub type DependencyMap<'arena> = HashMap<Arc<str>, StoreKey<Module<'arena>>>;
@@ -114,7 +115,8 @@ pub struct Module<'arena> {
     pub exports: HashSet<Ident<'arena>>,
     pub file: Arc<SourceFile>,
     pub package_root: StoreKey<Module<'arena>>,
-    /// if this parent is the same as the package_root, it means this module is the package root.
+    pub name: Symbol<'arena>,
+    /// if this parent is undefined, that means it's the root package.
     pub parent: StoreKey<Module<'arena>>,
     pub assembly: Vec<(Span<'arena>, String)>,
 }
@@ -134,6 +136,7 @@ pub struct ParserQueueEntry<'arena> {
     pub file: Arc<std::path::Path>,
     pub file_root: Arc<std::path::Path>,
     pub loaded_file: Option<FileId>,
+    pub name: Symbol<'arena>,
     pub package_root: StoreKey<Module<'arena>>,
     /// if this parent is the same as the package_root, it means this module is the package root.
     pub parent: StoreKey<Module<'arena>>,
@@ -145,6 +148,7 @@ impl<'arena> Module<'arena> {
         file: Arc<SourceFile>,
         package_root: StoreKey<Self>,
         parent: StoreKey<Self>,
+        name: Symbol<'arena>,
     ) -> Self {
         Self {
             imports: HashMap::new(),
@@ -154,6 +158,7 @@ impl<'arena> Module<'arena> {
             assembly: Vec::new(),
             parent,
             package_root,
+            name,
         }
     }
 
@@ -322,6 +327,7 @@ impl<'arena> Module<'arena> {
                     module_id,
                     var.span,
                     var.annotations,
+                    var.name,
                 ));
                 self.scope.insert(var.name, ModuleScopeValue::Static(key));
                 self.maybe_add_export(public, var.name);
@@ -385,6 +391,7 @@ impl<'arena> Module<'arena> {
                     file,
                     file_root: self.file.package_root.clone(),
                     module_key,
+                    name: name.symbol(),
                     loaded_file: None,
                     parent: module_id,
                     package_root: self.package_root,

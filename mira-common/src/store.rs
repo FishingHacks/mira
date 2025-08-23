@@ -47,6 +47,10 @@ impl<T: ?Sized> StoreKey<T> {
         assert!(v < usize::MAX);
         Self(v, PhantomData)
     }
+
+    pub fn is_undefined(self) -> bool {
+        self == Self::undefined()
+    }
 }
 
 impl<T: ?Sized> Debug for StoreKey<T> {

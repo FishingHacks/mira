@@ -116,3 +116,9 @@ interface TraitImplementation {
     trait: ItemRef;
     funcs: ItemRef[];
 };
+
+interface Output {
+    libraries: ItemRef[];
+    main_library: ItemRef;
+    items: Item[];
+}

@@ -113,9 +113,10 @@ pub struct TypedStatic<'arena> {
     pub type_: Ty<'arena>,
     /// guaranteed to not be `Dynamic`, `Intrinsic` or `Static`
     pub value: TypedLiteral<'arena>,
-    pub module: StoreKey<TypecheckedModule<'arena>>,
+    pub module_id: StoreKey<TypecheckedModule<'arena>>,
     pub loc: Span<'arena>,
     pub annotations: Annotations<'arena>,
+    pub name: Ident<'arena>,
 }
 
 impl<'arena> TypedStatic<'arena> {
@@ -125,13 +126,15 @@ impl<'arena> TypedStatic<'arena> {
         module: StoreKey<TypecheckedModule<'arena>>,
         loc: Span<'arena>,
         annotations: Annotations<'arena>,
+        name: Ident<'arena>,
     ) -> Self {
         Self {
             type_,
             value: literal,
-            module,
+            module_id: module,
             loc,
             annotations,
+            name,
         }
     }
 }
@@ -152,19 +155,15 @@ pub struct TypecheckingContext<'arena> {
     pub ctx: TypeCtx<'arena>,
 }
 
+#[derive(Debug)]
 pub struct TypecheckedModule<'arena> {
-    scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
-    exports: HashSet<Ident<'arena>>,
+    pub scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
+    pub exports: HashSet<Ident<'arena>>,
+    pub parent: StoreKey<TypecheckedModule<'arena>>,
+    pub root_module: StoreKey<TypecheckedModule<'arena>>,
+    pub name: Symbol<'arena>,
     pub file: Arc<SourceFile>,
     pub assembly: Vec<(Span<'arena>, String)>,
-}
-
-impl Debug for TypecheckedModule<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TypecheckedModule")
-            .field("scope", &self.scope)
-            .finish()
-    }
 }
 
 impl<'arena> TypecheckingContext<'arena> {
@@ -237,6 +236,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     StoreKey::undefined(),
                     statics_reader[key].3,
                     Annotations::default(),
+                    Ident::EMPTY,
                 ),
             );
         }
@@ -306,16 +306,19 @@ impl<'arena> TypecheckingContext<'arena> {
         let mut typechecked_module_writer = me.modules.write();
         let module_reader = module_context.modules.read();
 
-        for key in module_reader.indices() {
-            let scope = module_reader[key].scope.clone();
+        for (key, module) in module_reader.index_value_iter() {
+            let scope = module.scope.clone();
 
             typechecked_module_writer.insert(
                 key,
                 TypecheckedModule {
                     scope,
-                    exports: module_reader[key].exports.clone(),
-                    file: module_reader[key].file.clone(),
-                    assembly: module_reader[key].assembly.clone(),
+                    parent: module.parent.cast(),
+                    root_module: module.package_root.cast(),
+                    name: module.name,
+                    exports: module.exports.clone(),
+                    file: module.file.clone(),
+                    assembly: module.assembly.clone(),
                 },
             );
         }

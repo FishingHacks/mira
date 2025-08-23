@@ -142,7 +142,7 @@ pub fn mangle_static<'arena>(
     let mut name = String::from("alloc_");
     let mut hasher = DefaultHasher::new();
     structure.type_.hash(&mut hasher);
-    structure.module.hash(&mut hasher);
+    structure.module_id.hash(&mut hasher);
     write!(name, "{:x}", hasher.finish()).expect("writing to a string should never fail");
     name
 }

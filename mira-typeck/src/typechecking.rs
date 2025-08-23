@@ -114,7 +114,7 @@ pub fn typecheck_static<'arena>(
 
     match typecheck_expression(
         context,
-        tc_module_reader[static_id].module,
+        tc_module_reader[static_id].module_id,
         &mut Scopes::new(),
         &Expression::Literal(expr, tc_module_reader[static_id].loc),
         &mut Vec::new(),

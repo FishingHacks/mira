@@ -7,6 +7,6 @@ macro! meow {
 
 //meow!(a, b)
 
-fn main() {
+pub fn main() {
     "Hello, World!".println();
 }

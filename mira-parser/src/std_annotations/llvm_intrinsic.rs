@@ -6,10 +6,8 @@ pub struct LLVMIntrinsicAnnotation(Box<str>);
 
 impl Display for LLVMIntrinsicAnnotation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "@llvm_intrinsic({})",
-            StrIdentDisplay(&self.0)
-        ))
+        // remove `llvm.`
+        f.write_fmt(format_args!("@llvm_intrinsic({:?})", &self.0[5..]))
     }
 }
 

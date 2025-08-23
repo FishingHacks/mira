@@ -1,0 +1,284 @@
+:root {
+    --bg: #262626;
+    --color: #ffffff;
+    --color-breadcrumb-delimiter: #d4d4d4;
+    --color-breadcrumb-element: #a855f7;
+    --code-background: #171717;
+    --code-color: #ffffff;
+    --radio-select: #3b82f6;
+    --radio-border: #737373;
+    --settings-button-filter: invert(0.75);
+    --sidebar-hover-bg: #525252;
+
+    /* item colors */
+    --color-function: #4ade80;
+    --color-struct: #2dd4bf;
+    --color-static: #6366f1;
+    --color-trait: #8b5cf6;
+    --color-module: #f43f5e;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    margin: 0;
+    background: var(--bg);
+    color: var(--color);
+    font-family: sans-serif;
+    font-weight: 500;
+}
+body {
+    margin: 0;
+    display: flex;
+}
+
+a {
+    text-decoration: none;
+}
+
+.path span {
+    user-select: none;
+    color: var(--color-breadcrumb-delimiter);
+}
+
+.path a {
+    text-decoration: none;
+    color: var(--color-breadcrumb-element);
+}
+
+.path a:hover, .path a:focus {
+    text-decoration: underline;
+    color: var(--color-breadcrumb-element);
+}
+.search-header {
+    display: flex;
+    margin-bottom: .5em;
+    position: relative;
+}
+
+.search-input {
+    color: #000;
+    padding: .5em;
+    border: 1px #fff solid;
+    outline: none;
+    background: #fff;
+    font-weight: 500;
+    font-size: 1em;
+    flex: 1;
+}
+
+.search-input:focus {
+    border: 1px #3b82f6 solid;
+}
+.settings-button {
+    margin: 0 .5em;
+    display: flex;
+    align-items: center;
+    border: 1px transparent solid;
+    padding: .25em;
+    cursor: pointer;
+    user-select: none;
+}
+
+.settings-button:hover {
+    border: 1px var(--color) solid;
+}
+
+.settings-button::before {
+    content: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-settings"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z" /><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" /></svg>');
+    filter: var(--settings-button-filter);
+    width: 18px;
+    height: 18px;
+    display: block;
+    margin-right: .2em;
+    color: var(--color);
+}
+
+.settings-popup {
+    position: absolute;
+    border: 1px solid var(--color);
+    background: var(--bg);
+    padding: .7em;
+    right: .5em;
+    top: 120%;
+    z-index: 1000;
+}
+
+.setting-radio {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+.setting-radio + .setting-radio {
+    margin-left: 1em;
+}
+
+.setting-radio input[type="radio"] {
+    appearance: none;
+    -moz-appearance: none;
+    -webkit-appearance: none;
+    width: 1.2rem;
+    height: 1.2rem;
+    margin: .25em;
+    border: 2px var(--radio-border) solid;
+    border-radius: 50%;
+    margin-right: .3em;
+}
+
+.setting-radio input[type="radio"]:checked {
+    background: var(--radio-select);
+    box-shadow: inset 0 0 0 3px var(--bg);
+}
+
+.hidden {
+    display: none;
+}
+
+.content {
+    width: 86%;
+    padding: 0 2em;
+    padding-top: 1em;
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar {
+    width: 14%;
+    min-height: 100vh;
+    border-right: 1px solid var(--color);
+    padding-top: 2em;
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar h2 {
+    margin: 0 4%;
+    margin-bottom: .25em;
+}
+
+.sidebar a {
+    text-decoration: none;
+    font-size: 1.1em;
+    color: var(--color-breadcrumb-element);
+    padding: .25em 5%;
+}
+
+.sidebar a:hover {
+    background-color: var(--sidebar-hover-bg);
+}
+
+h1, h2, h3, h4, h5, h6 {
+    margin: 0
+}
+
+.code {
+    padding: .75em;
+    border-radius: 7px;
+    background: var(--code-background);
+    color: var(--code-color);
+}
+
+.function {
+    color: var(--color-function);
+}
+
+.struct {
+    color: var(--color-struct);
+}
+
+.static {
+    color: var(--color-static);
+}
+
+.trait {
+    color: var(--color-trait);
+}
+
+.module {
+    color: var(--color-module);
+}
+
+.anchorable {
+    position: relative;
+}
+
+.anchorable > .anchor {
+    display: none;
+    position: absolute;
+    color: var(--color);
+    left: -15px;
+    top: 0;
+    padding-right: 8px;
+}
+.anchorable:hover > .anchor,
+.anchorable > .anchor:hover {
+    display: initial;
+}
+
+.structfield, .member-function, .item-ref {
+    font-size: 1.15em;
+    margin: .25em 0;
+    display: block;
+}
+
+.header {
+    padding-top: .1em;
+    padding-bottom: .25em;
+    border-bottom: 1px var(--color) solid;
+    margin: .25em 0;
+}
+
+:root[color-scheme="light"] {
+    --bg: #f5f5f5;
+    --color: #000000;
+    --color-breadcrumb-delimiter: #525252;
+    --color-breadcrumb-element: #7e22ce;
+    --code-background: #404040;
+    --code-color: #ffffff;
+    --settings-button-filter: none;
+
+    /* item colors */
+    --color-function: #16a34a;
+    --color-struct: #0284c7;
+    --color-static: #4338ca;
+    --color-trait: #7e22ce;
+    --color-module: #f43f5e;
+}
+
+:root[color-scheme="ayu"] {
+    --bg: #0d1017;
+    --color: #bfbdb6;
+    --color-breadcrumb-delimiter: #d4d4d4;
+    --color-breadcrumb-element: #e6b450;
+    --code-background: #171717;
+    --code-color: #ffffff;
+
+    /* item colors */
+    --color-function: #ffb454;
+    --color-struct: #59c2ff;
+    --color-static: #d2a6ff;
+    --color-trait: #f07178;
+    --color-module: #f43f5e;
+}
+
+@media(prefers-color-scheme: light) {
+    :root[color-scheme="prefererence"] {
+        --bg: #f5f5f5;
+        --color: #000000;
+        --color-breadcrumb-delimiter: #525252;
+        --color-breadcrumb-element: #7e22ce;
+        --code-background: #404040;
+        --code-color: #ffffff;
+        --settings-button-filter: none;
+
+        /* item colors */
+        --color-function: #16a34a;
+        --color-struct: #0284c7;
+        --color-static: #4338ca;
+        --color-trait: #7e22ce;
+        --color-module: #f43f5e;
+    }
+}

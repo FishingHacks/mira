@@ -271,7 +271,9 @@ dependencies = [
 name = "mira-doc"
 version = "0.1.0"
 dependencies = [
- "mira-lexer",
+ "mira-common",
+ "mira-driver",
+ "mira-errors",
  "mira-parser",
  "mira-spans",
  "mira-typeck",

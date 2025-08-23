@@ -1,9 +1,9 @@
-mod allocate;
-mod clone_copy;
-mod intrinsics;
-mod langitems;
-mod os;
-mod panicking;
+pub mod allocate;
+pub mod clone_copy;
+pub mod intrinsics;
+pub mod langitems;
+pub mod os;
+pub mod panicking;
 mod start;
 
 pub use clone_copy::Clone;

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en" color-scheme="preference">
+    <head>
+        <title>meow - mira</title>
+        <link rel="stylesheet" href="./index.css">
+        <noscript><link rel="stylesheet" href="./noscript.css"></noscript>
+        <script src="./index.js"></script>
+    </head>
+    <body>
+        <div class="sidebar">
+            <h2>Packages</h2>
+            <a href="#">std</a>
+            <a href="#">root</a>
+        </div>
+        <div class="content">
+            <div class="search-header">
+                <input class="search-input" placeholder="search here plsss" />
+                <a class="settings-button">Settings</a>
+
+                <div class="settings-popup hidden">
+                    <div>Theme</div>
+                    <label for="theme-light" class="setting-radio">
+                        <input type="radio" name="theme" id="theme-light" value="light">
+                        <span>light</span>
+                    </label>
+                    <label for="theme-dark" class="setting-radio">
+                        <input type="radio" name="theme" id="theme-dark" value="dark">
+                        <span>dark</span>
+                    </label>
+                    <label for="theme-ayu" class="setting-radio">
+                        <input type="radio" name="theme" id="theme-ayu" value="ayu">
+                        <span>ayu</span>
+                    </label>
+                    <label for="theme-preference" class="setting-radio">
+                        <input type="radio" name="theme" id="theme-preference" value="preference">
+                        <span>system preference</span>
+                    </label>
+                </div>
+            </div>
+            <div class="search-results hidden">
+            </div>
+            <div class="main-content">
+                <div class="path"><a href="#">std</a><span>::</span><a href="#">intrinsics</a><span>::</span><a href="#">type_name</a></div>
+                <h1>function <span class="function">type_name</span></h1>
+                <pre class="item-decl code"><code>fn type_name&lt;unsized T&gt;() -&gt; &amp;str { .. }</code></pre>
+
+                <h1>struct <span class="struct">Meow</span></h1>
+                <pre class="item-decl code"><code>struct Meow { field: u32, .. }</code></pre>
+
+                <h2 id="fields" class="anchorable header">Fields<a class="anchor" href="#fields">§</a></h2>
+                <span id="structfield.field1" class="anchorable structfield"><code>field1: <a class="struct" href="#">u32</a></code><a href="#structfield.field1" class="anchor">§</a></span>
+                <span id="structfield.field2" class="anchorable structfield"><code>field2: <a class="struct" href="#">u32</a></code><a href="#structfield.field2" class="anchor">§</a></span>
+
+                <h2 id="functions" class="anchorable header">Functions<a class="anchor" href="#functions">§</a></h2>
+                <span id="function.len" class="anchorable member-function"><code>fn <a class="function" href="#function.len">len</a>(self: &amp;<span class="struct">Self</span>) -&gt; <span class="struct">usize</span></code><a href="#function.len" class="anchor">§</a></span>
+                <span id="function.push" class="anchorable member-function"><code>fn <a class="function" href="#function.push">push</a>(self: &amp;<span class="struct">Self</span>, value: <span class="struct">usize</span>)</code><a href="#function.push" class="anchor">§</a></span>
+
+                <h2 id="traits" class="anchorable header">Traits<a class="anchor" href="#traits">§</a></h2>
+                <h3 id="traits.Clone" class="anchorable header">Clone<a class="anchor" href="#traits.Clone">§</a></h3>
+                <span id="traitfunction.clone" class="anchorable member-function"><code>fn <a class="function" href="#traitfunction.clone">clone</a>(self: &amp;<span class="struct">Self</span>) -&gt; <span class="struct">Self</span></code><a href="#traitfunction.clone" class="anchor">§</a></span>
+
+
+                <h3 id="traits.Allocate" class="anchorable header">Allocate<a class="anchor" href="#traits.Allocate">§</a></h3>
+                <span id="traitfunction.allocate" class="anchorable member-function"><code>fn <a class="function" href="#traitfunction.allocate">allocate</a>(self: &amp;<span class="struct">Self</span>, size: <span class="struct">usize</span>, align: <span class="struct">usize</span>) -&gt; &amp;<span class="struct">void</span></code><a href="#traitfunction.allocate" class="anchor">§</a></span>
+                <span id="traitfunction.reallocate" class="anchorable member-function"><code>fn <a class="function" href="#traitfunction.reallocate">reallocate</a>(self: &amp;<span class="struct">Self</span>, ptr: &amp;<span class="struct">void</span>, size: <span class="struct">usize</span>, align: <span class="struct">usize</span>) -&gt; &amp;<span class="struct">void</span></code><a href="#traitfunction.reallocate" class="anchor">§</a></span>
+                <span id="traitfunction.free" class="anchorable member-function"><code>fn <a class="function" href="#traitfunction.free">free</a>(self: &amp;<span class="struct">Self</span>, ptr: &amp;<span class="struct">void</span>)</code><a href="#traitfunction.free" class="anchor">§</a></span>
+
+                <h3 id="traits.Copy" class="anchorable header">Copy<a class="anchor" href="#traits.Copy">§</a></h3>
+
+                <h1>static <span class="static">ALL_ITEMS</span></h1>
+                <pre class="item-decl code"><code>let ALL_ITEMS: &amp;[u8]</code></pre>
+
+                <h1>trait <span class="trait">Allocate</span></h1>
+                <pre class="item-decl code"><code>trait Allocate { .. }</code></pre>
+
+                <h2 id="functions" class="anchorable header">Functions<a class="anchor" href="#functions">§</a></h2>
+                <span id="function.allocate" class="anchorable member-function"><code>fn <a class="function" href="#traitfunction.allocate">allocate</a>(self: &amp;<span class="struct">Self</span>, size: <span class="struct">usize</span>, align: <span class="struct">usize</span>) -&gt; &amp;<span class="struct">void</span></code><a href="#traitfunction.allocate" class="anchor">§</a></span>
+                <span id="function.reallocate" class="anchorable member-function"><code>fn <a class="function" href="#traitfunction.reallocate">reallocate</a>(self: &amp;<span class="struct">Self</span>, ptr: &amp;<span class="struct">void</span>, size: <span class="struct">usize</span>, align: <span class="struct">usize</span>) -&gt; &amp;<span class="struct">void</span></code><a href="#traitfunction.reallocate" class="anchor">§</a></span>
+                <span id="function.free" class="anchorable member-function"><code>fn <a class="function" href="#traitfunction.free">free</a>(self: &amp;<span class="struct">Self</span>, ptr: &amp;<span class="struct">void</span>)</code><a href="#traitfunction.free" class="anchor">§</a></span>
+
+                <!-- <h1>module <span class="module">mira</span></h1> -->
+            </div>
+        </div>
+    </body>
+</html>

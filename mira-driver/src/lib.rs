@@ -1,10 +1,4 @@
-use std::{
-    fmt::Arguments,
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{fmt::Arguments, fs::File, io::Write, path::Path, sync::Arc};
 
 use std::io::IsTerminal;
 
@@ -15,8 +9,10 @@ use mira_errors::{
 };
 use mira_spans::SharedCtx;
 
+mod libfinder;
 mod libtree;
 mod parsing;
+pub use libfinder::find_library;
 pub use libtree::*;
 
 #[cfg(feature = "progress-bar")]
@@ -42,6 +38,8 @@ use mira_llvm_backend::{CodegenConfig, CodegenContext, CodegenContextBuilder, Co
 use mira_linking::LinkerInput;
 #[cfg(feature = "linking")]
 use mira_target::Target;
+#[cfg(feature = "linking")]
+use std::path::PathBuf;
 
 #[cfg(feature = "progress-bar")]
 struct DropThreadJoin<T>(Option<JoinHandle<T>>);

@@ -13,6 +13,13 @@ pub enum LibraryInput {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LibraryId(pub(crate) usize);
 
+impl LibraryId {
+    #[inline(always)]
+    pub const fn to_usize(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Default)]
 pub struct LibraryTree {
     pub(crate) main: Option<LibraryId>,
@@ -24,6 +31,7 @@ pub struct LibraryBuilder<'tree> {
     tree: &'tree mut LibraryTree,
     root: Arc<Path>,
     root_file_path: Arc<Path>,
+    name: Box<str>,
     input: LibraryInput,
     dependencies: HashMap<Arc<str>, LibraryId>,
 }
@@ -53,6 +61,7 @@ impl<'tree> LibraryBuilder<'tree> {
             root_file_path: self.root_file_path,
             input: self.input,
             dependencies: self.dependencies,
+            name: self.name,
         });
         id
     }
@@ -68,6 +77,7 @@ impl LibraryTree {
         &mut self,
         module_root: Arc<Path>,
         file_path: Arc<Path>,
+        name: impl Into<Box<str>>,
     ) -> LibraryBuilder {
         LibraryBuilder {
             tree: self,
@@ -75,6 +85,7 @@ impl LibraryTree {
             root_file_path: file_path,
             input: LibraryInput::Path,
             dependencies: HashMap::new(),
+            name: name.into(),
         }
     }
 
@@ -100,6 +111,7 @@ impl LibraryTree {
 pub struct Library {
     pub root: Arc<Path>,
     pub root_file_path: Arc<Path>,
+    pub name: Box<str>,
     pub input: LibraryInput,
     pub dependencies: HashMap<Arc<str>, LibraryId>,
 }

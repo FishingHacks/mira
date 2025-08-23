@@ -1,7 +1,7 @@
 use super::compile::compile;
 use crate::editor::{get_path, run_editor};
 use crate::repl::Repl;
-use crate::{libfinder, VERSION};
+use crate::VERSION;
 
 use std::str::FromStr;
 use std::time::Instant;
@@ -14,14 +14,14 @@ use std::{
 };
 
 use mira_argparse::{EditorMode, ReplArgs};
-use mira_driver::{EmitMethod, LibraryTree};
+use mira_driver::{find_library, EmitMethod, LibraryTree};
 use mira_llvm_backend::CodegenConfig;
 use mira_target::{Target, NATIVE_TARGET};
 
 use super::about::print_about;
 
 pub fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
-    let Some(libmirastd) = libfinder::find_library("mirastd") else {
+    let Some(libmirastd) = find_library("mirastd") else {
         println!("Failed to find mirastd");
         return Ok(());
     };
@@ -327,10 +327,15 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
         .build_library(
             repl.data.libmirastd.clone(),
             repl.data.std_main_file.clone(),
+            "std",
         )
         .build();
     let mainlib = libtree
-        .build_library(repl.data.current_dir.clone(), repl.data.file.clone())
+        .build_library(
+            repl.data.current_dir.clone(),
+            repl.data.file.clone(),
+            "repl_buffer",
+        )
         .with_source(repl.buf.clone().into())
         .with_dependency("std", libstd)
         .build();

@@ -44,6 +44,11 @@ pub struct StdoutWriteError(pub std::io::Error);
 pub struct IoWriteError(pub std::path::PathBuf, pub std::io::Error);
 
 #[derive(ErrorData)]
+#[error("couldn't create directory `{}`: {_1}", _0.display())]
+#[no_arena_lifetime]
+pub struct IoCreateDirError(pub std::path::PathBuf, pub std::io::Error);
+
+#[derive(ErrorData)]
 #[error("couldn't read `{}`: {_1}", _0.display())]
 #[no_arena_lifetime]
 pub struct IoReadError(pub std::path::PathBuf, pub std::io::Error);

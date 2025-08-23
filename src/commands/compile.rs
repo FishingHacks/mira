@@ -7,14 +7,12 @@ use std::{
 };
 
 use mira_argparse::{CompileArgs, OptimizationMode, PathOrStdout};
-use mira_driver::{Context, EmitMethod, LibraryTree, LinkOpts, ProgressBarStyle};
+use mira_driver::{find_library, Context, EmitMethod, LibraryTree, LinkOpts, ProgressBarStyle};
 use mira_errors::{Diagnostic, Output};
 use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder};
 use mira_spans::Arena;
 use mira_target::Target;
 use mira_typeck::GlobalContext;
-
-use crate::libfinder;
 
 pub fn opt_mode_to_codegen_cfg(
     mode: OptimizationMode,
@@ -42,7 +40,7 @@ pub(super) fn to_emit(value: Option<PathOrStdout>) -> Option<EmitMethod> {
 }
 
 pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
-    let Some(libmirastd) = libfinder::find_library("mirastd") else {
+    let Some(libmirastd) = find_library("mirastd") else {
         println!("Failed to find mirastd");
         return Ok(());
     };
@@ -59,10 +57,14 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
     let mut libtree = LibraryTree::new();
     let stdlib_main_file = libmirastd.join("lib.mr").into();
     let libstd = libtree
-        .build_library(libmirastd.into(), stdlib_main_file)
+        .build_library(libmirastd.into(), stdlib_main_file, "std")
         .build();
+    let module_name = root_directory
+        .file_stem()
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "root".to_string());
     let mainlib = libtree
-        .build_library(root_directory.into(), file)
+        .build_library(root_directory.into(), file, module_name)
         .with_dependency("std", libstd)
         .build();
     libtree.main_library(mainlib);
