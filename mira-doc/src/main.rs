@@ -97,6 +97,7 @@ fn _main(
         };
     }
     let stdlib_module = StoreKey::from_usize(std_id.to_usize());
+    let index_file = output.join("index.html");
     let mut context = tri!(html::HTMLGenerateContext::new(
         output,
         typeck_ctx.clone(),
@@ -161,6 +162,21 @@ fn _main(
             }
         }
     }
+
+    // generate the module file of the main lib in the root directory under index.html
+
+    let key = main_module;
+    let qualified_paths = Rc::clone(&context.generated.borrow()[&ModuleScopeValue::Module(key)]);
+    let qualified_paths = (
+        index_file,
+        qualified_paths.1.clone(),
+        qualified_paths.2.clone(),
+    );
+    let s = context.generate_module(&qualified_paths, key.cast());
+    tri!(
+        std::fs::write(&qualified_paths.0, s)
+            .map_err(|e| IoWriteError(qualified_paths.0, e).to_error())
+    );
 
     None
 }
