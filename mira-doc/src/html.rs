@@ -57,7 +57,7 @@ type QualifiedPaths<'ctx> = (
 );
 
 pub struct HTMLGenerateContext<'ctx> {
-    path: PathBuf,
+    pub path: PathBuf,
     pub generated: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
     pub queued: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
     tc_ctx: Arc<TypecheckingContext<'ctx>>,
@@ -228,10 +228,16 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             }
         }
 
+        // <script>const root = "./";</script>
         // <link rel="stylesheet" href="./index.css">
         // <noscript><link rel="stylesheet" href="./noscript.css"></noscript>
         // <script src="./index.js"></script>
         let len = s.len();
+        output.push_str("<script>const root = ");
+        output
+            .write_fmt(format_args!("{:?}", if s.is_empty() { "./" } else { &s }))
+            .unwrap();
+        output.push_str(";</script>");
         output.push_str(r#"<link rel="stylesheet" href="#);
         s.push_str("index.css");
         output
@@ -861,6 +867,29 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             T::Generic { name, .. } => s.escaped().push_str(name.symbol().to_str()),
         }
     }
+
+    /// generates the search index of all generated and queued values.
+    pub fn generate_search_index(&self) -> String {
+        let mut s = "window.search_index = [".to_string();
+        for (i, qualified_path) in self.generated.borrow().values().enumerate() {
+            if i != 0 {
+                s.push(',');
+            }
+            let path = qualified_path.0.strip_prefix(&self.path).unwrap();
+            s.push('[');
+            s.write_fmt(format_args!("{path:?}")).unwrap();
+            s.push_str(",[");
+            for (i, sym) in qualified_path.1.iter().enumerate() {
+                if i != 0 {
+                    s.push(',');
+                }
+                s.write_fmt(format_args!("{:?}", sym.to_str())).unwrap();
+            }
+            s.push_str("]]");
+        }
+        s.push_str("]; if(window.init_search != null) window.init_search(window.search_index);");
+        s
+    }
 }
 
 enum FnId<'ctx> {
@@ -979,8 +1008,9 @@ fn item_ty(v: ModuleScopeValue<'_>) -> &'static str {
     <head>
 -------------------------------------------- ^- HTML_HEAD
 has to  |<link rel="stylesheet" href="./index.css">
-be gener|<noscript><link rel="stylesheet" href="./noscript.css"></noscript>
-ated    |<script src="./index.js"></script>
+be gene-|<noscript><link rel="stylesheet" href="./noscript.css"></noscript>
+rated   |<script>const root = "./"</script>
+        |<script src="./index.js"></script>
 -------------------------------------------- v- HTML_PREAMBLE1
     </head>
     <body>
@@ -993,7 +1023,7 @@ ated    |<script src="./index.js"></script>
         </div>
         <div class="content">
             <div class="search-header">
-                <input class="search-input" placeholder="search here plsss" />
+                <input class="search-input" placeholder="press s or / to start searching" />
                 <a class="settings-button">Settings</a>
 
                 <div class="settings-popup hidden">
@@ -1029,5 +1059,5 @@ ated    |<script src="./index.js"></script>
 */
 static HTML_HEAD: &str = r#"<!DOCTYPE html><html lang="en" color-scheme="preference"><head>"#;
 static HTML_PREAMBLE1: &str = r#"</head><body><div class="sidebar"><h2>Packages</h2>"#;
-static HTML_PREAMBLE2: &str = r#"</div><div class="content"><div class="search-header"><input class="search-input" placeholder="search here plsss" /><a class="settings-button">Settings</a><div class="settings-popup hidden"><div>Theme</div><label for="theme-light" class="setting-radio"><input type="radio" name="theme" id="theme-light" value="light"><span>light</span></label><label for="theme-dark" class="setting-radio"><input type="radio" name="theme" id="theme-dark" value="dark"><span>dark</span></label><label for="theme-ayu" class="setting-radio"><input type="radio" name="theme" id="theme-ayu" value="ayu"><span>ayu</span></label><label for="theme-preference" class="setting-radio"><input type="radio" name="theme" id="theme-preference" value="preference"><span>system preference</span></label></div></div><div class="search-results hidden"></div><div class="main-content">"#;
+static HTML_PREAMBLE2: &str = r#"</div><div class="content"><div class="search-header"><input class="search-input" placeholder="press s or / to start searching" /><a class="settings-button">Settings</a><div class="settings-popup hidden"><div>Theme</div><label for="theme-light" class="setting-radio"><input type="radio" name="theme" id="theme-light" value="light"><span>light</span></label><label for="theme-dark" class="setting-radio"><input type="radio" name="theme" id="theme-dark" value="dark"><span>dark</span></label><label for="theme-ayu" class="setting-radio"><input type="radio" name="theme" id="theme-ayu" value="ayu"><span>ayu</span></label><label for="theme-preference" class="setting-radio"><input type="radio" name="theme" id="theme-preference" value="preference"><span>system preference</span></label></div></div><div class="search-results hidden"></div><div class="main-content">"#;
 static HTML_POSTAMBLE: &str = "</div></div></body></html>";

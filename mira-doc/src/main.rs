@@ -163,6 +163,12 @@ fn _main(
         }
     }
 
+    let search_idx = context.generate_search_index();
+    tri!(err_fs::write_file(
+        context.path.join("searchidx.js"),
+        &search_idx
+    ));
+
     // generate the module file of the main lib in the root directory under index.html
 
     let key = main_module;
