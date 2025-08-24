@@ -131,7 +131,6 @@ fn parse_single<'arena>(
 /// `source` - The source that will be parsed
 ///
 /// Returns the parsed module context as well as the main module.
-#[allow(clippy::too_many_arguments)]
 pub fn parse_all<'arena>(
     ctx: SharedCtx<'arena>,
     #[cfg(feature = "progress-bar")] progress_bar: ProgressBarThread,

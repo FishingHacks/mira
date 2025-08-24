@@ -10,7 +10,6 @@ struct Chunk {
     start: usize,
 }
 
-#[allow(dead_code)]
 struct UsedChunk(Box<[MaybeUninit<u8>]>);
 
 impl Chunk {

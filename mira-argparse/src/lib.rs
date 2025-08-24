@@ -27,7 +27,6 @@ pub fn parse_args() -> MiraArgs {
 }
 
 #[derive(Subcommand, Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum Action {
     /// Prints the current mira and mirac version
     Version,

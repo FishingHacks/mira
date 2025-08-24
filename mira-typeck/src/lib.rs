@@ -354,7 +354,6 @@ impl<'arena> TypecheckingContext<'arena> {
         errors
     }
 
-    #[allow(clippy::result_large_err)]
     pub fn resolve_type(
         &self,
         module_id: StoreKey<TypecheckedModule<'arena>>,
@@ -762,7 +761,6 @@ impl<'arena> TypecheckingContext<'arena> {
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn typed_resolve_import<'arena>(
     context: &TypecheckingContext<'arena>,
     module: StoreKey<TypecheckedModule<'arena>>,
@@ -832,7 +830,6 @@ fn typed_resolve_import<'arena>(
     .to_error())
 }
 
-#[allow(clippy::result_large_err)]
 fn resolve_import<'arena>(
     context: &ModuleContext<'arena>,
     current_module: StoreKey<Module<'arena>>,

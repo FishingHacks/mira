@@ -624,7 +624,6 @@ fn float_number_to_literal<'arena>(
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn typecheck_expression<'arena>(
     context: &TypecheckingContext<'arena>,
     module: StoreKey<TypecheckedModule<'arena>>,
@@ -1422,7 +1421,6 @@ fn typecheck_expression<'arena>(
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn typecheck_cast<'arena>(
     scope: &mut Scopes<'arena>,
     exprs: &mut Vec<TypedExpression<'arena>>,
@@ -1588,7 +1586,7 @@ fn typecheck_cast<'arena>(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::result_large_err)]
+#[allow(clippy::too_many_arguments)]
 fn typecheck_dyn_membercall<'arena>(
     context: &TypecheckingContext<'arena>,
     scope: &mut Scopes<'arena>,
@@ -1697,7 +1695,6 @@ fn typecheck_dyn_membercall<'arena>(
     Ok((return_ty, TypedLiteral::Dynamic(id)))
 }
 
-#[allow(clippy::result_large_err)]
 fn typecheck_membercall<'arena>(
     context: &TypecheckingContext<'arena>,
     module: StoreKey<TypecheckedModule<'arena>>,
@@ -1867,7 +1864,6 @@ fn typecheck_membercall<'arena>(
     Ok((function.0.return_type, TypedLiteral::Dynamic(call_id)))
 }
 
-#[allow(clippy::result_large_err)]
 fn typecheck_take_ref<'arena>(
     context: &TypecheckingContext<'arena>,
     module: StoreKey<TypecheckedModule<'arena>>,
@@ -1903,7 +1899,6 @@ fn typecheck_take_ref<'arena>(
 // NOTE: the actual type of the value is a reference on top of the returned type, but we don't do
 // that as that would require additional computations. The reference is as such implicit but has to
 // be added when pushing the type onto the scope (e.g. during auto deref)
-#[allow(clippy::result_large_err)]
 fn ref_resolve_indexing<'arena>(
     context: &TypecheckingContext<'arena>,
     module: StoreKey<TypecheckedModule<'arena>>,
@@ -2127,7 +2122,6 @@ fn ref_resolve_indexing<'arena>(
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn indexing_resolve_rhs<'arena>(
     context: &TypecheckingContext<'arena>,
     module: StoreKey<TypecheckedModule<'arena>>,
@@ -2184,7 +2178,6 @@ fn make_reference<'arena>(
     TypedLiteral::Dynamic(new_id)
 }
 
-#[allow(clippy::result_large_err)]
 fn copy_resolve_indexing<'arena>(
     context: &TypecheckingContext<'arena>,
     module: StoreKey<TypecheckedModule<'arena>>,

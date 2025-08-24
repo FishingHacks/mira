@@ -4,7 +4,6 @@ use mira_spans::Span;
 use super::{Ty, TypecheckingError};
 
 pub trait IntrinsicExt {
-    #[allow(clippy::result_large_err)]
     fn is_valid_for<'arena>(
         &self,
         loc: Span<'arena>,
@@ -20,7 +19,6 @@ fn generic_count(intrinsic: Intrinsic) -> usize {
 }
 
 impl IntrinsicExt for Intrinsic {
-    #[allow(clippy::result_large_err)]
     fn is_valid_for<'arena>(
         &self,
         loc: Span<'arena>,
