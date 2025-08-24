@@ -1115,6 +1115,64 @@ fn typecheck_expression<'arena>(
                     _ => unreachable!(),
                 };
             }
+            if matches!(operator, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
+                let span_left = left_side.span();
+                let span_right = right_side.span();
+                let (typ_left, left_side) = typecheck_expression(
+                    context,
+                    module,
+                    scope,
+                    left_side,
+                    exprs,
+                    TypeSuggestion::Bool,
+                )?;
+                if typ_left != default_types::bool {
+                    return Err(TypecheckingError::MismatchingType {
+                        location: span_left,
+                        expected: default_types::bool,
+                        found: typ_left,
+                    }
+                    .to_error());
+                }
+                let mut rhs_exprs = Vec::new();
+                let (typ_right, right_side) = typecheck_expression(
+                    context,
+                    module,
+                    scope,
+                    right_side,
+                    &mut rhs_exprs,
+                    TypeSuggestion::Bool,
+                )?;
+                if typ_right != default_types::bool {
+                    return Err(TypecheckingError::MismatchingType {
+                        location: span_right,
+                        expected: default_types::bool,
+                        found: typ_right,
+                    }
+                    .to_error());
+                }
+                let span = span_left.combine_with([span_right], ctx.span_interner());
+
+                let id = scope.push(default_types::bool);
+                match operator {
+                    BinaryOp::LogicalAnd => exprs.push(TypedExpression::LAnd(
+                        span,
+                        id,
+                        left_side,
+                        right_side,
+                        rhs_exprs.into_boxed_slice(),
+                    )),
+                    BinaryOp::LogicalOr => exprs.push(TypedExpression::LOr(
+                        span,
+                        id,
+                        left_side,
+                        right_side,
+                        rhs_exprs.into_boxed_slice(),
+                    )),
+                    _ => unreachable!(),
+                }
+                return Ok((default_types::bool, TypedLiteral::Dynamic(id)));
+            }
             let (typ_left, left_side) =
                 typecheck_expression(context, module, scope, left_side, exprs, type_suggestion)?;
             let (typ_right, right_side) = typecheck_expression(
@@ -1155,12 +1213,6 @@ fn typecheck_expression<'arena>(
                 BinaryOp::BitwiseXor if typ.is_int_like() || typ.is_bool() => {
                     tc_res!(binary scope, exprs; BXor(loc, left_side, right_side, typ))
                 }
-                BinaryOp::LogicalOr if typ.is_bool() => {
-                    tc_res!(binary scope, exprs; LOr(loc, left_side, right_side, typ))
-                }
-                BinaryOp::LogicalAnd if typ.is_bool() => {
-                    tc_res!(binary scope, exprs; LAnd(loc, left_side, right_side, typ))
-                }
                 BinaryOp::GreaterThan if typ.is_int_like() => {
                     tc_res!(binary scope, exprs; GreaterThan(loc, left_side, right_side, default_types::bool))
                 }
@@ -1188,8 +1240,6 @@ fn typecheck_expression<'arena>(
                 BinaryOp::BitwiseAnd => Err(TypecheckingError::CannotBAnd(loc, typ).to_error()),
                 BinaryOp::BitwiseOr => Err(TypecheckingError::CannotBOr(loc, typ).to_error()),
                 BinaryOp::BitwiseXor => Err(TypecheckingError::CannotBXor(loc, typ).to_error()),
-                BinaryOp::LogicalOr => Err(TypecheckingError::CannotLOr(loc, typ).to_error()),
-                BinaryOp::LogicalAnd => Err(TypecheckingError::CannotLAnd(loc, typ).to_error()),
                 BinaryOp::GreaterThan
                 | BinaryOp::GreaterThanEq
                 | BinaryOp::LessThan
@@ -1199,7 +1249,10 @@ fn typecheck_expression<'arena>(
                 BinaryOp::Equals | BinaryOp::NotEquals => {
                     Err(TypecheckingError::CannotEq(loc, typ).to_error())
                 }
-                BinaryOp::RShift | BinaryOp::LShift => unreachable!(),
+                BinaryOp::LogicalOr
+                | BinaryOp::LogicalAnd
+                | BinaryOp::RShift
+                | BinaryOp::LShift => unreachable!(),
             }
         }
         Expression::FunctionCall {

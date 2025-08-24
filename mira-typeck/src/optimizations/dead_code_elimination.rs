@@ -140,8 +140,6 @@ fn run_block<'arena>(block: &[TypedExpression<'arena>], ctx: &mut DceContext<'_,
             | TypedExpression::BXor(_, _, lit1, lit2)
             | TypedExpression::GreaterThan(_, _, lit1, lit2)
             | TypedExpression::LessThan(_, _, lit1, lit2)
-            | TypedExpression::LAnd(_, _, lit1, lit2)
-            | TypedExpression::LOr(_, _, lit1, lit2)
             | TypedExpression::GreaterThanEq(_, _, lit1, lit2)
             | TypedExpression::LessThanEq(_, _, lit1, lit2)
             | TypedExpression::Eq(_, _, lit1, lit2)
@@ -149,6 +147,13 @@ fn run_block<'arena>(block: &[TypedExpression<'arena>], ctx: &mut DceContext<'_,
             | TypedExpression::LShift(_, _, lit1, lit2)
             | TypedExpression::RShift(_, _, lit1, lit2) => {
                 run_literal(lit1, ctx);
+                run_literal(lit2, ctx);
+            }
+
+            TypedExpression::LAnd(_, _, lit1, lit2, blk)
+            | TypedExpression::LOr(_, _, lit1, lit2, blk) => {
+                run_literal(lit1, ctx);
+                run_block(blk, ctx);
                 run_literal(lit2, ctx);
             }
             TypedExpression::DirectExternCall(_, _, _, lits)

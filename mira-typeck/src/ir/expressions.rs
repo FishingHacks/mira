@@ -174,6 +174,7 @@ pub enum TypedExpression<'arena> {
         ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
+        Box<[TypedExpression<'arena>]>,
     ),
     // _1 = _1 || _2
     LOr(
@@ -181,6 +182,7 @@ pub enum TypedExpression<'arena> {
         ScopeValueId<'arena>,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
+        Box<[TypedExpression<'arena>]>,
     ),
     // _1 = _1 >= _2
     GreaterThanEq(

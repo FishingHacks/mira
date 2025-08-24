@@ -1403,8 +1403,56 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 self.push_value(*dst, v);
                 Ok(())
             }
-            TypedExpression::LAnd(..) => todo!(),
-            TypedExpression::LOr(..) => todo!(),
+            TypedExpression::LAnd(_, dst, left, right, blk) => {
+                let rhs = self
+                    .context
+                    .append_basic_block(self.current_fn, "land_right");
+                let end = self.context.append_basic_block(self.current_fn, "land_end");
+                let left_value = self.lit_to_basic_value(left);
+                self.build_conditional_branch(left_value.into_int_value(), rhs, end)?;
+                let cur_blk = self.current_block;
+                self.goto(rhs);
+
+                for expr in blk {
+                    self.codegen(expr, scope, module_id)?;
+                }
+                let rhs_value = self.lit_to_basic_value(right);
+                self.build_unconditional_branch(end)?;
+
+                self.goto(end);
+                let res = self.build_phi(self.default_types.bool, "")?;
+                res.add_incoming(&[
+                    (&self.default_types.bool.const_zero(), cur_blk),
+                    (&rhs_value, rhs),
+                ]);
+                self.push_value(*dst, res.as_basic_value());
+                Ok(())
+            }
+            TypedExpression::LOr(_, dst, left, right, blk) => {
+                let rhs = self
+                    .context
+                    .append_basic_block(self.current_fn, "lor_right");
+                let end = self.context.append_basic_block(self.current_fn, "lor_end");
+                let left_value = self.lit_to_basic_value(left);
+                self.build_conditional_branch(left_value.into_int_value(), end, rhs)?;
+                let cur_blk = self.current_block;
+                self.goto(rhs);
+
+                for expr in blk {
+                    self.codegen(expr, scope, module_id)?;
+                }
+                let rhs_value = self.lit_to_basic_value(right);
+                self.build_unconditional_branch(end)?;
+
+                self.goto(end);
+                let res = self.build_phi(self.default_types.bool, "")?;
+                res.add_incoming(&[
+                    (&self.default_types.bool.const_int(1, false), cur_blk),
+                    (&rhs_value, rhs),
+                ]);
+                self.push_value(*dst, res.as_basic_value());
+                Ok(())
+            }
             TypedExpression::GreaterThanEq(_, dst, lhs, rhs) => {
                 let typ = lhs
                     .to_primitive_type(self.tc_scope, self.tc_ctx)

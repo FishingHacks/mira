@@ -230,8 +230,30 @@ impl ExpressionDisplay<'_> {
             TypedExpression::LessThan(_, dst, lhs, rhs) => {
                 expr!(binary f, dst, lhs, rhs, "<")
             }
-            TypedExpression::LAnd(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "&&"),
-            TypedExpression::LOr(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "||"),
+            TypedExpression::LAnd(_, dst, lhs, rhs, blk) => {
+                f.write_char('_')?;
+                f.write_value(dst)?;
+                f.write_str(" = ")?;
+                Tld(lhs).fmt(f)?;
+                f.write_str(" && ")?;
+                if !blk.is_empty() {
+                    write_block(f, blk)?;
+                    f.write_char(' ')?;
+                }
+                Tld(rhs).fmt(f)
+            }
+            TypedExpression::LOr(_, dst, lhs, rhs, blk) => {
+                f.write_char('_')?;
+                f.write_value(dst)?;
+                f.write_str(" = ")?;
+                Tld(lhs).fmt(f)?;
+                f.write_str(" || ")?;
+                if !blk.is_empty() {
+                    write_block(f, blk)?;
+                    f.write_char(' ')?;
+                }
+                Tld(rhs).fmt(f)
+            }
             TypedExpression::GreaterThanEq(_, dst, lhs, rhs) => {
                 expr!(binary f, dst, lhs, rhs, ">=")
             }

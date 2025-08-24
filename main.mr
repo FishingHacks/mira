@@ -1,12 +1,9 @@
-macro! meow {
-    ($first:ident) => { $first };
-    ($first:ident $(, $ident:ident)* $(,)?) => {
-        concat_idents!($first, $(` `, $ident),*)
-    };
-}
-
-//meow!(a, b)
-
 pub fn main() {
-    "Hello, World!".println();
+    if (get_bool() || get_bool()) "1".println();
+    else "2".println();
+
+    if (get_bool() && get_bool()) "1".println();
+    else "2".println();
 }
+
+extern fn get_bool() -> bool;

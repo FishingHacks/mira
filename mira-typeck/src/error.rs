@@ -177,16 +177,6 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("cannot binary xor")] Span<'arena>,
         Ty<'arena>,
     ),
-    #[error("Cannot and `{_1}`")]
-    CannotLAnd(
-        #[primary_label("cannot logically and")] Span<'arena>,
-        Ty<'arena>,
-    ),
-    #[error("Cannot or `{_1}`")]
-    CannotLOr(
-        #[primary_label("cannot logically or")] Span<'arena>,
-        Ty<'arena>,
-    ),
     #[error("Cannot compare `{_1}`")]
     CannotCompare(#[primary_label("cannot compare")] Span<'arena>, Ty<'arena>),
     #[error("Cannot compare the equality of `{_1}`")]

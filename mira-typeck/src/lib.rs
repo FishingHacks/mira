@@ -610,7 +610,32 @@ impl<'arena> TypecheckingContext<'arena> {
             return Some(typ);
         }
         match typ {
-            TypeRef::DynReference { .. } => todo!(),
+            TypeRef::DynReference {
+                traits,
+                num_references,
+                span,
+            } => {
+                let mut trait_refs = Vec::with_capacity(traits.len());
+                for trait_name in traits.iter() {
+                    let v = typed_resolve_import(
+                        self,
+                        module,
+                        trait_name.as_slice(),
+                        span,
+                        &mut HashSet::new(),
+                    );
+                    let Ok(ModuleScopeValue::Trait(id)) = v else {
+                        return None;
+                    };
+                    trait_refs.push((id.cast(), *trait_name.as_slice().last().unwrap()));
+                }
+                let trait_refs = ArenaList::new(self.ctx.arena(), &trait_refs);
+                Some(with_refcount(
+                    self.ctx,
+                    self.ctx.intern_ty(TyKind::DynType(trait_refs)),
+                    *num_references,
+                ))
+            }
             TypeRef::Function {
                 return_ty,
                 args,
