@@ -103,15 +103,27 @@ impl StyledPrinter for UnicodePrinter {
         f.write_char('\n')
     }
 
-    fn print_loc_single(&self, f: &mut Formatter<'_>, loc: Loc<'_>) -> std::fmt::Result {
+    fn print_loc_single(
+        &self,
+        f: &mut Formatter<'_>,
+        loc: Loc<'_>,
+        line_len: u32,
+    ) -> std::fmt::Result {
         print_line_left(f, &self.styles, '·', None, self.line_col_size)?;
-        f.write_space(loc.start)?;
+        f.write_space(loc.start.min(line_len))?;
         f.write_str(self.styles.bold)?;
         f.write_str(self.color_for_style(loc.style))?;
-        for _ in 0..loc.end - loc.start {
+        if loc.start >= line_len {
             match loc.style {
                 LabeledSpanStyle::Primary => f.write_char('^')?,
                 LabeledSpanStyle::Secondary => f.write_char('─')?,
+            }
+        } else {
+            for _ in 0..loc.end.min(line_len) - loc.start {
+                match loc.style {
+                    LabeledSpanStyle::Primary => f.write_char('^')?,
+                    LabeledSpanStyle::Secondary => f.write_char('─')?,
+                }
             }
         }
         f.write_char(' ')?;
@@ -143,6 +155,13 @@ impl StyledPrinter for UnicodePrinter {
                 }
             } else {
                 f.write_char(' ')?;
+            }
+        }
+        if let Some(loc) = locs.iter().find(|v| v.start >= line_len) {
+            self.write_loc_style(f, loc.style, last)?;
+            match loc.style {
+                LabeledSpanStyle::Secondary => f.write_char('┬')?,
+                LabeledSpanStyle::Primary => f.write_char('^')?,
             }
         }
         f.write_str(self.styles.reset)?;
@@ -210,7 +229,7 @@ nya mwrrrp purrr mreaow
         let file = sourcemap.new_file(
             Path::new("/file.mr").into(),
             Path::new("/").into(),
-            SOURCE.into(),
+            SOURCE.trim().into(),
         );
         assert_eq!(file.id, ZERO_FILE_ID);
         let mut formatter = DiagnosticFormatter::new(
@@ -226,6 +245,10 @@ nya mwrrrp purrr mreaow
             .unwrap()
             .trim();
         let rhs = err.trim();
+        if lhs != rhs {
+            println!("-----\n{lhs}\n-----");
+            println!("{rhs}\n-----");
+        }
         assert_eq!(lhs, rhs);
     }
 
@@ -233,12 +256,16 @@ nya mwrrrp purrr mreaow
     fn errors() {
         let arena = Arena::new();
         let span_interner = SpanInterner::new(&arena);
-        let span1 = SpanData::new(BytePos::from_u32(12), 3, ZERO_FILE_ID);
-        let span2 = SpanData::new(BytePos::from_u32(23), 7, ZERO_FILE_ID);
-        let span3 = SpanData::new(BytePos::from_u32(10), 23, ZERO_FILE_ID);
+        let span1 = SpanData::new(BytePos::from_u32(11), 3, ZERO_FILE_ID);
+        let span2 = SpanData::new(BytePos::from_u32(22), 7, ZERO_FILE_ID);
+        let span3 = SpanData::new(BytePos::from_u32(9), 23, ZERO_FILE_ID);
+        let span4 = SpanData::new(BytePos::from_u32(56), 23, ZERO_FILE_ID);
+        let span5 = SpanData::new(BytePos::from_u32(53), 23, ZERO_FILE_ID);
         let span1 = Span::new(span1, &span_interner);
         let span2 = Span::new(span2, &span_interner);
         let span3 = Span::new(span3, &span_interner);
+        let span4 = Span::new(span4, &span_interner);
+        let span5 = Span::new(span5, &span_interner);
 
         assert_err_eq(
             Diagnostic::new(ErrorSimple(12), Severity::Error),
@@ -257,9 +284,9 @@ nya mwrrrp purrr mreaow
         assert_err_eq(
             Diagnostic::new(WithSpans(span1, span2), Severity::Warn),
             r#"warning: spans error
-  ╭──[/file.mr:3:3]
+  ╭──[/file.mr:2:3]
   │ 
-3 │ meow nya mwrrrrrp purrrr
+2 │ meow nya mwrrrrrp purrrr
   ·    ^^^        ┬──────   
   ·    │          ╰─ secondary
   ·    ╰─ primary
@@ -271,12 +298,54 @@ nya mwrrrp purrr mreaow
                 .with_primary_label(span2, "primary label")
                 .with_secondary_label(span3, "secondary label"),
             r#"error: this is a simple error with 56.
-  ╭──[/file.mr:3:14]
+  ╭──[/file.mr:2:14]
   │ 
-3 │ meow nya mwrrrrrp purrrr
+2 │ meow nya mwrrrrrp purrrr
   ·  ┬────────────^^^^^^^───
   ·  │            ╰─ primary label
   ·  ╰─ secondary label
+  ╰──
+  note: meow note"#,
+        );
+        assert_err_eq(
+            Diagnostic::new(ErrorSimple(56), Severity::Error)
+                .with_note("meow note")
+                .with_primary_label(span4, "primary label"),
+            r#"error: this is a simple error with 56.
+  ╭──[/file.mr:3:23]
+  │ 
+3 │ nya mwrrrp purrr mreaow
+  ·                        ^ primary label
+  ╰──
+  note: meow note"#,
+        );
+        assert_err_eq(
+            Diagnostic::new(ErrorSimple(56), Severity::Error)
+                .with_note("meow note")
+                .with_primary_label(span4, "primary label")
+                .with_secondary_label(span5, "secondary label"),
+            r#"error: this is a simple error with 56.
+  ╭──[/file.mr:3:23]
+  │ 
+3 │ nya mwrrrp purrr mreaow
+  ·                     ┬──^
+  ·                     │  ╰─ primary label
+  ·                     ╰─ secondary label
+  ╰──
+  note: meow note"#,
+        );
+        assert_err_eq(
+            Diagnostic::new(ErrorSimple(56), Severity::Error)
+                .with_note("meow note")
+                .with_primary_label(span5, "primary label")
+                .with_secondary_label(span4, "secondary label"),
+            r#"error: this is a simple error with 56.
+  ╭──[/file.mr:3:20]
+  │ 
+3 │ nya mwrrrp purrr mreaow
+  ·                     ^^^┬
+  ·                     │  ╰─ secondary label
+  ·                     ╰─ primary label
   ╰──
   note: meow note"#,
         );

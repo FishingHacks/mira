@@ -23,7 +23,12 @@ pub trait StyledPrinter {
     ) -> std::fmt::Result;
     fn print_code_line(&self, f: &mut Formatter<'_>, line: u32, code: &str) -> std::fmt::Result;
     fn print_code_line_interrupt(&self, f: &mut Formatter<'_>) -> std::fmt::Result;
-    fn print_loc_single(&self, f: &mut Formatter<'_>, loc: Loc<'_>) -> std::fmt::Result;
+    fn print_loc_single(
+        &self,
+        f: &mut Formatter<'_>,
+        loc: Loc<'_>,
+        line_len: u32,
+    ) -> std::fmt::Result;
     fn print_loc_lines(
         &self,
         f: &mut Formatter<'_>,

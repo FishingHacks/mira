@@ -354,7 +354,7 @@ impl<'arena> DiagnosticFormatter<'arena> {
             //    .    ---- `meow` defined here
             if lines.len() == 1 {
                 let loc = lines[0];
-                printer.print_loc_single(f, loc)?;
+                printer.print_loc_single(f, loc, line_len as u32)?;
                 continue;
             }
 
