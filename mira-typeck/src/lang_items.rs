@@ -4,8 +4,8 @@ use std::fmt::{Debug, Display};
 
 use crate::context::TypeCtx;
 use crate::{
-    FunctionList, Ty, TyKind, TypecheckedFunctionContract, TypecheckingContext,
-    TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct, TypedTrait, default_types,
+    FunctionList, Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction,
+    TypedFunctionContract, TypedStatic, TypedStruct, TypedTrait, default_types,
 };
 use mira_common::store::StoreKey;
 use mira_macros::ErrorData;
@@ -557,7 +557,7 @@ impl<'arena> LangItems<'arena> {
 #[allow(dead_code)]
 fn does_function_match<'arena>(
     func_a: &LangItemFunction<'arena>,
-    func_b: &TypecheckedFunctionContract<'arena>,
+    func_b: &TypedFunctionContract<'arena>,
     lang_item: &'static str,
     errors: &mut Diagnostics<'arena>,
 ) -> bool {

@@ -361,7 +361,7 @@ pub fn write_block(f: &mut Formatter, exprs: &[TypedExpression]) -> std::fmt::Re
 }
 
 // writes a block to `f` unless the block is a single expression of type
-// `TypecheckedExpression::Block`, in which case it will print the block.
+// `TypedExpression::Block`, in which case it will print the block.
 pub fn write_implicit_block(f: &mut Formatter, exprs: &[TypedExpression]) -> std::fmt::Result {
     if exprs.len() == 1 && matches!(exprs[0], TypedExpression::Block(..)) {
         ExpressionDisplay(&exprs[0]).fmt(f)

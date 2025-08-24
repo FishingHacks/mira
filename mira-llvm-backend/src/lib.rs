@@ -8,7 +8,7 @@ use mira_common::store::{AssociatedStore, StoreKey, VecStore};
 use mira_parser::std_annotations::intrinsic::Intrinsic;
 use mira_spans::interner::Symbol;
 use mira_typeck::{
-    Ty, TyKind, TypecheckedModule, TypecheckingContext, TypedTrait, default_types,
+    Ty, TyKind, TypecheckingContext, TypedModule, TypedTrait, default_types,
     ir::{OffsetValue, ScopeEntry, TypedExpression, TypedLiteral},
 };
 pub mod mangling;
@@ -873,7 +873,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
         &mut self,
         expr: &TypedExpression<'arena>,
         scope: DIScope<'ctx>,
-        module_id: StoreKey<TypecheckedModule<'arena>>,
+        module_id: StoreKey<TypedModule<'arena>>,
     ) -> Result<(), BuilderError> {
         self.set_current_debug_location(self.debug_ctx.location(scope, expr.span()));
         match expr {
@@ -2181,8 +2181,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                     }
                 }
             }
-
-            Intrinsic::Select => todo!(),
 
             // TODO: raii
             Intrinsic::Drop | Intrinsic::DropInPlace | Intrinsic::Forget => {

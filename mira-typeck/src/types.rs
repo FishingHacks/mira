@@ -419,8 +419,6 @@ impl<'arena> TyKind<'arena> {
         }
     }
 
-    // TODO: deprecate this and replace uses of refcount() > 0 with some method that checks if it
-    // has a ref or let TyKind::Ref(ty) = ty.
     pub fn refcount(&self) -> u8 {
         let mut count = 0;
         let mut ty = self;

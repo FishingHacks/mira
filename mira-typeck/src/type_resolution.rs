@@ -14,8 +14,8 @@ use mira_parser::{
 };
 
 use super::{
-    TypecheckedFunctionContract, TypecheckingContext, TypecheckingErrorDiagnosticsExt,
-    TypedGeneric, TypedStatic, TypedTrait,
+    TypecheckingContext, TypecheckingErrorDiagnosticsExt, TypedFunctionContract, TypedGeneric,
+    TypedStatic, TypedTrait,
     ir::TypedLiteral,
     resolve_import,
     types::{TyKind, default_types, with_refcount},
@@ -372,7 +372,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 bounds: ArenaList::new(self.ctx.arena(), &bounds),
             });
         }
-        let mut resolved_function_contract = TypecheckedFunctionContract {
+        let mut resolved_function_contract = TypedFunctionContract {
             module_id: module_id.cast(),
             name: writer[function_id].0.name,
             span: writer[function_id].0.span,
@@ -429,7 +429,7 @@ impl<'arena> TypecheckingContext<'arena> {
             &mut writer[ext_function_id].0.return_type,
             TypeRef::Void(span, 0),
         );
-        let mut resolved_function_contract = TypecheckedFunctionContract {
+        let mut resolved_function_contract = TypedFunctionContract {
             module_id: module_id.cast(),
             name: writer[ext_function_id].0.name,
             span: writer[ext_function_id].0.span,

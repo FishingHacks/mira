@@ -20,8 +20,8 @@ use mira_parser::{
 use mira_spans::{ArenaList, Ident, Span};
 
 use super::{
-    TypecheckedModule, TypecheckingContext, TypecheckingError, TypecheckingErrorDiagnosticsExt,
-    TypedExternalFunction, TypedFunction, TypedStatic, TypedTrait, default_types,
+    TypecheckingContext, TypecheckingError, TypecheckingErrorDiagnosticsExt, TypedExternalFunction,
+    TypedFunction, TypedModule, TypedStatic, TypedTrait, default_types,
     ir::{OffsetValue, TypedExpression, TypedLiteral},
     types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
 };
@@ -285,7 +285,7 @@ fn typecheck_statement<'arena>(
     context: &TypecheckingContext<'arena>,
     scope: &mut Scopes<'arena>,
     statement: &Statement<'arena>,
-    module: StoreKey<TypecheckedModule<'arena>>,
+    module: StoreKey<TypedModule<'arena>>,
     return_type: Ty<'arena>,
     exprs: &mut Vec<TypedExpression<'arena>>,
     errs: &mut Diagnostics<'arena>,
@@ -626,7 +626,7 @@ fn float_number_to_literal<'arena>(
 
 fn typecheck_expression<'arena>(
     context: &TypecheckingContext<'arena>,
-    module: StoreKey<TypecheckedModule<'arena>>,
+    module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypedExpression<'arena>>,
@@ -1643,7 +1643,7 @@ fn typecheck_cast<'arena>(
 fn typecheck_dyn_membercall<'arena>(
     context: &TypecheckingContext<'arena>,
     scope: &mut Scopes<'arena>,
-    module: StoreKey<TypecheckedModule<'arena>>,
+    module: StoreKey<TypedModule<'arena>>,
     exprs: &mut Vec<TypedExpression<'arena>>,
     ident: &Ident<'arena>,
     args: &[Expression<'arena>],
@@ -1750,7 +1750,7 @@ fn typecheck_dyn_membercall<'arena>(
 
 fn typecheck_membercall<'arena>(
     context: &TypecheckingContext<'arena>,
-    module: StoreKey<TypecheckedModule<'arena>>,
+    module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     exprs: &mut Vec<TypedExpression<'arena>>,
     lhs: &Expression<'arena>,
@@ -1919,7 +1919,7 @@ fn typecheck_membercall<'arena>(
 
 fn typecheck_take_ref<'arena>(
     context: &TypecheckingContext<'arena>,
-    module: StoreKey<TypecheckedModule<'arena>>,
+    module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypedExpression<'arena>>,
@@ -1954,7 +1954,7 @@ fn typecheck_take_ref<'arena>(
 // be added when pushing the type onto the scope (e.g. during auto deref)
 fn ref_resolve_indexing<'arena>(
     context: &TypecheckingContext<'arena>,
-    module: StoreKey<TypecheckedModule<'arena>>,
+    module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypedExpression<'arena>>,
@@ -2177,7 +2177,7 @@ fn ref_resolve_indexing<'arena>(
 
 fn indexing_resolve_rhs<'arena>(
     context: &TypecheckingContext<'arena>,
-    module: StoreKey<TypecheckedModule<'arena>>,
+    module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypedExpression<'arena>>,
@@ -2233,7 +2233,7 @@ fn make_reference<'arena>(
 
 fn copy_resolve_indexing<'arena>(
     context: &TypecheckingContext<'arena>,
-    module: StoreKey<TypecheckedModule<'arena>>,
+    module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
     exprs: &mut Vec<TypedExpression<'arena>>,

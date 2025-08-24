@@ -41,7 +41,6 @@ impl IntrinsicExt for Intrinsic {
             | Intrinsic::SizeOf
             | Intrinsic::Read
             | Intrinsic::Write
-            | Intrinsic::Select
             | Intrinsic::VolatileRead
             | Intrinsic::VolatileWrite
             | Intrinsic::Forget => generics[0]

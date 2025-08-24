@@ -48,17 +48,17 @@ pub struct TypedGeneric<'arena> {
 }
 
 #[derive(Debug)]
-pub struct TypecheckedFunctionContract<'arena> {
+pub struct TypedFunctionContract<'arena> {
     pub name: Option<Ident<'arena>>,
     pub arguments: Vec<(Ident<'arena>, Ty<'arena>)>,
     pub return_type: Ty<'arena>,
     pub annotations: Annotations<'arena>,
     pub span: Span<'arena>,
-    pub module_id: StoreKey<TypecheckedModule<'arena>>,
+    pub module_id: StoreKey<TypedModule<'arena>>,
     pub generics: Vec<TypedGeneric<'arena>>,
 }
 
-impl Hash for TypecheckedFunctionContract<'_> {
+impl Hash for TypedFunctionContract<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match &self.name {
             None => "{{anon_fn}}".hash(state),
@@ -82,7 +82,7 @@ pub struct TypedTrait<'arena> {
         Span<'arena>,
     )>,
     pub location: Span<'arena>,
-    pub module_id: StoreKey<TypecheckedModule<'arena>>,
+    pub module_id: StoreKey<TypedModule<'arena>>,
     pub id: StoreKey<TypedTrait<'arena>>,
     pub annotations: Annotations<'arena>,
 }
@@ -95,7 +95,7 @@ pub struct TypedStruct<'arena> {
     pub global_impl: HashMap<Ident<'arena>, StoreKey<TypedFunction<'arena>>>,
     pub trait_impl: HashMap<StoreKey<TypedTrait<'arena>>, Vec<StoreKey<TypedFunction<'arena>>>>,
     pub annotations: Annotations<'arena>,
-    pub module_id: StoreKey<TypecheckedModule<'arena>>,
+    pub module_id: StoreKey<TypedModule<'arena>>,
     pub id: StoreKey<TypedStruct<'arena>>,
     pub generics: Vec<TypedGeneric<'arena>>,
 }
@@ -113,7 +113,7 @@ pub struct TypedStatic<'arena> {
     pub type_: Ty<'arena>,
     /// guaranteed to not be `Dynamic`, `Intrinsic` or `Static`
     pub value: TypedLiteral<'arena>,
-    pub module_id: StoreKey<TypecheckedModule<'arena>>,
+    pub module_id: StoreKey<TypedModule<'arena>>,
     pub loc: Span<'arena>,
     pub annotations: Annotations<'arena>,
     pub name: Ident<'arena>,
@@ -123,7 +123,7 @@ impl<'arena> TypedStatic<'arena> {
     pub fn new(
         type_: Ty<'arena>,
         literal: TypedLiteral<'arena>,
-        module: StoreKey<TypecheckedModule<'arena>>,
+        module: StoreKey<TypedModule<'arena>>,
         loc: Span<'arena>,
         annotations: Annotations<'arena>,
         name: Ident<'arena>,
@@ -139,12 +139,12 @@ impl<'arena> TypedStatic<'arena> {
     }
 }
 
-pub type TypedFunction<'arena> = (TypecheckedFunctionContract<'arena>, IR<'arena>);
-pub type TypedExternalFunction<'arena> = (TypecheckedFunctionContract<'arena>, Option<IR<'arena>>);
+pub type TypedFunction<'arena> = (TypedFunctionContract<'arena>, IR<'arena>);
+pub type TypedExternalFunction<'arena> = (TypedFunctionContract<'arena>, Option<IR<'arena>>);
 
 #[allow(clippy::type_complexity)]
 pub struct TypecheckingContext<'arena> {
-    pub modules: RwLock<AssociatedStore<TypecheckedModule<'arena>, Module<'arena>>>,
+    pub modules: RwLock<AssociatedStore<TypedModule<'arena>, Module<'arena>>>,
     pub functions: RwLock<Store<TypedFunction<'arena>>>,
     pub external_functions: RwLock<Store<TypedExternalFunction<'arena>>>,
     pub statics: RwLock<Store<TypedStatic<'arena>>>,
@@ -156,11 +156,11 @@ pub struct TypecheckingContext<'arena> {
 }
 
 #[derive(Debug)]
-pub struct TypecheckedModule<'arena> {
+pub struct TypedModule<'arena> {
     pub scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
     pub exports: HashSet<Ident<'arena>>,
-    pub parent: StoreKey<TypecheckedModule<'arena>>,
-    pub root_module: StoreKey<TypecheckedModule<'arena>>,
+    pub parent: StoreKey<TypedModule<'arena>>,
+    pub root_module: StoreKey<TypedModule<'arena>>,
     pub name: Symbol<'arena>,
     pub file: Arc<SourceFile>,
     pub assembly: Vec<(Span<'arena>, String)>,
@@ -245,7 +245,7 @@ impl<'arena> TypecheckingContext<'arena> {
             functions.insert(
                 key,
                 (
-                    TypecheckedFunctionContract {
+                    TypedFunctionContract {
                         annotations: Annotations::default(),
                         name: None,
                         arguments: Vec::new(),
@@ -263,7 +263,7 @@ impl<'arena> TypecheckingContext<'arena> {
             external_functions.insert(
                 key,
                 (
-                    TypecheckedFunctionContract {
+                    TypedFunctionContract {
                         annotations: Annotations::default(),
                         name: None,
                         arguments: Vec::new(),
@@ -311,7 +311,7 @@ impl<'arena> TypecheckingContext<'arena> {
 
             typechecked_module_writer.insert(
                 key,
-                TypecheckedModule {
+                TypedModule {
                     scope,
                     parent: module.parent.cast(),
                     root_module: module.package_root.cast(),
@@ -356,7 +356,7 @@ impl<'arena> TypecheckingContext<'arena> {
 
     pub fn resolve_type(
         &self,
-        module_id: StoreKey<TypecheckedModule<'arena>>,
+        module_id: StoreKey<TypedModule<'arena>>,
         typ: &TypeRef<'arena>,
         generics: &[TypedGeneric<'arena>],
     ) -> Result<Ty<'arena>, Diagnostic<'arena>> {
@@ -601,7 +601,7 @@ impl<'arena> TypecheckingContext<'arena> {
         &self,
         typ: &TypeRef<'arena>,
         generics: &[TypedGeneric<'arena>],
-        module: StoreKey<TypecheckedModule<'arena>>,
+        module: StoreKey<TypedModule<'arena>>,
         context: Arc<ModuleContext<'arena>>,
         errors: &mut Diagnostics<'arena>,
         left: &mut HashMap<StoreKey<BakedStruct<'arena>>, ResolvingState>,
@@ -788,10 +788,10 @@ impl<'arena> TypecheckingContext<'arena> {
 
 fn typed_resolve_import<'arena>(
     context: &TypecheckingContext<'arena>,
-    module: StoreKey<TypecheckedModule<'arena>>,
+    module: StoreKey<TypedModule<'arena>>,
     import: &[Ident<'arena>],
     location: &Span<'arena>,
-    already_included: &mut HashSet<(StoreKey<TypecheckedModule<'arena>>, Symbol<'arena>)>,
+    already_included: &mut HashSet<(StoreKey<TypedModule<'arena>>, Symbol<'arena>)>,
 ) -> Result<ModuleScopeValue<'arena>, Diagnostic<'arena>> {
     if import.is_empty() {
         return Ok(ModuleScopeValue::Module(module.cast()));

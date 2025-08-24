@@ -20,8 +20,8 @@ use mira_common::store::{AssociatedStore, Store, StoreKey};
 use mira_parser::std_annotations::intrinsic::IntrinsicAnnotation;
 use mira_spans::{Span, interner::Symbol};
 use mira_typeck::{
-    Ty, TyKind, TypeCtx, TypecheckedModule, TypecheckingContext, TypedExternalFunction,
-    TypedFunction, TypedStruct, default_types,
+    Ty, TyKind, TypeCtx, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedModule,
+    TypedStruct, default_types,
 };
 
 use super::{
@@ -43,8 +43,7 @@ pub struct DebugContext<'ctx, 'arena> {
     pub(super) builder: DebugInfoBuilder<'ctx>,
     global_scope: DIScope<'ctx>,
     root_file: DIFile<'ctx>,
-    pub(super) modules:
-        AssociatedStore<(DINamespace<'ctx>, DIFile<'ctx>), TypecheckedModule<'arena>>,
+    pub(super) modules: AssociatedStore<(DINamespace<'ctx>, DIFile<'ctx>), TypedModule<'arena>>,
     default_types: DefaultTypes<'ctx>,
     type_store: HashMap<Ty<'arena>, DIType<'ctx>>,
     context: &'ctx Context,
@@ -68,7 +67,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         ty: Ty<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
-        module: StoreKey<TypecheckedModule<'arena>>,
+        module: StoreKey<TypedModule<'arena>>,
         structs: &Store<TypedStruct<'arena>>,
         arg: u32,
     ) {
@@ -96,7 +95,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         ty: Ty<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
-        module: StoreKey<TypecheckedModule<'arena>>,
+        module: StoreKey<TypedModule<'arena>>,
         structs: &Store<TypedStruct<'arena>>,
     ) {
         let alignment = ty.alignment(
@@ -122,7 +121,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         &self,
         parent_scope: DIScope<'ctx>,
         loc: Span<'arena>,
-        module: StoreKey<TypecheckedModule<'arena>>,
+        module: StoreKey<TypedModule<'arena>>,
     ) -> DILexicalBlock<'ctx> {
         let (line, column) = loc.with_source_file(self.ctx.source_map()).lookup_pos();
         self.builder

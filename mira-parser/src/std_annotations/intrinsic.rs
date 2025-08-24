@@ -86,7 +86,6 @@ intrinsics! {
     Read => read, // <T>(v: &T) -> T, reads a memory location even if T is not Copy
     Write => write, // <T>(v: &T, value: T), writes a memory location without dropping the value
     // that was previously there
-    Select => select, // <T>(cond: bool, a: T, b: T) -> T, equivalent to cond ? a : b
     VolatileRead => volatile_read, // <T>(ptr: &T) -> T
     VolatileWrite => volatile_write, // <T>(ptr: &T, val: T);
 }

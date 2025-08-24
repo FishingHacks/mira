@@ -15,8 +15,8 @@ use mira_parser::{
 };
 use mira_spans::Symbol;
 use mira_typeck::{
-    Ty, TyKind, TypeCtx, TypecheckedModule, TypecheckingContext, TypedExternalFunction,
-    TypedFunction, TypedStatic, TypedStruct, TypedTrait, default_types,
+    Ty, TyKind, TypeCtx, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedModule,
+    TypedStatic, TypedStruct, TypedTrait, default_types,
 };
 
 pub mod err_fs {
@@ -50,25 +50,21 @@ static NOSCRIPT_CSS: &str = include_str!("../mock/noscript.css");
 /// std::intrinsics::type_name) and the list of modules to get there (e.g. std::intrinsics).
 /// Note that if you put in a module however, the module path does *not* contain that module
 /// (e.g. the result for the intrinsics module in std would be `$root/std/intrinsics/index.html`, ["std", "intrinsics"], [module<std>])
-type QualifiedPaths<'ctx> = (
-    PathBuf,
-    Vec<Symbol<'ctx>>,
-    Vec<StoreKey<TypecheckedModule<'ctx>>>,
-);
+type QualifiedPaths<'ctx> = (PathBuf, Vec<Symbol<'ctx>>, Vec<StoreKey<TypedModule<'ctx>>>);
 
 pub struct HTMLGenerateContext<'ctx> {
     pub path: PathBuf,
     pub generated: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
     pub queued: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
     tc_ctx: Arc<TypecheckingContext<'ctx>>,
-    modules: Vec<StoreKey<TypecheckedModule<'ctx>>>,
+    modules: Vec<StoreKey<TypedModule<'ctx>>>,
 }
 
 impl<'ctx> HTMLGenerateContext<'ctx> {
     pub fn new(
         dir: PathBuf,
         tc_ctx: Arc<TypecheckingContext<'ctx>>,
-        modules: Vec<StoreKey<TypecheckedModule<'ctx>>>,
+        modules: Vec<StoreKey<TypedModule<'ctx>>>,
     ) -> Result<Self, Diagnostic<'static>> {
         let dir = err_fs::create_dir_all(dir)?;
         err_fs::write_file(dir.join("index.js"), JS)?;
@@ -665,7 +661,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     pub fn generate_module(
         &mut self,
         fully_qualified_path: &QualifiedPaths<'ctx>,
-        key: StoreKey<TypecheckedModule<'ctx>>,
+        key: StoreKey<TypedModule<'ctx>>,
     ) -> String {
         let curfile = &fully_qualified_path.0;
         let module = &self.tc_ctx.modules.read()[key.cast()];

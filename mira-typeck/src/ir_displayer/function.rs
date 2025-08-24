@@ -1,5 +1,5 @@
 use crate::{
-    TypecheckedFunctionContract, TypedFunction, default_types,
+    TypedFunction, TypedFunctionContract, default_types,
     ir::{TypedExpression, TypedLiteral},
 };
 use mira_common::store::StoreKey;
@@ -8,7 +8,7 @@ use mira_lexer::token::IdentDisplay;
 use super::{expressions::write_implicit_block, formatter::Formatter};
 
 pub struct FuncDisplay<'a>(
-    pub &'a TypecheckedFunctionContract<'a>,
+    pub &'a TypedFunctionContract<'a>,
     pub Option<&'a [TypedExpression<'a>]>,
 );
 

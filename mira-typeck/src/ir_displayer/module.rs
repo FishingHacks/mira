@@ -1,4 +1,4 @@
-use crate::TypecheckedModule;
+use crate::TypedModule;
 use mira_common::store::StoreKey;
 use mira_lexer::token::IdentDisplay;
 use mira_parser::module::ModuleScopeValue;
@@ -6,10 +6,10 @@ use mira_parser::module::ModuleScopeValue;
 use super::formatter::Formatter;
 
 #[repr(transparent)]
-pub struct ModuleDisplay<'a>(pub &'a TypecheckedModule<'a>);
+pub struct ModuleDisplay<'a>(pub &'a TypedModule<'a>);
 
 impl ModuleDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter, id: StoreKey<TypecheckedModule>) -> std::fmt::Result {
+    pub fn fmt(&self, f: &mut Formatter, id: StoreKey<TypedModule>) -> std::fmt::Result {
         f.write_str("@root_path(")?;
         f.write_debug(&self.0.file.package_root)?;
         f.write_str(")\nmodule mod_")?;
