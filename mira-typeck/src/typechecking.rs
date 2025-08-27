@@ -107,7 +107,7 @@ pub fn typecheck_static<'arena>(
     let ty = tc_module_reader[static_id].type_;
     let expr = {
         std::mem::replace(
-            &mut module_context.statics.write()[static_id.cast()].1,
+            &mut module_context.statics.write()[static_id.cast()].value,
             LiteralValue::Void,
         )
     };
@@ -746,7 +746,7 @@ fn typecheck_expression<'arena>(
                 }
 
                 let mut elements = Vec::with_capacity(structure.elements.len());
-                for (key, typ) in structure.elements.iter() {
+                for (key, typ, _) in structure.elements.iter() {
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
                             location: *location,
@@ -809,7 +809,7 @@ fn typecheck_expression<'arena>(
                 }
 
                 let mut elements = Vec::with_capacity(structure.elements.len());
-                for (key, typ) in structure.elements.iter() {
+                for (key, typ, _) in structure.elements.iter() {
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
                             location: *location,
@@ -1998,8 +1998,8 @@ fn ref_resolve_indexing<'arena>(
                             .elements
                             .iter()
                             .enumerate()
-                            .find(|(_, (v, _))| v == element_name)
-                            .map(|(idx, (_, typ))| (idx, typ))
+                            .find(|(_, (v, _, _))| v == element_name)
+                            .map(|(idx, (_, typ, _))| (idx, typ))
                         {
                             Some((idx, typ)) => {
                                 typ_lhs = *typ;
@@ -2378,8 +2378,8 @@ fn copy_resolve_indexing<'arena>(
                             .elements
                             .iter()
                             .enumerate()
-                            .find(|(_, (v, _))| v == element_name)
-                            .map(|(idx, (_, typ))| (idx, typ))
+                            .find(|(_, (v, _, _))| v == element_name)
+                            .map(|(idx, (_, typ, _))| (idx, typ))
                         {
                             Some((idx, typ)) => {
                                 typ_lhs = *typ;

@@ -475,12 +475,13 @@ impl<'arena> TypecheckingContext<'arena> {
         errors: &mut Diagnostics<'arena>,
     ) {
         let mut writer = context.statics.write();
-        let span = writer[static_id].3;
-        let name = writer[static_id].5;
-        let annotations = std::mem::take(&mut writer[static_id].4);
-        let dummy_type = TypeRef::Void(writer[static_id].0.span(), 0);
-        let typ = std::mem::replace(&mut writer[static_id].0, dummy_type);
-        let module_id = writer[static_id].2;
+        let span = writer[static_id].span;
+        let name = writer[static_id].name;
+        let annotations = std::mem::take(&mut writer[static_id].annotations);
+        let dummy_type = TypeRef::Void(writer[static_id].ty.span(), 0);
+        let typ = std::mem::replace(&mut writer[static_id].ty, dummy_type);
+        let module_id = writer[static_id].module;
+        let comment = writer[static_id].comment;
         drop(writer);
         match self.resolve_type(module_id.cast(), &typ, &[]) {
             Ok(v) => {
@@ -491,6 +492,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     span,
                     annotations,
                     name,
+                    comment,
                 );
             }
             Err(e) => _ = errors.add(e),
@@ -509,13 +511,15 @@ impl<'arena> TypecheckingContext<'arena> {
         let annotations = std::mem::take(&mut writer[trait_id].annotations);
         let functions = std::mem::take(&mut writer[trait_id].functions);
         let module_id = writer[trait_id].module;
+        let comment = writer[trait_id].comment;
         drop(writer);
 
         let mut typed_functions = Vec::new();
         let error_count = errors.len();
 
-        for (name, arguments, return_type, annotations, location) in functions {
-            let typed_return_type = match self.resolve_type(module_id.cast(), &return_type, &[]) {
+        for func in functions {
+            let typed_return_type = match self.resolve_type(module_id.cast(), &func.return_ty, &[])
+            {
                 Ok(v) => v,
                 Err(e) => {
                     errors.add(e);
@@ -525,7 +529,7 @@ impl<'arena> TypecheckingContext<'arena> {
 
             let mut typed_arguments = Vec::new();
 
-            for arg in arguments {
+            for arg in &func.args {
                 match self.resolve_type(module_id.cast(), &arg.typ, &[]) {
                     Ok(v) => typed_arguments.push((arg.name, v)),
                     Err(e) => _ = errors.add(e),
@@ -536,8 +540,9 @@ impl<'arena> TypecheckingContext<'arena> {
                 name,
                 typed_arguments,
                 typed_return_type,
-                annotations,
-                location,
+                func.annotations,
+                func.span,
+                func.comment,
             ));
         }
 
@@ -549,6 +554,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 module_id: module_id.cast(),
                 annotations,
                 functions: typed_functions,
+                comment,
             };
         }
     }

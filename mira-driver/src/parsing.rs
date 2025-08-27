@@ -4,12 +4,13 @@ use crossbeam_channel::{Sender, bounded};
 use mira_errors::Diagnostics;
 #[cfg(feature = "progress-bar")]
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
+use mira_spans::context::DocComment;
 use parking_lot::RwLock;
 
 use mira_common::store::{AssociatedStore, Store, StoreKey};
 use mira_common::threadpool::ThreadPool;
 use mira_errors::IoReadError;
-use mira_lexer::{Lexer, LexingError};
+use mira_lexer::{Lexer, LexingError, Literal, TokenType};
 use mira_parser::{
     Parser, ParsingError, ProgramFormingError,
     module::{Module, ModuleContext, ParserQueueEntry},
@@ -56,7 +57,28 @@ fn parse_single<'arena>(
     }
 
     let file = lexer.file.clone();
-    let tokens = lexer.into_tokens();
+    let mut tokens = lexer.into_tokens();
+    let mut comment = None;
+    if let Some(tok) = tokens.first() {
+        if tok.typ == TokenType::ModuleDocComment {
+            let Some(Literal::DocComment(v)) = tok.literal else {
+                unreachable!()
+            };
+            comment = Some(v);
+        }
+    }
+    if comment.is_some() {
+        tokens.remove(0);
+    }
+    if let Some(c) = cur_entry.comment {
+        match comment {
+            Some(v) => {
+                module_context.ctx.merge_doc_comments(v, c);
+                module_context.ctx.clear_doc_comment(c);
+            }
+            None => comment = Some(c),
+        }
+    }
     let tokens = {
         let mut diagnostics = Diagnostics::new();
         match mira_parser::expand_tokens(module_context.ctx, file.clone(), tokens, &mut diagnostics)
@@ -101,6 +123,7 @@ fn parse_single<'arena>(
         cur_entry.package_root,
         cur_entry.parent,
         cur_entry.name,
+        comment.unwrap_or(DocComment::EMPTY),
     );
     _ = current_parser;
     if let Err(errs) = module.push_all(
@@ -172,6 +195,7 @@ pub fn parse_all<'arena>(
             package_root: modid,
             parent: StoreKey::undefined(),
             module_key: modid,
+            comment: None,
         });
     }
     let main_mod = libtree

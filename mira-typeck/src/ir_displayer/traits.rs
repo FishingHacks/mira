@@ -15,7 +15,7 @@ impl TraitDisplay<'_> {
         f.write_value(&IdentDisplay(self.0.name.symbol()))?;
         f.write_str(" {")?;
         f.push_indent();
-        for (name, args, return_type, annotations, _) in self.0.functions.iter() {
+        for (name, args, return_type, annotations, _, _) in self.0.functions.iter() {
             f.write_char('\n')?;
             f.write_value(annotations)?;
             f.write_str("fn ")?;

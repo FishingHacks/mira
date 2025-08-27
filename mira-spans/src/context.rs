@@ -75,12 +75,12 @@ impl<'arena> SharedCtx<'arena> {
     }
 
     /// merges 2 doc comments, appending the second one to the first one.
-    pub fn merge_doc_comments(&mut self, a: DocComment, b: DocComment) {
+    pub fn merge_doc_comments(&self, a: DocComment, b: DocComment) {
         self.doc_comment_store.lock().merge_doc_comments(a, b);
     }
 
     /// removes a doc comment.
-    pub fn clear_doc_comment(&mut self, v: DocComment) {
+    pub fn clear_doc_comment(&self, v: DocComment) {
         self.doc_comment_store.lock().clear_doc_comment(v);
     }
 }
@@ -131,6 +131,10 @@ pub struct DocComment(usize);
 
 impl DocComment {
     pub const EMPTY: DocComment = DocComment(0);
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl Debug for DocComment {

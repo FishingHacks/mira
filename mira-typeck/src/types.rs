@@ -301,7 +301,7 @@ impl<'arena> TyKind<'arena> {
         let structure = &structs[struct_id];
         assert!(element < structure.elements.len());
         let mut offset = 0;
-        for (_, typ) in &structure.elements[0..element] {
+        for (_, typ, _) in &structure.elements[0..element] {
             let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
             offset = align(offset, alignment) + size;
         }
@@ -371,7 +371,7 @@ impl<'arena> TyKind<'arena> {
             TyKind::Struct { struct_id, .. } => {
                 let mut size = 0;
                 let mut alignment = 1;
-                for (_, element) in structs[struct_id].elements.iter() {
+                for (_, element, _) in structs[struct_id].elements.iter() {
                     let (typ_size, typ_alignment) = element.size_and_alignment(ptr_size, structs);
                     alignment = alignment.max(typ_alignment);
                     size = align(size, typ_alignment) + typ_size;

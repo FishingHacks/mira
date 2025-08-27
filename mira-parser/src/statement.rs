@@ -25,19 +25,24 @@ pub enum BakableFunction<'arena> {
 }
 
 #[derive(Clone, Debug)]
+pub struct TraitFunction<'arena> {
+    pub name: Ident<'arena>,
+    pub args: Vec<Argument<'arena>>,
+    pub return_ty: TypeRef<'arena>,
+    pub annotations: Annotations<'arena>,
+    pub span: Span<'arena>,
+    pub comment: DocComment,
+}
+
+#[derive(Clone, Debug)]
 pub struct Trait<'arena> {
     pub name: Ident<'arena>,
-    pub functions: Vec<(
-        Ident<'arena>,
-        Vec<Argument<'arena>>,
-        TypeRef<'arena>,
-        Annotations<'arena>,
-        Span<'arena>,
-    )>,
+    pub functions: Vec<TraitFunction<'arena>>,
     pub span: Span<'arena>,
     pub annotations: Annotations<'arena>,
     pub module: StoreKey<Module<'arena>>,
     pub public: bool,
+    pub comment: DocComment,
 }
 
 impl Display for Trait<'_> {
@@ -48,21 +53,21 @@ impl Display for Trait<'_> {
         Display::fmt(&self.name, f)?;
         f.write_str("{\n")?;
 
-        for (name, args, return_type, annotations, _) in self.functions.iter() {
-            Display::fmt(annotations, f)?;
+        for func in self.functions.iter() {
+            Display::fmt(&func.annotations, f)?;
             f.write_str("    fn ")?;
-            Display::fmt(name, f)?;
+            Display::fmt(&func.name, f)?;
             f.write_char('(')?;
-            for (i, v) in args.iter().enumerate() {
+            for (i, v) in func.args.iter().enumerate() {
                 if i != 0 {
                     f.write_str(", ")?;
                 }
                 Display::fmt(v, f)?;
             }
             f.write_char(')')?;
-            if !matches!(return_type, TypeRef::Void(_, 0)) {
+            if !matches!(func.return_ty, TypeRef::Void(_, 0)) {
                 f.write_str(" -> ")?;
-                Display::fmt(return_type, f)?;
+                Display::fmt(&func.return_ty, f)?;
             }
             f.write_str(";\n")?;
         }
@@ -120,7 +125,7 @@ pub enum Statement<'arena> {
     },
     Struct {
         name: Ident<'arena>,
-        elements: Vec<(Ident<'arena>, TypeRef<'arena>)>,
+        elements: Vec<(Ident<'arena>, TypeRef<'arena>, DocComment)>,
         span: Span<'arena>,
         global_impl: HashMap<Ident<'arena>, (FunctionContract<'arena>, Statement<'arena>)>,
         #[allow(clippy::type_complexity)]
@@ -132,12 +137,14 @@ pub enum Statement<'arena> {
         generics: Vec<Generic<'arena>>,
         annotations: Annotations<'arena>,
         public: bool,
+        comment: DocComment,
     },
     Trait(Trait<'arena>),
     ModuleAsm(Span<'arena>, String),
     Static {
         var: Variable<'arena>,
         public: bool,
+        comment: DocComment,
     },
 
     Use {
@@ -150,6 +157,7 @@ pub enum Statement<'arena> {
         span: Span<'arena>,
         name: Ident<'arena>,
         public: bool,
+        comment: Option<DocComment>,
     },
 
     BakedFunction(StoreKey<Function<'arena>>, Span<'arena>),
@@ -711,12 +719,18 @@ impl<'arena> Parser<'_, 'arena> {
     }
 
     fn parse_mod(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
+        let comment = self.current_doc_comment.take();
         let span = self.eat().span;
         let name = self.expect_identifier()?;
         let semicolon_span = self.expect(TokenType::Semicolon)?.span;
 
         let span = span.combine_with([semicolon_span, name.span()], self.ctx.span_interner);
-        Ok(Statement::Mod { span, name, public })
+        Ok(Statement::Mod {
+            span,
+            name,
+            public,
+            comment,
+        })
     }
 
     fn parse_use(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
@@ -750,25 +764,17 @@ impl<'arena> Parser<'_, 'arena> {
 
     fn parse_trait_fn(
         &mut self,
-    ) -> Result<
-        (
-            Ident<'arena>,
-            Vec<Argument<'arena>>,
-            TypeRef<'arena>,
-            Annotations<'arena>,
-            Span<'arena>,
-        ),
-        ParsingError<'arena>,
-    > {
+        comment: DocComment,
+    ) -> Result<TraitFunction<'arena>, ParsingError<'arena>> {
         let span = self.current().span;
         let name = self.expect_identifier()?;
-
-        let mut arguments = vec![];
+        let annotations = std::mem::take(&mut self.current_annotations);
+        let mut args = vec![];
 
         self.expect(TokenType::ParenLeft)?;
 
         while !self.match_tok(TokenType::ParenRight) {
-            if !arguments.is_empty() {
+            if !args.is_empty() {
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
                         loc: self.peek().span,
@@ -785,10 +791,10 @@ impl<'arena> Parser<'_, 'arena> {
             let name = self.expect_identifier()?;
             self.expect(TokenType::Colon)?;
 
-            arguments.push(Argument::new(TypeRef::parse(self)?, name))
+            args.push(Argument::new(TypeRef::parse(self)?, name))
         }
 
-        let return_type = if self.match_tok(TokenType::ReturnType) {
+        let return_ty = if self.match_tok(TokenType::ReturnType) {
             TypeRef::parse(self)?
         } else {
             TypeRef::Void(self.peek().span, 0)
@@ -796,13 +802,14 @@ impl<'arena> Parser<'_, 'arena> {
 
         self.expect(TokenType::Semicolon)?;
 
-        Ok((
+        Ok(TraitFunction {
             name,
-            arguments,
-            return_type,
-            std::mem::take(&mut self.current_annotations),
-            self.span_from(span),
-        ))
+            args,
+            return_ty,
+            annotations,
+            span,
+            comment,
+        })
     }
 
     fn parse_trait(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
@@ -812,6 +819,7 @@ impl<'arena> Parser<'_, 'arena> {
             self.peek().span
         };
         self.expect(TokenType::Trait)?;
+        let comment = self.take_doc_comment();
         let name = self.expect_identifier()?;
 
         self.expect(TokenType::CurlyLeft)?;
@@ -820,14 +828,24 @@ impl<'arena> Parser<'_, 'arena> {
         annotations.are_annotations_valid_for(crate::annotations::AnnotationReceiver::Trait)?;
         let mut functions = Vec::new();
 
+        let mut func_comment = None;
         while !self.match_tok(TokenType::CurlyRight) {
+            if let Some(comment) = self.eat_doc_comment() {
+                match func_comment {
+                    Some(v) => {
+                        self.ctx.merge_doc_comments(v, comment);
+                        self.ctx.clear_doc_comment(comment);
+                    }
+                    None => func_comment = Some(comment),
+                }
+            }
             if self.match_tok(TokenType::AnnotationIntroducer) {
                 self.parse_annotation()?;
                 continue;
             }
 
             self.expect(TokenType::Fn)?;
-            let func = self.parse_trait_fn()?;
+            let func = self.parse_trait_fn(func_comment.take().unwrap_or(DocComment::EMPTY))?;
             functions.push(func);
         }
 
@@ -838,6 +856,7 @@ impl<'arena> Parser<'_, 'arena> {
             annotations,
             module: self.key,
             public,
+            comment,
         }))
     }
 
@@ -858,6 +877,11 @@ impl<'arena> Parser<'_, 'arena> {
         if public {
             assert!(is_static);
         }
+        let comment = if is_static {
+            self.take_doc_comment()
+        } else {
+            DocComment::EMPTY
+        };
         let span = if public {
             self.current().span
         } else {
@@ -895,7 +919,11 @@ impl<'arena> Parser<'_, 'arena> {
             annotations,
         };
         match is_static {
-            true => Ok(Statement::Static { var, public }),
+            true => Ok(Statement::Static {
+                var,
+                public,
+                comment,
+            }),
             false => Ok(Statement::Var(var)),
         }
     }
@@ -1005,6 +1033,7 @@ impl<'arena> Parser<'_, 'arena> {
     }
     fn parse_struct(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
         let annotations = std::mem::take(&mut self.current_annotations);
+        let comment = self.take_doc_comment();
         annotations.are_annotations_valid_for(AnnotationReceiver::Struct)?;
 
         // struct Name { ... fields ...; implementation area }
@@ -1039,6 +1068,7 @@ impl<'arena> Parser<'_, 'arena> {
         self.expect(TokenType::CurlyLeft)?;
 
         while !self.matches(&[TokenType::CurlyRight, TokenType::Semicolon]) {
+            let comment = self.eat_doc_comment().unwrap_or(DocComment::EMPTY);
             if !elements.is_empty() {
                 // needs comma
                 self.expect_one_of(&[
@@ -1054,7 +1084,7 @@ impl<'arena> Parser<'_, 'arena> {
             let name = self.expect_identifier()?;
             self.expect(TokenType::Colon)?;
             let typ = TypeRef::parse(self)?;
-            elements.push((name, typ));
+            elements.push((name, typ, comment));
         }
 
         let mut global_impl =
@@ -1068,7 +1098,14 @@ impl<'arena> Parser<'_, 'arena> {
             while !self.match_tok(TokenType::CurlyRight) {
                 match self.peek().typ {
                     TokenType::Fn => {
-                        let func = self.parse_callable(false, false)?;
+                        if let Some(doc_comment) = self.eat_doc_comment() {
+                            // overriding here is fine because we don't parse annotations,
+                            // meaning there can only ever be one doc comment.
+                            self.current_doc_comment = Some(doc_comment);
+                        }
+                        let func = self.parse_callable(false, false);
+                        self.current_doc_comment = None;
+                        let func = func?;
                         let name = func
                             .0
                             .contract
@@ -1095,14 +1132,23 @@ impl<'arena> Parser<'_, 'arena> {
 
                         self.expect(TokenType::CurlyLeft)?;
                         while !self.match_tok(TokenType::CurlyRight) {
+                            if let Some(doc_comment) = self.eat_doc_comment() {
+                                // overriding here is fine because we don't parse annotations,
+                                // meaning there can only ever be one doc comment.
+                                self.current_doc_comment = Some(doc_comment);
+                            }
+
                             if self.peek().typ != TokenType::Fn {
+                                self.current_doc_comment = None;
                                 return Err(ParsingError::StructImplRegionExpect {
                                     loc: self.peek().span,
                                     found: self.peek().typ,
                                     is_trait_impl: true,
                                 });
                             }
-                            let func = self.parse_callable(false, false)?;
+                            let func = self.parse_callable(false, false);
+                            self.current_doc_comment = None;
+                            let func = func?;
                             let name = func
                                 .0
                                 .contract
@@ -1141,6 +1187,7 @@ impl<'arena> Parser<'_, 'arena> {
             annotations,
             generics,
             public,
+            comment,
         })
     }
 

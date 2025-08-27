@@ -29,4 +29,6 @@ pub enum LexingError<'arena> {
         loc: Span<'arena>,
         character: char,
     },
+    #[error("Module-level doc comment have to be the first token in the file.")]
+    InvalidModuleDocComment(#[primary_label("")] Span<'arena>),
 }

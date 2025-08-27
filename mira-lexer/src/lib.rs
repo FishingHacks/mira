@@ -87,6 +87,10 @@ impl<'arena> Lexer<'arena> {
         self.source.get(self.current + 1).copied().unwrap_or('\0')
     }
 
+    fn peek3(&self) -> char {
+        self.source.get(self.current + 2).copied().unwrap_or('\0')
+    }
+
     fn if_char_advance(&mut self, character: char) -> bool {
         if self.peek() != character {
             return false;
@@ -168,12 +172,42 @@ impl<'arena> Lexer<'arena> {
             //  */
             // gets parsed as "meow\nmeow"
             '/' if self.peek() == self.peek2() && matches!(self.peek(), '/' | '*') => {
+                let now = self.current;
+                let single_line = self.advance() == '/';
+                self.advance();
+
+                let mut s = String::new();
+                self.parse_doc_comments(&mut s, single_line, false);
+                let span = self.span_from(now);
+                let comment = self.ctx.add_doc_comment(s.into_boxed_str());
+                Ok(Token::new(
+                    TokenType::DocComment,
+                    Some(Literal::DocComment(comment)),
+                    span,
+                ))
+            }
+            // module doc comment is only allowed as the first token.
+            // module doc comment (//!) or module doc block comment (/*!). note that we have to filter out /(^ *\* *|)/, so that
+            // /*!
+            //  * meow
+            //  * meow
+            //  */
+            // gets parsed as "meow\nmeow"
+            '/' if matches!(self.peek(), '/' | '*') && self.peek2() == '!' => {
+                if self.tokens.len() < 2 || self.tokens[0].typ != TokenType::Eof {
+                    let now = self.current;
+                    let single_line = self.advance() == '/';
+                    self.advance();
+                    self.parse_doc_comments(&mut String::new(), single_line, true);
+
+                    return Err(LexingError::InvalidModuleDocComment(self.span_from(now)));
+                }
                 let single_line = self.advance() == '/';
                 self.advance();
 
                 let now = self.current;
                 let mut s = String::new();
-                self.parse_doc_comments(&mut s, single_line);
+                self.parse_doc_comments(&mut s, single_line, true);
                 let span = self.span_from(now);
                 let comment = self.ctx.add_doc_comment(s.into_boxed_str());
                 Ok(Token::new(
@@ -314,7 +348,7 @@ impl<'arena> Lexer<'arena> {
         s.push('\n');
     }
 
-    fn parse_doc_comments(&mut self, s: &mut String, mut single_line: bool) {
+    fn parse_doc_comments(&mut self, s: &mut String, mut single_line: bool, module: bool) {
         let mut max_spaces = None;
         loop {
             if single_line {
@@ -337,10 +371,17 @@ impl<'arena> Lexer<'arena> {
             loop {
                 self.skip_spaces();
                 if self.peek() == '/' && self.peek2() == '/' {
+                    if module {
+                        if self.peek3() == '/' {
+                            return;
+                        }
+                    } else if self.peek3() == '!' {
+                        return;
+                    }
                     self.advance();
                     self.advance();
                     // /// was found, continue to the start of the loop
-                    if self.peek() == '/' {
+                    if self.peek() == '/' || self.peek() == '!' {
                         self.advance();
                         single_line = true;
                         break;
@@ -351,11 +392,18 @@ impl<'arena> Lexer<'arena> {
                 }
                 // /* was found, skip normal comment
                 if self.peek() == '/' && self.peek2() == '*' {
+                    if module {
+                        if self.peek3() == '*' {
+                            return;
+                        }
+                    } else if self.peek3() == '!' {
+                        return;
+                    }
                     self.advance();
                     self.advance();
 
                     // /** was found, invoke the multiline parsing procedure
-                    if self.peek() == '*' {
+                    if self.peek() == '*' || self.peek() == '!' {
                         self.advance();
                         single_line = false;
                         break;

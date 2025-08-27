@@ -82,17 +82,19 @@ pub struct TypedTrait<'arena> {
         Ty<'arena>,
         Annotations<'arena>,
         Span<'arena>,
+        DocComment,
     )>,
     pub location: Span<'arena>,
     pub module_id: StoreKey<TypedModule<'arena>>,
     pub id: StoreKey<TypedTrait<'arena>>,
     pub annotations: Annotations<'arena>,
+    pub comment: DocComment,
 }
 
 #[derive(Debug)]
 pub struct TypedStruct<'arena> {
     pub name: Ident<'arena>,
-    pub elements: Vec<(Ident<'arena>, Ty<'arena>)>,
+    pub elements: Vec<(Ident<'arena>, Ty<'arena>, DocComment)>,
     pub span: Span<'arena>,
     pub global_impl: HashMap<Ident<'arena>, StoreKey<TypedFunction<'arena>>>,
     pub trait_impl: HashMap<StoreKey<TypedTrait<'arena>>, Vec<StoreKey<TypedFunction<'arena>>>>,
@@ -100,6 +102,7 @@ pub struct TypedStruct<'arena> {
     pub module_id: StoreKey<TypedModule<'arena>>,
     pub id: StoreKey<TypedStruct<'arena>>,
     pub generics: Vec<TypedGeneric<'arena>>,
+    pub comment: DocComment,
 }
 
 impl Hash for TypedStruct<'_> {
@@ -119,6 +122,7 @@ pub struct TypedStatic<'arena> {
     pub loc: Span<'arena>,
     pub annotations: Annotations<'arena>,
     pub name: Ident<'arena>,
+    pub comment: DocComment,
 }
 
 impl<'arena> TypedStatic<'arena> {
@@ -129,6 +133,7 @@ impl<'arena> TypedStatic<'arena> {
         loc: Span<'arena>,
         annotations: Annotations<'arena>,
         name: Ident<'arena>,
+        comment: DocComment,
     ) -> Self {
         Self {
             type_,
@@ -137,6 +142,7 @@ impl<'arena> TypedStatic<'arena> {
             loc,
             annotations,
             name,
+            comment,
         }
     }
 }
@@ -166,6 +172,7 @@ pub struct TypedModule<'arena> {
     pub name: Symbol<'arena>,
     pub file: Arc<SourceFile>,
     pub assembly: Vec<(Span<'arena>, String)>,
+    pub comment: DocComment,
 }
 
 impl<'arena> TypecheckingContext<'arena> {
@@ -225,6 +232,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     module_id: StoreKey::undefined(),
                     generics: Vec::new(),
                     id: key.cast(),
+                    comment: DocComment::EMPTY,
                 },
             );
         }
@@ -236,9 +244,10 @@ impl<'arena> TypecheckingContext<'arena> {
                     default_types::never,
                     TypedLiteral::Void,
                     StoreKey::undefined(),
-                    statics_reader[key].3,
+                    statics_reader[key].span,
                     Annotations::default(),
                     Ident::EMPTY,
+                    DocComment::EMPTY,
                 ),
             );
         }
@@ -291,6 +300,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     module_id: StoreKey::undefined(),
                     id: key.cast(),
                     annotations: Annotations::default(),
+                    comment: DocComment::EMPTY,
                 },
             );
         }
@@ -323,6 +333,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     exports: module.exports.clone(),
                     file: module.file.clone(),
                     assembly: module.assembly.clone(),
+                    comment: module.comment,
                 },
             );
         }
@@ -580,6 +591,7 @@ impl<'arena> TypecheckingContext<'arena> {
             id: id.cast(),
             generics,
             trait_impl: HashMap::new(),
+            comment: writer[id].comment,
         };
         drop(writer);
 
@@ -592,7 +604,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 errors,
                 left,
             ) {
-                typed_struct.elements.push((element.0, typ));
+                typed_struct.elements.push((element.0, typ, element.2));
             }
         }
         self.structs.write()[id.cast()] = typed_struct;

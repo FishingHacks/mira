@@ -643,10 +643,10 @@ fn does_struct_match<'arena>(
         match structure_b
             .elements
             .iter()
-            .find(|(v, _)| v.symbol() == *element_name)
+            .find(|(v, _, _)| v.symbol() == *element_name)
         {
             Some(v) if v.1 == *element_type => {}
-            Some((_, other_type)) => {
+            Some((_, other_type, _)) => {
                 errors.add_struct_mismatching_field(
                     *element_name,
                     *element_type,
@@ -660,7 +660,7 @@ fn does_struct_match<'arena>(
         }
     }
 
-    for (element_name, _) in structure_b.elements.iter().filter(|(v, _)| {
+    for (element_name, _, _) in structure_b.elements.iter().filter(|(v, _, _)| {
         !structure_a
             .fields
             .iter()

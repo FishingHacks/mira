@@ -428,6 +428,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s.push_str(": ");
         self.write_ty(&mut s, v.type_, curfile);
         s.push_str("</code></pre>");
+        self.generate_doc_comment(v.comment, &mut s);
+
         s.push_str(HTML_POSTAMBLE);
         s
     }
@@ -453,10 +455,11 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s.escaped().push_str(trait_.name.symbol().to_str());
         s.push_str(" { .. }");
         s.push_str("</code></pre>");
+        self.generate_doc_comment(trait_.comment, &mut s);
 
         s.push_str(r##"<h2 id="functions" class="anchorable header">Functions<a class="anchor" href="#functions">§</a></h2>"##);
         // <span id="function.allocate" class="anchorable member-function"><code>fn <a class="function" href="#function.allocate">allocate</a>(self: &amp;<span class="struct">Self</span>, size: <span class="struct">usize</span>, align: <span class="struct">usize</span>) -&gt; &amp;<span class="struct">void</span></code><a href="#function.allocate" class="anchor">§</a></span>
-        for (name, args, ret_ty, _, _) in &trait_.functions {
+        for (name, args, ret_ty, _, _, comment) in &trait_.functions {
             s.push_str("<span id=\"function.");
             s.escaped().push_str(name.symbol().to_str());
             s.push_str(
@@ -485,6 +488,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str("</code><a href=\"#function.");
             s.push_fmt(format_args!("{}", urlencode(name.symbol().to_str())));
             s.push_str("\" class=\"anchor\">§</a></span>");
+
+            self.generate_doc_comment(*comment, &mut s);
         }
 
         s.push_str(HTML_POSTAMBLE);
@@ -514,7 +519,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(" {}");
         } else {
             s.push_str(" {");
-            for (name, ty) in structure.elements.iter() {
+            for (name, ty, _) in structure.elements.iter() {
                 s.push_str("\n    ");
                 s.escaped().push_str(name.symbol().to_str());
                 s.push_str(": ");
@@ -524,6 +529,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str("\n}");
         }
         s.push_str("</code></pre>");
+        self.generate_doc_comment(structure.comment, &mut s);
 
         // <h2 id="fields" class="anchorable header">Fields<a class="anchor" href="#fields">§</a></h2>
         if !structure.elements.is_empty() {
@@ -531,7 +537,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         }
 
         // <span id="structfield.field1" class="anchorable structfield"><code>field1: <a class="struct" href="#">u32</a></code><a href="#structfield.field1" class="anchor">§</a></span>
-        for (name, ty) in structure.elements.iter() {
+        for (name, ty, comment) in structure.elements.iter() {
             s.push_str("<span id=\"structfield.");
             s.escaped().push_str(name.symbol().to_str());
             s.push_str("\" class=\"anchorable structfield\"><code>");
@@ -541,6 +547,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str("</code><a href=\"#structfield.");
             s.push_fmt(format_args!("{}", urlencode(name.symbol().to_str())));
             s.push_str("\" class=\"anchor\">§</a></span>");
+
+            self.generate_doc_comment(*comment, &mut s);
         }
 
         // <h2 id="functions" class="anchorable header">Functions<a class="anchor" href="#functions">§</a></h2>
@@ -643,6 +651,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(function_prefix);
             s.push_fmt(format_args!("{}", urlencode(name)));
             s.push_str("\" class=\"anchor\">§</a></span>");
+
+            self.generate_doc_comment(contract.comment, s);
         }
     }
 
@@ -660,6 +670,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             fully_qualified_path,
             ModuleScopeValue::Module(key.cast()),
         );
+
+        self.generate_doc_comment(module.comment, &mut s);
 
         let mut modules = vec![];
         let mut functions = vec![];

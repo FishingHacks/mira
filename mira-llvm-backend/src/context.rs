@@ -353,7 +353,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             let fields = structure
                 .elements
                 .iter()
-                .map(|(_, t)| {
+                .map(|(_, t, _)| {
                     if *t == default_types::void || *t == default_types::never {
                         default_types.i8.array_type(0).into()
                     } else {

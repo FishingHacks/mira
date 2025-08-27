@@ -10,7 +10,7 @@ use crate::{
     TypeRef, annotations::Annotations, error::ProgramFormingError,
 };
 use mira_common::store::{AssociatedStore, Store, StoreKey};
-use mira_spans::{FileId, Ident, SharedCtx, SourceFile, Span, Symbol};
+use mira_spans::{FileId, Ident, SharedCtx, SourceFile, Span, Symbol, context::DocComment};
 
 mod module_resolution;
 
@@ -27,7 +27,7 @@ pub enum ModuleScopeValue<'arena> {
 #[derive(Debug)]
 pub struct BakedStruct<'arena> {
     pub name: Ident<'arena>,
-    pub elements: Vec<(Ident<'arena>, TypeRef<'arena>)>,
+    pub elements: Vec<(Ident<'arena>, TypeRef<'arena>, DocComment)>,
     pub span: Span<'arena>,
     pub global_impl: HashMap<Ident<'arena>, StoreKey<Function<'arena>>>,
     pub impls: Vec<(
@@ -38,6 +38,7 @@ pub struct BakedStruct<'arena> {
     pub annotations: Annotations<'arena>,
     pub module_id: StoreKey<Module<'arena>>,
     pub generics: Vec<Generic<'arena>>,
+    pub comment: DocComment,
 }
 
 pub type Function<'arena> = (
@@ -50,14 +51,16 @@ pub type ExternalFunction<'arena> = (
     Option<Statement<'arena>>,
     StoreKey<Module<'arena>>,
 );
-pub type Static<'arena> = (
-    TypeRef<'arena>,
-    LiteralValue<'arena>,
-    StoreKey<Module<'arena>>,
-    Span<'arena>,
-    Annotations<'arena>,
-    Ident<'arena>,
-);
+#[derive(Debug)]
+pub struct Static<'arena> {
+    pub ty: TypeRef<'arena>,
+    pub value: LiteralValue<'arena>,
+    pub module: StoreKey<Module<'arena>>,
+    pub span: Span<'arena>,
+    pub annotations: Annotations<'arena>,
+    pub name: Ident<'arena>,
+    pub comment: DocComment,
+}
 
 pub type DependencyMap<'arena> = HashMap<Arc<str>, StoreKey<Module<'arena>>>;
 
@@ -119,6 +122,7 @@ pub struct Module<'arena> {
     /// if this parent is undefined, that means it's the root package.
     pub parent: StoreKey<Module<'arena>>,
     pub assembly: Vec<(Span<'arena>, String)>,
+    pub comment: DocComment,
 }
 
 impl Debug for Module<'_> {
@@ -141,6 +145,7 @@ pub struct ParserQueueEntry<'arena> {
     /// if this parent is the same as the package_root, it means this module is the package root.
     pub parent: StoreKey<Module<'arena>>,
     pub module_key: StoreKey<Module<'arena>>,
+    pub comment: Option<DocComment>,
 }
 
 impl<'arena> Module<'arena> {
@@ -149,6 +154,7 @@ impl<'arena> Module<'arena> {
         package_root: StoreKey<Self>,
         parent: StoreKey<Self>,
         name: Symbol<'arena>,
+        comment: DocComment,
     ) -> Self {
         Self {
             imports: HashMap::new(),
@@ -159,6 +165,7 @@ impl<'arena> Module<'arena> {
             parent,
             package_root,
             name,
+            comment,
         }
     }
 
@@ -269,6 +276,7 @@ impl<'arena> Module<'arena> {
                 annotations,
                 generics,
                 public,
+                comment,
             } => {
                 if self.is_defined(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
@@ -302,6 +310,7 @@ impl<'arena> Module<'arena> {
                     impls: baked_impls,
                     module_id,
                     generics,
+                    comment,
                 };
 
                 let mut writer = context.structs.write();
@@ -309,7 +318,11 @@ impl<'arena> Module<'arena> {
                 self.scope.insert(name, ModuleScopeValue::Struct(key));
                 self.maybe_add_export(public, name);
             }
-            Statement::Static { var, public } => {
+            Statement::Static {
+                var,
+                public,
+                comment,
+            } => {
                 if self.is_defined(&var.name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         var.span,
@@ -321,14 +334,15 @@ impl<'arena> Module<'arena> {
                     return Err(ProgramFormingError::GlobalValueNoLiteral(var.value.span()));
                 };
                 let mut writer = context.statics.write();
-                let key = writer.insert((
-                    var.ty.expect("static needs to have a type"),
+                let key = writer.insert(Static {
+                    ty: var.ty.expect("static needs to have a type"),
                     value,
-                    module_id,
-                    var.span,
-                    var.annotations,
-                    var.name,
-                ));
+                    module: module_id,
+                    span: var.span,
+                    annotations: var.annotations,
+                    name: var.name,
+                    comment,
+                });
                 self.scope.insert(var.name, ModuleScopeValue::Static(key));
                 self.maybe_add_export(public, var.name);
             }
@@ -371,7 +385,12 @@ impl<'arena> Module<'arena> {
                 self.imports.insert(name, (span, path));
                 self.maybe_add_export(public, name);
             }
-            Statement::Mod { public, name, span } => {
+            Statement::Mod {
+                public,
+                name,
+                span,
+                comment,
+            } => {
                 if self.is_defined(&name) {
                     return Err(ProgramFormingError::IdentAlreadyDefined(
                         span,
@@ -395,6 +414,7 @@ impl<'arena> Module<'arena> {
                     loaded_file: None,
                     parent: module_id,
                     package_root: self.package_root,
+                    comment,
                 });
                 self.scope
                     .insert(name, ModuleScopeValue::Module(module_key));

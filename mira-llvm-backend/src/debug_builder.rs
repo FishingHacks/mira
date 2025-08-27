@@ -492,7 +492,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                     let fields = elements
                         .iter()
                         .enumerate()
-                        .map(|(i, (name, v))| {
+                        .map(|(i, (name, v, _))| {
                             let offset = ty.struct_offset(ptr_size, structs, i);
                             let (size, alignment) = v.size_and_alignment(ptr_size, structs);
                             let ty = self.get_type(*v, structs);

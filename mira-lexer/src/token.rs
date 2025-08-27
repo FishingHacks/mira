@@ -98,7 +98,8 @@ token_type! {
     AnnotationIntroducer = "@",
     NamespaceAccess = "::",
     QuestionMark = "?",
-    DocComment = "doc comment",
+    DocComment = "<doc comment>",
+    ModuleDocComment = "<module doc comment>",
     Eof = "",
 }
 

@@ -21,7 +21,7 @@ impl StructDisplay<'_> {
             .elements
             .iter()
             .enumerate()
-            .map(|(a, (b, c))| (a, b, c))
+            .map(|(a, (b, c, _))| (a, b, c))
         {
             if idx != 0 {
                 f.write_char(',')?;
