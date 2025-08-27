@@ -537,7 +537,7 @@ impl<'arena> TypecheckingContext<'arena> {
             }
 
             typed_functions.push((
-                name,
+                func.name,
                 typed_arguments,
                 typed_return_type,
                 func.annotations,

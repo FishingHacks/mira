@@ -1,16 +1,24 @@
+//! Module responsible for handling allocations
+
 @lang("allocator_trait")
+/// Some struct that allocates memory.
 pub trait Allocator {
+    /// Allocates `size` amount of memory with 8-byte alignment.
     fn alloc(self: &Self, size: usize) -> &void;
+    /// Grows or shrinks the allocation at `ptr` to `size` bytes. Returns the new allocation.
     fn realloc(self: &Self, ptr: &void, size: usize) -> &void;
+    /// Frees the allocation at `ptr`.
     fn free(self: &Self, ptr: &void);
 }
 
+/// The standard libc allocator (currently only returns a null pointer.)
 pub struct CAlloc {;
     impl Allocator {
         fn alloc(self: &Self, size: usize) -> &void = &void;
-        fn realloc(self: &Self, ptr: &void, size: usize) -> &void = ptr;
+        fn realloc(self: &Self, ptr: &void, size: usize) -> &void = &void;
         fn free(self: &Self, ptr: &void) = void;
     }
 }
 @lang("allocator")
+/// The global allocator.
 pub let allocator: CAlloc = .{};

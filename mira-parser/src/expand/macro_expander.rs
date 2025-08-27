@@ -66,7 +66,7 @@ impl<'arena> MacroExpander<'arena> {
         let mut tokens = BorrowedTokenStream::new(tokens, eof_span);
         let mut is_macro = false;
         while !tokens.is_at_end() {
-            match tokens.eat().typ {
+            match tokens.eat_with_doc_comments().typ {
                 TokenType::MacroDef if !can_define_macros => {
                     diagnostics.add_unexpected_token(tokens.current().span);
                     has_err = true;
@@ -172,14 +172,15 @@ impl<'arena> MacroExpander<'arena> {
             }
 
             while !tokens.is_at_end() {
-                match tokens.eat().typ {
+                let tok = tokens.eat_with_doc_comments();
+                match tok.typ {
                     TokenType::MacroDef if !can_define_macros => {
-                        diagnostics.add_unexpected_token(tokens.current().span);
+                        diagnostics.add_unexpected_token(tok.span);
                         has_err = true;
                         break;
                     }
                     TokenType::MacroInvocation | TokenType::MacroDef => break,
-                    _ => toks.push(tokens.current()),
+                    _ => toks.push(tok),
                 }
             }
         }

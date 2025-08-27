@@ -129,6 +129,16 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         self.eat();
     }
 
+    pub fn eat_with_doc_comments(&mut self) -> Token<'arena> {
+        match self.tokens.get(self.pos).copied() {
+            Some(tok) => {
+                self.pos += 1;
+                tok
+            }
+            None => self.eof_token(),
+        }
+    }
+
     pub fn eat(&mut self) -> Token<'arena> {
         loop {
             match self.tokens.get(self.pos).copied() {

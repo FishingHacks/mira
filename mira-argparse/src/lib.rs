@@ -27,6 +27,7 @@ pub fn parse_args() -> MiraArgs {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Action {
     /// Prints the current mira and mirac version
     Version,
@@ -192,5 +193,5 @@ pub struct ExpandArgs {
     /// the file to expand
     pub file: PathBuf,
     /// File to emit the ir to (or specify `-` for stdout)
-    pub output: Option<PathOrStdout>,
+    pub output: PathOrStdout,
 }

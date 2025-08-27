@@ -21,6 +21,17 @@ impl HTMLGenerateContext<'_> {
         pulldown_cmark::html::push_html(output, passes);
     }
 
+    pub fn generate_ref_comment(&self, comment: DocComment, output: &mut String) {
+        self.tc_ctx.ctx.with_doc_comment(comment, |v| {
+            let Some(line) = v.lines().find(|l| !l.is_empty()) else {
+                return;
+            };
+            output.push_str(r#"<dd class="description">"#);
+            self.generate_markdown(line, output);
+            output.push_str("</dd>");
+        });
+    }
+
     pub fn generate_doc_comment(&self, comment: DocComment, output: &mut String) {
         self.tc_ctx.ctx.with_doc_comment(comment, |v| {
             if v.is_empty() {

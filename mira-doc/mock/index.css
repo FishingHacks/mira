@@ -255,6 +255,32 @@ h1, h2, h3, h4, h5, h6 {
     font-size: 1.15em;
     margin: .25em 0;
     display: block;
+    max-width: max-content;
+}
+
+.item-ref {
+    margin: .125em 0;
+}
+
+.item-list {
+    display: grid;
+    grid-template-columns: 17% 83%;
+    width: 100%;
+    align-items: center;
+}
+
+.item-list > dt {
+    grid-column-start: 1;
+    overflow-wrap: anywhere;
+}
+
+.item-list > dd {
+    margin: 0;
+    grid-column-start: 2;
+}
+
+.item-list > dd p {
+    margin: 0;
 }
 
 .header {
@@ -290,6 +316,17 @@ table td {
 
 table th, table td {
     padding: .5em;
+}
+
+.description code {
+    background-color: var(--code-background);
+    color: var(--code-color);
+    padding: 0 .25em;
+    border-radius: 4px;
+}
+
+.description a code {
+    color: var(--link);
 }
 
 :root[color-scheme="light"] {

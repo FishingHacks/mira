@@ -1,32 +1,53 @@
+//! Compiler intrinsics -- you really shouldn't touch this, unless some intrinsic is exported to somewhere else.
+
 @intrinsic("unreachable")
+/// Marks an unreachable branch. Triggers UB when reached.
+///
+/// See More: [`unreachable` (llvm instruction)](https://llvm.org/docs/LangRef.html#unreachable-instruction)
 pub fn unreachable() -> ! { while(true) {} }
 
 @llvm_intrinsic("trap")
-pub fn trap() -> ! { while(true) {} }
+/// Traps the processor, or, if no such instruction exists, aborts the process.
+///
+/// See More: [`llvm.trap`](https://llvm.org/docs/LangRef.html#llvm-trap-intrinsic)
+pub fn abort() -> ! { while(true) {} }
 
 @llvm_intrinsic("debugtrap")
+/// Triggers a breakpoint
+///
+/// See More: [`llvm.debugtrap`](https://llvm.org/docs/LangRef.html#llvm-debugtrap-intrinsic)
 pub fn breakpoint(){}
 
 @llvm_intrinsic("returnaddress")
+/// Returns the return address of the current function, or one of it's callers, depending on if it was inlined or not.
+///
+/// See More: [`llvm.returnaddress`](https://llvm.org/docs/LangRef.html#llvm-returnaddress-intrinsic)
 pub fn return_address() -> usize = 0;
 
 @intrinsic("size_of")
+/// Returns the size of the type `T`
 pub fn size_of<T>() -> usize = 0;
 
 @intrinsic("get_metadata")
+/// Gets the metadata of the reference. This is the vtable pointer for `&dyn _`, or the array length for `&[_]`. Returns 0 for all sized types.
 pub fn get_metadata<unsized T>(_: &T) -> usize = 0;
 
 @intrinsic("offset")
+/// Offsets a pointer by some amount of bytes. Equivalent to `(ptr as &void as usize + by) as &void as &T`
 fn offset<T>(ptr: &T, by: usize) -> &T = ptr;
 
 @intrinsic("with_metadata")
+/// Sets the metadata of the pointer. This would be the vtable pointer for `&dyn _` or the array length for `&[_]`. Does nothing for all sized types.
 fn with_metadata<T, unsized R>(ptr: &T, data: usize) -> &R {while(true){}}
 
 @intrinsic("size_of_val")
+/// Gets the size of the value of type T at the pointer. This takes into account number of elements for `&[_]` or the size of the underlying type for `&dyn _`.
 pub fn size_of_val<unsized T>(ptr: &T) -> usize = 0;
 
 @intrinsic("call_main")
+/// Calls the main function, if it exists
 pub fn call_main() = void;
 
 @intrinsic("type_name")
+/// Returns the typename of the type `T`
 pub fn type_name<unsized T>() -> &str = "";

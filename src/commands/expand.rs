@@ -15,7 +15,7 @@ pub fn expand_main(args: ExpandArgs) {
     else {
         return;
     };
-    let Some(emit_method) = to_emit(args.output) else {
+    let Some(emit_method) = to_emit(Some(args.output)) else {
         return;
     };
     if let Err(e) = dcx.emit_tokens(&tokens, emit_method) {

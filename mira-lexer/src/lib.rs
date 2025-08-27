@@ -194,7 +194,9 @@ impl<'arena> Lexer<'arena> {
             //  */
             // gets parsed as "meow\nmeow"
             '/' if matches!(self.peek(), '/' | '*') && self.peek2() == '!' => {
-                if self.tokens.len() < 2 || self.tokens[0].typ != TokenType::Eof {
+                if self.tokens.len() > 1
+                    || (!self.tokens.is_empty() && self.tokens[0].typ != TokenType::Eof)
+                {
                     let now = self.current;
                     let single_line = self.advance() == '/';
                     self.advance();
@@ -211,7 +213,7 @@ impl<'arena> Lexer<'arena> {
                 let span = self.span_from(now);
                 let comment = self.ctx.add_doc_comment(s.into_boxed_str());
                 Ok(Token::new(
-                    TokenType::DocComment,
+                    TokenType::ModuleDocComment,
                     Some(Literal::DocComment(comment)),
                     span,
                 ))

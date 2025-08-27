@@ -1,3 +1,8 @@
+//! Lang items
+//!
+//! Lang items are items implemented in mira, that the compiler is interested in, because those items have special meaning for the compiler.
+//! This could be for example the u64 implementation struct, the range struct, or the panic function. Most lang items are in this module.
+
 use pkg::print_str;
 use pkg::print_char;
 use pkg::print_newline;
@@ -49,74 +54,119 @@ macro! print_impl {
     };
 }
 
+/// Prints a `u64` to stdout
 print_impl!(unsigned u64 20)
+/// Prints a `u32` to stdout
 print_impl!(unsigned u32 10)
+/// Prints a `u16` to stdout
 print_impl!(unsigned u16 5)
+/// Prints a `u8` to stdout
 print_impl!(unsigned u8 3)
+/// Prints an `i64` to stdout
 print_impl!(signed i64 19)
+/// Prints an `i32` to stdout
 print_impl!(signed i32 10)
+/// Prints an `i16` to stdout
 print_impl!(signed i16 5)
+/// Prints an `i8` to stdout
 print_impl!(signed i8 3)
 
 @lang("u8")
+/// Struct that implements functions for `u8`
 pub struct u8_t {;
+    /// Prints the number to stdout
     fn print(self: u8) = print_u8(self);
+    /// Prints the number as well as a newline to stdout
     fn println(self: u8) { print_u8(self); print_newline(); }
 }
 @lang("u16")
+/// Struct that implements functions for `u16`
 pub struct u16_t {;
+    /// Prints the number to stdout
     fn print(self: u16) = print_u16(self);
+    /// Prints the number as well as a newline to stdout
     fn println(self: u16) { print_u16(self); print_newline(); }
 }
 @lang("u32")
+/// Struct that implements functions for `u32`
 pub struct u32_t {;
+    /// Prints the number to stdout
     fn print(self: u32) = print_u32(self);
+    /// Prints the number as well as a newline to stdout
     fn println(self: u32) { print_u32(self); print_newline(); }
 }
 @lang("u64")
+/// Struct that implements functions for `u64`
 pub struct u64_t {;
+    /// Prints the number to stdout
     fn print(self: u64) = print_u64(self);
+    /// Prints the number as well as a newline to stdout
     fn println(self: u64) { print_u64(self); print_newline(); }
 }
 @lang("usize")
+/// Struct that implements functions for `usize`
 pub struct usize_t {;
+    /// Prints the number to stdout
     fn print(self: usize) = print_u64(self as u64);
+    /// Prints the number as well as a newline to stdout
     fn println(self: usize) { print_u64(self as u64); print_newline(); }
 }
 
 @lang("i8")
+/// Struct that implements functions for `i8`
 pub struct i8_t {;
+    /// Prints the number to stdout
     fn print(self: i8) = print_i8(self);
+    /// Prints the number as well as a newline to stdout
     fn println(self: i8) { print_i8(self); print_newline(); }
 }
 @lang("i16")
+/// Struct that implements functions for `i16`
 pub struct i16_t {;
+    /// Prints the number to stdout
     fn print(self: i16) = print_i16(self);
+    /// Prints the number as well as a newline to stdout
     fn println(self: i16) { print_i16(self); print_newline(); }
 }
 @lang("i32")
+/// Struct that implements functions for `i32`
 pub struct i32_t {;
+    /// Prints the number to stdout
     fn print(self: i32) = print_i32(self);
+    /// Prints the number as well as a newline to stdout
     fn println(self: i32) { print_i32(self); print_newline(); }
 }
 @lang("i64")
+/// Struct that implements functions for `i64`
 pub struct i64_t {;
+    /// Prints the number to stdout
     fn print(self: i64) = print_i64(self);
+    /// Prints the number as well as a newline to stdout
     fn println(self: i64) { print_i64(self); print_newline(); }
 }
 @lang("isize")
+/// Struct that implements functions for `isize`
 pub struct isize_t {;
+    /// Prints the number to stdout
     fn print(self: isize) = print_i64(self as i64);
+    /// Prints the number as well as a newline to stdout
     fn println(self: isize) { print_i64(self as i64); print_newline(); }
 }
 @lang("bool")
+/// Struct that implements functions for `bool`
 pub struct bool_t {;
+    /// Prints the boolean to stdout
     fn print(self: bool) { if (self) print_str("true"); else print_str("false"); }
+    /// Prints the boolean as well as a newline to stdout
     fn println(self: bool) { if (self) print_str("true\n"); else print_str("false\n"); }
 }
 @lang("str")
+/// Struct that implements functions for `str_t`
 pub struct str_t {;
+    /// Prints the string to stdout
     fn print(self: &str) = print_str(self);
+    /// Prints the string as well as a new line character (`'\n'`) to stdout
     fn println(self: &str) { print_str(self); print_newline(); }
+    /// Gets the length of the string
     fn len(self: &str) -> usize = get_metadata<str>(self);
 }

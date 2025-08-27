@@ -59,6 +59,7 @@ fn parse_single<'arena>(
     let file = lexer.file.clone();
     let mut tokens = lexer.into_tokens();
     let mut comment = None;
+
     if let Some(tok) = tokens.first() {
         if tok.typ == TokenType::ModuleDocComment {
             let Some(Literal::DocComment(v)) = tok.literal else {

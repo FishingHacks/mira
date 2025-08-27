@@ -1,6 +1,11 @@
+//! Panicking
+//!
+//! Module to panic during execution because something went very wrong
+
 use pkg::print_u64_hex;
 use pkg::cstrlen;
 use pkg::os::write;
+use pkg::os::exit;
 
 struct unw_cursor { inner: [u64; 127] }
 struct unw_context { inner: [u64; 121] }
@@ -17,6 +22,7 @@ extern fn unw_get_reg(cursor: &unw_cursor, register: u32, value: &usize);
 @alias("_Ux86_64_get_proc_name")
 extern fn unw_get_proc_name(cursor: &unw_cursor, name: &u8, name_size: usize, offset: &usize) -> i32;
 
+/// Shows the current backtrace
 pub fn show_bt() {
     let cursor = unw_cursor { inner: [0u64; 127] };
     let context = unw_context { inner: [0u64; 121] };
@@ -41,9 +47,11 @@ pub fn show_bt() {
     }
 }
 
+/// Prints "panic: {message}\n", prints the backtrace and exits.
 pub fn panic(message: &str) {
     "panic: ".print();
     message.println();
     "".println();
     show_bt();
+    exit(110);
 }

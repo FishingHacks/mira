@@ -13,7 +13,7 @@ use mira_parser::{
     annotations::Annotations,
     module::{ExternalFunction, Function, ModuleScopeValue},
 };
-use mira_spans::Symbol;
+use mira_spans::{Symbol, context::DocComment};
 use mira_typeck::{
     Ty, TyKind, TypeCtx, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedModule,
     TypedStatic, TypedStruct, TypedTrait, default_types,
@@ -690,15 +690,20 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             }
         }
 
-        if !modules.is_empty() {
-            s.push_str(r##"<h2 id="modules" class="anchorable header">Modules<a class="anchor" href="#modules">§</a></h2>"##);
+        let has_modules = !modules.is_empty();
+        if has_modules {
+            s.push_str(r##"<h2 id="modules" class="anchorable header">Modules<a class="anchor" href="#modules">§</a></h2><dl class="item-list">"##);
         }
         for key in modules {
             self.write_reference(ModuleScopeValue::Module(key.cast()), &mut s, curfile);
         }
+        if has_modules {
+            s.push_str("</dl>");
+        }
 
-        if !functions.is_empty() {
-            s.push_str(r##"<h2 id="functions" class="anchorable header">Functions<a class="anchor" href="#functions">§</a></h2>"##);
+        let has_functions = !functions.is_empty();
+        if has_functions {
+            s.push_str(r##"<h2 id="functions" class="anchorable header">Functions<a class="anchor" href="#functions">§</a></h2><dl class="item-list">"##);
         }
         for key in functions {
             let key = match key {
@@ -707,26 +712,41 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             };
             self.write_reference(key, &mut s, curfile);
         }
+        if has_functions {
+            s.push_str("</dl>");
+        }
 
-        if !structs.is_empty() {
-            s.push_str(r##"<h2 id="structs" class="anchorable header">Structs<a class="anchor" href="#structs">§</a></h2>"##);
+        let has_structs = !structs.is_empty();
+        if has_structs {
+            s.push_str(r##"<h2 id="structs" class="anchorable header">Structs<a class="anchor" href="#structs">§</a></h2><dl class="item-list">"##);
         }
         for key in structs {
             self.write_reference(ModuleScopeValue::Struct(key.cast()), &mut s, curfile);
         }
+        if has_structs {
+            s.push_str("</dl>");
+        }
 
-        if !traits.is_empty() {
-            s.push_str(r##"<h2 id="traits" class="anchorable header">Traits<a class="anchor" href="#traits">§</a></h2>"##);
+        let has_traits = !traits.is_empty();
+        if has_traits {
+            s.push_str(r##"<h2 id="traits" class="anchorable header">Traits<a class="anchor" href="#traits">§</a></h2><dl class="item-list">"##);
         }
         for key in traits {
             self.write_reference(ModuleScopeValue::Trait(key.cast()), &mut s, curfile);
         }
+        if has_traits {
+            s.push_str("</dl>");
+        }
 
-        if !statics.is_empty() {
-            s.push_str(r##"<h2 id="statics" class="anchorable header">Statics<a class="anchor" href="#statics">§</a></h2>"##);
+        let has_statics = !statics.is_empty();
+        if has_statics {
+            s.push_str(r##"<h2 id="statics" class="anchorable header">Statics<a class="anchor" href="#statics">§</a></h2><dl class="item-list">"##);
         }
         for key in statics {
             self.write_reference(ModuleScopeValue::Static(key.cast()), &mut s, curfile);
+        }
+        if has_statics {
+            s.push_str("</dl>");
         }
 
         s.push_str(HTML_POSTAMBLE);
@@ -734,43 +754,53 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     }
 
     fn write_reference(&self, value: ModuleScopeValue<'ctx>, s: &mut String, curfile: &Path) {
-        use ModuleScopeValue as V;
-
         let path = self.get_item_path(value, curfile);
         let ty = item_ty(value);
-        let name = match value {
-            V::Function(key) => self.tc_ctx.functions.read()[key.cast()]
-                .0
-                .name
-                .unwrap()
-                .symbol(),
-            V::ExternalFunction(key) => self.tc_ctx.external_functions.read()[key.cast()]
-                .0
-                .name
-                .unwrap()
-                .symbol(),
-            V::Struct(key) => self.tc_ctx.structs.read()[key.cast()].name.symbol(),
-            V::Static(key) => self.tc_ctx.statics.read()[key.cast()].name.symbol(),
-            V::Module(key) => self.tc_ctx.modules.read()[key].name,
-            V::Trait(key) => self.tc_ctx.traits.read()[key.cast()].name.symbol(),
-        };
-        s.push_str("<span class=\"item-ref anchorable ");
-        s.push_str(ty);
-        s.push_str("\" id=\"");
-        s.push_str(ty);
-        s.push('.');
-        s.push_fmt(format_args!("{}", urlencode(name.to_str())));
-        s.push_str("\"><a href=\"");
+        let (name, comment) = self.comment_name_of(value);
+        s.push_str("<dt><a href=\"");
         s.push_fmt(format_args!("{}", urlencode(&path)));
         s.push_str("\" class=\"item-ref ");
         s.push_str(ty);
         s.push_str("\">");
         s.escaped().push_str(name.to_str());
-        s.push_str("</a><a class=\"anchor\" href=\"#");
-        s.push_str(ty);
-        s.push('.');
-        s.push_fmt(format_args!("{}", urlencode(name.to_str())));
-        s.push_str("\">§</a></span>");
+        s.push_str("</a></dt>");
+
+        self.generate_ref_comment(comment, s);
+    }
+
+    fn comment_name_of(&self, item: ModuleScopeValue<'_>) -> (Symbol<'ctx>, DocComment) {
+        match item {
+            ModuleScopeValue::Function(store_key) => {
+                let reader = self.tc_ctx.functions.read();
+                let v = &reader[store_key.cast()].0;
+                (v.name.unwrap().symbol(), v.comment)
+            }
+            ModuleScopeValue::ExternalFunction(store_key) => {
+                let reader = self.tc_ctx.external_functions.read();
+                let v = &reader[store_key.cast()].0;
+                (v.name.unwrap().symbol(), v.comment)
+            }
+            ModuleScopeValue::Struct(store_key) => {
+                let reader = self.tc_ctx.structs.read();
+                let v = &reader[store_key.cast()];
+                (v.name.symbol(), v.comment)
+            }
+            ModuleScopeValue::Static(store_key) => {
+                let reader = self.tc_ctx.statics.read();
+                let v = &reader[store_key.cast()];
+                (v.name.symbol(), v.comment)
+            }
+            ModuleScopeValue::Module(store_key) => {
+                let reader = self.tc_ctx.modules.read();
+                let v = &reader[store_key.cast()];
+                (v.name, v.comment)
+            }
+            ModuleScopeValue::Trait(store_key) => {
+                let reader = self.tc_ctx.traits.read();
+                let v = &reader[store_key.cast()];
+                (v.name.symbol(), v.comment)
+            }
+        }
     }
 
     fn write_ty(&self, s: &mut String, ty: Ty<'_>, curfile: &Path) {

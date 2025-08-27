@@ -1,3 +1,7 @@
+//! # Mira Standard Library
+//!
+//! Standard library for mira. Here is where all the intrinsics and lang items live too. (compiler internals yippieeee)
+
 pub mod allocate;
 pub mod clone_copy;
 pub mod intrinsics;
@@ -13,14 +17,19 @@ pub use langitems::print_u64;
 pub use langitems::print_i64;
 pub use panicking::panic;
 
+/// Prints `string` to stdout
 pub fn print_str(string: &str) = write(1, string as &u8, string.len());
+/// Prints the character `c` to stdout
 pub fn print_char(c: u8) = write(1, &c, 1);
+/// Prints a newliine to stdout
 pub fn print_newline() = print_char(0xa);
+/// Prints `string` with a newline (`\n`) to stdout
 pub fn print_str_newline(string: &str) {
     print_str(string);
     print_newline();
 }
 
+/// Gets the length of a c string
 pub fn cstrlen(cstr: &u8) -> usize {
     let len = 0usize;
     while (*cstr != 0) {
@@ -29,6 +38,7 @@ pub fn cstrlen(cstr: &u8) -> usize {
     }
     return len;
 }
+/// Prints a u64 as a hex literal
 pub fn print_u64_hex(val: u64) {
     print_str("0x");
     if (val == 0) {
