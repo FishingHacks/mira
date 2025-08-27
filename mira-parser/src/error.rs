@@ -208,6 +208,13 @@ pub enum ParsingError<'arena> {
         loc: Span<'arena>,
         name: String,
     },
+    #[error("{error}")]
+    ArbitraryError {
+        error: String,
+        label: String,
+        #[primary_label("{label}")]
+        label_span: Span<'arena>,
+    },
 }
 
 #[derive(Debug, ErrorData)]

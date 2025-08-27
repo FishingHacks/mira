@@ -7,7 +7,7 @@ use std::{
 
 use crate::{error::ParsingError, std_annotations, tokenstream::TokenStream};
 use mira_lexer::Token;
-use mira_spans::Span;
+use mira_spans::{SharedCtx, Span};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AnnotationReceiver {
@@ -50,12 +50,12 @@ pub trait Annotation: Display + Debug + Any {
     }
 }
 
-pub trait ClonableAnnotation: Annotation + 'static + Send + Sync {
+pub trait ClonableAnnotation: Annotation + Send + Sync {
     fn clone_box(&self) -> Box<dyn ClonableAnnotation>;
     fn as_any(&self) -> &dyn Any;
 }
 
-impl<T: Annotation + Clone + 'static + Send + Sync> ClonableAnnotation for T {
+impl<T: Annotation + Clone + Send + Sync> ClonableAnnotation for T {
     fn clone_box(&self) -> Box<dyn ClonableAnnotation> {
         Box::new(self.clone())
     }
@@ -70,8 +70,14 @@ impl Clone for Box<dyn ClonableAnnotation> {
     }
 }
 
-pub type AnnotationParser =
-    Box<dyn Fn(TokenStream) -> Result<Box<dyn ClonableAnnotation>, ParsingError> + Send + Sync>;
+pub type AnnotationParser = Box<
+    dyn for<'ctx> Fn(
+            TokenStream<'ctx>,
+            SharedCtx<'ctx>,
+        ) -> Result<Box<dyn ClonableAnnotation>, ParsingError<'ctx>>
+        + Send
+        + Sync,
+>;
 
 static ANNOTATIONS_REGISTRY: LazyLock<HashMap<&'static str, AnnotationParser>> =
     LazyLock::new(|| {
@@ -86,9 +92,10 @@ pub fn parse_annotation<'arena>(
     name: &str,
     tokens: Vec<Token<'arena>>,
     span: Span<'arena>,
+    ctx: SharedCtx<'arena>,
 ) -> Result<Box<dyn ClonableAnnotation>, ParsingError<'arena>> {
     if let Some(parser) = ANNOTATIONS_REGISTRY.get(name) {
-        parser(TokenStream::new(tokens, span))
+        parser(TokenStream::new(tokens, span), ctx)
     } else {
         Err(ParsingError::UnknownAnnotation {
             loc: span,
@@ -127,8 +134,10 @@ impl<'arena> Annotations<'arena> {
         name: &str,
         tokens: Vec<Token<'arena>>,
         span: Span<'arena>,
+        ctx: SharedCtx<'arena>,
     ) -> Result<(), ParsingError<'arena>> {
-        self.0.push((parse_annotation(name, tokens, span)?, span));
+        self.0
+            .push((parse_annotation(name, tokens, span, ctx)?, span));
         Ok(())
     }
 
@@ -195,5 +204,16 @@ impl<'arena> Annotations<'arena> {
                 self.0.remove(i);
             }
         }
+    }
+
+    pub fn add_annotaion(&mut self, v: Box<dyn ClonableAnnotation>, span: Span<'arena>) {
+        self.0.push((v, span));
+    }
+
+    pub fn retain<T: ClonableAnnotation + 'static>(&mut self, mut f: impl FnMut(&T) -> bool) {
+        self.0.retain(|v| match <dyn Any>::downcast_ref(&v.0) {
+            Some(v) => f(v),
+            None => true,
+        });
     }
 }

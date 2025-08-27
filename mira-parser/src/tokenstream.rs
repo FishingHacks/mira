@@ -1,8 +1,8 @@
 use std::slice::SliceIndex;
 
 use crate::error::ParsingError;
-use mira_lexer::{Token, TokenType};
-use mira_spans::{Ident, Span, interner::Symbol};
+use mira_lexer::{Literal, Token, TokenType};
+use mira_spans::{Ident, Span, context::DocComment, interner::Symbol};
 
 pub trait TokenHolder<'arena>: AsRef<[Token<'arena>]> {
     fn len(&self) -> usize {
@@ -76,9 +76,21 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         }
     }
 
-    /// returns all tokens from the current position of the stream
-    pub fn tokens(&self) -> &[Token<'arena>] {
-        &self.tokens.as_ref()[self.pos..]
+    /// returns all tokens from the current position of the stream, without doc comments
+    pub fn tokens(&self) -> impl Iterator<Item = Token<'arena>> {
+        self.tokens.as_ref()[self.pos..]
+            .iter()
+            .filter(|v| v.typ != TokenType::DocComment)
+            .copied()
+    }
+
+    /// returns all previous tokens
+    fn previous_tokens(&self) -> impl Iterator<Item = Token<'arena>> {
+        self.tokens.as_ref()[..self.pos]
+            .iter()
+            .rev()
+            .filter(|v| v.typ != TokenType::DocComment)
+            .copied()
     }
 
     pub fn token_holder(&self) -> &Holder {
@@ -95,8 +107,13 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
 
     /// returns true if the inner vec is empty or there's only an Eof token left.
     pub fn is_at_end(&self) -> bool {
-        let tokens = self.tokens();
-        tokens.is_empty() || (tokens.len() == 1 && tokens[0].typ == TokenType::Eof)
+        let mut toks = self.tokens();
+        let token = toks.next();
+        match token {
+            _ if toks.next().is_some() => false,
+            Some(v) if v.typ != TokenType::Eof => false,
+            _ => true,
+        }
     }
 
     pub fn eof_span(&self) -> Span<'arena> {
@@ -109,52 +126,61 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
 
     /// dismisses (removes) a token
     pub fn dismiss(&mut self) {
-        self.pos += 1;
+        self.eat();
     }
 
     pub fn eat(&mut self) -> Token<'arena> {
-        match self.tokens.get(self.pos).copied() {
-            Some(tok) => {
-                self.pos += 1;
-                tok
+        loop {
+            match self.tokens.get(self.pos).copied() {
+                Some(tok) if tok.typ == TokenType::DocComment => self.pos += 1,
+                Some(tok) => {
+                    self.pos += 1;
+                    return tok;
+                }
+                None => return self.eof_token(),
             }
-            None => self.eof_token(),
         }
     }
 
     /// returns the "current" token, aka the last token dismissed or returned by eat
     pub fn current(&self) -> Token<'arena> {
-        assert!(self.pos > 0);
-        *self
-            .tokens
-            .get(self.pos - 1)
+        self.previous_tokens()
+            .next()
             .expect("there should always have been a token")
+    }
+
+    pub fn eat_doc_comment(&mut self) -> Option<DocComment> {
+        let tok = self.tokens.get(self.pos)?;
+        if tok.typ != TokenType::DocComment {
+            return None;
+        }
+        self.pos += 1;
+        let Some(Literal::DocComment(v)) = tok.literal else {
+            unreachable!()
+        };
+        assert_ne!(
+            self.tokens.get(self.pos).map(|v| v.typ),
+            Some(TokenType::DocComment),
+        );
+        Some(v)
     }
 
     /// returns the token that would be returned by the next eat() call
     pub fn peek(&self) -> Token<'arena> {
-        self.tokens
-            .get(self.pos)
-            .copied()
-            .unwrap_or_else(|| self.eof_token())
+        self.tokens().next().unwrap_or_else(|| self.eof_token())
     }
 
     // the token returned by the eat call before the current one
     pub fn last(&self) -> Token<'arena> {
-        assert!(self.pos > 1);
-        self.tokens
-            .get(self.pos - 2)
-            .copied()
+        self.previous_tokens()
+            .nth(1)
             .expect("there should always have been a token")
     }
 
     /// returns the token that would be returned by the next eat() call after a prior eat/dismiss
     /// call
     pub fn peek2(&self) -> Token<'arena> {
-        self.tokens
-            .get(self.pos + 1)
-            .copied()
-            .unwrap_or_else(|| self.eof_token())
+        self.tokens().nth(1).unwrap_or_else(|| self.eof_token())
     }
 
     /// Expects and removes a token. Only removes if the token matches the expected token.

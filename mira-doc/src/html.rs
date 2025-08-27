@@ -56,7 +56,7 @@ pub struct HTMLGenerateContext<'ctx> {
     pub path: PathBuf,
     pub generated: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
     pub queued: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
-    tc_ctx: Arc<TypecheckingContext<'ctx>>,
+    pub tc_ctx: Arc<TypecheckingContext<'ctx>>,
     modules: Vec<StoreKey<TypedModule<'ctx>>>,
 }
 
@@ -371,6 +371,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             self.write_ty(&mut s, contract.return_type, curfile);
         }
         s.push_str(" { .. }</code></pre>");
+        self.generate_doc_comment(contract.comment, &mut s);
+
         s.push_str(HTML_POSTAMBLE);
         s
     }
@@ -410,6 +412,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             self.write_ty(&mut s, contract.return_type, curfile);
         }
         s.push_str(" { .. }</code></pre>");
+        self.generate_doc_comment(contract.comment, &mut s);
+
         s.push_str(HTML_POSTAMBLE);
         s
     }

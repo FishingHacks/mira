@@ -11,7 +11,7 @@ pub use expression::{
 };
 use mira_common::store::StoreKey;
 use mira_lexer::{Token, TokenType};
-use mira_spans::{BytePos, SharedCtx, SourceFile, SpanData};
+use mira_spans::{BytePos, SharedCtx, SourceFile, SpanData, context::DocComment};
 use module::Module;
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 use tokenstream::{BorrowedTokenStream, TokenStream};
@@ -33,6 +33,7 @@ pub struct Parser<'a, 'arena> {
 
     stream: BorrowedTokenStream<'arena, 'a>,
     current_annotations: Annotations<'arena>,
+    current_doc_comment: Option<DocComment>,
     pub key: StoreKey<Module<'arena>>,
 }
 
@@ -67,13 +68,15 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         Self {
             ctx,
             stream,
-            // tokens,
-            // current: 0,
             current_annotations: Default::default(),
+            current_doc_comment: None,
             file,
             key,
-            // imports: HashMap::new(),
         }
+    }
+
+    pub fn take_doc_comment(&mut self) -> DocComment {
+        self.current_doc_comment.take().unwrap_or(DocComment::EMPTY)
     }
 
     // gets to the next sensical expression/type boundary

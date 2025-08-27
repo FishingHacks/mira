@@ -32,7 +32,10 @@ impl Display for LangItemAnnotation {
     }
 }
 
-pub fn parse(mut tokens: TokenStream) -> Result<LangItemAnnotation, ParsingError> {
+pub fn parse<'a>(
+    mut tokens: TokenStream<'a>,
+    _: SharedCtx<'a>,
+) -> Result<LangItemAnnotation, ParsingError<'a>> {
     let (item, _) = tokens.expect_string()?;
     tokens.finish()?;
     Ok(LangItemAnnotation(item.to_string()))

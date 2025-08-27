@@ -1,3 +1,4 @@
+use mira_spans::context::DocComment;
 use mira_spans::{Ident, Span, Symbol};
 use std::fmt::{Debug, Display, Write};
 use std::str::FromStr;
@@ -97,6 +98,7 @@ token_type! {
     AnnotationIntroducer = "@",
     NamespaceAccess = "::",
     QuestionMark = "?",
+    DocComment = "doc comment",
     Eof = "",
 }
 
@@ -166,6 +168,7 @@ pub enum Literal<'arena> {
     UInt(u64, NumberType),
     String(Symbol<'arena>),
     Bool(bool),
+    DocComment(DocComment),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

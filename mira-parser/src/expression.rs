@@ -309,6 +309,7 @@ impl<'arena> LiteralValue<'arena> {
                 Literal::SInt(int, typ) => LiteralValue::SInt(*int, *typ),
                 Literal::UInt(uint, typ) => LiteralValue::UInt(*uint, *typ),
                 Literal::String(string) => LiteralValue::String(*string),
+                Literal::DocComment(_) => unreachable!(),
             }),
             TokenType::VoidLiteral => Some(LiteralValue::Void),
             TokenType::IdentifierLiteral => match value.literal {
@@ -633,6 +634,7 @@ impl<'arena> Expression<'arena> {
                             annotations: std::mem::take(&mut contract.annotations),
                             span: contract.span,
                             generics: std::mem::take(&mut contract.generics),
+                            comment: contract.comment,
                         },
                         std::mem::replace(
                             &mut **statements,

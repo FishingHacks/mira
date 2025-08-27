@@ -16,7 +16,10 @@ impl Display for Noinline {
         f.write_fmt(format_args!("@{}()", self.get_name()))
     }
 }
-pub fn parse(mut tokens: TokenStream) -> Result<Noinline, ParsingError> {
+pub fn parse<'a>(
+    mut tokens: TokenStream<'a>,
+    _: SharedCtx<'a>,
+) -> Result<Noinline, ParsingError<'a>> {
     tokens.finish()?;
     Ok(Noinline)
 }

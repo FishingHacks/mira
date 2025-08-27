@@ -10,7 +10,7 @@ use crate::{
 };
 use mira_common::store::StoreKey;
 use mira_lexer::{Token, TokenType};
-use mira_spans::interner::symbols;
+use mira_spans::{context::DocComment, interner::symbols};
 
 use super::{
     Expression, Parser, PathWithoutGenerics,
@@ -568,6 +568,17 @@ impl<'arena> Parser<'_, 'arena> {
             return Err(ParsingError::ExpectedAnnotationStatement(self.peek().span));
         }
 
+        if let Some(doc_comment) = self.eat_doc_comment() {
+            match self.current_doc_comment {
+                Some(v) => {
+                    self.ctx.merge_doc_comments(v, doc_comment);
+                    self.ctx.clear_doc_comment(doc_comment);
+                }
+                None => self.current_doc_comment = Some(doc_comment),
+            }
+        }
+        let consumes_doc_comment = self.peek().typ != TokenType::AnnotationIntroducer;
+
         let maybe_statement = match self.peek().typ {
             TokenType::Extern if !is_global => invalid_kw!("external value/function"),
             TokenType::Fn if !is_global => invalid_kw!("function"),
@@ -622,7 +633,13 @@ impl<'arena> Parser<'_, 'arena> {
                 return Err(ParsingError::ExpressionAtTopLevel(self.peek().span));
             }
             _ => self.parse_expression_stmt().map(Some),
-        }?;
+        };
+
+        if consumes_doc_comment {
+            self.current_doc_comment = None;
+        }
+
+        let maybe_statement = maybe_statement?;
         if maybe_statement.is_some() {
             assert_eq!(
                 self.current_annotations.len(),
@@ -1199,7 +1216,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
 
         self.current_annotations
-            .push_annotation(&name, args, self.span_from(span))
+            .push_annotation(&name, args, self.span_from(span), self.ctx)
     }
 }
 
@@ -1225,6 +1242,7 @@ impl Display for Argument<'_> {
 
 #[derive(Clone, Debug)]
 pub struct FunctionContract<'arena> {
+    pub comment: DocComment,
     pub name: Option<Ident<'arena>>,
     pub arguments: Vec<Argument<'arena>>,
     pub return_type: TypeRef<'arena>,
@@ -1292,6 +1310,7 @@ impl<'arena> Parser<'_, 'arena> {
         public: bool,
     ) -> Result<(Callable<'arena>, Option<Statement<'arena>>), ParsingError<'arena>> {
         let annotations = std::mem::take(&mut self.current_annotations);
+        let comment = self.take_doc_comment();
 
         let span = if public {
             self.current().span
@@ -1375,6 +1394,7 @@ impl<'arena> Parser<'_, 'arena> {
             span,
             annotations,
             generics,
+            comment,
         };
         Ok((
             Callable {

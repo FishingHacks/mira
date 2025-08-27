@@ -1,7 +1,7 @@
 mod arena;
 #[macro_use]
 pub mod interner;
-mod context;
+pub mod context;
 mod span;
 mod symbol;
 

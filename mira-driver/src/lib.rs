@@ -217,6 +217,7 @@ impl<'ctx> Context<'ctx> {
         for tok in tokens {
             method.emit_fmt(format_args!("{tok} "))?;
         }
+        method.emit_fmt(format_args!("\n"))?;
         Ok(())
     }
 

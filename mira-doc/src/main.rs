@@ -9,6 +9,7 @@ use mira_spans::Arena;
 use mira_typeck::{GlobalContext, TypeCtx};
 
 mod html;
+mod markdown;
 
 fn main() {
     let mut args = std::env::args();

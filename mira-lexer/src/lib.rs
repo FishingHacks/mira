@@ -83,6 +83,10 @@ impl<'arena> Lexer<'arena> {
         self.source.get(self.current).copied().unwrap_or('\0')
     }
 
+    fn peek2(&self) -> char {
+        self.source.get(self.current + 1).copied().unwrap_or('\0')
+    }
+
     fn if_char_advance(&mut self, character: char) -> bool {
         if self.peek() != character {
             return false;
@@ -157,6 +161,27 @@ impl<'arena> Lexer<'arena> {
             '-' if self.if_char_advance('=') => token!(MinusAssign),
             '-' if self.if_char_advance('>') => token!(ReturnType),
             '-' => token!(Minus),
+            // doc comment (///) or doc block comment (/**). note that we have to filter out /(^ *\* *|)/, so that
+            // /**
+            //  * meow
+            //  * meow
+            //  */
+            // gets parsed as "meow\nmeow"
+            '/' if self.peek() == self.peek2() && matches!(self.peek(), '/' | '*') => {
+                let single_line = self.advance() == '/';
+                self.advance();
+
+                let now = self.current;
+                let mut s = String::new();
+                self.parse_doc_comments(&mut s, single_line);
+                let span = self.span_from(now);
+                let comment = self.ctx.add_doc_comment(s.into_boxed_str());
+                Ok(Token::new(
+                    TokenType::DocComment,
+                    Some(Literal::DocComment(comment)),
+                    span,
+                ))
+            }
             '/' if self.peek() != '/' && self.peek() != '*' => token!(Divide),
             '%' => token!(Modulo),
             '*' => token!(Asterix),
@@ -179,15 +204,11 @@ impl<'arena> Lexer<'arena> {
                 return Ok(None);
             }
             '/' if self.if_char_advance('*') => {
-                loop {
-                    if self.advance() == '*' && self.if_char_advance('/') {
-                        break;
-                    }
-                }
+                self.skip_multi_line_comment();
                 return Ok(None);
             }
             '/' if self.if_char_advance('/') => {
-                while !self.is_at_end() && self.advance() != '\n' {}
+                self.skip_single_line_comment();
                 return Ok(None);
             }
             '@' => token!(AnnotationIntroducer),
@@ -209,6 +230,121 @@ impl<'arena> Lexer<'arena> {
             }
         }
         .map(Some)
+    }
+
+    fn skip_single_line_comment(&mut self) {
+        while !self.is_at_end() && self.advance() != '\n' {}
+    }
+
+    fn skip_multi_line_comment(&mut self) {
+        loop {
+            if self.advance() == '*' && self.advance() == '/' {
+                break;
+            }
+        }
+    }
+
+    fn skip_spaces(&mut self) {
+        while matches!(self.peek(), ' ' | '\t') {
+            self.advance();
+        }
+    }
+
+    fn parse_multi_line_doc_comment(&mut self, s: &mut String) {
+        self.skip_spaces();
+        // skip the line if it's only `/**`.
+        if self.peek() == '\n' {
+            self.advance();
+        }
+        loop {
+            // skip spaces
+            self.skip_spaces();
+            // skip one '*' and 0+ spaces, if existent and not followed by a '/'.
+            if self.peek2() != '/' && self.if_char_advance('*') {
+                self.skip_spaces();
+            }
+            loop {
+                match self.peek() {
+                    '\n' => {
+                        self.advance();
+                        s.push('\n');
+                        break;
+                    }
+                    '*' if self.peek2() == '/' => {
+                        self.advance();
+                        self.advance();
+                        // /**
+                        //  * meow
+                        //  */
+                        // should be parsed as "meow\n".
+                        if !s.ends_with('\n') {
+                            s.push('\n');
+                        }
+                        return;
+                    }
+                    _ if self.is_at_end() => return,
+                    _ => s.push(self.advance()),
+                }
+            }
+        }
+    }
+
+    fn parse_single_line_doc_comment(&mut self, s: &mut String) {
+        self.skip_spaces();
+        while !self.is_at_end() && !self.if_char_advance('\n') {
+            s.push(self.advance());
+        }
+        if self.is_at_end() {
+            return;
+        }
+        s.push('\n');
+    }
+
+    fn parse_doc_comments(&mut self, s: &mut String, mut single_line: bool) {
+        loop {
+            if single_line {
+                self.parse_single_line_doc_comment(s);
+            } else {
+                self.parse_multi_line_doc_comment(s);
+            }
+            if self.is_at_end() {
+                return;
+            }
+            // look for /// or /**
+            loop {
+                self.skip_spaces();
+                if self.peek() == '/' && self.peek2() == '/' {
+                    self.advance();
+                    self.advance();
+                    // /// was found, continue to the start of the loop
+                    if self.peek() == '/' {
+                        self.advance();
+                        single_line = true;
+                        break;
+                    }
+                    // normal comment, skip it
+                    self.skip_single_line_comment();
+                    continue;
+                }
+                // /* was found, skip normal comment
+                if self.peek() == '/' && self.peek2() == '*' {
+                    self.advance();
+                    self.advance();
+
+                    // /** was found, invoke the multiline parsing procedure
+                    if self.peek() == '*' {
+                        self.advance();
+                        single_line = false;
+                        break;
+                    }
+                    // normal comment, skip it
+                    self.skip_multi_line_comment();
+                    continue;
+                }
+                // if no /// was found, return
+                return;
+            }
+        }
     }
 
     #[inline(always)]
@@ -671,11 +807,7 @@ impl<'arena> Lexer<'arena> {
 
 #[cfg(test)]
 mod test {
-    use mira_spans::{
-        Arena, SourceMap,
-        interner::{SpanInterner, SymbolInterner},
-    };
-    use parking_lot::Mutex;
+    use mira_spans::{Arena, context::GlobalCtx};
 
     use super::*;
 
@@ -739,10 +871,8 @@ mod test {
         ($str: expr; $($pat:pat),* $(,)?) => {
             let mut i = 0;
             let arena = Arena::new();
-            let span_interner = SpanInterner::new(&arena);
-            let string_interner = Mutex::new(SymbolInterner::new(&arena));
-            let source_map = SourceMap::new();
-            let ctx = SharedCtx::new(&string_interner, &span_interner, &source_map);
+            let gtx = GlobalCtx::new(&arena);
+            let ctx = gtx.share();
             let (_, errs) = get_tokens(ctx, $str);
             $(
                 if i >= errs.len() {
@@ -786,10 +916,8 @@ mod test {
     #[test]
     fn test_strings() {
         let arena = Arena::new();
-        let span_interner = SpanInterner::new(&arena);
-        let string_interner = Mutex::new(SymbolInterner::new(&arena));
-        let source_map = SourceMap::new();
-        let ctx = SharedCtx::new(&string_interner, &span_interner, &source_map);
+        let gtx = GlobalCtx::new(&arena);
+        let ctx = gtx.share();
         assert_token_eq(
             r#"
 "a b c";
@@ -813,10 +941,8 @@ mod test {
     #[test]
     fn test_idents() {
         let arena = Arena::new();
-        let span_interner = SpanInterner::new(&arena);
-        let string_interner = Mutex::new(SymbolInterner::new(&arena));
-        let source_map = SourceMap::new();
-        let ctx = SharedCtx::new(&string_interner, &span_interner, &source_map);
+        let gtx = GlobalCtx::new(&arena);
+        let ctx = gtx.share();
         assert_token_eq(
             "jkhdfgkjhdf",
             &[tok!(ctx, IdentifierLiteral, jkhdfgkjhdf)],
@@ -834,10 +960,8 @@ mod test {
     #[test]
     fn test_numbers() {
         let arena = Arena::new();
-        let span_interner = SpanInterner::new(&arena);
-        let string_interner = Mutex::new(SymbolInterner::new(&arena));
-        let source_map = SourceMap::new();
-        let ctx = SharedCtx::new(&string_interner, &span_interner, &source_map);
+        let gtx = GlobalCtx::new(&arena);
+        let ctx = gtx.share();
         assert_token_eq(
             "12; -23; 23.9; -29.3; 0x1; -0x1;",
             &[

@@ -6,4 +6,13 @@ pub fn main() {
     else "2".println();
 }
 
+/// meow
+/// This is a doc comment.
+/**
+ *  This is a multiline comment
+    With spaces
+*   and other stuff
+*/
+/// and back to a single line doc comment
 extern fn get_bool() -> bool;
+

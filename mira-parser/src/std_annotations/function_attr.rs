@@ -31,7 +31,10 @@ impl Display for FunctionAttr {
     }
 }
 
-pub fn parse(mut tokens: TokenStream) -> Result<FunctionAttr, ParsingError> {
+pub fn parse<'a>(
+    mut tokens: TokenStream<'a>,
+    _: SharedCtx<'a>,
+) -> Result<FunctionAttr, ParsingError<'a>> {
     let mut function_attr = FunctionAttr::default();
     let mut needs_comma = false;
     while !tokens.is_at_end() {
@@ -47,7 +50,7 @@ pub fn parse(mut tokens: TokenStream) -> Result<FunctionAttr, ParsingError> {
                 return Err(ParsingError::InvalidFunctionAttribute {
                     loc: ident.span(),
                     name: ident.symbol(),
-                })
+                });
             }
         }
     }

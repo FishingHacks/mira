@@ -30,6 +30,7 @@ impl LLVMIntrinsicAnnotation {
 
 pub fn parse<'arena>(
     mut tokens: TokenStream<'arena>,
+    _: SharedCtx<'arena>,
 ) -> Result<LLVMIntrinsicAnnotation, ParsingError<'arena>> {
     let tok = tokens.expect_one_of(&[TokenType::IdentifierLiteral, TokenType::StringLiteral])?;
     tokens.finish()?;

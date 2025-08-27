@@ -20,7 +20,10 @@ impl Display for ExternAliasAnnotation {
         f.write_fmt(format_args!("@alias({:?})", self.0))
     }
 }
-pub fn parse(mut tokens: TokenStream) -> Result<ExternAliasAnnotation, ParsingError> {
+pub fn parse<'a>(
+    mut tokens: TokenStream<'a>,
+    _: SharedCtx<'a>,
+) -> Result<ExternAliasAnnotation, ParsingError<'a>> {
     let (name, _) = tokens.expect_string()?;
     tokens.finish()?;
     Ok(ExternAliasAnnotation(name.to_string()))

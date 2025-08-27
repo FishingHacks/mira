@@ -380,6 +380,7 @@ impl<'arena> TypecheckingContext<'arena> {
             arguments: Vec::new(),
             return_type: default_types::never,
             generics,
+            comment: writer[function_id].0.comment,
         };
         drop(writer);
 
@@ -422,6 +423,7 @@ impl<'arena> TypecheckingContext<'arena> {
         errors: &mut Diagnostics<'arena>,
     ) {
         let mut writer = context.external_functions.write();
+        let comment = writer[ext_function_id].0.comment;
         let module_id = writer[ext_function_id].2;
         let arguments = std::mem::take(&mut writer[ext_function_id].0.arguments);
         let span = writer[ext_function_id].0.return_type.span();
@@ -437,6 +439,7 @@ impl<'arena> TypecheckingContext<'arena> {
             arguments: Vec::new(),
             return_type: default_types::never,
             generics: Vec::new(),
+            comment,
         };
         drop(writer);
 

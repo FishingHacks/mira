@@ -23,6 +23,7 @@ use mira_parser::{
 };
 use mira_spans::{
     ArenaList, Ident, SourceFile, Span,
+    context::DocComment,
     interner::{Symbol, symbols},
 };
 
@@ -56,6 +57,7 @@ pub struct TypedFunctionContract<'arena> {
     pub span: Span<'arena>,
     pub module_id: StoreKey<TypedModule<'arena>>,
     pub generics: Vec<TypedGeneric<'arena>>,
+    pub comment: DocComment,
 }
 
 impl Hash for TypedFunctionContract<'_> {
@@ -253,6 +255,7 @@ impl<'arena> TypecheckingContext<'arena> {
                         span: functions_reader[key].0.span,
                         module_id: StoreKey::undefined(),
                         generics: Vec::new(),
+                        comment: DocComment::EMPTY,
                     },
                     IR::new(Vec::new(), VecStore::new()),
                 ),
@@ -271,6 +274,7 @@ impl<'arena> TypecheckingContext<'arena> {
                         span: external_functions_reader[key].0.span,
                         module_id: StoreKey::undefined(),
                         generics: Vec::new(),
+                        comment: DocComment::EMPTY,
                     },
                     None,
                 ),

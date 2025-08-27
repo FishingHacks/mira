@@ -130,6 +130,7 @@ fn macro_concat<'arena>(
             Some(Literal::Bool(v)) if v => concat_str.push_str("true"),
             Some(Literal::Bool(_)) => concat_str.push_str("false"),
             Some(Literal::String(ref v)) => concat_str.push_str(v),
+            Some(Literal::DocComment(v)) => ctx.with_doc_comment(v, |v| concat_str.push_str(v)),
         }
     }
     Ok(vec![Token {
@@ -238,13 +239,16 @@ fn macro_file<'arena>(
 }
 
 fn macro_compile_error<'arena>(
-    _: SharedCtx<'arena>,
+    ctx: SharedCtx<'arena>,
     span: Span<'arena>,
     args: &[Token<'arena>],
     diagnostics: &mut Diagnostics<'arena>,
 ) -> Result<Vec<Token<'arena>>, ()> {
     if let Some(lit) = args.first().as_ref().and_then(|v| v.literal.as_ref()) {
         match lit {
+            &Literal::DocComment(v) => {
+                _ = diagnostics.add_compile_error(ctx.with_doc_comment(v, str::to_string), span)
+            }
             Literal::Float(v, _) => _ = diagnostics.add_compile_error(format!("{v}"), span),
             Literal::SInt(v, _) => _ = diagnostics.add_compile_error(format!("{v}"), span),
             Literal::UInt(v, _) => _ = diagnostics.add_compile_error(format!("{v}"), span),

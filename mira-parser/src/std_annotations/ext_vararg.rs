@@ -20,6 +20,9 @@ impl Display for ExternVarArg {
         f.write_str("@ext_vararg()")
     }
 }
-pub fn parse(mut tokens: TokenStream) -> Result<ExternVarArg, ParsingError> {
+pub fn parse<'a>(
+    mut tokens: TokenStream<'a>,
+    _: SharedCtx<'a>,
+) -> Result<ExternVarArg, ParsingError<'a>> {
     tokens.finish().map(|_| ExternVarArg)
 }

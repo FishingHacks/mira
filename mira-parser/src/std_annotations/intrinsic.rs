@@ -32,6 +32,7 @@ impl IntrinsicAnnotation {
 
 pub fn parse<'arena>(
     mut tokens: TokenStream<'arena>,
+    _: SharedCtx<'arena>,
 ) -> Result<IntrinsicAnnotation, ParsingError<'arena>> {
     let (name, loc) = tokens.expect_string()?;
     let v = Intrinsic::from_str(&name)

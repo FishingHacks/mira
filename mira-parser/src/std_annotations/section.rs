@@ -20,7 +20,10 @@ impl Display for SectionAnnotation {
         f.write_fmt(format_args!("@section({:?})", self.0))
     }
 }
-pub fn parse(mut tokens: TokenStream) -> Result<SectionAnnotation, ParsingError> {
+pub fn parse<'a>(
+    mut tokens: TokenStream<'a>,
+    _: SharedCtx<'a>,
+) -> Result<SectionAnnotation, ParsingError<'a>> {
     let (name, _) = tokens.expect_string()?;
     tokens.finish()?;
     Ok(SectionAnnotation(name.to_string()))

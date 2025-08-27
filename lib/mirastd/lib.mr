@@ -13,6 +13,7 @@ pub use langitems::print_u64;
 pub use langitems::print_i64;
 pub use panicking::panic;
 
+/// Prints a string to stdout
 pub fn print_str(string: &str) = write(1, string as &u8, string.len());
 pub fn print_char(c: u8) = write(1, &c, 1);
 pub fn print_newline() = print_char(0xa);
