@@ -30,6 +30,7 @@ syn = "2.0.104"
 proc-macro2 = "1.0.95"
 quote = "1.0.40"
 termsize = "0.1.9"
+pulldown-cmark = "0.13"
 
 [features]
 default = ["llvm20-1"]

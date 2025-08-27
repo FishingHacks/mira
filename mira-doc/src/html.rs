@@ -230,27 +230,19 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         // <script src="./index.js"></script>
         let len = s.len();
         output.push_str("<script>const root = ");
-        output
-            .write_fmt(format_args!("{:?}", if s.is_empty() { "./" } else { &s }))
-            .unwrap();
+        output.push_fmt(format_args!("{:?}", if s.is_empty() { "./" } else { &s }));
         output.push_str(";</script>");
         output.push_str(r#"<link rel="stylesheet" href="#);
         s.push_str("index.css");
-        output
-            .write_fmt(format_args!("\"{}\"", urlencode(&s)))
-            .unwrap();
+        output.push_fmt(format_args!("\"{}\"", urlencode(&s)));
         output.push_str(r#"><noscript><link rel="stylesheet" href="#);
         s.truncate(len);
         s.push_str("noscript.css");
-        output
-            .write_fmt(format_args!("\"{}\"", urlencode(&s)))
-            .unwrap();
+        output.push_fmt(format_args!("\"{}\"", urlencode(&s)));
         output.push_str(r#"></noscript><script src="#);
         s.truncate(len);
         s.push_str("index.js");
-        output
-            .write_fmt(format_args!("\"{}\"", urlencode(&s)))
-            .unwrap();
+        output.push_fmt(format_args!("\"{}\"", urlencode(&s)));
         output.push_str("></script>");
     }
 
@@ -267,7 +259,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         for &key in &self.modules {
             let path = self.get_item_path(ModuleScopeValue::Module(key.cast()), curfile);
             s.push_str("<a href=\"");
-            s.write_fmt(format_args!("{}", urlencode(&path))).unwrap();
+            s.push_fmt(format_args!("{}", urlencode(&path)));
             s.push_str("\">");
             s.push_str(reader[key.cast()].name.to_str());
             s.push_str("</a>");
@@ -292,14 +284,10 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 output.push_str("<span>::</span>");
             }
             output.push_str("<a href=");
-            output
-                .write_fmt(format_args!(
-                    "\"{}\"",
-                    urlencode(
-                        &self.get_item_path(ModuleScopeValue::Module(path[i].cast()), my_path)
-                    )
-                ))
-                .unwrap();
+            output.push_fmt(format_args!(
+                "\"{}\"",
+                urlencode(&self.get_item_path(ModuleScopeValue::Module(path[i].cast()), my_path))
+            ));
             output.push('>');
             output.escaped().push_str(sym.to_str());
             output.push_str("</a>");
@@ -474,8 +462,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(
                 "\" class=\"anchorable member-function\"><code>fn <a class=\"function\" href=\"#function.",
             );
-            s.write_fmt(format_args!("{}", urlencode(name.symbol().to_str())))
-                .unwrap();
+            s.push_fmt(format_args!("{}", urlencode(name.symbol().to_str())));
             s.push_str("\">");
             s.escaped().push_str(name.symbol().to_str());
             s.push_str("</a>");
@@ -496,8 +483,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             }
 
             s.push_str("</code><a href=\"#function.");
-            s.write_fmt(format_args!("{}", urlencode(name.symbol().to_str())))
-                .unwrap();
+            s.push_fmt(format_args!("{}", urlencode(name.symbol().to_str())));
             s.push_str("\" class=\"anchor\">§</a></span>");
         }
 
@@ -553,8 +539,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(": ");
             self.write_ty(&mut s, *ty, curfile);
             s.push_str("</code><a href=\"#structfield.");
-            s.write_fmt(format_args!("{}", urlencode(name.symbol().to_str())))
-                .unwrap();
+            s.push_fmt(format_args!("{}", urlencode(name.symbol().to_str())));
             s.push_str("\" class=\"anchor\">§</a></span>");
         }
 
@@ -590,12 +575,11 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.escaped().push_str(trait_.name.symbol().to_str());
             s.push_str("\" class=\"anchorable header\">impl <a href=\"");
             let path = self.get_item_path(ModuleScopeValue::Trait(traitid.cast()), curfile);
-            s.write_fmt(format_args!("{}", urlencode(&path))).unwrap();
+            s.push_fmt(format_args!("{}", urlencode(&path)));
             s.push_str("\" class=\"trait\">");
             s.escaped().push_str(trait_.name.symbol().to_str());
             s.push_str("</a><a class=\"anchor\" href=\"#traits.");
-            s.write_fmt(format_args!("{}", urlencode(trait_.name.symbol().to_str())))
-                .unwrap();
+            s.push_fmt(format_args!("{}", urlencode(trait_.name.symbol().to_str())));
             s.push_str("\">§</a></h3>");
 
             let prefix = format!(
@@ -634,7 +618,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 "\" class=\"anchorable member-function\"><code>fn <a class=\"function\"  href=\"#",
             );
             s.push_str(function_prefix);
-            s.write_fmt(format_args!("{}", urlencode(name))).unwrap();
+            s.push_fmt(format_args!("{}", urlencode(name)));
             s.push_str("\">");
             s.escaped().push_str(name);
             s.push_str("</a>(");
@@ -657,7 +641,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             }
             s.push_str("</code><a href=\"#");
             s.push_str(function_prefix);
-            s.write_fmt(format_args!("{}", urlencode(name))).unwrap();
+            s.push_fmt(format_args!("{}", urlencode(name)));
             s.push_str("\" class=\"anchor\">§</a></span>");
         }
     }
@@ -763,10 +747,9 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s.push_str("\" id=\"");
         s.push_str(ty);
         s.push('.');
-        s.write_fmt(format_args!("{}", urlencode(name.to_str())))
-            .unwrap();
+        s.push_fmt(format_args!("{}", urlencode(name.to_str())));
         s.push_str("\"><a href=\"");
-        s.write_fmt(format_args!("{}", urlencode(&path))).unwrap();
+        s.push_fmt(format_args!("{}", urlencode(&path)));
         s.push_str("\" class=\"item-ref ");
         s.push_str(ty);
         s.push_str("\">");
@@ -774,8 +757,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s.push_str("</a><a class=\"anchor\" href=\"#");
         s.push_str(ty);
         s.push('.');
-        s.write_fmt(format_args!("{}", urlencode(name.to_str())))
-            .unwrap();
+        s.push_fmt(format_args!("{}", urlencode(name.to_str())));
         s.push_str("\">§</a></span>");
     }
 
@@ -799,7 +781,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             T::Struct { struct_id, name } => {
                 s.push_str("<a class=\"struct\" href=\"");
                 let path = self.get_item_path(ModuleScopeValue::Struct(struct_id.cast()), curfile);
-                s.write_fmt(format_args!("{}", urlencode(&path))).unwrap();
+                s.push_fmt(format_args!("{}", urlencode(&path)));
                 s.push_str("\">");
                 s.escaped().push_str(name.symbol().to_str());
                 s.push_str("</a>");
@@ -816,7 +798,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 s.push('[');
                 self.write_ty(s, *typ, curfile);
                 s.push_str("; ");
-                s.write_fmt(format_args!("{number_elements}")).unwrap();
+                s.push_fmt(format_args!("{number_elements}"));
                 s.push(']');
             }
             T::Tuple(ty_list) => {
@@ -877,13 +859,13 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             }
             let path = qualified_path.0.strip_prefix(&self.path).unwrap();
             s.push('[');
-            s.write_fmt(format_args!("{path:?}")).unwrap();
+            s.push_fmt(format_args!("{path:?}"));
             s.push_str(",[");
             for (i, sym) in qualified_path.1.iter().enumerate() {
                 if i != 0 {
                     s.push(',');
                 }
-                s.write_fmt(format_args!("{:?}", sym.to_str())).unwrap();
+                s.push_fmt(format_args!("{:?}", sym.to_str()));
             }
             s.push_str("]]");
         }
@@ -981,6 +963,14 @@ impl HTMLEscapeStr<'_> {
             '"' => self.0.push_str("&quot;"),
             _ => self.0.push(c),
         }
+    }
+}
+pub trait StringExt {
+    fn push_fmt(&mut self, args: Arguments<'_>);
+}
+impl StringExt for String {
+    fn push_fmt(&mut self, args: Arguments<'_>) {
+        self.write_fmt(args).unwrap()
     }
 }
 pub trait HTMLEscapeExt {

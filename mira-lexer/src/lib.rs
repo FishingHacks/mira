@@ -244,8 +244,18 @@ impl<'arena> Lexer<'arena> {
         }
     }
 
-    fn skip_spaces(&mut self) {
+    fn skip_spaces(&mut self) -> usize {
+        let mut i = 0;
         while matches!(self.peek(), ' ' | '\t') {
+            i += 1;
+            self.advance();
+        }
+        i
+    }
+
+    fn skip_spaces_max(&mut self, mut i: usize) {
+        while i > 0 && matches!(self.peek(), ' ' | '\t') {
+            i -= 1;
             self.advance();
         }
     }
@@ -256,12 +266,16 @@ impl<'arena> Lexer<'arena> {
         if self.peek() == '\n' {
             self.advance();
         }
+        let mut num_spaces = self.skip_spaces();
+        let has_star = self.peek() == '*';
+        if self.if_char_advance('*') {
+            num_spaces = self.skip_spaces();
+        }
         loop {
-            // skip spaces
-            self.skip_spaces();
-            // skip one '*' and 0+ spaces, if existent and not followed by a '/'.
-            if self.peek2() != '/' && self.if_char_advance('*') {
+            if has_star {
                 self.skip_spaces();
+                self.if_char_advance('*');
+                self.skip_spaces_max(num_spaces);
             }
             loop {
                 match self.peek() {
@@ -289,8 +303,8 @@ impl<'arena> Lexer<'arena> {
         }
     }
 
-    fn parse_single_line_doc_comment(&mut self, s: &mut String) {
-        self.skip_spaces();
+    fn parse_single_line_doc_comment(&mut self, s: &mut String, max_spaces: usize) {
+        self.skip_spaces_max(max_spaces);
         while !self.is_at_end() && !self.if_char_advance('\n') {
             s.push(self.advance());
         }
@@ -301,9 +315,18 @@ impl<'arena> Lexer<'arena> {
     }
 
     fn parse_doc_comments(&mut self, s: &mut String, mut single_line: bool) {
+        let mut max_spaces = None;
         loop {
             if single_line {
-                self.parse_single_line_doc_comment(s);
+                let max_spaces = match max_spaces {
+                    Some(v) => v,
+                    None => {
+                        let spaces = self.skip_spaces();
+                        max_spaces = Some(spaces);
+                        spaces
+                    }
+                };
+                self.parse_single_line_doc_comment(s, max_spaces);
             } else {
                 self.parse_multi_line_doc_comment(s);
             }

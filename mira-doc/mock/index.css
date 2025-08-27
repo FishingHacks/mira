@@ -9,6 +9,7 @@
     --radio-border: #737373;
     --settings-button-filter: invert(0.75);
     --sidebar-hover-bg: #525252;
+    --link: #06b6d4;
 
     /* item colors */
     --color-function: #4ade80;
@@ -36,6 +37,11 @@ body {
 
 a {
     text-decoration: none;
+    color: var(--link);
+}
+
+a:hover {
+    text-decoration: underline;
 }
 
 .path span, .searchpath span {
@@ -105,6 +111,7 @@ a {
     padding: .25em;
     cursor: pointer;
     user-select: none;
+    color: var(--color);
 }
 
 .settings-button:hover {
@@ -193,6 +200,7 @@ a {
 
 .sidebar a:hover, .sidebar a:focus {
     background-color: var(--sidebar-hover-bg);
+    text-decoration: none;
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -256,6 +264,34 @@ h1, h2, h3, h4, h5, h6 {
     margin: .25em 0;
 }
 
+p {
+    margin: 0 0 .75em 0;
+}
+
+.footnote_ref:target a {
+    background-color: var(--link);
+    font-weight: bold;
+    color: var(--bg);
+}
+
+table {
+    border: 1px var(--color) solid;
+    padding: 0;
+    border-collapse: collapse;
+}
+
+table th + th, table td + td {
+    border-left: 1px var(--color) solid;
+}
+
+table td {
+    border-top: 1px var(--color) solid;
+}
+
+table th, table td {
+    padding: .5em;
+}
+
 :root[color-scheme="light"] {
     --bg: #f5f5f5;
     --color: #000000;
@@ -264,6 +300,7 @@ h1, h2, h3, h4, h5, h6 {
     --code-background: #404040;
     --code-color: #ffffff;
     --settings-button-filter: none;
+    --link: #0891b2;
 
     /* item colors */
     --color-function: #16a34a;
@@ -298,6 +335,7 @@ h1, h2, h3, h4, h5, h6 {
         --code-background: #404040;
         --code-color: #ffffff;
         --settings-button-filter: none;
+        --link: #0891b2;
 
         /* item colors */
         --color-function: #16a34a;
