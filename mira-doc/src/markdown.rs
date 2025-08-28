@@ -111,9 +111,10 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             if v.is_empty() {
                 return;
             }
-            output.push_str(r#"<div class="description">"#);
+
+            output.push_str(r#"<details class="description-toggle" open><summary><span>Expand</span></summary><div class="description">"#);
             self.generate_markdown(v, output, module, current_path);
-            output.push_str("</div>");
+            output.push_str("</div></details>");
         });
     }
 }

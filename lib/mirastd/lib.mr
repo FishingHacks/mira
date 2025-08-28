@@ -1,4 +1,4 @@
-//! # Mira Standard Library
+//! ## Mira Standard Library
 //!
 //! Standard library for mira. Here is where all the intrinsics and lang items live too. (compiler internals yippieeee)
 
