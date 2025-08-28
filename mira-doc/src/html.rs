@@ -359,7 +359,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             self.write_ty(&mut s, contract.return_type, curfile);
         }
         s.push_str(" { .. }</code></pre>");
-        self.generate_doc_comment(contract.comment, &mut s);
+        self.generate_doc_comment(contract.comment, &mut s, contract.module_id, curfile);
 
         s.push_str(HTML_POSTAMBLE);
         s
@@ -400,7 +400,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             self.write_ty(&mut s, contract.return_type, curfile);
         }
         s.push_str(" { .. }</code></pre>");
-        self.generate_doc_comment(contract.comment, &mut s);
+        self.generate_doc_comment(contract.comment, &mut s, contract.module_id, curfile);
 
         s.push_str(HTML_POSTAMBLE);
         s
@@ -428,7 +428,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s.push_str(": ");
         self.write_ty(&mut s, v.type_, curfile);
         s.push_str("</code></pre>");
-        self.generate_doc_comment(v.comment, &mut s);
+        self.generate_doc_comment(v.comment, &mut s, v.module_id, curfile);
 
         s.push_str(HTML_POSTAMBLE);
         s
@@ -442,6 +442,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let curfile = &fully_qualified_path.0;
         let trait_ = &self.tc_ctx.traits.read()[key];
         let mut s = self.generate_file_start(curfile, trait_.name.symbol().to_str());
+        let module = trait_.module_id;
 
         self.generate_header(
             &mut s,
@@ -455,7 +456,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s.escaped().push_str(trait_.name.symbol().to_str());
         s.push_str(" { .. }");
         s.push_str("</code></pre>");
-        self.generate_doc_comment(trait_.comment, &mut s);
+        self.generate_doc_comment(trait_.comment, &mut s, module, curfile);
 
         s.push_str(r##"<h2 id="functions" class="anchorable header">Functions<a class="anchor" href="#functions">§</a></h2>"##);
         // <span id="function.allocate" class="anchorable member-function"><code>fn <a class="function" href="#function.allocate">allocate</a>(self: &amp;<span class="struct">Self</span>, size: <span class="struct">usize</span>, align: <span class="struct">usize</span>) -&gt; &amp;<span class="struct">void</span></code><a href="#function.allocate" class="anchor">§</a></span>
@@ -489,7 +490,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_fmt(format_args!("{}", urlencode(name.symbol().to_str())));
             s.push_str("\" class=\"anchor\">§</a></span>");
 
-            self.generate_doc_comment(*comment, &mut s);
+            self.generate_doc_comment(*comment, &mut s, module, curfile);
         }
 
         s.push_str(HTML_POSTAMBLE);
@@ -504,6 +505,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let curfile = &fully_qualified_path.0;
         let structure = &self.tc_ctx.structs.read()[key];
         let mut s = self.generate_file_start(curfile, structure.name.symbol().to_str());
+        let module = structure.module_id;
 
         self.generate_header(
             &mut s,
@@ -529,7 +531,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str("\n}");
         }
         s.push_str("</code></pre>");
-        self.generate_doc_comment(structure.comment, &mut s);
+        self.generate_doc_comment(structure.comment, &mut s, module, curfile);
 
         // <h2 id="fields" class="anchorable header">Fields<a class="anchor" href="#fields">§</a></h2>
         if !structure.elements.is_empty() {
@@ -548,7 +550,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_fmt(format_args!("{}", urlencode(name.symbol().to_str())));
             s.push_str("\" class=\"anchor\">§</a></span>");
 
-            self.generate_doc_comment(*comment, &mut s);
+            self.generate_doc_comment(*comment, &mut s, module, curfile);
         }
 
         // <h2 id="functions" class="anchorable header">Functions<a class="anchor" href="#functions">§</a></h2>
@@ -567,6 +569,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             structure.global_impl.values().copied(),
             "function.",
             selfty,
+            module,
         );
 
         // <h2 id="traits" class="anchorable header">Traits<a class="anchor" href="#traits">§</a></h2>
@@ -600,6 +603,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 implementation.iter().copied(),
                 &prefix,
                 selfty,
+                module,
             );
         }
 
@@ -614,6 +618,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         implementation: impl Iterator<Item = StoreKey<TypedFunction<'ctx>>>,
         function_prefix: &str,
         selfty: Ty<'ctx>,
+        module: StoreKey<TypedModule<'ctx>>,
     ) {
         let funcs = self.tc_ctx.functions.read();
         for id in implementation {
@@ -652,26 +657,26 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_fmt(format_args!("{}", urlencode(name)));
             s.push_str("\" class=\"anchor\">§</a></span>");
 
-            self.generate_doc_comment(contract.comment, s);
+            self.generate_doc_comment(contract.comment, s, module, curfile);
         }
     }
 
     pub fn generate_module(
         &mut self,
         fully_qualified_path: &QualifiedPaths<'ctx>,
-        key: StoreKey<TypedModule<'ctx>>,
+        module_id: StoreKey<TypedModule<'ctx>>,
     ) -> String {
         let curfile = &fully_qualified_path.0;
-        let module = &self.tc_ctx.modules.read()[key.cast()];
+        let module = &self.tc_ctx.modules.read()[module_id.cast()];
         let mut s = self.generate_file_start(curfile, module.name.to_str());
 
         self.generate_header(
             &mut s,
             fully_qualified_path,
-            ModuleScopeValue::Module(key.cast()),
+            ModuleScopeValue::Module(module_id.cast()),
         );
 
-        self.generate_doc_comment(module.comment, &mut s);
+        self.generate_doc_comment(module.comment, &mut s, module_id, curfile);
 
         let mut modules = vec![];
         let mut functions = vec![];
@@ -695,7 +700,12 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(r##"<h2 id="modules" class="anchorable header">Modules<a class="anchor" href="#modules">§</a></h2><dl class="item-list">"##);
         }
         for key in modules {
-            self.write_reference(ModuleScopeValue::Module(key.cast()), &mut s, curfile);
+            self.write_reference(
+                ModuleScopeValue::Module(key.cast()),
+                &mut s,
+                curfile,
+                module_id,
+            );
         }
         if has_modules {
             s.push_str("</dl>");
@@ -710,7 +720,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 FnId::Extern(key) => ModuleScopeValue::ExternalFunction(key.cast()),
                 FnId::Normal(key) => ModuleScopeValue::Function(key.cast()),
             };
-            self.write_reference(key, &mut s, curfile);
+            self.write_reference(key, &mut s, curfile, module_id);
         }
         if has_functions {
             s.push_str("</dl>");
@@ -721,7 +731,12 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(r##"<h2 id="structs" class="anchorable header">Structs<a class="anchor" href="#structs">§</a></h2><dl class="item-list">"##);
         }
         for key in structs {
-            self.write_reference(ModuleScopeValue::Struct(key.cast()), &mut s, curfile);
+            self.write_reference(
+                ModuleScopeValue::Struct(key.cast()),
+                &mut s,
+                curfile,
+                module_id,
+            );
         }
         if has_structs {
             s.push_str("</dl>");
@@ -732,7 +747,12 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(r##"<h2 id="traits" class="anchorable header">Traits<a class="anchor" href="#traits">§</a></h2><dl class="item-list">"##);
         }
         for key in traits {
-            self.write_reference(ModuleScopeValue::Trait(key.cast()), &mut s, curfile);
+            self.write_reference(
+                ModuleScopeValue::Trait(key.cast()),
+                &mut s,
+                curfile,
+                module_id,
+            );
         }
         if has_traits {
             s.push_str("</dl>");
@@ -743,7 +763,12 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(r##"<h2 id="statics" class="anchorable header">Statics<a class="anchor" href="#statics">§</a></h2><dl class="item-list">"##);
         }
         for key in statics {
-            self.write_reference(ModuleScopeValue::Static(key.cast()), &mut s, curfile);
+            self.write_reference(
+                ModuleScopeValue::Static(key.cast()),
+                &mut s,
+                curfile,
+                module_id,
+            );
         }
         if has_statics {
             s.push_str("</dl>");
@@ -753,7 +778,13 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s
     }
 
-    fn write_reference(&self, value: ModuleScopeValue<'ctx>, s: &mut String, curfile: &Path) {
+    fn write_reference(
+        &self,
+        value: ModuleScopeValue<'ctx>,
+        s: &mut String,
+        curfile: &Path,
+        module: StoreKey<TypedModule<'ctx>>,
+    ) {
         let path = self.get_item_path(value, curfile);
         let ty = item_ty(value);
         let (name, comment) = self.comment_name_of(value);
@@ -765,7 +796,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s.escaped().push_str(name.to_str());
         s.push_str("</a></dt>");
 
-        self.generate_ref_comment(comment, s);
+        self.generate_ref_comment(comment, s, module, curfile);
     }
 
     fn comment_name_of(&self, item: ModuleScopeValue<'_>) -> (Symbol<'ctx>, DocComment) {
@@ -867,22 +898,41 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                     self.write_ty(s, function_type.return_type, curfile);
                 }
             }
-            T::PrimitiveNever => s.push('!'),
-            T::PrimitiveVoid => s.push_str("<span class=\"struct\">void</span>"),
-            T::PrimitiveI8 => s.push_str("<span class=\"struct\">i8</span>"),
-            T::PrimitiveI16 => s.push_str("<span class=\"struct\">i16</span>"),
-            T::PrimitiveI32 => s.push_str("<span class=\"struct\">i32</span>"),
-            T::PrimitiveI64 => s.push_str("<span class=\"struct\">i64</span>"),
-            T::PrimitiveISize => s.push_str("<span class=\"struct\">isize</span>"),
-            T::PrimitiveU8 => s.push_str("<span class=\"struct\">u8</span>"),
-            T::PrimitiveU16 => s.push_str("<span class=\"struct\">u16</span>"),
-            T::PrimitiveU32 => s.push_str("<span class=\"struct\">u32</span>"),
-            T::PrimitiveU64 => s.push_str("<span class=\"struct\">u64</span>"),
-            T::PrimitiveUSize => s.push_str("<span class=\"struct\">usize</span>"),
-            T::PrimitiveF32 => s.push_str("<span class=\"struct\">f32</span>"),
-            T::PrimitiveF64 => s.push_str("<span class=\"struct\">f64</span>"),
-            T::PrimitiveStr => s.push_str("<span class=\"struct\">str</span>"),
-            T::PrimitiveBool => s.push_str("<span class=\"struct\">bool</span>"),
+            T::PrimitiveNever
+            | T::PrimitiveVoid
+            | T::PrimitiveI8
+            | T::PrimitiveI16
+            | T::PrimitiveI32
+            | T::PrimitiveI64
+            | T::PrimitiveISize
+            | T::PrimitiveU8
+            | T::PrimitiveU16
+            | T::PrimitiveU32
+            | T::PrimitiveU64
+            | T::PrimitiveUSize
+            | T::PrimitiveF32
+            | T::PrimitiveF64
+            | T::PrimitiveStr
+            | T::PrimitiveBool => s.push_fmt(format_args!(
+                "<a class=\"struct\" href=\"{link}\">{ty}</a>",
+                link = crate::default_ty_links::primitive_ty_to_link(&ty),
+            )),
+            // T::PrimitiveNever => s.push('!'),
+            // T::PrimitiveVoid => s.push_str("<span class=\"struct\">void</span>"),
+            // T::PrimitiveI8 => s.push_str("<span class=\"struct\">i8</span>"),
+            // T::PrimitiveI16 => s.push_str("<span class=\"struct\">i16</span>"),
+            // T::PrimitiveI32 => s.push_str("<span class=\"struct\">i32</span>"),
+            // T::PrimitiveI64 => s.push_str("<span class=\"struct\">i64</span>"),
+            // T::PrimitiveISize => s.push_str("<span class=\"struct\">isize</span>"),
+            // T::PrimitiveU8 => s.push_str("<span class=\"struct\">u8</span>"),
+            // T::PrimitiveU16 => s.push_str("<span class=\"struct\">u16</span>"),
+            // T::PrimitiveU32 => s.push_str("<span class=\"struct\">u32</span>"),
+            // T::PrimitiveU64 => s.push_str("<span class=\"struct\">u64</span>"),
+            // T::PrimitiveUSize => s.push_str("<span class=\"struct\">usize</span>"),
+            // T::PrimitiveF32 => s.push_str("<span class=\"struct\">f32</span>"),
+            // T::PrimitiveF64 => s.push_str("<span class=\"struct\">f64</span>"),
+            // T::PrimitiveStr => s.push_str("<span class=\"struct\">str</span>"),
+            // T::PrimitiveBool => s.push_str("<span class=\"struct\">bool</span>"),
             T::PrimitiveSelf => s.push_str("<span class=\"struct\">Self</span>"),
             T::Ref(ty) => {
                 s.push_str("&amp;");

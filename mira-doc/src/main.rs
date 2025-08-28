@@ -8,6 +8,7 @@ use mira_parser::module::ModuleScopeValue;
 use mira_spans::Arena;
 use mira_typeck::{GlobalContext, TypeCtx};
 
+mod default_ty_links;
 mod html;
 mod markdown;
 

@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     context::TypeCtx,
     ir::{IR, ScopeEntry},
-    typed_resolve_import,
     types::EMPTY_TYLIST,
 };
 use mira_common::store::{StoreKey, VecStore};
@@ -634,18 +633,16 @@ fn typecheck_expression<'arena>(
 ) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     let ctx = context.ctx;
     match expression {
-        Expression::Literal(literal_value, location) => match literal_value {
+        &Expression::Literal(ref literal_value, span) => match literal_value {
             LiteralValue::String(global_str) => {
                 Ok((default_types::str_ref, TypedLiteral::String(*global_str)))
             }
             LiteralValue::Array(ArrayLiteral::Values(vec)) if vec.is_empty() => {
                 let typ = match type_suggestion {
-                    TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => {
-                        type_suggestion.to_type(context).ok_or_else(|| {
-                            TypecheckingError::CannotInferArrayType(*location).to_error()
-                        })?
-                    }
-                    _ => return Err(TypecheckingError::CannotInferArrayType(*location).to_error()),
+                    TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
+                        .to_type(context)
+                        .ok_or_else(|| TypecheckingError::CannotInferArrayType(span).to_error())?,
+                    _ => return Err(TypecheckingError::CannotInferArrayType(span).to_error()),
                 };
                 Ok((typ, TypedLiteral::Array(typ, [].into())))
             }
@@ -730,7 +727,7 @@ fn typecheck_expression<'arena>(
                 let struct_id = if let TypeSuggestion::Struct(id) = type_suggestion {
                     id
                 } else {
-                    return Err(TypecheckingError::CannotInferAnonStructType(*location).to_error());
+                    return Err(TypecheckingError::CannotInferAnonStructType(span).to_error());
                 };
 
                 let structure = &context.structs.read()[struct_id];
@@ -749,7 +746,7 @@ fn typecheck_expression<'arena>(
                 for (key, typ, _) in structure.elements.iter() {
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
-                            location: *location,
+                            location: span,
                             name: key.symbol(),
                         }
                         .to_error());
@@ -781,20 +778,18 @@ fn typecheck_expression<'arena>(
                 ))
             }
             LiteralValue::Struct(values, path) => {
-                let value = typed_resolve_import(
-                    context,
-                    module,
-                    &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
-                    location,
-                    &mut HashSet::new(),
-                )
-                .map_err(|_| {
-                    TypecheckingError::CannotFindValue(*location, path.clone()).to_error()
-                })?;
+                let value = context
+                    .typed_resolve_import(
+                        module,
+                        &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
+                        span,
+                        &mut HashSet::new(),
+                    )
+                    .map_err(|_| {
+                        TypecheckingError::CannotFindValue(span, path.clone()).to_error()
+                    })?;
                 let ModuleScopeValue::Struct(struct_id) = value else {
-                    return Err(
-                        TypecheckingError::CannotFindValue(*location, path.clone()).to_error()
-                    );
+                    return Err(TypecheckingError::CannotFindValue(span, path.clone()).to_error());
                 };
                 let structure = &context.structs.read()[struct_id.cast()];
                 // ensure there are no excessive values in the struct initialization
@@ -812,7 +807,7 @@ fn typecheck_expression<'arena>(
                 for (key, typ, _) in structure.elements.iter() {
                     let Some((loc, expr)) = values.get(key) else {
                         return Err(TypecheckingError::MissingField {
-                            location: *location,
+                            location: span,
                             name: key.symbol(),
                         }
                         .to_error());
@@ -866,16 +861,16 @@ fn typecheck_expression<'arena>(
                     generics.extend_from_slice(generic_value);
                 }
 
-                let value = typed_resolve_import(
-                    context,
-                    module,
-                    &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
-                    location,
-                    &mut HashSet::new(),
-                )
-                .map_err(|_| {
-                    TypecheckingError::CannotFindValue(*location, path.clone()).to_error()
-                })?;
+                let value = context
+                    .typed_resolve_import(
+                        module,
+                        &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
+                        span,
+                        &mut HashSet::new(),
+                    )
+                    .map_err(|_| {
+                        TypecheckingError::CannotFindValue(span, path.clone()).to_error()
+                    })?;
                 match value {
                     ModuleScopeValue::Function(id) => {
                         let reader = &context.functions.read()[id.cast()];
@@ -884,7 +879,7 @@ fn typecheck_expression<'arena>(
                             reader.0.arguments.iter().map(|v| v.1).collect::<Vec<_>>();
                         if reader.0.generics.len() != generics.len() {
                             return Err(TypecheckingError::MismatchingGenericCount(
-                                *location,
+                                span,
                                 reader.0.generics.len(),
                                 generics.len(),
                             )
@@ -894,10 +889,9 @@ fn typecheck_expression<'arena>(
                         for (i, typ) in generics.iter().enumerate() {
                             let ty = context.resolve_type(module, typ, &[])?;
                             if reader.0.generics[i].sized && !ty.is_sized() {
-                                return Err(TypecheckingError::UnsizedForSizedGeneric(
-                                    *location, ty,
-                                )
-                                .to_error());
+                                return Err(
+                                    TypecheckingError::UnsizedForSizedGeneric(span, ty).to_error()
+                                );
                             }
                             generic_types.push(ty);
                         }
@@ -954,19 +948,16 @@ fn typecheck_expression<'arena>(
                     }
                     ModuleScopeValue::Static(id) => {
                         if !generics.is_empty() {
-                            return Err(TypecheckingError::UnexpectedGenerics {
-                                location: *location,
-                            }
-                            .to_error());
+                            return Err(
+                                TypecheckingError::UnexpectedGenerics { location: span }.to_error()
+                            );
                         }
                         Ok((
                             context.statics.read()[id.cast()].type_,
                             TypedLiteral::Static(id.cast()),
                         ))
                     }
-                    _ => {
-                        Err(TypecheckingError::CannotFindValue(*location, path.clone()).to_error())
-                    }
+                    _ => Err(TypecheckingError::CannotFindValue(span, path.clone()).to_error()),
                 }
             }
             LiteralValue::BakedAnonymousFunction(fn_id) => {

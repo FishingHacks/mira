@@ -1,7 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
-use mira_spans::context::DocComment;
-use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
+use mira_common::store::StoreKey;
+use mira_errors::Diagnostic;
+use mira_spans::{Ident, Span, context::DocComment};
+use mira_typeck::TypedModule;
+use pulldown_cmark::{BrokenLink, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 
 use crate::html::{HTMLEscapeExt, HTMLGenerateContext, StringExt};
 
@@ -11,34 +15,104 @@ const OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_TASKLISTS)
     .union(Options::ENABLE_SMART_PUNCTUATION);
 
-impl HTMLGenerateContext<'_> {
-    pub fn generate_markdown(&self, markdown: &str, output: &mut String) {
+impl<'ctx> HTMLGenerateContext<'ctx> {
+    fn resolve_ref(
+        &self,
+        mut item: &str,
+        module: StoreKey<TypedModule<'ctx>>,
+        current_path: &Path,
+    ) -> Option<CowStr<'static>> {
+        if let Some(v) = crate::default_ty_links::primitive_link_from_str(item) {
+            return Some(CowStr::Borrowed(v));
+        }
+        if item.starts_with('`') && item.ends_with('`') {
+            item = &item[1..item.len() - 1];
+        }
+
+        let mut imports = vec![];
+        for entry in item.split("::") {
+            // entry must not be empty, must only contain alphanumeric characters, `_`, `$` or `#`
+            // and must not begin with a number.
+            if entry.is_empty()
+                || !entry
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '#')
+                || matches!(entry.chars().next(), Some('0'..='9'))
+            {
+                return None;
+            }
+            let sym = self.tc_ctx.ctx.intern_str(entry);
+            imports.push(Ident::new(sym, Span::DUMMY));
+        }
+
+        let entry = self
+            .tc_ctx
+            .typed_resolve_import(module, &imports, Span::DUMMY, &mut HashSet::new())
+            .map_err(Diagnostic::dismiss)
+            .ok()?;
+        let url = self.get_item_path(entry, current_path);
+        Some(url.into())
+    }
+
+    fn resolve_broken_link<'a>(
+        &self,
+        module: StoreKey<TypedModule<'ctx>>,
+        link: BrokenLink<'a>,
+        current_path: &Path,
+    ) -> Option<(CowStr<'a>, CowStr<'a>)> {
+        let link_url = self.resolve_ref(&link.reference, module, current_path)?;
+        Some((link_url, link.reference))
+    }
+
+    pub fn generate_markdown(
+        &self,
+        markdown: &str,
+        output: &mut String,
+        module: StoreKey<TypedModule<'ctx>>,
+        current_path: &Path,
+    ) {
         if markdown.is_empty() {
             return;
         }
-        let parser = Parser::new_ext(markdown, OPTIONS);
+        let parser = Parser::new_with_broken_link_callback(
+            markdown,
+            OPTIONS,
+            Some(|broken_link| self.resolve_broken_link(module, broken_link, current_path)),
+        );
         let passes = FootnotePass::new(CodeblockPass(parser));
         pulldown_cmark::html::push_html(output, passes);
     }
 
-    pub fn generate_ref_comment(&self, comment: DocComment, output: &mut String) {
+    pub fn generate_ref_comment(
+        &self,
+        comment: DocComment,
+        output: &mut String,
+        module: StoreKey<TypedModule<'ctx>>,
+        current_path: &Path,
+    ) {
         self.tc_ctx.ctx.with_doc_comment(comment, |v| {
             let Some(line) = v.lines().find(|l| !l.is_empty()) else {
                 return;
             };
             output.push_str(r#"<dd class="description">"#);
-            self.generate_markdown(line, output);
+            self.generate_markdown(line, output, module, current_path);
             output.push_str("</dd>");
         });
     }
 
-    pub fn generate_doc_comment(&self, comment: DocComment, output: &mut String) {
+    pub fn generate_doc_comment(
+        &self,
+        comment: DocComment,
+        output: &mut String,
+        module: StoreKey<TypedModule<'ctx>>,
+        current_path: &Path,
+    ) {
         self.tc_ctx.ctx.with_doc_comment(comment, |v| {
             if v.is_empty() {
                 return;
             }
             output.push_str(r#"<div class="description">"#);
-            self.generate_markdown(v, output);
+            self.generate_markdown(v, output, module, current_path);
             output.push_str("</div>");
         });
     }
