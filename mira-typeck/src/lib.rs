@@ -446,20 +446,20 @@ impl<'arena> TypecheckingContext<'arena> {
                 type_name,
                 span: loc,
             } => {
-                if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
-                    if let Some((id, generic)) = generics
+                if type_name.entries.len() == 1
+                    && type_name.entries[0].1.is_empty()
+                    && let Some((id, generic)) = generics
                         .iter()
                         .enumerate()
                         .find(|(_, v)| v.name == type_name.entries[0].0)
-                    {
-                        let ty = self.ctx.intern_ty(TyKind::Generic {
-                            name: type_name.entries[0].0,
-                            generic_id: id as u8,
-                            sized: generic.sized,
-                            bounds: generic.bounds,
-                        });
-                        return Ok(with_refcount(self.ctx, ty, *num_references));
-                    }
+                {
+                    let ty = self.ctx.intern_ty(TyKind::Generic {
+                        name: type_name.entries[0].0,
+                        generic_id: id as u8,
+                        sized: generic.sized,
+                        bounds: generic.bounds,
+                    });
+                    return Ok(with_refcount(self.ctx, ty, *num_references));
                 }
 
                 let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();

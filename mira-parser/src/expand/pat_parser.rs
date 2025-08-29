@@ -155,17 +155,15 @@ fn parse_tree<'arena>(
         _ => Ok(TokenTree::Token(tokens.current())),
     }?;
     // clump multiple tokens in the body together
-    if !parse_def {
-        if let TokenTree::Token(tok) = res {
-            if !tokens.is_at_end() && tokens.peek().typ == TokenType::Dollar {
-                return Ok(res);
-            }
-            let mut toks = vec![tok];
-            while !tokens.is_at_end() && tokens.peek().typ != TokenType::Dollar {
-                toks.push(tokens.eat());
-            }
-            return Ok(TokenTree::Tokens(toks.into_boxed_slice()));
+    if !parse_def && let TokenTree::Token(tok) = res {
+        if !tokens.is_at_end() && tokens.peek().typ == TokenType::Dollar {
+            return Ok(res);
         }
+        let mut toks = vec![tok];
+        while !tokens.is_at_end() && tokens.peek().typ != TokenType::Dollar {
+            toks.push(tokens.eat());
+        }
+        return Ok(TokenTree::Tokens(toks.into_boxed_slice()));
     }
     Ok(res)
 }

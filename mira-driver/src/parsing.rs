@@ -60,13 +60,13 @@ fn parse_single<'arena>(
     let mut tokens = lexer.into_tokens();
     let mut comment = None;
 
-    if let Some(tok) = tokens.first() {
-        if tok.typ == TokenType::ModuleDocComment {
-            let Some(Literal::DocComment(v)) = tok.literal else {
-                unreachable!()
-            };
-            comment = Some(v);
-        }
+    if let Some(tok) = tokens.first()
+        && tok.typ == TokenType::ModuleDocComment
+    {
+        let Some(Literal::DocComment(v)) = tok.literal else {
+            unreachable!()
+        };
+        comment = Some(v);
     }
     if comment.is_some() {
         tokens.remove(0);

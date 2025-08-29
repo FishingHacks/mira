@@ -17,8 +17,8 @@ use mira_typeck::GlobalContext;
 pub fn opt_mode_to_codegen_cfg(
     mode: OptimizationMode,
     target: Target,
-    cpu_features: Option<&str>,
-) -> CodegenConfig {
+    cpu_features: Option<&'_ str>,
+) -> CodegenConfig<'_> {
     match mode {
         OptimizationMode::Debugger => CodegenConfig::new_debug_unoptimized(),
         OptimizationMode::Debug => CodegenConfig::new_debug(),

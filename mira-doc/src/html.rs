@@ -998,7 +998,7 @@ fn unsubstitute_self<'ctx>(ctx: TypeCtx<'ctx>, ty: Ty<'ctx>, selfty: Ty<'ctx>) -
     }
 }
 
-pub fn urlencode(s: &str) -> UrlEncoded {
+pub fn urlencode(s: &'_ str) -> UrlEncoded<'_> {
     UrlEncoded(s)
 }
 
@@ -1066,10 +1066,10 @@ impl StringExt for String {
     }
 }
 pub trait HTMLEscapeExt {
-    fn escaped(&mut self) -> HTMLEscapeStr;
+    fn escaped(&'_ mut self) -> HTMLEscapeStr<'_>;
 }
 impl HTMLEscapeExt for String {
-    fn escaped(&mut self) -> HTMLEscapeStr {
+    fn escaped(&'_ mut self) -> HTMLEscapeStr<'_> {
         HTMLEscapeStr(self)
     }
 }
@@ -1107,6 +1107,7 @@ rated   |<script>const root = "./"</script>
             <div class="search-header">
                 <input class="search-input" placeholder="press s or / to start searching" />
                 <a class="settings-button">Settings</a>
+                <a class="expand-button open">Summary</a>
 
                 <div class="settings-popup hidden">
                     <div>Theme</div>
@@ -1141,5 +1142,5 @@ rated   |<script>const root = "./"</script>
 */
 static HTML_HEAD: &str = r#"<!DOCTYPE html><html lang="en" color-scheme="preference"><head>"#;
 static HTML_PREAMBLE1: &str = r#"</head><body><div class="sidebar"><h2>Packages</h2>"#;
-static HTML_PREAMBLE2: &str = r#"</div><div class="content"><div class="search-header"><input class="search-input" placeholder="press s or / to start searching" /><a class="settings-button">Settings</a><div class="settings-popup hidden"><div>Theme</div><label for="theme-light" class="setting-radio"><input type="radio" name="theme" id="theme-light" value="light"><span>light</span></label><label for="theme-dark" class="setting-radio"><input type="radio" name="theme" id="theme-dark" value="dark"><span>dark</span></label><label for="theme-ayu" class="setting-radio"><input type="radio" name="theme" id="theme-ayu" value="ayu"><span>ayu</span></label><label for="theme-preference" class="setting-radio"><input type="radio" name="theme" id="theme-preference" value="preference"><span>system preference</span></label></div></div><div class="search-results hidden"></div><div class="main-content">"#;
+static HTML_PREAMBLE2: &str = r#"</div><div class="content"><div class="search-header"><input class="search-input" placeholder="press s or / to start searching" /><a class="settings-button">Settings</a><a class="expand-button open">Summary</a><div class="settings-popup hidden"><div>Theme</div><label for="theme-light" class="setting-radio"><input type="radio" name="theme" id="theme-light" value="light"><span>light</span></label><label for="theme-dark" class="setting-radio"><input type="radio" name="theme" id="theme-dark" value="dark"><span>dark</span></label><label for="theme-ayu" class="setting-radio"><input type="radio" name="theme" id="theme-ayu" value="ayu"><span>ayu</span></label><label for="theme-preference" class="setting-radio"><input type="radio" name="theme" id="theme-preference" value="preference"><span>system preference</span></label></div></div><div class="search-results hidden"></div><div class="main-content">"#;
 static HTML_POSTAMBLE: &str = "</div></div></body></html>";

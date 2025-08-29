@@ -74,11 +74,11 @@ impl LibraryTree {
 
     #[must_use]
     pub fn build_library(
-        &mut self,
+        &'_ mut self,
         module_root: Arc<Path>,
         file_path: Arc<Path>,
         name: impl Into<Box<str>>,
-    ) -> LibraryBuilder {
+    ) -> LibraryBuilder<'_> {
         LibraryBuilder {
             tree: self,
             root: module_root,

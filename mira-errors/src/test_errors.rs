@@ -41,7 +41,7 @@ impl ErrorData for WithSpans<'_> {
         cb(format_args!("spans error"))
     }
 
-    fn labeled_spans(&self, _: crate::FormattingCtx<'_>) -> Vec<crate::LabeledSpan> {
+    fn labeled_spans(&'_ self, _: crate::FormattingCtx<'_>) -> Vec<crate::LabeledSpan<'_>> {
         vec![
             LabeledSpan::primary("primary", self.0),
             LabeledSpan::secondary("secondary", self.1),

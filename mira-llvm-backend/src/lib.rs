@@ -1838,23 +1838,23 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                         self.push_value_raw(*dst, new_ptr.into());
                         return Ok(());
                     }
-                } else if let TypedLiteral::Static(id) = src {
-                    if self.tc_scope[*dst].stack_allocated {
-                        let ty = &self.tc_scope[*dst].ty;
-                        let llvm_ty =
-                            ty.to_llvm_basic_type(&self.default_types, self.structs, self.context);
-                        let alignment = get_alignment(llvm_ty);
-                        let new_ptr = self.build_alloca(llvm_ty, "")?;
-                        self.build_memmove(
-                            new_ptr,
-                            alignment,
-                            self.statics[*id].as_pointer_value(),
-                            alignment,
-                            llvm_ty.size_of().expect("llvm type should always be sized"),
-                        )?;
-                        self.push_value_raw(*dst, new_ptr.into());
-                        return Ok(());
-                    }
+                } else if let TypedLiteral::Static(id) = src
+                    && self.tc_scope[*dst].stack_allocated
+                {
+                    let ty = &self.tc_scope[*dst].ty;
+                    let llvm_ty =
+                        ty.to_llvm_basic_type(&self.default_types, self.structs, self.context);
+                    let alignment = get_alignment(llvm_ty);
+                    let new_ptr = self.build_alloca(llvm_ty, "")?;
+                    self.build_memmove(
+                        new_ptr,
+                        alignment,
+                        self.statics[*id].as_pointer_value(),
+                        alignment,
+                        llvm_ty.size_of().expect("llvm type should always be sized"),
+                    )?;
+                    self.push_value_raw(*dst, new_ptr.into());
+                    return Ok(());
                 }
                 self.push_value(*dst, self.lit_to_basic_value(src));
                 Ok(())

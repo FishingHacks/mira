@@ -2,6 +2,7 @@ let settings_window;
 let searchbar;
 let search_results;
 let settings_button;
+let expand_button;
 let main_content;
 let last_search = "";
 let running_search = false;
@@ -144,11 +145,21 @@ function handle_settings_blur_click(e) {
     settings_window.classList.add("hidden")
 }
 
+function expand_click() {
+    expand_button.classList.toggle("open");
+    let expanded = expand_button.classList.contains("open");
+    expand_button.textContent = expanded ? "Summary" : "Show all";
+    const elems = document.getElementsByTagName("details");
+    for (let i = 0; i < elems.length; ++i) elems[i].open = expanded;
+}
+
 function onload() {
     let colorscheme = localStorage.getItem("colorscheme");
     settings_window = document.getElementsByClassName("settings-popup")[0];
     settings_button = document.getElementsByClassName("settings-button")[0];
+    expand_button = document.getElementsByClassName("expand-button")[0];
     settings_button.addEventListener("click", open_close_settings);
+    expand_button.addEventListener("click", expand_click);
     if (!["ayu", "dark", "light", "preference"].includes(colorscheme)) {
         colorscheme = "preference";
         localStorage.setItem("colorscheme", colorscheme);

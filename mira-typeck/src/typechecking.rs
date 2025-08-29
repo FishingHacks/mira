@@ -480,11 +480,11 @@ fn typecheck_statement<'arena>(
             )
             .map_err(|e| _ = errs.add(e))?;
 
-            if let Some(expected_typ) = expected_typ {
-                if expected_typ != typ {
-                    errs.add_mismatching_type(var.span, expected_typ, typ);
-                    return Err(());
-                }
+            if let Some(expected_typ) = expected_typ
+                && expected_typ != typ
+            {
+                errs.add_mismatching_type(var.span, expected_typ, typ);
+                return Err(());
             }
 
             let id = match expr {
@@ -851,10 +851,11 @@ fn typecheck_expression<'arena>(
             )),
             LiteralValue::Bool(v) => Ok((default_types::bool, TypedLiteral::Bool(*v))),
             LiteralValue::Dynamic(path) => {
-                if path.entries.len() == 1 && path.entries[0].1.is_empty() {
-                    if let Some((entry, id)) = scope.get(path.entries[0].0) {
-                        return Ok((entry.ty, TypedLiteral::Dynamic(id)));
-                    }
+                if path.entries.len() == 1
+                    && path.entries[0].1.is_empty()
+                    && let Some((entry, id)) = scope.get(path.entries[0].0)
+                {
+                    return Ok((entry.ty, TypedLiteral::Dynamic(id)));
                 }
                 let mut generics = Vec::new();
                 for (.., generic_value) in path.entries.iter() {
@@ -2094,23 +2095,22 @@ fn ref_resolve_indexing<'arena>(
                 type_suggestion.clone(),
             )?;
 
-            if let TypeSuggestion::UnsizedArray(_) = type_suggestion {
-                if let TyKind::Ref(ty) = **typ
-                    && let TyKind::SizedArray {
-                        number_elements,
-                        typ,
-                    } = **ty
-                {
-                    let typ = context.ctx.intern_ty(TyKind::UnsizedArray(typ));
-                    let id = scope.push(typ.take_ref(context.ctx));
-                    exprs.push(TypedExpression::MakeUnsizedSlice(
-                        expression.span(),
-                        id,
-                        typed_literal,
-                        number_elements,
-                    ));
-                    return Ok((typ, TypedLiteral::Dynamic(id)));
-                }
+            if let TypeSuggestion::UnsizedArray(_) = type_suggestion
+                && let TyKind::Ref(ty) = **typ
+                && let TyKind::SizedArray {
+                    number_elements,
+                    typ,
+                } = **ty
+            {
+                let typ = context.ctx.intern_ty(TyKind::UnsizedArray(typ));
+                let id = scope.push(typ.take_ref(context.ctx));
+                exprs.push(TypedExpression::MakeUnsizedSlice(
+                    expression.span(),
+                    id,
+                    typed_literal,
+                    number_elements,
+                ));
+                return Ok((typ, TypedLiteral::Dynamic(id)));
             }
 
             if typ.has_refs() && !increase_ref {
