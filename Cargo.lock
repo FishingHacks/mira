@@ -357,6 +357,7 @@ dependencies = [
  "mira-spans",
  "mira-target",
  "mira-typeck",
+ "parking_lot",
 ]
 
 [[package]]
