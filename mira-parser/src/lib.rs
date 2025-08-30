@@ -10,8 +10,9 @@ pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
 use mira_common::store::StoreKey;
+use mira_context::{DocComment, SharedCtx};
 use mira_lexer::{Token, TokenType};
-use mira_spans::{BytePos, SharedCtx, SourceFile, SpanData, context::DocComment};
+use mira_spans::{BytePos, SourceFile, SpanData};
 use module::Module;
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 use tokenstream::{BorrowedTokenStream, TokenStream};

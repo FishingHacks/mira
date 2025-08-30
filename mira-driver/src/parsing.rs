@@ -1,10 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crossbeam_channel::{Sender, bounded};
+use mira_context::{DocComment, SharedCtx};
 use mira_errors::Diagnostics;
-#[cfg(feature = "progress-bar")]
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
-use mira_spans::context::DocComment;
 use parking_lot::RwLock;
 
 use mira_common::store::{AssociatedStore, Store, StoreKey};
@@ -15,15 +14,15 @@ use mira_parser::{
     Parser, ParsingError, ProgramFormingError,
     module::{Module, ModuleContext, ParserQueueEntry},
 };
-use mira_spans::{SharedCtx, SourceFile};
+use mira_spans::SourceFile;
 
 use crate::{LibraryId, LibraryInput, LibraryTree};
 
 #[allow(clippy::too_many_arguments)]
 fn parse_single<'arena>(
     file: Arc<SourceFile>,
-    #[cfg(feature = "progress-bar")] mut progress_bar: ProgressBarThread,
-    #[cfg(feature = "progress-bar")] parsing_item: ProgressItemRef,
+    progress_bar: ProgressBarThread,
+    parsing_item: ProgressItemRef,
     finish_sender: Sender<()>,
     errors: Arc<RwLock<Diagnostics<'arena>>>,
     parsing_queue: Arc<RwLock<Vec<ParserQueueEntry<'arena>>>>,
@@ -33,7 +32,6 @@ fn parse_single<'arena>(
     // ┌──────────────┐
     // │ Tokenization │
     // └──────────────┘
-    #[cfg(feature = "progress-bar")]
     let mut item = progress_bar.add_child(
         parsing_item,
         format!("Tokenizing {}", file.path.display()).into_boxed_str(),
@@ -46,9 +44,7 @@ fn parse_single<'arena>(
             .extend(errs.into_iter().map(LexingError::to_error));
     }
 
-    #[cfg(feature = "progress-bar")]
     progress_bar.remove(item);
-    #[cfg(feature = "progress-bar")]
     {
         item = progress_bar.add_child(
             parsing_item,
@@ -80,6 +76,7 @@ fn parse_single<'arena>(
             None => comment = Some(c),
         }
     }
+
     let tokens = {
         let mut diagnostics = Diagnostics::new();
         match mira_parser::expand_tokens(module_context.ctx, file.clone(), tokens, &mut diagnostics)
@@ -109,9 +106,7 @@ fn parse_single<'arena>(
     // ┌─────────────────┐
     // │ Program Forming │
     // └─────────────────┘
-    #[cfg(feature = "progress-bar")]
     progress_bar.remove(item);
-    #[cfg(feature = "progress-bar")]
     {
         item = progress_bar.add_child(
             parsing_item,
@@ -142,7 +137,6 @@ fn parse_single<'arena>(
         .modules
         .write()
         .insert_reserved(cur_entry.module_key, module);
-    #[cfg(feature = "progress-bar")]
     progress_bar.remove(item);
 
     _ = finish_sender.send(())
@@ -157,8 +151,8 @@ fn parse_single<'arena>(
 /// Returns the parsed module context as well as the main module.
 pub fn parse_all<'arena>(
     ctx: SharedCtx<'arena>,
-    #[cfg(feature = "progress-bar")] progress_bar: ProgressBarThread,
-    #[cfg(feature = "progress-bar")] parsing_item: ProgressItemRef,
+    progress_bar: ProgressBarThread,
+    parsing_item: ProgressItemRef,
     libtree: &LibraryTree,
 ) -> Result<(Arc<ModuleContext<'arena>>, StoreKey<Module<'arena>>), Diagnostics<'arena>> {
     let errors = Arc::new(RwLock::new(Diagnostics::new()));
@@ -237,7 +231,6 @@ pub fn parse_all<'arena>(
                 },
             };
 
-            #[cfg(feature = "progress-bar")]
             let progress_bar = progress_bar.clone();
             let errors = errors.clone();
             let finish_sender = finish_sender.clone();
@@ -247,9 +240,7 @@ pub fn parse_all<'arena>(
             handle.spawn(move || {
                 parse_single(
                     source,
-                    #[cfg(feature = "progress-bar")]
                     progress_bar,
-                    #[cfg(feature = "progress-bar")]
                     parsing_item,
                     finish_sender,
                     errors,

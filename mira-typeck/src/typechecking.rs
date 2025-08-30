@@ -869,7 +869,8 @@ fn typecheck_expression<'arena>(
                         span,
                         &mut HashSet::new(),
                     )
-                    .map_err(|_| {
+                    .map_err(|e| {
+                        e.dismiss();
                         TypecheckingError::CannotFindValue(span, path.clone()).to_error()
                     })?;
                 match value {

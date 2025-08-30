@@ -1,4 +1,6 @@
-use mira_spans::context::DocComment;
+use mira_context::DocComment;
+#[cfg(test)]
+use mira_context::SharedCtx;
 use mira_spans::{Ident, Span, Symbol};
 use std::fmt::{Debug, Display, Write};
 use std::str::FromStr;
@@ -170,6 +172,28 @@ pub enum Literal<'arena> {
     String(Symbol<'arena>),
     Bool(bool),
     DocComment(DocComment),
+}
+
+impl Literal<'_> {
+    /// compares the two literals, treating Literal::String and Literal::DocComment as the same.
+    #[cfg(test)]
+    pub(super) fn doc_comment_as_symbol_eq(&self, other: &Literal<'_>, ctx: SharedCtx<'_>) -> bool {
+        match self {
+            Literal::String(symbol) => match other {
+                Literal::String(other) => symbol == other,
+                Literal::DocComment(other) => {
+                    ctx.with_doc_comment(*other, |v| v == symbol.to_str())
+                }
+                _ => false,
+            },
+            Literal::DocComment(comment) => match other {
+                Literal::String(other) => ctx.with_doc_comment(*comment, |v| v == other.to_str()),
+                Literal::DocComment(other) => comment == other,
+                _ => false,
+            },
+            _ => self == other,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

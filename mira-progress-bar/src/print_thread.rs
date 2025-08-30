@@ -1,5 +1,6 @@
+use core::panic;
 use std::{
-    io::stdout,
+    io::{Write, stdout},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -11,46 +12,71 @@ use std::{
 use crate::{ProgressBar, ProgressBarStyle, ProgressItemRef};
 
 #[derive(Clone)]
-pub struct ProgressBarThread {
-    next_progbar_item_ref: Arc<AtomicUsize>,
+pub struct ProgressBarThread(Arc<ProgressBarThreadInner>);
+
+struct ProgressBarThreadInner {
+    next_progbar_item_ref: AtomicUsize,
     sender: Sender<ProgressMessage>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl Drop for ProgressBarThread {
     fn drop(&mut self) {
-        self.stop_thread();
+        // if this is the last reference, drop it
+        if let Some(v) = Arc::get_mut(&mut self.0) {
+            _ = v.sender.send(ProgressMessage::StopThread);
+            if let Err(e) = v
+                .handle
+                .take()
+                .expect("thread should always exist here")
+                .join()
+            {
+                if let Some(s) = e.downcast_ref::<&str>() {
+                    panic!("Print thread panicked:\n{s}");
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    panic!("Print thread panicked:\n{s}");
+                } else {
+                    panic!("Print thread panicked");
+                }
+            }
+        }
     }
 }
 
 impl ProgressBarThread {
     fn next_progbar_ref(&self) -> ProgressItemRef {
-        ProgressItemRef(self.next_progbar_item_ref.fetch_add(1, Ordering::Relaxed))
+        ProgressItemRef(self.0.next_progbar_item_ref.fetch_add(1, Ordering::Relaxed))
     }
 
-    pub fn add_child(&mut self, parent: ProgressItemRef, name: Box<str>) -> ProgressItemRef {
+    pub fn add_child(&self, parent: ProgressItemRef, name: Box<str>) -> ProgressItemRef {
         let item = self.next_progbar_ref();
         _ = self
+            .0
             .sender
             .send(ProgressMessage::AddChild { name, item, parent });
         item
     }
 
-    pub fn add_item(&mut self, name: Box<str>) -> ProgressItemRef {
+    pub fn add_item(&self, name: Box<str>) -> ProgressItemRef {
         let item = self.next_progbar_ref();
-        _ = self.sender.send(ProgressMessage::Add { name, item });
+        _ = self.0.sender.send(ProgressMessage::Add { name, item });
         item
     }
 
-    pub fn remove(&mut self, item: ProgressItemRef) {
-        _ = self.sender.send(ProgressMessage::Remove(item));
+    pub fn remove(&self, item: ProgressItemRef) {
+        _ = self.0.sender.send(ProgressMessage::Remove(item));
     }
 
-    pub fn clear_children(&mut self, item: ProgressItemRef) {
-        _ = self.sender.send(ProgressMessage::ClearChildren(item));
+    pub fn clear_children(&self, item: ProgressItemRef) {
+        _ = self.0.sender.send(ProgressMessage::ClearChildren(item));
     }
 
-    pub fn stop_thread(&mut self) {
-        _ = self.sender.send(ProgressMessage::StopThread);
+    pub fn print_stdout(&self, s: String) {
+        _ = self.0.sender.send(ProgressMessage::PrintStdout(s));
+    }
+
+    pub fn print_stderr(&self, s: String) {
+        _ = self.0.sender.send(ProgressMessage::PrintStdout(s));
     }
 }
 
@@ -67,15 +93,20 @@ pub enum ProgressMessage {
     },
     Remove(ProgressItemRef),
     ClearChildren(ProgressItemRef),
+    PrintStdout(String),
+    PrintStderr(String),
 }
 
-pub fn start_thread(style: ProgressBarStyle) -> (JoinHandle<()>, ProgressBarThread) {
-    start_thread_with(ProgressBar::new(style))
+/// if no style is specified, no bar will be displayed.
+pub fn start_thread(style: Option<ProgressBarStyle>) -> ProgressBarThread {
+    match style {
+        Some(style) => start_thread_with(ProgressBar::new(style)),
+        None => start_thread_nobar(),
+    }
 }
 
 fn handle_msg(msg: ProgressMessage, bar: &mut ProgressBar) -> bool {
     match msg {
-        ProgressMessage::StopThread => return true,
         ProgressMessage::Add { name, item } => bar.add_item(name, item),
         ProgressMessage::AddChild { name, item, parent } => bar.add_child_item(parent, name, item),
         ProgressMessage::Remove(item) => bar.remove_item(item),
@@ -88,17 +119,49 @@ fn handle_msg(msg: ProgressMessage, bar: &mut ProgressBar) -> bool {
                 bar.remove_item_inner(child);
             }
         }
+        _ => return handle_msg_no_bar(msg),
     }
     false
 }
 
-pub fn start_thread_with(bar: ProgressBar) -> (JoinHandle<()>, ProgressBarThread) {
+fn handle_msg_no_bar(msg: ProgressMessage) -> bool {
+    match msg {
+        ProgressMessage::Add { .. }
+        | ProgressMessage::AddChild { .. }
+        | ProgressMessage::Remove(_)
+        | ProgressMessage::ClearChildren(_) => {}
+        ProgressMessage::StopThread => return true,
+        ProgressMessage::PrintStderr(v) => {
+            println!("{v}");
+            if !v.ends_with("\n\n") {
+                println!();
+            }
+        }
+        ProgressMessage::PrintStdout(v) => {
+            println!("{v}");
+            if !v.ends_with("\n\n") {
+                println!();
+            }
+        }
+    }
+    false
+}
+
+pub fn start_thread_with(bar: ProgressBar) -> ProgressBarThread {
     let (tx, rx) = channel();
     let handle = std::thread::spawn(move || {
         let mut bar = bar;
         loop {
             // wait for incoming message
             let Ok(msg) = rx.recv() else { return };
+            if matches!(
+                msg,
+                ProgressMessage::PrintStdout(_) | ProgressMessage::PrintStderr(_)
+            ) {
+                // clean the progress bar to display any incoming diagnostics
+                bar.clean(&mut stdout().lock())
+                    .expect("failed to clean the progress bar up");
+            }
             if handle_msg(msg, &mut bar) {
                 break;
             }
@@ -125,17 +188,37 @@ pub fn start_thread_with(bar: ProgressBar) -> (JoinHandle<()>, ProgressBarThread
         let mut stdout = stdout().lock();
         bar.root_children.clear();
         bar.items.clear();
-        if let Err(e) = bar.display(&mut stdout) {
-            drop(stdout);
-            eprintln!("Failed to write to stdout: {e:?}")
+        bar.clean(&mut stdout)
+            .expect("failed to clean up the progress bar");
+        stdout.flush().expect("failed to flush stdout");
+    });
+
+    ProgressBarThread(Arc::new(ProgressBarThreadInner {
+        next_progbar_item_ref: AtomicUsize::new(0),
+        sender: tx,
+        handle: Some(handle),
+    }))
+}
+
+pub fn start_thread_nobar() -> ProgressBarThread {
+    let (tx, rx) = channel();
+    let handle = std::thread::spawn(move || {
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    if handle_msg_no_bar(msg) {
+                        break;
+                    }
+                }
+                Err(TryRecvError::Empty) => continue,
+                Err(TryRecvError::Disconnected) => return,
+            }
         }
     });
 
-    (
-        handle,
-        ProgressBarThread {
-            next_progbar_item_ref: Arc::default(),
-            sender: tx,
-        },
-    )
+    ProgressBarThread(Arc::new(ProgressBarThreadInner {
+        next_progbar_item_ref: AtomicUsize::new(0),
+        sender: tx,
+        handle: Some(handle),
+    }))
 }

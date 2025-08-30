@@ -7,3 +7,4 @@ edition = "2024"
 mira-spans.workspace = true
 mira-errors.workspace = true
 parking_lot.workspace = true
+mira-context.workspace = true

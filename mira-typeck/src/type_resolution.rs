@@ -3,7 +3,6 @@ use std::{
     sync::Arc,
 };
 
-use mira_errors::Diagnostics;
 use mira_spans::ArenaList;
 
 use mira_common::store::StoreKey;
@@ -13,9 +12,10 @@ use mira_parser::{
     std_annotations::lang_item::LangItemAnnotation,
 };
 
+use crate::error::TypecheckingErrorEmitterExt;
+
 use super::{
-    TypecheckingContext, TypecheckingErrorDiagnosticsExt, TypedFunctionContract, TypedGeneric,
-    TypedStatic, TypedTrait,
+    TypecheckingContext, TypedFunctionContract, TypedGeneric, TypedStatic, TypedTrait,
     ir::TypedLiteral,
     resolve_import,
     types::{TyKind, default_types, with_refcount},
@@ -34,9 +34,7 @@ impl<'arena> TypecheckingContext<'arena> {
     /// and don't free them until fully resolving a value. This module is designed in a way that
     /// such a deadlock should never happen but.. uhh... :3c :3
     /// meow
-    pub fn resolve_types<'a>(&'a self, context: Arc<ModuleContext<'arena>>) -> Diagnostics<'arena> {
-        let mut errors = Diagnostics::new();
-
+    pub fn resolve_types<'a>(&'a self, context: Arc<ModuleContext<'arena>>) {
         let mut lang_items_writer = self.lang_items.write();
         let lang_items_writer = &mut *lang_items_writer;
 
@@ -54,18 +52,12 @@ impl<'arena> TypecheckingContext<'arena> {
             let struct_reader = context.structs.read();
             let module_id = struct_reader[key].module_id;
             drop(struct_reader);
-            let err_count = errors.len();
+            let tracker = self.ctx.track_errors();
             assert!(
-                !self.resolve_struct(
-                    context.clone(),
-                    key,
-                    module_id,
-                    &mut errors,
-                    &mut structs_left
-                ),
+                !self.resolve_struct(context.clone(), key, module_id, &mut structs_left),
                 "this came from no field, so this shouldn't be recursive"
             );
-            if err_count != errors.len() {
+            if self.ctx.errors_happened(tracker) {
                 continue;
             }
             let struct_reader = self.structs.read();
@@ -78,7 +70,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     annotation.get_langitem(),
                     struct_reader[key.cast()].span,
                 ) {
-                    errors.add(e);
+                    self.ctx.emit_diag(e);
                 }
             }
         }
@@ -88,9 +80,9 @@ impl<'arena> TypecheckingContext<'arena> {
         // └───────────┘
         let function_keys = context.functions.read().indices().collect::<Vec<_>>();
         for function_key in function_keys {
-            let error_count = errors.len();
-            self.resolve_function(function_key, &context, &mut errors);
-            if error_count != errors.len() {
+            let tracker = self.ctx.track_errors();
+            self.resolve_function(function_key, &context);
+            if self.ctx.errors_happened(tracker) {
                 continue;
             }
             let function_reader = self.functions.read();
@@ -104,7 +96,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     annotation.get_langitem(),
                     function_reader[function_key.cast()].0.span,
                 ) {
-                    errors.add(e);
+                    self.ctx.emit_diag(e);
                 }
             }
         }
@@ -118,9 +110,9 @@ impl<'arena> TypecheckingContext<'arena> {
             .indices()
             .collect::<Vec<_>>();
         for ext_function_key in ext_function_keys {
-            let error_count = errors.len();
-            self.resolve_ext_function(ext_function_key, &context, &mut errors);
-            if error_count != errors.len() {
+            let tracker = self.ctx.track_errors();
+            self.resolve_ext_function(ext_function_key, &context);
+            if self.ctx.errors_happened(tracker) {
                 continue;
             }
             let ext_function_reader = self.external_functions.read();
@@ -134,7 +126,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     annotation.get_langitem(),
                     ext_function_reader[ext_function_key.cast()].0.span,
                 ) {
-                    errors.add(e);
+                    self.ctx.emit_diag(e);
                 }
             }
         }
@@ -144,9 +136,9 @@ impl<'arena> TypecheckingContext<'arena> {
         // └─────────┘
         let statics_keys = context.statics.read().indices().collect::<Vec<_>>();
         for static_key in statics_keys {
-            let error_count = errors.len();
-            self.resolve_static(static_key, &context, &mut errors);
-            if error_count != errors.len() {
+            let tracker = self.ctx.track_errors();
+            self.resolve_static(static_key, &context);
+            if self.ctx.errors_happened(tracker) {
                 continue;
             }
             let static_reader = self.statics.read();
@@ -159,7 +151,7 @@ impl<'arena> TypecheckingContext<'arena> {
                     annotation.get_langitem(),
                     static_reader[static_key.cast()].loc,
                 ) {
-                    errors.add(e);
+                    self.ctx.emit_diag(e);
                 }
             }
         }
@@ -169,9 +161,9 @@ impl<'arena> TypecheckingContext<'arena> {
         // └────────┘
         let trait_keys = context.traits.read().indices().collect::<Vec<_>>();
         for trait_key in trait_keys {
-            let error_count = errors.len();
-            self.resolve_trait(trait_key, &context, &mut errors);
-            if error_count != errors.len() {
+            let tracker = self.ctx.track_errors();
+            self.resolve_trait(trait_key, &context);
+            if self.ctx.errors_happened(tracker) {
                 continue;
             }
             let trait_reader = self.traits.read();
@@ -184,28 +176,23 @@ impl<'arena> TypecheckingContext<'arena> {
                     annotation.get_langitem(),
                     trait_reader[trait_key.cast()].location,
                 ) {
-                    errors.add(e);
+                    self.ctx.emit_diag(e);
                 }
             }
         }
 
         let struct_keys = context.structs.read().indices().collect::<Vec<_>>();
         for struct_id in struct_keys {
-            self.resolve_struct_impls(struct_id, &context, &mut errors);
+            self.resolve_struct_impls(struct_id, &context);
         }
 
-        {
-            lang_items_writer.check(&mut errors, self);
-        }
-
-        errors
+        lang_items_writer.check(self);
     }
 
     fn resolve_struct_impls(
         &self,
         struct_key: StoreKey<BakedStruct<'arena>>,
         context: &ModuleContext<'arena>,
-        errors: &mut Diagnostics<'arena>,
     ) {
         let mut writer = context.structs.write();
         let trait_impl = std::mem::take(&mut writer[struct_key].impls);
@@ -222,12 +209,12 @@ impl<'arena> TypecheckingContext<'arena> {
             let trait_id =
                 match resolve_import(context, module.cast(), &[name], loc, &mut HashSet::new()) {
                     Err(e) => {
-                        errors.add(e);
+                        self.ctx.emit_diag(e);
                         continue;
                     }
                     Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
                     Ok(_) => {
-                        errors.add_unbound_ident(loc, name.symbol());
+                        self.ctx.emit_unbound_ident(loc, name.symbol());
                         continue;
                     }
                 };
@@ -236,7 +223,7 @@ impl<'arena> TypecheckingContext<'arena> {
             if typed_trait.functions.len() != implementation.len() {
                 for (name, func_id) in &implementation {
                     if !typed_trait.functions.iter().any(|(v, ..)| v == name) {
-                        errors.add_is_not_trait_member(
+                        self.ctx.emit_is_not_trait_member(
                             function_reader[func_id.cast()].0.span,
                             name.symbol(),
                         );
@@ -247,7 +234,7 @@ impl<'arena> TypecheckingContext<'arena> {
             let mut trait_impl = Vec::new();
             for (name, args, return_type, ..) in &typed_trait.functions {
                 let Some(&func_id) = implementation.get(name) else {
-                    errors.add_missing_trait_item(loc, name.symbol());
+                    self.ctx.emit_missing_trait_item(loc, name.symbol());
                     continue;
                 };
 
@@ -266,12 +253,13 @@ impl<'arena> TypecheckingContext<'arena> {
                         .iter()
                         .map(|(_, v)| *v)
                         .collect::<Vec<_>>();
-                    errors.add_mismatching_arguments(function_contract.span, expected, found);
+                    self.ctx
+                        .emit_mismatching_arguments(function_contract.span, expected, found);
                     with_errs = true;
                 }
 
                 if *return_type != function_contract.return_type {
-                    errors.add_mismatching_return_type(
+                    self.ctx.emit_mismatching_return_type(
                         function_contract.span,
                         *return_type,
                         function_contract.return_type,
@@ -330,7 +318,6 @@ impl<'arena> TypecheckingContext<'arena> {
         &self,
         function_id: StoreKey<Function<'arena>>,
         context: &ModuleContext<'arena>,
-        errors: &mut Diagnostics<'arena>,
     ) {
         let mut writer = context.functions.write();
         let module_id = writer[function_id].2;
@@ -354,7 +341,7 @@ impl<'arena> TypecheckingContext<'arena> {
                 ) {
                     Ok(ModuleScopeValue::Trait(v)) => bounds.push(v.cast()),
                     Ok(_) => {
-                        errors.add_unbound_ident(
+                        self.ctx.emit_unbound_ident(
                             bound.1,
                             bound
                                 .0
@@ -363,7 +350,7 @@ impl<'arena> TypecheckingContext<'arena> {
                                 .symbol(),
                         );
                     }
-                    Err(e) => _ = errors.add(e),
+                    Err(e) => self.ctx.emit_diag(e),
                 }
             }
             generics.push(TypedGeneric {
@@ -384,17 +371,14 @@ impl<'arena> TypecheckingContext<'arena> {
         };
         drop(writer);
 
-        let mut has_errors = false;
+        let error_tracker = self.ctx.track_errors();
         match self.resolve_type(
             module_id.cast(),
             &return_type,
             &resolved_function_contract.generics,
         ) {
             Ok(v) => resolved_function_contract.return_type = v,
-            Err(e) => {
-                has_errors = true;
-                errors.add(e);
-            }
+            Err(e) => self.ctx.emit_diag(e),
         }
 
         for arg in arguments {
@@ -404,14 +388,11 @@ impl<'arena> TypecheckingContext<'arena> {
                 &resolved_function_contract.generics,
             ) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                Err(e) => {
-                    has_errors = true;
-                    errors.add(e);
-                }
+                Err(e) => self.ctx.emit_diag(e),
             }
         }
 
-        if !has_errors {
+        if !self.ctx.errors_happened(error_tracker) {
             self.functions.write()[function_id.cast()].0 = resolved_function_contract;
         }
     }
@@ -420,7 +401,6 @@ impl<'arena> TypecheckingContext<'arena> {
         &self,
         ext_function_id: StoreKey<ExternalFunction<'arena>>,
         context: &ModuleContext<'arena>,
-        errors: &mut Diagnostics<'arena>,
     ) {
         let mut writer = context.external_functions.write();
         let comment = writer[ext_function_id].0.comment;
@@ -443,37 +423,26 @@ impl<'arena> TypecheckingContext<'arena> {
         };
         drop(writer);
 
-        let mut has_errors = false;
+        let tracker = self.ctx.track_errors();
         match self.resolve_type(module_id.cast(), &return_type, &[]) {
             Ok(v) => resolved_function_contract.return_type = v,
-            Err(e) => {
-                has_errors = true;
-                errors.add(e);
-            }
+            Err(e) => self.ctx.emit_diag(e),
         }
 
         for arg in arguments {
             match self.resolve_type(module_id.cast(), &arg.typ, &[]) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                Err(e) => {
-                    has_errors = true;
-                    errors.add(e);
-                }
+                Err(e) => self.ctx.emit_diag(e),
             }
         }
 
-        if !has_errors {
+        if !self.ctx.errors_happened(tracker) {
             self.external_functions.write()[ext_function_id.cast()] =
                 (resolved_function_contract, None);
         }
     }
 
-    fn resolve_static(
-        &self,
-        static_id: StoreKey<Static<'arena>>,
-        context: &ModuleContext<'arena>,
-        errors: &mut Diagnostics<'arena>,
-    ) {
+    fn resolve_static(&self, static_id: StoreKey<Static<'arena>>, context: &ModuleContext<'arena>) {
         let mut writer = context.statics.write();
         let span = writer[static_id].span;
         let name = writer[static_id].name;
@@ -495,16 +464,11 @@ impl<'arena> TypecheckingContext<'arena> {
                     comment,
                 );
             }
-            Err(e) => _ = errors.add(e),
+            Err(e) => self.ctx.emit_diag(e),
         }
     }
 
-    fn resolve_trait(
-        &self,
-        trait_id: StoreKey<Trait<'arena>>,
-        context: &ModuleContext<'arena>,
-        errors: &mut Diagnostics<'arena>,
-    ) {
+    fn resolve_trait(&self, trait_id: StoreKey<Trait<'arena>>, context: &ModuleContext<'arena>) {
         let mut writer = context.traits.write();
         let span = writer[trait_id].span;
         let name = writer[trait_id].name;
@@ -515,14 +479,14 @@ impl<'arena> TypecheckingContext<'arena> {
         drop(writer);
 
         let mut typed_functions = Vec::new();
-        let error_count = errors.len();
+        let tracker = self.ctx.track_errors();
 
         for func in functions {
             let typed_return_type = match self.resolve_type(module_id.cast(), &func.return_ty, &[])
             {
                 Ok(v) => v,
                 Err(e) => {
-                    errors.add(e);
+                    self.ctx.emit_diag(e);
                     continue;
                 }
             };
@@ -532,7 +496,7 @@ impl<'arena> TypecheckingContext<'arena> {
             for arg in &func.args {
                 match self.resolve_type(module_id.cast(), &arg.typ, &[]) {
                     Ok(v) => typed_arguments.push((arg.name, v)),
-                    Err(e) => _ = errors.add(e),
+                    Err(e) => self.ctx.emit_diag(e),
                 }
             }
 
@@ -546,7 +510,7 @@ impl<'arena> TypecheckingContext<'arena> {
             ));
         }
 
-        if errors.len() == error_count {
+        if !self.ctx.errors_happened(tracker) {
             self.traits.write()[trait_id.cast()] = TypedTrait {
                 name,
                 location: span,

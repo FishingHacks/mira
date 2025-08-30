@@ -18,6 +18,7 @@ cargo doc --open --no-deps \
  -p mira-llvm-backend \
  -p mira-progress-bar \
  -p mira-spans \
+ -p mira-context \
  -p parking_lot \
  -p inkwell \
  -p cfg-if \

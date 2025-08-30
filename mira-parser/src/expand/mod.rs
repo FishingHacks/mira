@@ -5,10 +5,11 @@ use std::{
     sync::Arc,
 };
 
+use mira_context::SharedCtx;
 use mira_errors::Diagnostic;
 use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_macros::{Display, ErrorData};
-use mira_spans::{Ident, SharedCtx, SourceFile, Span, Symbol};
+use mira_spans::{Ident, SourceFile, Span, Symbol};
 mod builtin_macros;
 mod macro_expander;
 mod pat_parser;

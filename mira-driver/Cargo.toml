@@ -4,7 +4,7 @@ version = "0.2.1"
 edition = "2024"
 
 [features]
-default = ["llvm20-1", "linking", "progress-bar"]
+default = ["llvm20-1", "linking"]
 lexing = ["mira-lexer"]
 macros = ["lexing", "mira-parser"]
 parsing = ["macros"]
@@ -14,7 +14,6 @@ linking = ["codegen", "mira-linking"]
 llvm20-1 = ["mira-llvm-backend", "codegen", "mira-llvm-backend/llvm20-1"]
 llvm19-1 = ["mira-llvm-backend", "codegen", "mira-llvm-backend/llvm19-1"]
 llvm18-0 = ["mira-llvm-backend", "codegen", "mira-llvm-backend/llvm18-0"]
-progress-bar = ["mira-progress-bar"]
 
 [dependencies]
 mira-typeck = { workspace = true, optional = true }
@@ -23,10 +22,11 @@ mira-parser = { workspace = true, optional = true }
 mira-target = { workspace = true, optional = true }
 mira-linking = { workspace = true, optional = true }
 mira-llvm-backend = { workspace = true, optional = true }
-mira-progress-bar = { workspace = true , optional = true }
 
+mira-progress-bar.workspace = true
 mira-common.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
 mira-errors.workspace = true
 mira-spans.workspace = true
+mira-context.workspace = true

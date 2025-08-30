@@ -1,18 +1,24 @@
-use std::{path::PathBuf, rc::Rc};
+use std::{path::PathBuf, process::ExitCode, rc::Rc};
 
 use html::err_fs;
 use mira_common::store::StoreKey;
-use mira_driver::{Context, LibraryTree, ProgressBarStyle, find_library};
-use mira_errors::{DiagnosticFormatter, Diagnostics, IoWriteError, Output};
+use mira_driver::{ContextData, DiagEmitter, EmitResult, ErrorEmitted, LibraryTree, find_library};
+use mira_errors::IoWriteError;
 use mira_parser::module::ModuleScopeValue;
 use mira_spans::Arena;
-use mira_typeck::{GlobalContext, TypeCtx};
 
 mod default_ty_links;
 mod html;
 mod markdown;
 
-fn main() {
+fn main() -> ExitCode {
+    match _main() {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+fn _main() -> EmitResult<()> {
     let mut args = std::env::args();
     let exec_path = args.next();
     let file = args.next();
@@ -28,7 +34,7 @@ fn main() {
             println!(
                 "Generate the documentation for the mira standard library and the root file into the output directory."
             );
-            return;
+            return Ok(());
         }
     };
 
@@ -40,20 +46,10 @@ fn main() {
     let output = PathBuf::from(output);
 
     let arena = Arena::new();
-    let ctx = GlobalContext::new(&arena);
-    if let Some((mut fmt, errs)) = _main(ctx.ty_ctx(), file, output) {
-        for err in errs {
-            fmt.display_diagnostic(err)
-                .expect("failed to display diagnostics");
-        }
-    }
-}
+    let input = file;
+    let (ctx, data) = ContextData::new(&arena, None, DiagEmitter::Stdout);
+    let mut context = data.to_context(ctx.ty_ctx());
 
-fn _main(
-    ctx: TypeCtx,
-    input: Option<PathBuf>,
-    output: PathBuf,
-) -> Option<(DiagnosticFormatter, Diagnostics)> {
     let std = find_library("mirastd").expect("failed to find mira std library");
     let std_lib_file = std.join("lib.mr");
 
@@ -75,26 +71,19 @@ fn _main(
     });
     libtree.main_library(main_lib.unwrap_or(std_id));
 
-    let mut context = Context::new(ctx, ProgressBarStyle::Normal);
-    macro_rules! tri {
-        ($e:expr) => {
-            match $e {
-                Ok(v) => v,
-                Err(e) => return Some((context.diagnostic_formatter(Output::Stderr), e)),
-            }
-        };
-    }
-    let (module_ctx, main_module) = tri!(context.parse_all_files(&libtree));
+    let (module_ctx, main_module) = context.parse_all_files(&libtree)?;
     let typechecking_item = context.add_typechecking_item();
-    let typeck_ctx = tri!(context.resolve_types(&module_ctx, typechecking_item));
+    let typeck_ctx = context.resolve_types(&module_ctx, typechecking_item)?;
     context.remove_progress_item(typechecking_item);
-    let formatter = context.diagnostic_formatter(Output::Stderr);
-    drop(context);
+    // drop(context);
     macro_rules! tri {
         ($e:expr) => {
             match $e {
                 Ok(v) => v,
-                Err(e) => return Some((formatter, e.into())),
+                Err(diag) => {
+                    typeck_ctx.ctx.emit_diag(diag);
+                    return Err(ErrorEmitted);
+                }
             }
         };
     }
@@ -186,5 +175,5 @@ fn _main(
             .map_err(|e| IoWriteError(qualified_paths.0, e).to_error())
     );
 
-    None
+    Ok(())
 }

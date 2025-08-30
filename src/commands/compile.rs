@@ -7,12 +7,13 @@ use std::{
 };
 
 use mira_argparse::{CompileArgs, OptimizationMode, PathOrStdout};
-use mira_driver::{find_library, Context, EmitMethod, LibraryTree, LinkOpts, ProgressBarStyle};
-use mira_errors::{Diagnostic, Output};
+use mira_driver::{
+    find_library, ContextData, DiagEmitter, EmitMethod, ErrorEmitted, LibraryTree, LinkOpts,
+    ProgressBarStyle,
+};
 use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder};
 use mira_spans::Arena;
 use mira_target::Target;
-use mira_typeck::GlobalContext;
 
 pub fn opt_mode_to_codegen_cfg(
     mode: OptimizationMode,
@@ -121,18 +122,6 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn emit_diagnostics<'a>(ctx: &Context<'a>, diagnostics: impl Iterator<Item = Diagnostic<'a>>) {
-    let mut formatter = ctx.diagnostic_formatter(Output::Stderr);
-    let mut num = 0;
-    for diagnostic in diagnostics {
-        num += 1;
-        formatter
-            .display_diagnostic(diagnostic)
-            .expect("failed to display diagnostic");
-    }
-    assert!(num > 0);
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile(
     libtree: &LibraryTree,
@@ -145,29 +134,21 @@ pub(crate) fn compile(
     exec_file: Option<&Path>,
     additional_linker_args: &[String],
     verbose: bool,
-) -> Result<(), ()> {
+) -> Result<(), ErrorEmitted> {
     let arena = Arena::new();
-    let ctx = GlobalContext::new(&arena);
+    let (ctx, data) = ContextData::new(&arena, Some(ProgressBarStyle::Normal), DiagEmitter::Stdout);
     let s_ctx = ctx.ty_ctx();
-    let mut ctx = Context::new(s_ctx, ProgressBarStyle::Normal);
-    macro_rules! tri {
-        (single $v:expr) => {
-            $v.map_err(|v| emit_diagnostics(&ctx, std::iter::once(v)))?
-        };
-        ($v:expr) => {
-            $v.map_err(|v| emit_diagnostics(&ctx, v.into_iter()))?
-        };
-    }
+    let mut ctx = data.to_context(s_ctx);
 
-    let (module_ctx, main_module) = tri!(ctx.parse_all_files(libtree));
+    let (module_ctx, main_module) = ctx.parse_all_files(libtree)?;
     let typechecking_item = ctx.add_typechecking_item();
-    let tc_ctx = tri!(ctx.resolve_types(&module_ctx, typechecking_item));
-    tri!(ctx.typecheck_items(&module_ctx, &tc_ctx, typechecking_item));
+    let tc_ctx = ctx.resolve_types(&module_ctx, typechecking_item)?;
+    ctx.typecheck_items(&module_ctx, &tc_ctx, typechecking_item)?;
     drop(module_ctx);
-    tri!(single ctx.validate_main_fn(&tc_ctx, main_module));
+    ctx.validate_main_fn(&tc_ctx, main_module)?;
     ctx.run_dead_code_elimination(&tc_ctx);
     if let Some(ir_writer) = ir_writer {
-        tri!(ctx.emit_ir(&tc_ctx, ir_writer));
+        ctx.emit_ir(&tc_ctx, ir_writer)?;
     }
     ctx.remove_progress_item(typechecking_item);
 
@@ -181,16 +162,16 @@ pub(crate) fn compile(
         codegen_item,
     );
     drop(tc_ctx);
-    tri!(err);
-    tri!(single ctx.optimize(&codegen_ctx, codegen_item));
+    err?;
+    ctx.optimize(&codegen_ctx, codegen_item)?;
     if let Some(llvm_ir_writer) = llvm_ir_writer {
-        tri!(ctx.emit_llvm_ir(&codegen_ctx, llvm_ir_writer));
+        ctx.emit_llvm_ir(&codegen_ctx, llvm_ir_writer)?;
     }
     if let Some(llvm_bc_writer) = llvm_bc_writer {
-        tri!(ctx.emit_llvm_bc(&codegen_ctx, llvm_bc_writer));
+        ctx.emit_llvm_bc(&codegen_ctx, llvm_bc_writer)?;
     }
     if let Some(asm_writer) = asm_writer {
-        tri!(ctx.emit_asm(&codegen_ctx, asm_writer));
+        ctx.emit_asm(&codegen_ctx, asm_writer)?;
     }
     ctx.remove_progress_item(codegen_item);
 
@@ -198,13 +179,13 @@ pub(crate) fn compile(
         return Ok(());
     };
 
-    tri!(single ctx.emit_object(&codegen_ctx, &obj_file));
+    ctx.emit_object(&codegen_ctx, &obj_file)?;
     drop(codegen_ctx);
 
     let Some(exec_file) = exec_file else {
         return Ok(());
     };
-    tri!(single ctx.link(LinkOpts {
+    ctx.link(LinkOpts {
         additional_linker_searchdir: &[],
         additional_args: additional_linker_args,
         debug_info: true,
@@ -215,6 +196,6 @@ pub(crate) fn compile(
         output_path: exec_file,
         obj_path: &[obj_file],
         input: vec![],
-    }));
+    })?;
     Ok(())
 }

@@ -7,7 +7,7 @@ pub use unicode::UnicodePrinter;
 use std::fmt::Arguments;
 use std::path::Path;
 
-pub trait StyledPrinter {
+pub trait StyledPrinter: Send + Sync {
     fn configure(&mut self, styles: Styles, severity: Severity, line_col_size: u32);
     fn print_message(
         &self,

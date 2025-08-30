@@ -56,13 +56,6 @@ impl ProgressBar {
         }
     }
 
-    pub fn custom(chars: BoxDrawingChars) -> Self {
-        Self {
-            chars,
-            ..Default::default()
-        }
-    }
-
     pub fn add_item(&mut self, name: Box<str>, item_ref: ProgressItemRef) {
         self.items.insert(
             item_ref.0,

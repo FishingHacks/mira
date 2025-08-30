@@ -15,4 +15,3 @@ pub fn main() {
 */
 /// and back to a single line doc comment
 extern fn get_bool() -> bool;
-

@@ -9,6 +9,7 @@ mira-typeck.workspace = true
 mira-errors.workspace = true
 mira-common.workspace = true
 mira-parser.workspace = true
-mira-driver = { workspace = true, features = ["typeck", "progress-bar"] }
+mira-driver = { workspace = true, features = ["typeck"] }
 parking_lot.workspace = true
 pulldown-cmark.workspace = true
+mira-context.workspace = true

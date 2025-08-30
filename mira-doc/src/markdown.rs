@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use mira_common::store::StoreKey;
+use mira_context::DocComment;
 use mira_errors::Diagnostic;
-use mira_spans::{Ident, Span, context::DocComment};
+use mira_spans::{Ident, Span};
 use mira_typeck::TypedModule;
 use pulldown_cmark::{BrokenLink, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 

@@ -1,10 +1,11 @@
-use mira_spans::{BytePos, SharedCtx, SourceFile, Span, SpanData};
+use mira_context::SharedCtx;
+use mira_spans::{BytePos, SourceFile, Span, SpanData};
 use std::str::FromStr;
 use std::sync::Arc;
 
 mod error;
 pub mod token;
-pub use error::LexingError;
+pub use error::{LexingError, LexingErrorDiagnosticsExt, LexingErrorEmitterExt};
 pub use token::{Literal, NumberType, Token, TokenType};
 #[macro_use]
 mod quote;
@@ -282,7 +283,7 @@ impl<'arena> Lexer<'arena> {
 
     fn skip_spaces(&mut self) -> usize {
         let mut i = 0;
-        while matches!(self.peek(), ' ' | '\t') {
+        while matches!(self.peek(), ' ' | '\t' | '\n' | '\r') {
             i += 1;
             self.advance();
         }
@@ -303,15 +304,18 @@ impl<'arena> Lexer<'arena> {
             self.advance();
         }
         let mut num_spaces = self.skip_spaces();
-        let has_star = self.peek() == '*';
-        if self.if_char_advance('*') {
+        let has_star = self.peek() == '*' && self.peek2() != '/';
+        if has_star {
+            self.advance();
             num_spaces = self.skip_spaces();
         }
         loop {
             if has_star {
                 self.skip_spaces();
-                self.if_char_advance('*');
-                self.skip_spaces_max(num_spaces);
+                if self.peek() == '*' && self.peek2() != '/' {
+                    self.advance();
+                    self.skip_spaces_max(num_spaces);
+                }
             }
             loop {
                 match self.peek() {
@@ -880,7 +884,8 @@ impl<'arena> Lexer<'arena> {
 
 #[cfg(test)]
 mod test {
-    use mira_spans::{Arena, context::GlobalCtx};
+    use mira_context::GlobalCtx;
+    use mira_spans::Arena;
 
     use super::*;
 
@@ -932,7 +937,18 @@ mod test {
             .iter()
             .zip(expected_tokens.iter().chain(std::iter::once(&eof_token)))
         {
-            if tok.typ != expected.0 || tok.literal != expected.1 {
+            let literals_eq = (tok.literal.is_none() && expected.1.is_none())
+                || (tok
+                    .literal
+                    .unwrap()
+                    .doc_comment_as_symbol_eq(expected.1.as_ref().unwrap(), ctx));
+            if tok.typ != expected.0 || !literals_eq {
+                if let Some(Literal::DocComment(left)) = tok.literal {
+                    ctx.with_doc_comment(left, |s| println!("Left: {s:?}"));
+                }
+                if let Some(Literal::DocComment(right)) = expected.1 {
+                    ctx.with_doc_comment(right, |s| println!("Right: {s:?}"));
+                }
                 panic!(
                     "mismatching tokens\n  left: {tokens:?}\n  right: {expected_tokens:?}\n\n{tok:?} - {expected:?}"
                 );
@@ -944,7 +960,7 @@ mod test {
         ($str: expr; $($pat:pat),* $(,)?) => {
             let mut i = 0;
             let arena = Arena::new();
-            let gtx = GlobalCtx::new(&arena);
+            let gtx = GlobalCtx::new_test_noemit(&arena);
             let ctx = gtx.share();
             let (_, errs) = get_tokens(ctx, $str);
             $(
@@ -989,7 +1005,7 @@ mod test {
     #[test]
     fn test_strings() {
         let arena = Arena::new();
-        let gtx = GlobalCtx::new(&arena);
+        let gtx = GlobalCtx::new_test_noemit(&arena);
         let ctx = gtx.share();
         assert_token_eq(
             r#"
@@ -1014,7 +1030,7 @@ mod test {
     #[test]
     fn test_idents() {
         let arena = Arena::new();
-        let gtx = GlobalCtx::new(&arena);
+        let gtx = GlobalCtx::new_test_noemit(&arena);
         let ctx = gtx.share();
         assert_token_eq(
             "jkhdfgkjhdf",
@@ -1033,7 +1049,7 @@ mod test {
     #[test]
     fn test_numbers() {
         let arena = Arena::new();
-        let gtx = GlobalCtx::new(&arena);
+        let gtx = GlobalCtx::new_test_noemit(&arena);
         let ctx = gtx.share();
         assert_token_eq(
             "12; -23; 23.9; -29.3; 0x1; -0x1;",
@@ -1106,6 +1122,40 @@ mod test {
                 tok!(Semicolon),
                 tok!(SIntLiteral, SInt(-0o5, _)),
                 tok!(FloatLiteral, Float(0.76, _)),
+            ],
+            ctx,
+        );
+    }
+
+    #[test]
+    fn test_doc_comments() {
+        let source = r#"
+/**
+ *  This is a multiline comment
+    With spaces
+*   and other stuff
+*/
+/// Nya
+/**
+ * Meow
+**/
+meow
+        "#;
+
+        let arena = Arena::new();
+        let gtx = GlobalCtx::new_test_noemit(&arena);
+        let ctx = gtx.share();
+        assert_token_eq(
+            source,
+            &[
+                tok!(
+                    ctx,
+                    DocComment,
+                    String(
+                        "This is a multiline comment\nWith spaces\n and other stuff\nNya\nMeow\n"
+                    )
+                ),
+                tok!(ctx, IdentifierLiteral, String("meow")),
             ],
             ctx,
         );

@@ -10,7 +10,8 @@ use crate::{
     TypeRef, annotations::Annotations, error::ProgramFormingError,
 };
 use mira_common::store::{AssociatedStore, Store, StoreKey};
-use mira_spans::{FileId, Ident, SharedCtx, SourceFile, Span, Symbol, context::DocComment};
+use mira_context::{DocComment, SharedCtx};
+use mira_spans::{FileId, Ident, SourceFile, Span, Symbol};
 
 mod module_resolution;
 

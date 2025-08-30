@@ -8,12 +8,13 @@ use std::{
 };
 
 use mira_common::store::StoreKey;
+use mira_context::DocComment;
 use mira_errors::Diagnostic;
 use mira_parser::{
     annotations::Annotations,
     module::{ExternalFunction, Function, ModuleScopeValue},
 };
-use mira_spans::{Symbol, context::DocComment};
+use mira_spans::Symbol;
 use mira_typeck::{
     Ty, TyKind, TypeCtx, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedModule,
     TypedStatic, TypedStruct, TypedTrait, default_types,

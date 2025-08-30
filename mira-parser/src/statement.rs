@@ -9,8 +9,9 @@ use crate::{
     module::{BakedStruct, ExternalFunction, Function, Module, ModuleContext, Static},
 };
 use mira_common::store::StoreKey;
+use mira_context::DocComment;
 use mira_lexer::{Token, TokenType};
-use mira_spans::{context::DocComment, interner::symbols};
+use mira_spans::interner::symbols;
 
 use super::{
     Expression, Parser, PathWithoutGenerics,

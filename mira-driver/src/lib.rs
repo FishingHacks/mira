@@ -1,26 +1,26 @@
 use std::{fmt::Arguments, fs::File, io::Write, path::Path, sync::Arc};
 
-use std::io::IsTerminal;
-
 use mira_common::store::StoreKey;
-use mira_errors::{
-    AsciiPrinter, Diagnostic, DiagnosticFormatter, Diagnostics, FileOpenError, IoWriteError,
-    Output, StdoutWriteError, StyledPrinter, Styles, UnicodePrinter,
-};
-use mira_spans::SharedCtx;
+use mira_context::DiagEmitter as DiagEmitMethod;
+use mira_context::SharedCtx;
+use mira_errors::{Diagnostic, Diagnostics, FileOpenError, IoWriteError, StdoutWriteError};
+use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
+
+pub use libfinder::find_library;
+pub use libtree::*;
+pub use mira_progress_bar::ProgressBarStyle;
 
 mod libfinder;
 mod libtree;
 mod parsing;
-pub use libfinder::find_library;
-pub use libtree::*;
 
-#[cfg(feature = "progress-bar")]
-pub use mira_progress_bar::ProgressBarStyle;
-#[cfg(feature = "progress-bar")]
-use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
-#[cfg(feature = "progress-bar")]
-use std::thread::JoinHandle;
+#[cfg(not(feature = "typeck"))]
+use mira_context::GlobalCtx;
+
+#[cfg(feature = "typeck")]
+use mira_spans::Arena;
+#[cfg(feature = "typeck")]
+use mira_typeck::GlobalContext;
 
 #[cfg(feature = "macros")]
 use mira_lexer::Token;
@@ -41,8 +41,9 @@ use mira_target::Target;
 #[cfg(feature = "linking")]
 use std::path::PathBuf;
 
-#[cfg(feature = "progress-bar")]
-struct DropThreadJoin<T>(Option<JoinHandle<T>>);
+pub struct ErrorEmitted;
+
+pub type EmitResult<T> = Result<T, ErrorEmitted>;
 
 struct EmitMethodWithDiags<'a, 'b, 'arena>(&'a mut EmitMethod, &'b mut Diagnostics<'arena>);
 
@@ -115,11 +116,85 @@ impl EmitMethod {
     }
 }
 
-#[cfg(feature = "progress-bar")]
-impl<T> Drop for DropThreadJoin<T> {
-    fn drop(&mut self) {
-        let Some(handle) = self.0.take() else { return };
-        handle.join().expect("failed to join thread");
+pub struct ContextData {
+    // #[cfg(not(feature = "typeck"))]
+    // ctx: GlobalCtx<'ctx>,
+    // #[cfg(feature = "typeck")]
+    // ctx: GlobalContext<'ctx>,
+    progress_bar: ProgressBarThread,
+}
+
+pub enum DiagEmitter {
+    Stdout,
+    Stderr,
+    File(File),
+    NoFail,
+    Discard,
+}
+
+impl ContextData {
+    #[cfg(feature = "typeck")]
+    /// if no style is specified, no bar will be displayed.
+    pub fn new<'ctx>(
+        arena: &'ctx Arena,
+        progress_bar_style: Option<ProgressBarStyle>,
+        emitter: DiagEmitter,
+    ) -> (GlobalContext<'ctx>, Self) {
+        let progress_bar = mira_progress_bar::print_thread::start_thread(progress_bar_style);
+        let emitter = match emitter {
+            DiagEmitter::Stdout => DiagEmitMethod::Stdout(progress_bar.clone()),
+            DiagEmitter::Stderr => DiagEmitMethod::Stderr(progress_bar.clone()),
+            DiagEmitter::File(file) => DiagEmitMethod::File(file),
+            DiagEmitter::NoFail => DiagEmitMethod::NoFail,
+            DiagEmitter::Discard => DiagEmitMethod::Discard,
+        };
+        let ctx = GlobalContext::new(
+            arena,
+            emitter,
+            mira_errors::env_printer(),
+            mira_errors::env_style(),
+        );
+        let me = Self { progress_bar };
+        (ctx, me)
+    }
+
+    #[cfg(not(feature = "typeck"))]
+    /// if no style is specified, no bar will be displayed.
+    pub fn new<'ctx>(
+        arena: &'ctx Arena,
+        progress_bar_style: Option<ProgressBarStyle>,
+        emitter: DiagEmitter,
+    ) -> (GlobalCtx<'ctx>, Self) {
+        let (thread, progress_bar) =
+            mira_progress_bar::print_thread::start_thread(progress_bar_style);
+        let emitter = match emitter {
+            DiagEmitter::Stdout => DiagEmitMethod::Stdout(progress_bar.clone()),
+            DiagEmitter::Stderr => DiagEmitMethod::Stderr(progress_bar.clone()),
+            DiagEmitter::File(file) => DiagEmitMethod::File(file),
+            DiagEmitter::NoFail => DiagEmitMethod::NoFail,
+            DiagEmitter::Discard => DiagEmitMethod::Discard,
+        };
+        let ctx = GlobalContext::new(
+            arena,
+            emitter,
+            mira_errors::env_printer(),
+            mira_errors::env_style(),
+        );
+        let me = Self {
+            progress_bar,
+            _pbthread: DropThreadJoin(Some(thread)),
+        };
+        (ctx, me)
+    }
+
+    #[cfg(feature = "typeck")]
+    pub fn to_context<'ctx>(self, ctx: TypeCtx<'ctx>) -> Context<'ctx> {
+        Context { ctx, data: self }
+    }
+
+    #[cfg(not(feature = "typeck"))]
+    pub fn to_context<'ctx>(self, ctx: SharedCtx<'ctx>) -> Context<'ctx> {
+        Context { ctx, data: self }
     }
 }
 
@@ -128,62 +203,22 @@ pub struct Context<'ctx> {
     ctx: SharedCtx,
     #[cfg(feature = "typeck")]
     ctx: TypeCtx<'ctx>,
-    #[cfg(feature = "progress-bar")]
-    progress_bar: ProgressBarThread,
-    #[cfg(feature = "progress-bar")]
-    _pbthread: DropThreadJoin<()>,
+    data: ContextData,
 }
 
 impl<'ctx> Context<'ctx> {
-    #[cfg(feature = "typeck")]
-    pub fn new(
-        ctx: TypeCtx<'ctx>,
-        #[cfg(feature = "progress-bar")] progress_bar_style: ProgressBarStyle,
-    ) -> Self {
-        #[cfg(feature = "progress-bar")]
-        let (thread, progress_bar) =
-            mira_progress_bar::print_thread::start_thread(progress_bar_style);
-        Self {
-            ctx,
-            #[cfg(feature = "progress-bar")]
-            progress_bar,
-            #[cfg(feature = "progress-bar")]
-            _pbthread: DropThreadJoin(Some(thread)),
-        }
-    }
-    #[cfg(not(feature = "typeck"))]
-    pub fn new(
-        ctx: SharedCtx<'ctx>,
-        #[cfg(feature = "progress-bar")] progress_bar_style: ProgressBarStyle,
-    ) -> Self {
-        #[cfg(feature = "progress-bar")]
-        let (thread, progress_bar) =
-            mira_progress_bar::print_thread::start_thread(progress_bar_style);
-        Self {
-            ctx,
-            #[cfg(feature = "progress-bar")]
-            progress_bar,
-            #[cfg(feature = "progress-bar")]
-            _pbthread: DropThreadJoin(Some(thread)),
-        }
-    }
-
     fn shared_ctx(&self) -> SharedCtx<'ctx> {
         #[cfg(feature = "typeck")]
-        return self.ctx.into();
+        return self.ctx.to_shared();
         #[cfg(not(feature = "typeck"))]
         self.ctx
     }
 
     #[cfg(feature = "macros")]
-    pub fn expand_macros(
-        &mut self,
-        file: Arc<Path>,
-    ) -> Result<Vec<Token<'ctx>>, Diagnostics<'ctx>> {
+    pub fn expand_macros(&mut self, file: Arc<Path>) -> EmitResult<Vec<Token<'ctx>>> {
         use mira_errors::IoReadError;
         use mira_lexer::{Lexer, LexingError};
 
-        let mut diags = Diagnostics::new();
         let f = match self
             .shared_ctx()
             .source_map
@@ -191,49 +226,45 @@ impl<'ctx> Context<'ctx> {
         {
             Ok(v) => v,
             Err(e) => {
-                diags.add_err(IoReadError(file.to_path_buf(), e));
-                return Err(diags);
+                self.ctx
+                    .emit_diag(IoReadError(file.to_path_buf(), e).to_error());
+                return Err(ErrorEmitted);
             }
         };
         let mut lexer = Lexer::new(self.shared_ctx(), f);
-        _ = lexer
-            .scan_tokens()
-            .map_err(|e| diags.extend(e.into_iter().map(LexingError::to_error)));
+        _ = lexer.scan_tokens().map_err(|e| {
+            self.ctx
+                .emit_diags(e.into_iter().map(LexingError::to_error))
+        });
 
         let file = lexer.file.clone();
         let tokens = lexer.into_tokens();
+        let mut diags = Diagnostics::new();
         match mira_parser::expand_tokens(self.shared_ctx(), file.clone(), tokens, &mut diags) {
             Some(v) => Ok(v),
-            None => Err(diags),
+            None => {
+                self.ctx.emit_diags(diags);
+                Err(ErrorEmitted)
+            }
+        }
+    }
+
+    fn emit(&self, method: &mut EmitMethod, args: Arguments<'_>) -> EmitResult<()> {
+        match method.emit_fmt(args) {
+            Ok(()) => Ok(()),
+            Err(diag) => {
+                self.ctx.emit_diag(diag);
+                Err(ErrorEmitted)
+            }
         }
     }
 
     #[cfg(feature = "macros")]
-    pub fn emit_tokens(
-        &self,
-        tokens: &[Token<'ctx>],
-        mut method: EmitMethod,
-    ) -> Result<(), Diagnostics<'ctx>> {
+    pub fn emit_tokens(&self, tokens: &[Token<'ctx>], mut method: EmitMethod) -> EmitResult<()> {
         for tok in tokens {
-            method.emit_fmt(format_args!("{tok} "))?;
+            self.emit(&mut method, format_args!("{tok} "))?;
         }
-        method.emit_fmt(format_args!("\n"))?;
-        Ok(())
-    }
-
-    pub fn diagnostic_formatter(&self, output: Output) -> DiagnosticFormatter<'ctx> {
-        let styles = match std::env::var("MIRA_COLOR").ok().as_deref() {
-            Some("0" | "none" | "no") => Styles::NO_COLORS,
-            Some("1" | "yes") => Styles::DEFAULT,
-            _ if std::io::stdout().is_terminal() => Styles::DEFAULT,
-            _ => Styles::NO_COLORS,
-        };
-        let printer: Box<dyn StyledPrinter> = match std::env::var("MIRA_DIAG_STYLE").ok().as_deref()
-        {
-            Some("ascii" | "text") => Box::new(AsciiPrinter::new()),
-            _ => Box::new(UnicodePrinter::new()),
-        };
-        DiagnosticFormatter::new(self.shared_ctx().source_map, output, printer, styles)
+        self.emit(&mut method, format_args!("\n"))
     }
 
     #[cfg(feature = "parsing")]
@@ -242,77 +273,70 @@ impl<'ctx> Context<'ctx> {
     pub fn parse_all_files(
         &mut self,
         libtree: &LibraryTree,
-    ) -> Result<(Arc<ModuleContext<'ctx>>, StoreKey<Module<'ctx>>), Diagnostics<'ctx>> {
+    ) -> EmitResult<(Arc<ModuleContext<'ctx>>, StoreKey<Module<'ctx>>)> {
         use crate::parsing::parse_all;
 
-        #[cfg(feature = "progress-bar")]
-        let parser_item = self.progress_bar.add_item("Parsing".into());
+        let parser_item = self.data.progress_bar.add_item("Parsing".into());
 
         let res = parse_all(
             self.shared_ctx(),
-            #[cfg(feature = "progress-bar")]
-            self.progress_bar.clone(),
-            #[cfg(feature = "progress-bar")]
+            self.data.progress_bar.clone(),
             parser_item,
             libtree,
         );
-        #[cfg(feature = "progress-bar")]
-        self.progress_bar.remove(parser_item);
-        res
+        self.data.progress_bar.remove(parser_item);
+        let v = res
+            .map_err(|v| self.ctx.emit_diags(v))
+            .map_err(|()| ErrorEmitted)?;
+        Ok(v)
     }
 
-    #[cfg(feature = "progress-bar")]
     pub fn add_progress_item(&mut self, item: impl Into<Box<str>>) -> ProgressItemRef {
-        self.progress_bar.add_item(item.into())
+        self.data.progress_bar.add_item(item.into())
     }
 
-    #[cfg(feature = "progress-bar")]
     pub fn add_progress_item_child(
         &mut self,
         parent: ProgressItemRef,
         item: impl Into<Box<str>>,
     ) -> ProgressItemRef {
-        self.progress_bar.add_child(parent, item.into())
+        self.data.progress_bar.add_child(parent, item.into())
     }
 
-    #[cfg(all(feature = "progress-bar", feature = "typeck"))]
     pub fn add_typechecking_item(&mut self) -> ProgressItemRef {
         self.add_progress_item("Typechecking")
     }
 
-    #[cfg(all(feature = "progress-bar", feature = "codegen"))]
     pub fn add_codegen_item(&mut self) -> ProgressItemRef {
         self.add_progress_item("Codegen")
     }
 
-    #[cfg(feature = "progress-bar")]
     pub fn remove_progress_item(&mut self, item: ProgressItemRef) {
-        self.progress_bar.remove(item);
+        self.data.progress_bar.remove(item);
     }
 
     #[cfg(feature = "typeck")]
     pub fn resolve_types(
         &mut self,
         module_ctx: &Arc<ModuleContext<'ctx>>,
-        #[cfg(feature = "progress-bar")] typechecking_item: ProgressItemRef,
-    ) -> Result<Arc<TypecheckingContext<'ctx>>, Diagnostics<'ctx>> {
+        typechecking_item: ProgressItemRef,
+    ) -> EmitResult<Arc<TypecheckingContext<'ctx>>> {
         use mira_typeck::TypecheckingContext;
 
-        #[cfg(feature = "progress-bar")]
         let type_resolution_item =
             self.add_progress_item_child(typechecking_item, "Type Resolution");
 
         let typeck_ctx = TypecheckingContext::new(self.ctx, module_ctx.clone());
-        let errs = typeck_ctx.resolve_imports(module_ctx.clone());
-        if !errs.is_empty() {
-            return Err(errs);
+        let tracker = self.ctx.track_errors();
+        typeck_ctx.resolve_imports(module_ctx.clone());
+        if self.ctx.errors_happened(tracker) {
+            return Err(ErrorEmitted);
         }
-        let errs = typeck_ctx.resolve_types(module_ctx.clone());
-        if !errs.is_empty() {
-            return Err(errs);
+        typeck_ctx.resolve_types(module_ctx.clone());
+        if self.ctx.errors_happened(tracker) {
+            return Err(ErrorEmitted);
         }
 
-        #[cfg(feature = "progress-bar")]
         self.remove_progress_item(type_resolution_item);
         Ok(typeck_ctx)
     }
@@ -322,8 +346,8 @@ impl<'ctx> Context<'ctx> {
         &mut self,
         module_ctx: &Arc<ModuleContext<'ctx>>,
         typeck_ctx: &Arc<TypecheckingContext<'ctx>>,
-        #[cfg(feature = "progress-bar")] typechecking_item: ProgressItemRef,
-    ) -> Result<(), Diagnostics<'ctx>> {
+        typechecking_item: ProgressItemRef,
+    ) -> EmitResult<()> {
         let function_keys = typeck_ctx.functions.read().indices().collect::<Vec<_>>();
         let ext_function_keys = typeck_ctx
             .external_functions
@@ -337,7 +361,6 @@ impl<'ctx> Context<'ctx> {
         for key in function_keys {
             use mira_typeck::typechecking::typecheck_function;
 
-            #[cfg(feature = "progress-bar")]
             let item = self
                 .add_progress_item_child(typechecking_item, format!("Typechecking function {key}"));
 
@@ -347,14 +370,12 @@ impl<'ctx> Context<'ctx> {
                 self.ctx,
             );
 
-            #[cfg(feature = "progress-bar")]
             self.remove_progress_item(item);
         }
 
         for key in ext_function_keys {
             use mira_typeck::typechecking::typecheck_external_function;
 
-            #[cfg(feature = "progress-bar")]
             let item = self.add_progress_item_child(
                 typechecking_item,
                 format!("Typechecking external function {key}"),
@@ -365,25 +386,23 @@ impl<'ctx> Context<'ctx> {
                 mira_typeck::ir::passes::run_passes(body, self.ctx);
             }
 
-            #[cfg(feature = "progress-bar")]
             self.remove_progress_item(item);
         }
 
         for key in static_keys {
             use mira_typeck::typechecking::typecheck_static;
 
-            #[cfg(feature = "progress-bar")]
             let item = self
                 .add_progress_item_child(typechecking_item, format!("Typechecking static {key}"));
 
             typecheck_static(typeck_ctx, module_ctx, key, &mut errs);
 
-            #[cfg(feature = "progress-bar")]
             self.remove_progress_item(item);
         }
 
         if !errs.is_empty() {
-            return Err(errs);
+            self.ctx.emit_diags(errs);
+            return Err(ErrorEmitted);
         }
 
         Ok(())
@@ -396,22 +415,21 @@ impl<'ctx> Context<'ctx> {
         &mut self,
         typeck_ctx: &Arc<TypecheckingContext<'ctx>>,
         main_module: StoreKey<Module<'ctx>>,
-    ) -> Result<StoreKey<TypedFunction<'ctx>>, Diagnostic<'ctx>> {
+    ) -> EmitResult<StoreKey<TypedFunction<'ctx>>> {
         typeck_ctx
             .validate_main_function(main_module)
-            .map_err(|v| v.to_error())
+            .map_err(|v| self.ctx.emit_diag(v.to_error()))
+            .map_err(|()| ErrorEmitted)
     }
 
     #[cfg(feature = "typeck")]
     pub fn run_dead_code_elimination(&mut self, typeck_ctx: &Arc<TypecheckingContext<'ctx>>) {
         use mira_typeck::optimizations;
 
-        #[cfg(feature = "progress-bar")]
         let item = self.add_progress_item("Dead code elimination");
 
         optimizations::dead_code_elimination::run_dce(typeck_ctx, &[], &[]);
 
-        #[cfg(feature = "progress-bar")]
         self.remove_progress_item(item);
     }
 
@@ -420,7 +438,7 @@ impl<'ctx> Context<'ctx> {
         &self,
         typeck_ctx: &TypecheckingContext<'ctx>,
         mut method: EmitMethod,
-    ) -> Result<(), Diagnostics<'ctx>> {
+    ) -> EmitResult<()> {
         use mira_typeck::ir_displayer::{ReadOnlyTypecheckingContext, TCContextDisplay};
 
         use crate::EmitMethodWithDiags;
@@ -439,7 +457,10 @@ impl<'ctx> Context<'ctx> {
         let mut formatter = Formatter::new(&mut writer, readonly_ctx);
         match TCContextDisplay.fmt(&mut formatter) {
             Ok(()) => Ok(()),
-            Err(_) => Err(errs),
+            Err(_) => {
+                self.ctx.emit_diags(errs);
+                Err(ErrorEmitted)
+            }
         }
     }
 
@@ -450,8 +471,8 @@ impl<'ctx> Context<'ctx> {
         main_module: StoreKey<Module<'ctx>>,
         codegen_opts: CodegenConfig<'ctx>,
         builder: &'cg_ctx CodegenContextBuilder,
-        #[cfg(feature = "progress-bar")] codegen_item: ProgressItemRef,
-    ) -> (CodegenContext<'cg_ctx, 'ctx>, Result<(), Diagnostics<'ctx>>)
+        codegen_item: ProgressItemRef,
+    ) -> (CodegenContext<'cg_ctx, 'ctx>, EmitResult<()>)
     where
         'ctx: 'cg_ctx,
     {
@@ -480,19 +501,16 @@ impl<'ctx> Context<'ctx> {
             {
                 continue;
             }
-            #[cfg(feature = "progress-bar")]
             let item =
                 self.add_progress_item_child(codegen_item, format!("Codegening function #{fn_id}"));
 
             if let Err(e) = codegen_context.compile_fn(fn_id) {
                 errs.add_err(CodegenError::from(e));
             }
-            #[cfg(feature = "progress-bar")]
             self.remove_progress_item(item);
         }
 
         for fn_id in typeck_ctx.external_functions.read().indices() {
-            #[cfg(feature = "progress-bar")]
             let item = self.add_progress_item_child(
                 codegen_item,
                 format!("Codegening external function #{fn_id}"),
@@ -501,29 +519,32 @@ impl<'ctx> Context<'ctx> {
             if let Err(e) = codegen_context.compile_external_fn(fn_id) {
                 errs.add_err(CodegenError::from(e));
             }
-            #[cfg(feature = "progress-bar")]
             self.remove_progress_item(item);
         }
 
-        (codegen_context, (errs.is_empty()).then_some(()).ok_or(errs))
+        (
+            codegen_context,
+            (errs.is_empty())
+                .then_some(())
+                .ok_or(ErrorEmitted)
+                .inspect_err(|_| self.ctx.emit_diags(errs)),
+        )
     }
 
     #[cfg(feature = "codegen")]
     pub fn optimize(
         &mut self,
         codegen_ctx: &CodegenContext<'_, 'ctx>,
-        #[cfg(feature = "progress-bar")] codegen_item: ProgressItemRef,
-    ) -> Result<(), Diagnostic<'ctx>> {
-        #[cfg(feature = "progress-bar")]
+        codegen_item: ProgressItemRef,
+    ) -> EmitResult<()> {
         self.add_progress_item_child(codegen_item, "Optimizing");
 
         if let Err(e) = codegen_ctx.finish() {
-            #[cfg(feature = "progress-bar")]
             self.remove_progress_item(codegen_item);
-            return Err(CodegenError::from(e).to_error());
+            self.ctx.emit_diag(CodegenError::from(e).to_error());
+            return Err(ErrorEmitted);
         }
 
-        #[cfg(feature = "progress-bar")]
         self.remove_progress_item(codegen_item);
         Ok(())
     }
@@ -533,13 +554,14 @@ impl<'ctx> Context<'ctx> {
         &self,
         codegen_ctx: &CodegenContext<'_, 'ctx>,
         mut method: EmitMethod,
-    ) -> Result<(), Diagnostics<'ctx>> {
+    ) -> EmitResult<()> {
         let ir = codegen_ctx.gen_ir();
-        let mut errs = Diagnostics::new();
-        if method.emit_diags(ir.to_bytes(), &mut errs) && errs.is_empty() {
-            Ok(())
-        } else {
-            Err(errs)
+        match method.emit(ir.to_bytes()) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.ctx.emit_diag(e);
+                Err(ErrorEmitted)
+            }
         }
     }
 
@@ -548,13 +570,14 @@ impl<'ctx> Context<'ctx> {
         &self,
         codegen_ctx: &CodegenContext<'_, 'ctx>,
         mut method: EmitMethod,
-    ) -> Result<(), Diagnostics<'ctx>> {
+    ) -> EmitResult<()> {
         let bitcode = codegen_ctx.gen_bitcode();
-        let mut errs = Diagnostics::new();
-        if method.emit_diags(bitcode.as_slice(), &mut errs) && errs.is_empty() {
-            Ok(())
-        } else {
-            Err(errs)
+        match method.emit(bitcode.as_slice()) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.ctx.emit_diag(e);
+                Err(ErrorEmitted)
+            }
         }
     }
 
@@ -563,15 +586,17 @@ impl<'ctx> Context<'ctx> {
         &self,
         codegen_ctx: &CodegenContext<'_, 'ctx>,
         mut method: EmitMethod,
-    ) -> Result<(), Diagnostics<'ctx>> {
-        let bitcode = codegen_ctx
+    ) -> EmitResult<()> {
+        let asm = codegen_ctx
             .gen_assembly()
-            .map_err(|v| Diagnostics::from(v.to_error()))?;
-        let mut errs = Diagnostics::new();
-        if method.emit_diags(bitcode.as_slice(), &mut errs) && errs.is_empty() {
-            Ok(())
-        } else {
-            Err(errs)
+            .map_err(|v| self.ctx.emit_diag(v.to_error()))
+            .map_err(|()| ErrorEmitted)?;
+        match method.emit(asm.as_slice()) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.ctx.emit_diag(e);
+                Err(ErrorEmitted)
+            }
         }
     }
 
@@ -580,7 +605,7 @@ impl<'ctx> Context<'ctx> {
         &self,
         codegen_ctx: &CodegenContext<'_, 'ctx>,
         path: &Path,
-    ) -> Result<(), Diagnostic<'ctx>> {
+    ) -> EmitResult<()> {
         use mira_errors::FileOpenError;
         use std::fs::File;
 
@@ -589,22 +614,27 @@ impl<'ctx> Context<'ctx> {
             .create(true)
             .truncate(true)
             .open(path)
-            .map_err(|e| FileOpenError(path.to_path_buf(), e).to_error())?;
+            .map_err(|e| FileOpenError(path.to_path_buf(), e).to_error())
+            .map_err(|e| self.ctx.emit_diag(e))
+            .map_err(|()| ErrorEmitted)?;
 
         codegen_ctx
             .write_object(&mut obj_file)
-            .map_err(CodegenError::to_error)
+            .map_err(|e| self.ctx.emit_diag(e.to_error()))
+            .map_err(|()| ErrorEmitted)
     }
 
     #[cfg(feature = "linking")]
-    pub fn link(&self, mut opts: LinkOpts) -> Result<(), Diagnostic<'ctx>> {
+    pub fn link(&self, mut opts: LinkOpts) -> EmitResult<()> {
         use mira_linking::{LinkOptions, LinkerError};
 
         let Some((linker, linker_path)) = mira_linking::search_for_linker(
             opts.target.needs_crt(),
             opts.additional_linker_searchdir,
         ) else {
-            return Err(LinkerError::UnableToLocateLinker.to_error());
+            self.ctx
+                .emit_diag(LinkerError::UnableToLocateLinker.to_error());
+            return Err(ErrorEmitted);
         };
 
         opts.input.push(LinkerInput::LinkLibrary("unwind".into()));
@@ -624,7 +654,8 @@ impl<'ctx> Context<'ctx> {
                 create_dynamic_library: opts.shared_obj,
                 target: opts.target,
             })
-            .map_err(move |v| v.to_error())
+            .map_err(|v| self.ctx.emit_diag(v.to_error()))
+            .map_err(|()| ErrorEmitted)
     }
 }
 

@@ -4,12 +4,11 @@ use std::{
     sync::Arc,
 };
 
+use mira_context::SharedCtx;
 use mira_errors::{Diagnostic, Diagnostics, pluralize};
 use mira_lexer::{Token, TokenType, token::IdentDisplay};
 use mira_macros::ErrorData;
-use mira_spans::{
-    BytePos, Ident, SharedCtx, SourceFile, Span, SpanData, Symbol, interner::SpanInterner,
-};
+use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData, Symbol, interner::SpanInterner};
 
 use crate::tokenstream::BorrowedTokenStream;
 

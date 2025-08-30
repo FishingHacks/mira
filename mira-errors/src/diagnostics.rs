@@ -138,7 +138,7 @@ pub struct Diagnostic<'arena> {
 impl Drop for Diagnostic<'_> {
     fn drop(&mut self) {
         if self.diagnostic.is_some() {
-            println!("Diagnostic was dropped without emitting");
+            panic!("Diagnostic was dropped without emitting");
         }
     }
 }
@@ -157,6 +157,7 @@ impl<'arena> Diagnostic<'arena> {
     }
 
     pub fn new<E: ErrorData + 'arena>(err: E, severity: Severity) -> Self {
+        // println!("{}", std::backtrace::Backtrace::force_capture());
         Self {
             diagnostic: Some(Box::new(DiagnosticInner {
                 severity,

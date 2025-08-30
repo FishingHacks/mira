@@ -1,6 +1,7 @@
+use mira_context::SharedCtx;
 use mira_errors::{Diagnostics, ErrorData};
 use mira_lexer::{Literal, NumberType, Token, TokenType, token::IdentDisplay};
-use mira_spans::{SharedCtx, Span, SpanData, Symbol};
+use mira_spans::{Span, SpanData, Symbol};
 use std::fmt::Write;
 
 use crate::tokenstream::BorrowedTokenStream;

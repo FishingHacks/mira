@@ -1,8 +1,9 @@
 use std::slice::SliceIndex;
 
 use crate::error::ParsingError;
+use mira_context::DocComment;
 use mira_lexer::{Literal, Token, TokenType};
-use mira_spans::{Ident, Span, context::DocComment, interner::Symbol};
+use mira_spans::{Ident, Span, interner::Symbol};
 
 pub trait TokenHolder<'arena>: AsRef<[Token<'arena>]> {
     fn len(&self) -> usize {

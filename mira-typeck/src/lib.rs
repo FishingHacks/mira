@@ -1,4 +1,4 @@
-use mira_errors::{Diagnostic, Diagnostics};
+use mira_errors::Diagnostic;
 use mira_macros::Display;
 use parking_lot::RwLock;
 use std::{
@@ -12,8 +12,9 @@ use type_resolution::ResolvingState;
 use ir::TypedLiteral;
 use types::{FunctionType, resolve_primitive_type, with_refcount};
 
-use crate::{ir::IR, lang_items::LangItems};
+use crate::{error::TypecheckingErrorEmitterExt, ir::IR, lang_items::LangItems};
 use mira_common::store::{AssociatedStore, Store, StoreKey, VecStore};
+use mira_context::DocComment;
 use mira_parser::{
     Trait, TypeRef,
     annotations::Annotations,
@@ -23,7 +24,6 @@ use mira_parser::{
 };
 use mira_spans::{
     ArenaList, Ident, SourceFile, Span,
-    context::DocComment,
     interner::{Symbol, symbols},
 };
 
@@ -356,8 +356,7 @@ impl<'arena> TypecheckingContext<'arena> {
         me
     }
 
-    pub fn resolve_imports(&self, context: Arc<ModuleContext<'arena>>) -> Diagnostics<'arena> {
-        let mut errors = Diagnostics::new();
+    pub fn resolve_imports(&self, context: Arc<ModuleContext<'arena>>) {
         let mut typechecked_module_writer = self.modules.write();
         let module_reader = context.modules.read();
         for key in module_reader.indices() {
@@ -370,15 +369,13 @@ impl<'arena> TypecheckingContext<'arena> {
                     &mut HashSet::new(),
                 );
                 match res {
-                    Err(e) => _ = errors.add(e),
+                    Err(diag) => self.ctx.emit_diag(diag),
                     Ok(k) => {
                         typechecked_module_writer[key.cast()].scope.insert(*name, k);
                     }
                 }
             }
         }
-
-        errors
     }
 
     pub fn resolve_type(
@@ -538,7 +535,6 @@ impl<'arena> TypecheckingContext<'arena> {
         context: Arc<ModuleContext<'arena>>,
         id: StoreKey<BakedStruct<'arena>>,
         module_id: StoreKey<Module<'arena>>,
-        errors: &mut Diagnostics<'arena>,
         left: &mut HashMap<StoreKey<BakedStruct<'arena>>, ResolvingState>,
     ) -> bool {
         if !left.contains_key(&id) {
@@ -565,19 +561,19 @@ impl<'arena> TypecheckingContext<'arena> {
         for generic in &writer[id].generics {
             let mut bounds = Vec::new();
 
-            for (bound, loc) in &generic.bounds {
+            for (bound, span) in &generic.bounds {
                 match resolve_import(
                     &context,
                     module_id,
                     &bound.entries,
-                    *loc,
+                    *span,
                     &mut HashSet::new(),
                 ) {
-                    Err(e) => _ = errors.add(e),
+                    Err(e) => self.ctx.emit_diag(e),
                     Ok(ModuleScopeValue::Trait(trait_id)) => bounds.push(trait_id.cast()),
                     Ok(_) => {
-                        errors.add_unbound_ident(
-                            *loc,
+                        self.ctx.emit_unbound_ident(
+                            *span,
                             bound.entries[bound.entries.len() - 1].symbol(),
                         );
                     }
@@ -612,7 +608,6 @@ impl<'arena> TypecheckingContext<'arena> {
                 &typed_struct.generics,
                 module_id.cast(),
                 context.clone(),
-                errors,
                 left,
             ) {
                 typed_struct.elements.push((element.0, typ, element.2));
@@ -630,7 +625,6 @@ impl<'arena> TypecheckingContext<'arena> {
         generics: &[TypedGeneric<'arena>],
         module: StoreKey<TypedModule<'arena>>,
         context: Arc<ModuleContext<'arena>>,
-        errors: &mut Diagnostics<'arena>,
         left: &mut HashMap<StoreKey<BakedStruct<'arena>>, ResolvingState>,
     ) -> Option<Ty<'arena>> {
         if let Some(typ) = resolve_primitive_type(self.ctx, typ) {
@@ -673,7 +667,6 @@ impl<'arena> TypecheckingContext<'arena> {
                     generics,
                     module,
                     context.clone(),
-                    errors,
                     left,
                 )?;
                 let mut arguments = Vec::with_capacity(args.len());
@@ -683,7 +676,6 @@ impl<'arena> TypecheckingContext<'arena> {
                         generics,
                         module,
                         context.clone(),
-                        errors,
                         left,
                     )?);
                 }
@@ -697,7 +689,7 @@ impl<'arena> TypecheckingContext<'arena> {
             TypeRef::Reference {
                 num_references,
                 type_name,
-                span: loc,
+                span,
             } => {
                 let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();
                 // NOTE: this should only have a generic at the end as this is a type
@@ -724,14 +716,16 @@ impl<'arena> TypecheckingContext<'arena> {
                 }
 
                 let Ok(value) =
-                    resolve_import(&context, module.cast(), &path, *loc, &mut HashSet::new())
+                    resolve_import(&context, module.cast(), &path, *span, &mut HashSet::new())
                 else {
-                    errors.add_unbound_ident(*loc, path[path.len() - 1].symbol());
+                    self.ctx
+                        .emit_unbound_ident(*span, path[path.len() - 1].symbol());
                     return None;
                 };
 
                 let ModuleScopeValue::Struct(id) = value else {
-                    errors.add_mismatching_scope_type(*loc, ScopeKind::Type, value.into());
+                    self.ctx
+                        .emit_mismatching_scope_type(*span, ScopeKind::Type, value.into());
                     return None;
                 };
 
@@ -747,8 +741,8 @@ impl<'arena> TypecheckingContext<'arena> {
                 }
 
                 let module = context.structs.read()[id].module_id;
-                if self.resolve_struct(context, id, module, errors, left) {
-                    errors.add_recursive_type_detected(*loc);
+                if self.resolve_struct(context, id, module, left) {
+                    self.ctx.emit_recursive_type_detected(*span);
                     return None;
                 }
                 let typechecked_struct = &self.structs.read()[id.cast()];
@@ -766,10 +760,9 @@ impl<'arena> TypecheckingContext<'arena> {
                 span: _,
             } => Some(with_refcount(
                 self.ctx,
-                self.ctx
-                    .intern_ty(TyKind::UnsizedArray(self.type_resolution_resolve_type(
-                        child, generics, module, context, errors, left,
-                    )?)),
+                self.ctx.intern_ty(TyKind::UnsizedArray(
+                    self.type_resolution_resolve_type(child, generics, module, context, left)?,
+                )),
                 *num_references,
             )),
             TypeRef::SizedArray {
@@ -780,9 +773,8 @@ impl<'arena> TypecheckingContext<'arena> {
             } => Some(with_refcount(
                 self.ctx,
                 self.ctx.intern_ty(TyKind::SizedArray {
-                    typ: self.type_resolution_resolve_type(
-                        child, generics, module, context, errors, left,
-                    )?,
+                    typ: self
+                        .type_resolution_resolve_type(child, generics, module, context, left)?,
                     number_elements: *number_elements,
                 }),
                 *num_references,
@@ -799,7 +791,6 @@ impl<'arena> TypecheckingContext<'arena> {
                         generics,
                         module,
                         context.clone(),
-                        errors,
                         left,
                     )?);
                 }
@@ -826,6 +817,7 @@ impl<'arena> TypecheckingContext<'arena> {
         let module_reader = self.modules.read();
         let cur_mod = &module_reader[module.cast()];
         let thing;
+
         if &*import[0] == "pkg" {
             thing = ModuleScopeValue::Module(cur_mod.root_module.cast());
         } else if &*import[0] == "super" {

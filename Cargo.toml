@@ -4,7 +4,7 @@ version = "0.2.1"
 edition = "2021"
 
 [workspace]
-members = [ "mira-argparse","mira-common", "mira-doc", "mira-driver", "mira-error-codes", "mira-errors", "mira-lexer", "mira-linking", "mira-llvm-backend", "mira-macros", "mira-parser", "mira-progress-bar", "mira-spans", "mira-target", "mira-typeck"]
+members = [ "mira-argparse","mira-common", "mira-context", "mira-doc", "mira-driver", "mira-error-codes", "mira-errors", "mira-lexer", "mira-linking", "mira-llvm-backend", "mira-macros", "mira-parser", "mira-progress-bar", "mira-spans", "mira-target", "mira-typeck"]
 
 [workspace.dependencies]
 mira-argparse = { path = "./mira-argparse" }
@@ -21,6 +21,7 @@ mira-macros = { path = "./mira-macros" }
 mira-llvm-backend = { path = "./mira-llvm-backend" }
 mira-progress-bar = { path = "./mira-progress-bar" }
 mira-spans = { path = "./mira-spans" }
+mira-context = { path = "./mira-context" }
 parking_lot = "0.12.3"
 clap = { version = "4.5.28", features = ["derive"] }
 inkwell = { git = "https://github.com/fishinghacks/inkwell.git" }

@@ -1,26 +1,50 @@
-use std::{fmt::Debug, ops::Index};
+use std::{fmt::Debug, ops::Index, sync::Arc};
 
-use crate::{
+use mira_errors::{Diagnostic, StyledPrinter, Styles, default_printer, default_styles};
+use mira_spans::{
     Arena, SourceMap, Span, SpanData, Symbol,
     interner::{SpanInterner, SymbolInterner},
 };
 use parking_lot::Mutex;
 
+mod diagnostics_emitter;
+pub use diagnostics_emitter::*;
+
+#[derive(Clone, Copy)]
+pub struct ErrorTracker(usize);
+
 pub struct GlobalCtx<'arena> {
     string_interner: Mutex<SymbolInterner<'arena>>,
     doc_comment_store: Mutex<DocCommentStore>,
     pub span_interner: SpanInterner<'arena>,
-    pub source_map: SourceMap,
+    pub source_map: Arc<SourceMap>,
+    diag_ctx: Mutex<DiagCtx>,
 }
 
 impl<'arena> GlobalCtx<'arena> {
-    pub fn new(arena: &'arena Arena) -> Self {
+    pub fn new(
+        arena: &'arena Arena,
+        emitter: DiagEmitter,
+        printer: Box<dyn StyledPrinter>,
+        styles: Styles,
+    ) -> Self {
+        let source_map = Arc::new(SourceMap::new());
         Self {
             string_interner: SymbolInterner::new(arena).into(),
             doc_comment_store: DocCommentStore::new().into(),
             span_interner: SpanInterner::new(arena),
-            source_map: SourceMap::new(),
+            diag_ctx: DiagCtx::new(emitter, source_map.clone(), printer, styles).into(),
+            source_map,
         }
+    }
+
+    pub fn new_test_noemit(arena: &'arena Arena) -> Self {
+        Self::new(
+            arena,
+            DiagEmitter::NoFail,
+            default_printer(),
+            default_styles(),
+        )
     }
 
     pub fn share(&'arena self) -> SharedCtx<'arena> {
@@ -29,6 +53,7 @@ impl<'arena> GlobalCtx<'arena> {
             &self.doc_comment_store,
             &self.span_interner,
             &self.source_map,
+            &self.diag_ctx,
         )
     }
 }
@@ -37,6 +62,7 @@ impl<'arena> GlobalCtx<'arena> {
 pub struct SharedCtx<'arena> {
     string_interner: &'arena Mutex<SymbolInterner<'arena>>,
     doc_comment_store: &'arena Mutex<DocCommentStore>,
+    dctx: &'arena Mutex<DiagCtx>,
     pub span_interner: &'arena SpanInterner<'arena>,
     pub source_map: &'arena SourceMap,
 }
@@ -47,12 +73,14 @@ impl<'arena> SharedCtx<'arena> {
         doc_comment_store: &'arena Mutex<DocCommentStore>,
         span_interner: &'arena SpanInterner<'arena>,
         source_map: &'arena SourceMap,
+        dctx: &'arena Mutex<DiagCtx>,
     ) -> Self {
         Self {
             string_interner,
             doc_comment_store,
             span_interner,
             source_map,
+            dctx,
         }
     }
 
@@ -82,6 +110,35 @@ impl<'arena> SharedCtx<'arena> {
     /// removes a doc comment.
     pub fn clear_doc_comment(&self, v: DocComment) {
         self.doc_comment_store.lock().clear_doc_comment(v);
+    }
+
+    pub fn emit_diags(&self, diags: impl IntoIterator<Item = Diagnostic<'arena>>) {
+        let mut dctx = self.dctx.lock();
+        for diag in diags {
+            dctx.emit_diag(diag);
+        }
+    }
+
+    pub fn emit_diag(&self, diag: Diagnostic<'arena>) {
+        self.dctx.lock().emit_diag(diag);
+    }
+
+    pub fn err_count(&self) -> usize {
+        self.dctx.lock().err_count()
+    }
+
+    pub fn track_errors(&self) -> ErrorTracker {
+        self.dctx.lock().track_errors()
+    }
+
+    pub fn errors_happened(&self, tracker: ErrorTracker) -> bool {
+        self.dctx.lock().errors_happened(tracker)
+    }
+}
+
+impl<'ctx> mira_errors::DiagEmitter<'ctx> for SharedCtx<'ctx> {
+    fn emit_diagnostic(&self, diag: Diagnostic<'ctx>) {
+        SharedCtx::emit_diag(self, diag);
     }
 }
 

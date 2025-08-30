@@ -1,11 +1,10 @@
 [package]
-name = "mira-linking"
+name = "mira-context"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-mira-target.workspace = true
-mira-macros.workspace = true
+mira-progress-bar.workspace = true
 mira-errors.workspace = true
 mira-spans.workspace = true
-mira-context.workspace = true
+parking_lot.workspace = true

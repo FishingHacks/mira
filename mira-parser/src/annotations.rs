@@ -6,8 +6,9 @@ use std::{
 };
 
 use crate::{error::ParsingError, std_annotations, tokenstream::TokenStream};
+use mira_context::SharedCtx;
 use mira_lexer::Token;
-use mira_spans::{SharedCtx, Span};
+use mira_spans::Span;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AnnotationReceiver {

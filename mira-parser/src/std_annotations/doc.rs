@@ -1,7 +1,8 @@
 use std::fmt::Debug;
 
+use mira_context::{DocComment, SharedCtx};
 use mira_lexer::Literal;
-use mira_spans::{context::DocComment, interner::symbols};
+use mira_spans::interner::symbols;
 
 use super::*;
 

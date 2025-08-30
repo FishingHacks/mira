@@ -2,7 +2,7 @@ use std::{
     any::Any,
     collections::HashMap,
     fmt::Write,
-    io::{StderrLock, StdoutLock, Write as _},
+    io::{IsTerminal as _, StderrLock, StdoutLock, Write as _},
     ops::Deref,
     sync::Arc,
 };
@@ -32,6 +32,10 @@ pub trait OutputWriter: Write + Any {}
 impl<T: Write + Any> OutputWriter for T {}
 
 use crate as mira_errors;
+
+pub trait DiagEmitter<'ctx>: 'ctx {
+    fn emit_diagnostic(&self, diag: Diagnostic<'ctx>);
+}
 
 #[derive(ErrorData)]
 #[error("couldn't write to stdout: {_0}")]
@@ -66,22 +70,37 @@ pub struct FileOpenError(pub std::path::PathBuf, pub std::io::Error);
 pub enum Output {
     Stdout,
     Stderr,
-    Custom(Box<dyn OutputWriter>),
+    String(String),
 }
 
 impl Output {
+    pub const fn string() -> Self {
+        Self::String(String::new())
+    }
+
+    pub fn as_string_mut(&mut self) -> &mut String {
+        match self {
+            Output::Stdout | Output::Stderr => {
+                unreachable!("output has to be of type Output::String")
+            }
+            Output::String(s) => s,
+        }
+    }
+
+    pub fn as_string_ref(&self) -> &String {
+        match self {
+            Output::Stdout | Output::Stderr => {
+                unreachable!("output has to be of type Output::String")
+            }
+            Output::String(s) => s,
+        }
+    }
+
     pub fn with_writer<R>(&mut self, f: impl FnOnce(&mut dyn Write) -> R) -> R {
         match self {
             Output::Stdout => f(&mut StdoutWriter(std::io::stdout().lock())),
             Output::Stderr => f(&mut StderrWriter(std::io::stderr().lock())),
-            Output::Custom(write) => f(&mut **write),
-        }
-    }
-
-    pub fn downcast_ref<R: 'static>(&self) -> Option<&R> {
-        match self {
-            Output::Stdout | Output::Stderr => None,
-            Output::Custom(output_writer) => <dyn Any>::downcast_ref::<R>(&**output_writer),
+            Output::String(s) => f(s),
         }
     }
 }
@@ -171,17 +190,43 @@ impl<'arena> Diagnostics<'arena> {
     }
 }
 
-pub struct DiagnosticFormatter<'arena> {
-    source_map: &'arena SourceMap,
+pub struct DiagnosticFormatter {
+    source_map: Arc<SourceMap>,
     unicode: bool,
     output: Output,
     printer: Box<dyn StyledPrinter>,
     styles: Styles,
 }
 
-impl<'arena> DiagnosticFormatter<'arena> {
+/// determines the style to use by the user's environment variables and terminal capabilities.
+pub fn env_style() -> Styles {
+    match std::env::var("MIRA_COLOR").ok().as_deref() {
+        Some("0" | "none" | "no") => Styles::NO_COLORS,
+        Some("1" | "yes") => Styles::DEFAULT,
+        _ if std::io::stdout().is_terminal() => Styles::DEFAULT,
+        _ => Styles::NO_COLORS,
+    }
+}
+
+/// determines the printer to use based on the user's environment variables.
+pub fn env_printer() -> Box<dyn StyledPrinter> {
+    match std::env::var("MIRA_DIAG_STYLE").ok().as_deref() {
+        Some("ascii" | "text") => Box::new(AsciiPrinter::new()),
+        _ => Box::new(UnicodePrinter::new()),
+    }
+}
+
+pub fn default_printer() -> Box<dyn StyledPrinter> {
+    Box::new(UnicodePrinter::new())
+}
+
+pub fn default_styles() -> Styles {
+    Styles::NO_COLORS
+}
+
+impl DiagnosticFormatter {
     pub fn new(
-        source_map: &'arena SourceMap,
+        source_map: Arc<SourceMap>,
         output: Output,
         printer: Box<dyn StyledPrinter>,
         styles: Styles,
@@ -194,6 +239,7 @@ impl<'arena> DiagnosticFormatter<'arena> {
             printer,
         }
     }
+
     pub fn unicode(mut self, unicode: bool) -> Self {
         self.unicode = unicode;
         self
@@ -203,21 +249,25 @@ impl<'arena> DiagnosticFormatter<'arena> {
         &self.output
     }
 
+    pub fn get_output_mut(&mut self) -> &mut Output {
+        &mut self.output
+    }
+
     pub fn with_output<R>(&mut self, f: impl FnOnce(Formatter) -> R) -> R {
         let ctx = FormattingCtx {
-            source_map: self.source_map,
+            source_map: &self.source_map,
             unicode: self.unicode,
         };
         self.output
             .with_writer(move |writer| f(Formatter::new(ctx, writer)))
     }
 
-    pub fn display_diagnostic(&mut self, mut diagnostic: Diagnostic<'arena>) -> std::fmt::Result {
+    pub fn display_diagnostic(&mut self, mut diagnostic: Diagnostic<'_>) -> std::fmt::Result {
         let Some(mut value) = diagnostic.take_inner() else {
             panic!("Diagnostic was already emitted")
         };
         let ctx = FormattingCtx {
-            source_map: self.source_map,
+            source_map: &self.source_map,
             unicode: self.unicode,
         };
         self.output.with_writer(|writer| {
@@ -230,7 +280,7 @@ impl<'arena> DiagnosticFormatter<'arena> {
         })
     }
 
-    fn print_diagnostic(
+    fn print_diagnostic<'arena>(
         diagnostic: &mut DiagnosticInner<'arena, dyn ErrorData + 'arena>,
         f: &mut Formatter<'_>,
         printer: &mut dyn StyledPrinter,
@@ -394,11 +444,6 @@ impl<'arena> DiagnosticFormatter<'arena> {
             100000000..1000000000 => 9,
             1000000000..=u32::MAX => 10,
         }
-    }
-
-    /// Discards the diagnostic without printing it.
-    pub fn discard_diagnostic(&mut self, diagnostic: Diagnostic<'arena>) {
-        diagnostic.dismiss();
     }
 }
 

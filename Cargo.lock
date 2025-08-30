@@ -283,10 +283,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mira-context"
+version = "0.1.0"
+dependencies = [
+ "mira-errors",
+ "mira-progress-bar",
+ "mira-spans",
+ "parking_lot",
+]
+
+[[package]]
 name = "mira-doc"
 version = "0.1.0"
 dependencies = [
  "mira-common",
+ "mira-context",
  "mira-driver",
  "mira-errors",
  "mira-parser",
@@ -302,6 +313,7 @@ version = "0.2.1"
 dependencies = [
  "crossbeam-channel",
  "mira-common",
+ "mira-context",
  "mira-errors",
  "mira-lexer",
  "mira-linking",
@@ -330,6 +342,7 @@ dependencies = [
 name = "mira-lexer"
 version = "0.2.1"
 dependencies = [
+ "mira-context",
  "mira-errors",
  "mira-spans",
  "parking_lot",
@@ -339,6 +352,7 @@ dependencies = [
 name = "mira-linking"
 version = "0.1.0"
 dependencies = [
+ "mira-context",
  "mira-errors",
  "mira-macros",
  "mira-spans",
@@ -351,6 +365,7 @@ version = "0.2.1"
 dependencies = [
  "inkwell",
  "mira-common",
+ "mira-context",
  "mira-errors",
  "mira-macros",
  "mira-parser",
@@ -374,6 +389,7 @@ name = "mira-parser"
 version = "0.1.0"
 dependencies = [
  "mira-common",
+ "mira-context",
  "mira-errors",
  "mira-lexer",
  "mira-macros",
@@ -407,6 +423,7 @@ name = "mira-typeck"
 version = "0.2.1"
 dependencies = [
  "mira-common",
+ "mira-context",
  "mira-errors",
  "mira-lexer",
  "mira-macros",

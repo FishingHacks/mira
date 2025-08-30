@@ -211,6 +211,7 @@ impl StyledPrinter for UnicodePrinter {
 #[cfg(test)]
 mod test {
     use mira_spans::{Arena, BytePos, FileId, SourceMap, Span, SpanData, interner::SpanInterner};
+    use std::sync::Arc;
 
     use super::*;
     use crate::{Diagnostic, DiagnosticFormatter, Output, test_errors::*};
@@ -225,7 +226,7 @@ nya mwrrrp purrr mreaow
 "#;
 
     fn assert_err_eq(diagnostic: Diagnostic<'_>, err: &str) {
-        let sourcemap = SourceMap::new();
+        let sourcemap = Arc::new(SourceMap::new());
         let file = sourcemap.new_file(
             Path::new("/file.mr").into(),
             Path::new("/").into(),
@@ -233,17 +234,13 @@ nya mwrrrp purrr mreaow
         );
         assert_eq!(file.id, ZERO_FILE_ID);
         let mut formatter = DiagnosticFormatter::new(
-            &sourcemap,
-            Output::Custom(Box::new(String::new())),
+            sourcemap,
+            Output::string(),
             Box::new(UnicodePrinter::new()),
             Styles::NO_COLORS,
         );
         formatter.display_diagnostic(diagnostic).unwrap();
-        let lhs = formatter
-            .get_output()
-            .downcast_ref::<String>()
-            .unwrap()
-            .trim();
+        let lhs = formatter.get_output().as_string_ref().trim();
         let rhs = err.trim();
         if lhs != rhs {
             println!("-----\n{lhs}\n-----");

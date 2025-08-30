@@ -1,9 +1,9 @@
 use crate::annotations::{Annotation, AnnotationParser, AnnotationReceiver, Annotations};
 use crate::error::ParsingError;
 use crate::tokenstream::TokenStream;
+use mira_context::SharedCtx;
 use mira_lexer::TokenType;
 use mira_lexer::token::StrIdentDisplay;
-use mira_spans::SharedCtx;
 use std::collections::HashMap;
 use std::fmt::{Display, Write};
 
