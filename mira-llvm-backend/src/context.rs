@@ -389,7 +389,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             let param_types = contract
                 .arguments
                 .iter()
-                .filter(|(_, t)| (*t != default_types::void && *t != default_types::never))
+                .filter(|(_, t)| *t != default_types::void && *t != default_types::never)
                 .map(|(_, t)| {
                     t.to_llvm_basic_type(&default_types, &structs, context)
                         .into()

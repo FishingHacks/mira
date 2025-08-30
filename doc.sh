@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
 # generate clap alone -- bunching clap in with other dependencies for some reason stops cargo from being able to find it.
-cargo doc --no-deps -p clap
-cargo doc --no-deps -p pulldown-cmark
-cargo doc --open --no-deps \
+cargo +nightly doc --no-deps -p clap
+cargo +nightly doc --no-deps -p pulldown-cmark
+cargo +nightly doc --open --no-deps \
  -p mira-argparse \
  -p mira-typeck \
  -p mira-error-codes \

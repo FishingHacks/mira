@@ -138,7 +138,7 @@ pub fn mangle_name<'arena>(
 static MODULE_PATHS: LazyLock<RwLock<AssociatedStore<String, TypedModule<'static>>>> =
     LazyLock::new(Default::default);
 
-/// writes <module path>, e.g. `std::os` to the string passed in.
+/// writes the module path, e.g. `std::os` to the string passed in.
 pub fn module_path<'ctx>(
     ctx: &TypecheckingContext<'ctx>,
     module: StoreKey<TypedModule<'ctx>>,
