@@ -3,7 +3,8 @@
     --color: #ffffff;
     --color-breadcrumb-delimiter: #d4d4d4;
     --color-breadcrumb-element: #a855f7;
-    --code-background: #171717;
+    --code-background: #151515;
+    --blockquote-background: #1c1c1c;
     --code-color: #ffffff;
     --radio-select: #3b82f6;
     --radio-border: #737373;
@@ -228,6 +229,7 @@ h1, h2, h3, h4, h5, h6 {
     border-radius: 7px;
     background: var(--code-background);
     color: var(--code-color);
+    margin: 0;
 }
 
 .function {
@@ -381,13 +383,45 @@ details.description-toggle summary::marker {
     content: none;
 }
 
+blockquote {
+    background: var(--blockquote-background);
+    color: var(--code-color);
+    padding: .25em;
+    margin: .25em 0;
+    border-left: 4px var(--blockquote-background) solid;
+}
+
+blockquote > :last-child {
+    margin-bottom: 0;
+}
+
+blockquote.markdown-alert-caution {
+    border-color: #dc2626;
+}
+
+blockquote.markdown-alert-warning {
+    border-color: #f59e0b;
+}
+
+blockquote.markdown-alert-important {
+    border-color: #a855f7;
+}
+
+blockquote.markdown-alert-tip {
+    border-color: #65a30d;
+}
+
+blockquote.markdown-alert-note {
+    border-color: #06b6d4;
+}
+
 :root[color-scheme="light"] {
     --bg: #f5f5f5;
     --color: #000000;
     --color-breadcrumb-delimiter: #525252;
     --color-breadcrumb-element: #7e22ce;
     --code-background: #404040;
-    --code-color: #ffffff;
+    --blockquote-background: #606060;
     --settings-button-filter: none;
     --link: #0891b2;
     --desc-toggle-filter: invert(0.45);
@@ -405,8 +439,6 @@ details.description-toggle summary::marker {
     --color: #bfbdb6;
     --color-breadcrumb-delimiter: #d4d4d4;
     --color-breadcrumb-element: #e6b450;
-    --code-background: #171717;
-    --code-color: #ffffff;
 
     /* item colors */
     --color-function: #ffb454;
@@ -423,7 +455,7 @@ details.description-toggle summary::marker {
         --color-breadcrumb-delimiter: #525252;
         --color-breadcrumb-element: #7e22ce;
         --code-background: #404040;
-        --code-color: #ffffff;
+        --blockquote-background: #606060;
         --settings-button-filter: none;
         --link: #0891b2;
         --desc-toggle-filter: invert(0.45);

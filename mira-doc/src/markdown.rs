@@ -14,7 +14,8 @@ const OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_FOOTNOTES)
     .union(Options::ENABLE_STRIKETHROUGH)
     .union(Options::ENABLE_TASKLISTS)
-    .union(Options::ENABLE_SMART_PUNCTUATION);
+    .union(Options::ENABLE_SMART_PUNCTUATION)
+    .union(Options::ENABLE_GFM);
 
 impl<'ctx> HTMLGenerateContext<'ctx> {
     fn resolve_ref(
