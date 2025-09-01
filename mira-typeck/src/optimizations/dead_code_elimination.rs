@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    TypecheckingContext, TypedFunction, TypedStatic,
+    TypeckCtx, TypedFunction, TypedStatic,
     ir::{TypedExpression, TypedLiteral},
 };
 use mira_common::store::StoreKey;
@@ -10,11 +10,11 @@ struct DceContext<'tc, 'arena> {
     used_functions: HashSet<StoreKey<TypedFunction<'arena>>>,
     used_statics: HashSet<StoreKey<TypedStatic<'arena>>>,
     funcs_left: HashSet<StoreKey<TypedFunction<'arena>>>,
-    tc_ctx: &'tc TypecheckingContext<'arena>,
+    tc_ctx: &'tc TypeckCtx<'arena>,
 }
 
 pub fn run_dce<'arena>(
-    tc_ctx: &TypecheckingContext<'arena>,
+    tc_ctx: &TypeckCtx<'arena>,
     used_funcs: &[StoreKey<TypedFunction<'arena>>],
     used_statics: &[StoreKey<TypedStatic<'arena>>],
 ) {

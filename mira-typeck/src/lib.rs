@@ -35,6 +35,7 @@ mod error;
 pub mod intrinsics;
 pub mod ir;
 pub mod ir_displayer;
+pub mod queries;
 mod type_resolution;
 pub mod typechecking;
 mod types;
@@ -151,7 +152,7 @@ pub type TypedFunction<'arena> = (TypedFunctionContract<'arena>, IR<'arena>);
 pub type TypedExternalFunction<'arena> = (TypedFunctionContract<'arena>, Option<IR<'arena>>);
 
 #[allow(clippy::type_complexity)]
-pub struct TypecheckingContext<'arena> {
+pub struct TypeckCtx<'arena> {
     pub modules: RwLock<AssociatedStore<TypedModule<'arena>, Module<'arena>>>,
     pub functions: RwLock<Store<TypedFunction<'arena>>>,
     pub external_functions: RwLock<Store<TypedExternalFunction<'arena>>>,
@@ -177,7 +178,7 @@ pub struct TypedModule<'arena> {
     pub comment: DocComment,
 }
 
-impl<'arena> TypecheckingContext<'arena> {
+impl<'arena> TypeckCtx<'arena> {
     pub fn validate_main_function(
         &self,
         main_pkg: StoreKey<Module<'arena>>,

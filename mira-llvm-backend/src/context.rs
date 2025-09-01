@@ -43,8 +43,8 @@ use mira_parser::std_annotations::{
 use mira_spans::interner::Symbol;
 use mira_target::{NATIVE_TARGET, Target};
 use mira_typeck::{
-    Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
-    TypedStruct, TypedTrait, default_types,
+    Ty, TyKind, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
+    TypedTrait, default_types,
     ir::{TypedExpression, TypedLiteral},
 };
 
@@ -80,7 +80,7 @@ impl CodegenContextBuilder {
 
     pub fn build<'ctx, 'arena>(
         &'ctx self,
-        ctx: Arc<TypecheckingContext<'arena>>,
+        ctx: Arc<TypeckCtx<'arena>>,
         module: &str,
         path: Arc<Path>,
         config: CodegenConfig<'ctx>,
@@ -96,7 +96,7 @@ impl Default for CodegenContextBuilder {
 }
 
 pub struct CodegenContext<'ctx, 'arena> {
-    pub(super) tc_ctx: Arc<TypecheckingContext<'arena>>,
+    pub(super) tc_ctx: Arc<TypeckCtx<'arena>>,
     pub(super) builder: Builder<'ctx>,
     pub(super) context: &'ctx Context,
     pub(super) default_types: DefaultTypes<'ctx>,
@@ -274,7 +274,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 
     fn new(
         context: &'ctx Context,
-        ctx: Arc<TypecheckingContext<'arena>>,
+        ctx: Arc<TypeckCtx<'arena>>,
         module: &str,
         path: Arc<Path>,
         config: CodegenConfig<'ctx>,
@@ -760,7 +760,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 
 #[allow(clippy::type_complexity)]
 fn collect_data<'arena>(
-    ctx: &TypecheckingContext<'arena>,
+    ctx: &TypeckCtx<'arena>,
 ) -> (
     HashSet<Symbol<'arena>>,
     HashSet<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,

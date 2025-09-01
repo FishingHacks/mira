@@ -1,14 +1,13 @@
-use mira_common::store::{AssociatedStore, StoreKey};
+use mira_common::store::StoreKey;
 use mira_parser::module::ModuleScopeValue;
 use mira_parser::std_annotations::alias::ExternAliasAnnotation;
+use mira_spans::TypeArena;
+use mira_typeck::queries::Providers;
 use mira_typeck::{
-    TypecheckingContext, TypedExternalFunction, TypedFunction, TypedModule, TypedStatic,
-    TypedStruct,
+    TypeckCtx, TypedExternalFunction, TypedFunction, TypedModule, TypedStatic, TypedStruct,
 };
-use parking_lot::RwLock;
 use std::fmt::Write;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::LazyLock;
 
 pub const ANON_FN_NAME: &str = "{{anonymous}}";
 pub const MANGLED_ANON_FN_NAME: &str = "25$CL$$CL$anonymous$CR$$CR$";
@@ -40,12 +39,12 @@ fn path_len(p: &str) -> usize {
 }
 
 pub fn mangle_function<'arena>(
-    ctx: &TypecheckingContext<'arena>,
+    ctx: &TypeckCtx<'arena>,
     id: StoreKey<TypedFunction<'arena>>,
 ) -> String {
     let fn_reader = ctx.functions.read();
     let mut mangled_name = "_ZN".to_string();
-    mangle_module(ctx, fn_reader[id].0.module_id, &mut mangled_name);
+    mangled_name.push_str(ctx.mangle_module(fn_reader[id].0.module_id));
 
     match fn_reader[id].0.name {
         None => mangled_name.push_str(MANGLED_ANON_FN_NAME),
@@ -61,7 +60,7 @@ pub fn mangle_function<'arena>(
 }
 
 pub fn mangle_external_function<'arena>(
-    ctx: &TypecheckingContext<'arena>,
+    ctx: &TypeckCtx<'arena>,
     id: StoreKey<TypedExternalFunction<'arena>>,
 ) -> String {
     let reader = &ctx.external_functions.read()[id].0;
@@ -78,14 +77,11 @@ pub fn mangle_external_function<'arena>(
         .to_string()
 }
 
-pub fn mangle_struct<'arena>(
-    ctx: &TypecheckingContext<'arena>,
-    id: StoreKey<TypedStruct<'arena>>,
-) -> String {
+pub fn mangle_struct<'arena>(ctx: &TypeckCtx<'arena>, id: StoreKey<TypedStruct<'arena>>) -> String {
     let struct_reader = ctx.structs.read();
     let structure = &struct_reader[id];
     let mut name = String::new();
-    module_path(ctx, structure.module_id, &mut name);
+    name.push_str(ctx.get_module_path(structure.module_id));
     name.push_str("::");
     name.push_str(&structure.name);
     name.push_str("::");
@@ -95,14 +91,11 @@ pub fn mangle_struct<'arena>(
     name
 }
 
-pub fn mangle_static<'arena>(
-    ctx: &TypecheckingContext<'arena>,
-    id: StoreKey<TypedStatic<'arena>>,
-) -> String {
+pub fn mangle_static<'arena>(ctx: &TypeckCtx<'arena>, id: StoreKey<TypedStatic<'arena>>) -> String {
     let static_reader = ctx.statics.read();
     let static_ = &static_reader[id];
     let mut mangled = "_ZN".to_string();
-    mangle_module(ctx, static_.module_id, &mut mangled);
+    mangled.push_str(ctx.mangle_module(static_.module_id));
     mangle_path_segment(static_.name.symbol().to_str(), &mut mangled);
 
     let mut hasher = DefaultHasher::new();
@@ -120,10 +113,7 @@ pub fn mangle_string(string: &str) -> String {
     name
 }
 
-pub fn mangle_name<'arena>(
-    ctx: &TypecheckingContext<'arena>,
-    item: ModuleScopeValue<'arena>,
-) -> String {
+pub fn mangle_name<'arena>(ctx: &TypeckCtx<'arena>, item: ModuleScopeValue<'arena>) -> String {
     match item {
         ModuleScopeValue::Function(id) => mangle_function(ctx, id.cast()),
         ModuleScopeValue::ExternalFunction(id) => mangle_external_function(ctx, id.cast()),
@@ -134,44 +124,6 @@ pub fn mangle_name<'arena>(
         }
     }
 }
-
-static MODULE_PATHS: LazyLock<RwLock<AssociatedStore<String, TypedModule<'static>>>> =
-    LazyLock::new(Default::default);
-
-/// writes the module path, e.g. `std::os` to the string passed in.
-pub fn module_path<'ctx>(
-    ctx: &TypecheckingContext<'ctx>,
-    module: StoreKey<TypedModule<'ctx>>,
-    s: &mut String,
-) {
-    if let Some(v) = MODULE_PATHS.read().get(&module.cast()) {
-        s.push_str(v);
-        return;
-    }
-    let mut cur_mod = module.cast();
-    let mut paths = Vec::new();
-    let reader = ctx.modules.read();
-    loop {
-        paths.push(reader[cur_mod].name);
-        if reader[cur_mod].parent.cast() == cur_mod || reader[cur_mod].root_module.cast() == cur_mod
-        {
-            break;
-        }
-        cur_mod = reader[cur_mod].parent.cast();
-    }
-    let mut path = String::with_capacity(paths.len() * 8);
-    for path_sym in paths.into_iter().rev() {
-        if !path.is_empty() {
-            path.push_str("::");
-        }
-        path.push_str(path_sym.to_str());
-    }
-    s.push_str(&path);
-    MODULE_PATHS.write().insert(module.cast(), path);
-}
-
-static MANGLED_MODULE_NAMES: LazyLock<RwLock<AssociatedStore<String, TypedModule<'static>>>> =
-    LazyLock::new(Default::default);
 
 fn mangle_path_segment(segment: &str, path: &mut String) {
     // if the path is empty or starts with a number, we have to print _<path>. This is because
@@ -192,16 +144,37 @@ fn mangle_path_segment(segment: &str, path: &mut String) {
     }
 }
 
-/// write the mangled module path, e.g. `3std2os` for `std::os`.
-pub fn mangle_module<'ctx>(
-    ctx: &TypecheckingContext<'ctx>,
+pub fn get_module_path<'ctx>(
+    ctx: &TypeckCtx<'ctx>,
     module: StoreKey<TypedModule<'ctx>>,
-    s: &mut String,
-) {
-    if let Some(v) = MANGLED_MODULE_NAMES.read().get(&module) {
-        s.push_str(v);
-        return;
+    arena: &'ctx TypeArena<u8>,
+) -> &'ctx str {
+    let mut cur_mod = module.cast();
+    let mut paths = Vec::new();
+    let reader = ctx.modules.read();
+    loop {
+        paths.push(reader[cur_mod].name);
+        if reader[cur_mod].parent.cast() == cur_mod || reader[cur_mod].root_module.cast() == cur_mod
+        {
+            break;
+        }
+        cur_mod = reader[cur_mod].parent.cast();
     }
+    let mut path = String::with_capacity(paths.len() * 8);
+    for path_sym in paths.into_iter().rev() {
+        if !path.is_empty() {
+            path.push_str("::");
+        }
+        path.push_str(path_sym.to_str());
+    }
+    arena.allocate_str(&path)
+}
+
+pub fn mangle_module<'ctx>(
+    ctx: &TypeckCtx<'ctx>,
+    module: StoreKey<TypedModule<'ctx>>,
+    arena: &'ctx TypeArena<u8>,
+) -> &'ctx str {
     let mut cur_mod = module.cast();
     let mut paths = Vec::new();
     let reader = ctx.modules.read();
@@ -217,6 +190,10 @@ pub fn mangle_module<'ctx>(
     for path_sym in paths.into_iter().rev() {
         mangle_path_segment(path_sym.to_str(), &mut path);
     }
-    s.push_str(&path);
-    MANGLED_MODULE_NAMES.write().insert(module.cast(), path);
+    arena.allocate_str(&path)
+}
+
+pub fn provide(providers: &mut Providers<'_>) {
+    providers.mangle_module = mangle_module;
+    providers.get_module_path = get_module_path;
 }

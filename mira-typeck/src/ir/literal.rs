@@ -5,8 +5,8 @@ use mira_parser::std_annotations::intrinsic::Intrinsic;
 use mira_spans::Symbol;
 
 use crate::{
-    Ty, TyKind, TyList, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedStatic,
-    TypedStruct, default_types, ir::ScopeEntry, typechecking::ScopeValueId, types::FunctionType,
+    Ty, TyKind, TyList, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
+    default_types, ir::ScopeEntry, typechecking::ScopeValueId, types::FunctionType,
 };
 
 #[derive(Debug, Clone)]
@@ -42,7 +42,7 @@ impl<'arena> TypedLiteral<'arena> {
     pub fn to_type<'a>(
         &self,
         scope: &'a VecStore<ScopeEntry<'arena>>,
-        ctx: &TypecheckingContext<'arena>,
+        ctx: &TypeckCtx<'arena>,
     ) -> Ty<'arena> {
         match self {
             TypedLiteral::Void => default_types::void,
@@ -110,7 +110,7 @@ impl<'arena> TypedLiteral<'arena> {
     pub fn to_primitive_type(
         &self,
         scope: &VecStore<ScopeEntry<'arena>>,
-        ctx: &TypecheckingContext<'arena>,
+        ctx: &TypeckCtx<'arena>,
     ) -> Option<Ty<'arena>> {
         match self {
             TypedLiteral::F64(_) => Some(default_types::f64),

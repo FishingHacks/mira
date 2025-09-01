@@ -16,8 +16,8 @@ use mira_parser::{
 };
 use mira_spans::Symbol;
 use mira_typeck::{
-    Ty, TyKind, TypeCtx, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedModule,
-    TypedStatic, TypedStruct, TypedTrait, default_types,
+    Ty, TyKind, TypeCtx, TypeckCtx, TypedExternalFunction, TypedFunction, TypedModule, TypedStatic,
+    TypedStruct, TypedTrait, default_types,
 };
 
 pub mod err_fs {
@@ -57,14 +57,14 @@ pub struct HTMLGenerateContext<'ctx> {
     pub path: PathBuf,
     pub generated: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
     pub queued: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
-    pub tc_ctx: Arc<TypecheckingContext<'ctx>>,
+    pub tc_ctx: Arc<TypeckCtx<'ctx>>,
     modules: Vec<StoreKey<TypedModule<'ctx>>>,
 }
 
 impl<'ctx> HTMLGenerateContext<'ctx> {
     pub fn new(
         dir: PathBuf,
-        tc_ctx: Arc<TypecheckingContext<'ctx>>,
+        tc_ctx: Arc<TypeckCtx<'ctx>>,
         modules: Vec<StoreKey<TypedModule<'ctx>>>,
     ) -> Result<Self, Diagnostic<'static>> {
         let dir = err_fs::create_dir_all(dir)?;

@@ -19,7 +19,7 @@ use mira_parser::{
 use mira_spans::{ArenaList, Ident, Span};
 
 use super::{
-    TypecheckingContext, TypecheckingError, TypecheckingErrorDiagnosticsExt, TypedExternalFunction,
+    TypecheckingError, TypecheckingErrorDiagnosticsExt, TypeckCtx, TypedExternalFunction,
     TypedFunction, TypedModule, TypedStatic, TypedTrait, default_types,
     ir::{OffsetValue, TypedExpression, TypedLiteral},
     types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
@@ -97,7 +97,7 @@ impl<'arena> Default for Scopes<'arena> {
 }
 
 pub fn typecheck_static<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
     static_id: StoreKey<TypedStatic<'arena>>,
     errs: &mut Diagnostics<'arena>,
@@ -140,7 +140,7 @@ pub fn typecheck_static<'arena>(
 
 #[allow(clippy::result_unit_err)]
 pub fn typecheck_external_function<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedExternalFunction<'arena>>,
     diagnostics: &mut Diagnostics<'arena>,
@@ -156,7 +156,7 @@ pub fn typecheck_external_function<'arena>(
 
 #[allow(clippy::result_unit_err)]
 pub fn typecheck_function<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedFunction<'arena>>,
     diagnostics: &mut Diagnostics<'arena>,
@@ -166,7 +166,7 @@ pub fn typecheck_function<'arena>(
 
 // NOTE: function_id has to be StoreKey<TypedExternalFunction> if is_external is set to true.
 fn inner_typecheck_function<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedFunction<'arena>>,
     is_external: bool,
@@ -281,7 +281,7 @@ fn inner_typecheck_function<'arena>(
 
 /// Returns if the statement and if it always returns
 fn typecheck_statement<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     scope: &mut Scopes<'arena>,
     statement: &Statement<'arena>,
     module: StoreKey<TypedModule<'arena>>,
@@ -624,7 +624,7 @@ fn float_number_to_literal<'arena>(
 }
 
 fn typecheck_expression<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
@@ -1474,7 +1474,7 @@ fn typecheck_cast<'arena>(
     new_typ: Ty<'arena>,
     lhs: TypedLiteral<'arena>,
     loc: Span<'arena>,
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
 ) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
     if typ == new_typ {
         return Ok((new_typ, lhs));
@@ -1634,7 +1634,7 @@ fn typecheck_cast<'arena>(
 
 #[allow(clippy::too_many_arguments)]
 fn typecheck_dyn_membercall<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     scope: &mut Scopes<'arena>,
     module: StoreKey<TypedModule<'arena>>,
     exprs: &mut Vec<TypedExpression<'arena>>,
@@ -1742,7 +1742,7 @@ fn typecheck_dyn_membercall<'arena>(
 }
 
 fn typecheck_membercall<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     exprs: &mut Vec<TypedExpression<'arena>>,
@@ -1911,7 +1911,7 @@ fn typecheck_membercall<'arena>(
 }
 
 fn typecheck_take_ref<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
@@ -1946,7 +1946,7 @@ fn typecheck_take_ref<'arena>(
 // that as that would require additional computations. The reference is as such implicit but has to
 // be added when pushing the type onto the scope (e.g. during auto deref)
 fn ref_resolve_indexing<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
@@ -2168,7 +2168,7 @@ fn ref_resolve_indexing<'arena>(
 }
 
 fn indexing_resolve_rhs<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,
@@ -2224,7 +2224,7 @@ fn make_reference<'arena>(
 }
 
 fn copy_resolve_indexing<'arena>(
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
     module: StoreKey<TypedModule<'arena>>,
     scope: &mut Scopes<'arena>,
     expression: &Expression<'arena>,

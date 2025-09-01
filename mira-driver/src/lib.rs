@@ -29,7 +29,7 @@ use mira_lexer::Token;
 use mira_parser::module::{Module, ModuleContext};
 
 #[cfg(feature = "typeck")]
-use mira_typeck::{TypeCtx, TypecheckingContext, TypedFunction, ir_displayer::Formatter};
+use mira_typeck::{TypeCtx, TypeckCtx, TypedFunction, ir_displayer::Formatter};
 
 #[cfg(feature = "codegen")]
 use mira_llvm_backend::{CodegenConfig, CodegenContext, CodegenContextBuilder, CodegenError};
@@ -153,6 +153,11 @@ impl ContextData {
             emitter,
             mira_errors::env_printer(),
             mira_errors::env_style(),
+            |providers| {
+                _ = providers;
+                #[cfg(feature = "mira-llvm-backend")]
+                mira_llvm_backend::provide(providers);
+            },
         );
         let me = Self { progress_bar };
         (ctx, me)
@@ -320,13 +325,13 @@ impl<'ctx> Context<'ctx> {
         &mut self,
         module_ctx: &Arc<ModuleContext<'ctx>>,
         typechecking_item: ProgressItemRef,
-    ) -> EmitResult<Arc<TypecheckingContext<'ctx>>> {
-        use mira_typeck::TypecheckingContext;
+    ) -> EmitResult<Arc<TypeckCtx<'ctx>>> {
+        use mira_typeck::TypeckCtx;
 
         let type_resolution_item =
             self.add_progress_item_child(typechecking_item, "Type Resolution");
 
-        let typeck_ctx = TypecheckingContext::new(self.ctx, module_ctx.clone());
+        let typeck_ctx = TypeckCtx::new(self.ctx, module_ctx.clone());
         let tracker = self.ctx.track_errors();
         typeck_ctx.resolve_imports(module_ctx.clone());
         if self.ctx.errors_happened(tracker) {
@@ -345,7 +350,7 @@ impl<'ctx> Context<'ctx> {
     pub fn typecheck_items(
         &mut self,
         module_ctx: &Arc<ModuleContext<'ctx>>,
-        typeck_ctx: &Arc<TypecheckingContext<'ctx>>,
+        typeck_ctx: &Arc<TypeckCtx<'ctx>>,
         typechecking_item: ProgressItemRef,
     ) -> EmitResult<()> {
         let function_keys = typeck_ctx.functions.read().indices().collect::<Vec<_>>();
@@ -413,7 +418,7 @@ impl<'ctx> Context<'ctx> {
     /// signature, then returns it.
     pub fn validate_main_fn(
         &mut self,
-        typeck_ctx: &Arc<TypecheckingContext<'ctx>>,
+        typeck_ctx: &Arc<TypeckCtx<'ctx>>,
         main_module: StoreKey<Module<'ctx>>,
     ) -> EmitResult<StoreKey<TypedFunction<'ctx>>> {
         typeck_ctx
@@ -423,7 +428,7 @@ impl<'ctx> Context<'ctx> {
     }
 
     #[cfg(feature = "typeck")]
-    pub fn run_dead_code_elimination(&mut self, typeck_ctx: &Arc<TypecheckingContext<'ctx>>) {
+    pub fn run_dead_code_elimination(&mut self, typeck_ctx: &Arc<TypeckCtx<'ctx>>) {
         use mira_typeck::optimizations;
 
         let item = self.add_progress_item("Dead code elimination");
@@ -434,11 +439,7 @@ impl<'ctx> Context<'ctx> {
     }
 
     #[cfg(feature = "typeck")]
-    pub fn emit_ir(
-        &self,
-        typeck_ctx: &TypecheckingContext<'ctx>,
-        mut method: EmitMethod,
-    ) -> EmitResult<()> {
+    pub fn emit_ir(&self, typeck_ctx: &TypeckCtx<'ctx>, mut method: EmitMethod) -> EmitResult<()> {
         use mira_typeck::ir_displayer::{ReadOnlyTypecheckingContext, TCContextDisplay};
 
         use crate::EmitMethodWithDiags;
@@ -467,7 +468,7 @@ impl<'ctx> Context<'ctx> {
     #[cfg(feature = "codegen")]
     pub fn codegen<'cg_ctx>(
         &mut self,
-        typeck_ctx: &Arc<TypecheckingContext<'ctx>>,
+        typeck_ctx: &Arc<TypeckCtx<'ctx>>,
         main_module: StoreKey<Module<'ctx>>,
         codegen_opts: CodegenConfig<'ctx>,
         builder: &'cg_ctx CodegenContextBuilder,

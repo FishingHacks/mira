@@ -20,8 +20,8 @@ use mira_common::store::{AssociatedStore, Store, StoreKey};
 use mira_parser::std_annotations::intrinsic::IntrinsicAnnotation;
 use mira_spans::{Span, interner::Symbol};
 use mira_typeck::{
-    Ty, TyKind, TypeCtx, TypecheckingContext, TypedExternalFunction, TypedFunction, TypedModule,
-    TypedStruct, default_types,
+    Ty, TyKind, TypeCtx, TypeckCtx, TypedExternalFunction, TypedFunction, TypedModule, TypedStruct,
+    default_types,
 };
 
 use super::{
@@ -132,7 +132,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         context: &'ctx Context,
         module: &Module<'ctx>,
         default_types: DefaultTypes<'ctx>,
-        tc_ctx: &TypecheckingContext<'arena>,
+        tc_ctx: &TypeckCtx<'arena>,
         root_path: &Path,
         optimizations: bool,
         ctx: TypeCtx<'arena>,

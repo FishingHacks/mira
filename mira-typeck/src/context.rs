@@ -9,7 +9,10 @@ use mira_spans::{
     interner::{SpanInterner, SymbolInterner},
 };
 
-use crate::{Ty, TyKind, TyList, TypeInterner, TypeListInterner};
+use crate::{
+    Ty, TyKind, TyList, TypeInterner, TypeListInterner,
+    queries::{Providers, QuerySystem},
+};
 
 pub struct GlobalContext<'arena> {
     arena: &'arena Arena,
@@ -20,6 +23,7 @@ pub struct GlobalContext<'arena> {
     type_list_interner: Mutex<TypeListInterner<'arena>>,
     source_map: Arc<SourceMap>,
     diag_ctx: Mutex<DiagCtx>,
+    query_system: QuerySystem<'arena>,
 }
 
 impl Debug for GlobalContext<'_> {
@@ -34,8 +38,11 @@ impl<'arena> GlobalContext<'arena> {
         emitter: DiagEmitter,
         printer: Box<dyn StyledPrinter>,
         styles: Styles,
+        provider: impl FnOnce(&mut Providers<'arena>),
     ) -> Self {
         let source_map = Arc::new(SourceMap::new());
+        let mut query_system = QuerySystem::new();
+        provider(query_system.get_providers());
         Self {
             string_interner: SymbolInterner::new(arena).into(),
             doc_comment_store: DocCommentStore::new().into(),
@@ -45,6 +52,7 @@ impl<'arena> GlobalContext<'arena> {
             diag_ctx: DiagCtx::new(emitter, source_map.clone(), printer, styles).into(),
             source_map,
             arena,
+            query_system,
         }
     }
 
@@ -177,6 +185,10 @@ impl<'arena> TypeCtx<'arena> {
 
     pub fn to_shared(self) -> SharedCtx<'arena> {
         self.into()
+    }
+
+    pub fn query_system(&self) -> &'arena QuerySystem<'arena> {
+        &self.0.query_system
     }
 }
 

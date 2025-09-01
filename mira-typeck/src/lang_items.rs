@@ -4,7 +4,7 @@ use std::fmt::{Debug, Display};
 
 use crate::context::TypeCtx;
 use crate::{
-    FunctionList, Ty, TyKind, TypecheckingContext, TypedExternalFunction, TypedFunction,
+    FunctionList, Ty, TyKind, TypeckCtx, TypedExternalFunction, TypedFunction,
     TypedFunctionContract, TypedStatic, TypedStruct, TypedTrait, default_types,
 };
 use mira_common::store::StoreKey;
@@ -529,7 +529,7 @@ impl<'arena> LangItems<'arena> {
         }
     }
 
-    pub fn check(&self, context: &TypecheckingContext<'arena>) {
+    pub fn check(&self, context: &TypeckCtx<'arena>) {
         let trait_reader = context.traits.read();
         let struct_reader = context.structs.read();
         let static_reader = context.statics.read();
@@ -559,7 +559,7 @@ fn does_function_match<'arena>(
     func_a: &LangItemFunction<'arena>,
     func_b: &TypedFunctionContract<'arena>,
     lang_item: &'static str,
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
 ) -> bool {
     let tracker = context.ctx.track_errors();
 
@@ -588,7 +588,7 @@ fn does_struct_match<'arena>(
     structure_a: &LangItemStruct<'arena>,
     structure_b: &TypedStruct<'arena>,
     lang_item: &'static str,
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
 ) -> bool {
     let tracker = context.ctx.track_errors();
     let trait_reader = context.traits.read();
@@ -734,7 +734,7 @@ fn does_static_match<'arena>(
     traits: &[StoreKey<TypedTrait<'arena>>],
     typ: Ty<'arena>,
     lang_item: &'static str,
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
 ) -> bool {
     let trait_reader = context.traits.read();
     match &**typ {
@@ -774,7 +774,7 @@ fn does_trait_match<'arena>(
     trait_a: &LangItemTrait<'arena>,
     trait_b: &TypedTrait<'arena>,
     lang_item: &'static str,
-    context: &TypecheckingContext<'arena>,
+    context: &TypeckCtx<'arena>,
 ) -> bool {
     let tracker = context.ctx.track_errors();
 

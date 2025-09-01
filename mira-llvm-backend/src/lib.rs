@@ -8,8 +8,9 @@ use mira_common::store::{AssociatedStore, StoreKey, VecStore};
 use mira_parser::std_annotations::intrinsic::Intrinsic;
 use mira_spans::interner::Symbol;
 use mira_typeck::{
-    Ty, TyKind, TypecheckingContext, TypedModule, TypedTrait, default_types,
+    Ty, TyKind, TypeckCtx, TypedModule, TypedTrait, default_types,
     ir::{OffsetValue, ScopeEntry, TypedExpression, TypedLiteral},
+    queries::Providers,
 };
 pub mod mangling;
 pub use context::{CodegenConfig, CodegenContext, CodegenContextBuilder, Optimizations};
@@ -87,7 +88,7 @@ impl<'ctx, 'a, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, 'a> {
 /// 'cg: codegen
 pub struct FunctionCodegenContext<'ctx, 'arena, 'cg, 'a> {
     tc_scope: &'a VecStore<ScopeEntry<'arena>>,
-    tc_ctx: &'cg TypecheckingContext<'arena>,
+    tc_ctx: &'cg TypeckCtx<'arena>,
     _scope: AssociatedStore<BasicValueEnum<'ctx>, ScopeEntry<'arena>>,
     builder: &'cg Builder<'ctx>,
     context: &'ctx Context,
@@ -2235,3 +2236,7 @@ compile_error!("one of llvm20-1, llvm19-1 or llvm18-0 has to be enabled");
     all(feature = "llvm19-1", feature = "llvm18-0"),
 ))]
 compile_error!("only one of llvm20-1, llvm19-1 and llvm18-0 are allowed to be active :3");
+
+pub fn provide(providers: &mut Providers<'_>) {
+    mangling::provide(providers);
+}

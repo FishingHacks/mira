@@ -15,7 +15,7 @@ use mira_parser::{
 use crate::error::TypecheckingErrorEmitterExt;
 
 use super::{
-    TypecheckingContext, TypedFunctionContract, TypedGeneric, TypedStatic, TypedTrait,
+    TypeckCtx, TypedFunctionContract, TypedGeneric, TypedStatic, TypedTrait,
     ir::TypedLiteral,
     resolve_import,
     types::{TyKind, default_types, with_refcount},
@@ -27,7 +27,7 @@ pub enum ResolvingState {
     Pending,
 }
 
-impl<'arena> TypecheckingContext<'arena> {
+impl<'arena> TypeckCtx<'arena> {
     /// Resolves the types; This should be ran *after* [Self::resolve_imports]
     ///
     /// NOTE: this could potentially deadlock as i write-lock the rwlocks in the context a bunch

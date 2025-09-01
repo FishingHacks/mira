@@ -8,7 +8,7 @@ use mira_lexer::NumberType;
 use mira_parser::TypeRef;
 use mira_spans::Ident;
 
-use super::{TypecheckingContext, TypedStruct, TypedTrait};
+use super::{TypeckCtx, TypedStruct, TypedTrait};
 
 pub mod default_types {
     #![allow(non_upper_case_globals)]
@@ -265,7 +265,7 @@ impl<'arena> TyKind<'arena> {
     pub fn implements(
         &self,
         traits: &[StoreKey<TypedTrait<'arena>>],
-        tc_ctx: &TypecheckingContext<'arena>,
+        tc_ctx: &TypeckCtx<'arena>,
     ) -> bool {
         match self {
             TyKind::Ref(v) => {
@@ -725,7 +725,7 @@ impl Display for TypeSuggestion<'_> {
 }
 
 impl<'arena> TypeSuggestion<'arena> {
-    pub fn to_type(&self, ctx: &TypecheckingContext<'arena>) -> Option<Ty<'arena>> {
+    pub fn to_type(&self, ctx: &TypeckCtx<'arena>) -> Option<Ty<'arena>> {
         match self {
             TypeSuggestion::Struct(id) => Some(ctx.ctx.intern_ty(TyKind::Struct {
                 struct_id: *id,

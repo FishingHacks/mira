@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 
 mod display;
 mod error_data;
+mod queries;
 mod utils;
 
 #[proc_macro_derive(Display, attributes(display))]
@@ -24,4 +25,12 @@ pub fn derive_display(input: TokenStream) -> TokenStream {
 )]
 pub fn derive_error_data(input: TokenStream) -> TokenStream {
     error_data::derive_error_data(input)
+}
+
+#[proc_macro]
+pub fn queries(input: TokenStream) -> TokenStream {
+    match queries::run(input) {
+        Ok(v) => v.into(),
+        Err(v) => v.into_compile_error().into(),
+    }
 }
