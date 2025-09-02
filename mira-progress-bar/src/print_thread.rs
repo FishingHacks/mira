@@ -12,7 +12,11 @@ use std::{
 use crate::{ProgressBar, ProgressBarStyle, ProgressItemRef};
 
 #[derive(Clone)]
-pub struct ProgressBarThread(Arc<ProgressBarThreadInner>);
+#[allow(private_interfaces)]
+pub enum ProgressBarThread {
+    Threaded(Arc<ProgressBarThreadInner>),
+    NoThread,
+}
 
 struct ProgressBarThreadInner {
     next_progbar_item_ref: AtomicUsize,
@@ -23,7 +27,10 @@ struct ProgressBarThreadInner {
 impl Drop for ProgressBarThread {
     fn drop(&mut self) {
         // if this is the last reference, drop it
-        if let Some(v) = Arc::get_mut(&mut self.0) {
+        let ProgressBarThread::Threaded(inner) = self else {
+            return;
+        };
+        if let Some(v) = Arc::get_mut(inner) {
             _ = v.sender.send(ProgressMessage::StopThread);
             if let Err(e) = v
                 .handle
@@ -45,38 +52,91 @@ impl Drop for ProgressBarThread {
 
 impl ProgressBarThread {
     fn next_progbar_ref(&self) -> ProgressItemRef {
-        ProgressItemRef(self.0.next_progbar_item_ref.fetch_add(1, Ordering::Relaxed))
+        let n = match self {
+            ProgressBarThread::Threaded(inner) => {
+                inner.next_progbar_item_ref.fetch_add(1, Ordering::Relaxed)
+            }
+            ProgressBarThread::NoThread => 0,
+        };
+        ProgressItemRef(n)
     }
 
     pub fn add_child(&self, parent: ProgressItemRef, name: Box<str>) -> ProgressItemRef {
+        let ProgressBarThread::Threaded(inner) = self else {
+            return ProgressItemRef(0);
+        };
         let item = self.next_progbar_ref();
-        _ = self
-            .0
+        _ = inner
             .sender
             .send(ProgressMessage::AddChild { name, item, parent });
         item
     }
 
     pub fn add_item(&self, name: Box<str>) -> ProgressItemRef {
+        let ProgressBarThread::Threaded(inner) = self else {
+            return ProgressItemRef(0);
+        };
         let item = self.next_progbar_ref();
-        _ = self.0.sender.send(ProgressMessage::Add { name, item });
+        _ = inner.sender.send(ProgressMessage::Add { name, item });
         item
     }
 
     pub fn remove(&self, item: ProgressItemRef) {
-        _ = self.0.sender.send(ProgressMessage::Remove(item));
+        let ProgressBarThread::Threaded(inner) = self else {
+            return;
+        };
+        _ = inner.sender.send(ProgressMessage::Remove(item));
     }
 
     pub fn clear_children(&self, item: ProgressItemRef) {
-        _ = self.0.sender.send(ProgressMessage::ClearChildren(item));
+        let ProgressBarThread::Threaded(inner) = self else {
+            return;
+        };
+        _ = inner.sender.send(ProgressMessage::ClearChildren(item));
     }
 
     pub fn print_stdout(&self, s: String) {
-        _ = self.0.sender.send(ProgressMessage::PrintStdout(s));
+        match self {
+            ProgressBarThread::Threaded(inner) => {
+                if let Err(e) = inner.sender.send(ProgressMessage::PrintStdout(s)) {
+                    let ProgressMessage::PrintStdout(s) = e.0 else {
+                        unreachable!()
+                    };
+                    print!("{s}");
+                    if !s.ends_with("\n\n") {
+                        println!()
+                    }
+                }
+            }
+            ProgressBarThread::NoThread => {
+                print!("{s}");
+                if !s.ends_with("\n\n") {
+                    println!()
+                }
+            }
+        }
     }
 
     pub fn print_stderr(&self, s: String) {
-        _ = self.0.sender.send(ProgressMessage::PrintStdout(s));
+        match self {
+            ProgressBarThread::Threaded(inner) => {
+                if let Err(e) = inner.sender.send(ProgressMessage::PrintStderr(s)) {
+                    let ProgressMessage::PrintStdout(s) = e.0 else {
+                        unreachable!()
+                    };
+                    eprint!("{s}");
+                    if !s.ends_with("\n\n") {
+                        eprintln!()
+                    }
+                }
+            }
+            ProgressBarThread::NoThread => {
+                eprint!("{s}");
+                if !s.ends_with("\n\n") {
+                    eprintln!()
+                }
+            }
+        }
     }
 }
 
@@ -119,17 +179,6 @@ fn handle_msg(msg: ProgressMessage, bar: &mut ProgressBar) -> bool {
                 bar.remove_item_inner(child);
             }
         }
-        _ => return handle_msg_no_bar(msg),
-    }
-    false
-}
-
-fn handle_msg_no_bar(msg: ProgressMessage) -> bool {
-    match msg {
-        ProgressMessage::Add { .. }
-        | ProgressMessage::AddChild { .. }
-        | ProgressMessage::Remove(_)
-        | ProgressMessage::ClearChildren(_) => {}
         ProgressMessage::StopThread => return true,
         ProgressMessage::PrintStderr(v) => {
             println!("{v}");
@@ -193,7 +242,7 @@ pub fn start_thread_with(bar: ProgressBar) -> ProgressBarThread {
         stdout.flush().expect("failed to flush stdout");
     });
 
-    ProgressBarThread(Arc::new(ProgressBarThreadInner {
+    ProgressBarThread::Threaded(Arc::new(ProgressBarThreadInner {
         next_progbar_item_ref: AtomicUsize::new(0),
         sender: tx,
         handle: Some(handle),
@@ -201,24 +250,5 @@ pub fn start_thread_with(bar: ProgressBar) -> ProgressBarThread {
 }
 
 pub fn start_thread_nobar() -> ProgressBarThread {
-    let (tx, rx) = channel();
-    let handle = std::thread::spawn(move || {
-        loop {
-            match rx.try_recv() {
-                Ok(msg) => {
-                    if handle_msg_no_bar(msg) {
-                        break;
-                    }
-                }
-                Err(TryRecvError::Empty) => continue,
-                Err(TryRecvError::Disconnected) => return,
-            }
-        }
-    });
-
-    ProgressBarThread(Arc::new(ProgressBarThreadInner {
-        next_progbar_item_ref: AtomicUsize::new(0),
-        sender: tx,
-        handle: Some(handle),
-    }))
+    ProgressBarThread::NoThread
 }

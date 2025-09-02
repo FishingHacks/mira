@@ -56,40 +56,6 @@ impl<'arena> GlobalContext<'arena> {
         }
     }
 
-    // pub fn diag_ctx(&'arena self, emitter: DiagEmitter) -> Mutex<DiagCtx<'arena>> {
-    //     let styles = match std::env::var("MIRA_COLOR").ok().as_deref() {
-    //         Some("0" | "none" | "no") => Styles::NO_COLORS,
-    //         Some("1" | "yes") => Styles::DEFAULT,
-    //         _ if std::io::stdout().is_terminal() => Styles::DEFAULT,
-    //         _ => Styles::NO_COLORS,
-    //     };
-    //     let printer: Box<dyn StyledPrinter> = match std::env::var("MIRA_DIAG_STYLE").ok().as_deref()
-    //     {
-    //         Some("ascii" | "text") => Box::new(AsciiPrinter::new()),
-    //         _ => Box::new(UnicodePrinter::new()),
-    //     };
-    //     Mutex::new(DiagCtx::new(
-    //         emitter,
-    //         self.source_map.clone(),
-    //         printer,
-    //         styles,
-    //     ))
-    // }
-
-    // pub fn make_diagnostic_formatter<P: StyledPrinter + 'static>(
-    //     &self,
-    //     printer: P,
-    //     output: Output,
-    // ) -> DiagnosticFormatter<'_> {
-    //     let styles = match std::env::var("MIRA_COLOR").ok().as_deref() {
-    //         Some("0" | "none" | "no") => Styles::NO_COLORS,
-    //         Some("1" | "yes") => Styles::DEFAULT,
-    //         _ if std::io::stdout().is_terminal() => Styles::DEFAULT,
-    //         _ => Styles::NO_COLORS,
-    //     };
-    //     DiagnosticFormatter::new(&self.source_map, output, Box::new(printer), styles)
-    // }
-
     pub fn ctx(&'arena self) -> SharedCtx<'arena> {
         SharedCtx::new(
             &self.string_interner,
@@ -140,14 +106,6 @@ impl<'arena> TypeCtx<'arena> {
     pub fn source_map(&self) -> &SourceMap {
         &self.0.source_map
     }
-
-    // pub fn make_diagnostic_formatter<P: StyledPrinter + 'static>(
-    //     &self,
-    //     printer: P,
-    //     output: Output,
-    // ) -> DiagnosticFormatter<'_> {
-    //     self.0.make_diagnostic_formatter(printer, output)
-    // }
 
     pub fn emit_diags(&self, diags: impl IntoIterator<Item = Diagnostic<'arena>>) {
         let mut dctx = self.0.diag_ctx.lock();

@@ -1,17 +1,21 @@
 mod cache;
 mod key;
-use std::marker::PhantomData;
+use std::{cell::Cell, marker::PhantomData};
 
 pub use cache::QueryCache;
 pub use key::QueryKey;
+use mira_common::store::StoreKey;
+use mira_errors::{Diagnostic, ErrorData, FatalError, Severity};
+use parking_lot::lock_api::RwLock;
 
-use crate::TypeckCtx;
+use crate::{TypeCtx, TypeckCtx};
 
 use super::{Providers, QueryArenas, QueryCaches, QueryStates, QuerySystem};
 
 impl<'arena> QuerySystem<'arena> {
     pub fn new() -> Self {
         Self {
+            jobs: RwLock::default(),
             providers: Providers::NEW,
             arenas: QueryArenas::default(),
             caches: QueryCaches::default(),
@@ -114,9 +118,11 @@ macro_rules! define_modules {
                     }
                 });
 
-                if !system.states.$name.write().insert(key) {
-                    panic!("cycle detected while computing {}", description(ctx, key));
+                if let Some(job) = system.states.$name.read().get(&key) {
+                    system.cycle_error(ctx.ctx, *job);
                 }
+                let job = system.enter_job(description(ctx, key));
+                system.states.$name.write().insert(key, job);
 
                 let res = $crate::macro_if!(if ($($manually_allocated)?)
                     { (system.providers.$name)(ctx, key, &system.arenas.$name) }
@@ -125,6 +131,7 @@ macro_rules! define_modules {
 
                 $crate::macro_if!(ifn($($uncached)?) { QueryCache::provide(&system.caches.$name, key, res) });
                 system.states.$name.write().remove(&key);
+                system.exit_job(job);
                 res
             }
 
@@ -156,8 +163,10 @@ macro_rules! define_system {
 
         #[allow(unused, dead_code)]
         #[derive(Default)]
+        // TODO: This should be thread local and involve some locking so no double computations
+        // happen
         pub struct QueryStates<'arena> {
-            $(pub(crate) $name: parking_lot::RwLock<std::collections::HashSet<queries::$name::Key<'arena>>>,)+
+            $(pub(crate) $name: parking_lot::RwLock<std::collections::HashMap<queries::$name::Key<'arena>, $crate::queries::plumbing::JobId<'arena>>>,)+
             _marker: std::marker::PhantomData<&'arena ()>,
         }
 
@@ -179,12 +188,15 @@ macro_rules! define_system {
             pub(crate) arenas: QueryArenas<'arena>,
             pub(crate) caches: QueryCaches<'arena>,
             pub(crate) states: QueryStates<'arena>,
+            pub(crate) jobs: parking_lot::RwLock<mira_common::store::Store<$crate::queries::plumbing::QueryJob<'arena>>>,
         }
         impl<'arena> $crate::TypeckCtx<'arena> {
             $(pub fn $name(&self, key: queries::$name::Key<'arena>) -> queries::$name::Value<'arena> { queries::$name::run(self.query_system(), self, key) })*
         }
     };
 }
+
+pub(crate) type JobId<'arena> = StoreKey<QueryJob<'arena>>;
 
 struct NeedsSendSync<T: Send + Sync>(PhantomData<T>);
 
@@ -193,5 +205,103 @@ const _: NeedsSendSync<QuerySystem> = NeedsSendSync(PhantomData);
 impl<'arena> TypeckCtx<'arena> {
     pub fn query_system(&self) -> &'arena QuerySystem<'arena> {
         self.ctx.query_system()
+    }
+}
+
+pub struct QueryJob<'arena> {
+    desc: Box<str>,
+    parent: StoreKey<QueryJob<'arena>>,
+    _marker: PhantomData<&'arena ()>,
+}
+
+impl<'arena> QueryJob<'arena> {
+    pub fn new(desc: Box<str>, parent: JobId<'arena>) -> Self {
+        Self {
+            desc,
+            parent,
+            _marker: PhantomData,
+        }
+    }
+}
+
+thread_local! {
+    static CURRENT_JOB: Cell<JobId<'static>> = const { Cell::new(JobId::undefined()) };
+}
+
+impl<'arena> QuerySystem<'arena> {
+    pub(crate) fn enter_job(&self, desc: impl Into<Box<str>>) -> JobId<'arena> {
+        let mut jobs = self.jobs.write();
+        let id = jobs.reserve_key();
+        jobs.insert_reserved(id, QueryJob::new(desc.into(), CURRENT_JOB.get().cast()));
+        CURRENT_JOB.set(id.cast());
+        id
+    }
+
+    pub(crate) fn exit_job(&self, id: JobId<'arena>) {
+        debug_assert_eq!(CURRENT_JOB.get().cast(), id);
+        _ = id;
+        let Some(job) = self.jobs.write().remove(&id) else {
+            panic!("Error: Exited non-existing job {id}")
+        };
+        CURRENT_JOB.set(job.parent.cast());
+    }
+
+    pub(crate) fn cycle_error(&self, ctx: TypeCtx<'arena>, job: JobId<'arena>) -> ! {
+        assert!(!job.is_undefined());
+        let jobs = self.jobs.read();
+        let main_query_desc = jobs[job].desc.clone();
+
+        let mut current_job = CURRENT_JOB.get().cast();
+        assert!(!current_job.is_undefined());
+        let mut descs = Vec::new();
+        while current_job != job {
+            descs.push(jobs[current_job].desc.clone());
+            current_job = jobs[current_job].parent;
+        }
+
+        descs.reverse();
+
+        let err = CyclicQuery {
+            descs,
+            main_query_desc,
+        };
+        ctx.emit_diag(Diagnostic::new(err, Severity::Error));
+        FatalError.raise()
+    }
+}
+
+struct CyclicQuery {
+    descs: Vec<Box<str>>,
+    main_query_desc: Box<str>,
+}
+
+impl ErrorData for CyclicQuery {
+    fn message<'ctx>(
+        &'ctx self,
+        _: mira_errors::FormattingCtx<'ctx>,
+        cb: &mut dyn FnMut(std::fmt::Arguments<'_>) -> std::fmt::Result,
+    ) -> std::fmt::Result {
+        cb(format_args!("Cycle detected when {}", self.main_query_desc))
+    }
+
+    fn notes<'ctx>(
+        &'ctx self,
+        _: mira_errors::FormattingCtx<'ctx>,
+        cb: &mut dyn FnMut(std::fmt::Arguments<'_>) -> std::fmt::Result,
+    ) -> std::fmt::Result {
+        for desc in &self.descs {
+            cb(format_args!("...which requires {desc}"))?;
+        }
+        if self.descs.is_empty() {
+            cb(format_args!(
+                "...which then immediately requires {}, completing the cycle.",
+                self.main_query_desc
+            ))
+        } else {
+            cb(format_args!(
+                "...which the again requires {}, completing the cycle.",
+                self.main_query_desc
+            ))
+        }
     }
 }

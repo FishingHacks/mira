@@ -468,3 +468,12 @@ impl<'a, 'b> Iterator for LineSplitter<'a, 'b> {
         Some(&self.1[start..self.0])
     }
 }
+
+pub struct FatalError;
+
+impl FatalError {
+    /// raises a fatal error
+    pub fn raise(self) -> ! {
+        std::panic::resume_unwind(Box::new(self))
+    }
+}

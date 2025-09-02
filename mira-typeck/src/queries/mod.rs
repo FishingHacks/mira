@@ -11,6 +11,9 @@ queries! {
 
     #[manually_allocated(u8)]
     get_module_path(StoreKey<TypedModule<'arena>>) -> &'arena str;
+
+    a(()) -> u8;
+    b(()) -> u8;
 }
 
 #[allow(clippy::module_inception)]

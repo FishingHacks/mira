@@ -428,6 +428,7 @@ dependencies = [
  "mira-lexer",
  "mira-macros",
  "mira-parser",
+ "mira-progress-bar",
  "mira-spans",
  "parking_lot",
 ]

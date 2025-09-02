@@ -34,12 +34,12 @@ impl<T: ?Sized> Eq for StoreKey<T> {}
 
 impl<T: ?Sized> StoreKey<T> {
     #[inline(always)]
-    pub fn cast<O: ?Sized>(self) -> StoreKey<O> {
+    pub const fn cast<O: ?Sized>(self) -> StoreKey<O> {
         StoreKey(self.0, PhantomData)
     }
 
     /// a key that should never be defined :3
-    pub fn undefined() -> Self {
+    pub const fn undefined() -> Self {
         Self(usize::MAX, PhantomData)
     }
 
@@ -48,8 +48,8 @@ impl<T: ?Sized> StoreKey<T> {
         Self(v, PhantomData)
     }
 
-    pub fn is_undefined(self) -> bool {
-        self == Self::undefined()
+    pub const fn is_undefined(self) -> bool {
+        self.0 == Self::undefined().0
     }
 }
 
