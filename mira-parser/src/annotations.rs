@@ -99,7 +99,7 @@ pub fn parse_annotation<'arena>(
         parser(TokenStream::new(tokens, span), ctx)
     } else {
         Err(ParsingError::UnknownAnnotation {
-            loc: span,
+            span,
             name: name.to_string(),
         })
     }
@@ -149,7 +149,7 @@ impl<'arena> Annotations<'arena> {
         for (annotation, span) in &self.0 {
             if !annotation.is_valid_for(typ, self) {
                 return Err(ParsingError::AnnotationDoesNotGoOn {
-                    loc: *span,
+                    span: *span,
                     name: annotation.get_name(),
                     thing: typ,
                 });

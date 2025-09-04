@@ -198,7 +198,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
     pub fn expect(&mut self, expected: TokenType) -> Result<Token<'arena>, ParsingError<'arena>> {
         if self.is_at_end() {
             return Err(ParsingError::Expected {
-                loc: self.eof_span,
+                span: self.eof_span,
                 expected,
                 found: self.eof_token(),
             });
@@ -206,7 +206,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         let tok = self.peek();
         if tok.typ != expected {
             return Err(ParsingError::Expected {
-                loc: tok.span,
+                span: tok.span,
                 expected,
                 found: tok,
             });
@@ -220,7 +220,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
     ) -> Result<Token<'arena>, ParsingError<'arena>> {
         if self.is_at_end() {
             return Err(ParsingError::ExpectedOneOf {
-                loc: self.eof_span,
+                span: self.eof_span,
                 valid: expected,
                 found: self.eof_token(),
             });
@@ -228,7 +228,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         let tok = self.peek();
         if !expected.contains(&tok.typ) {
             return Err(ParsingError::ExpectedOneOf {
-                loc: tok.span,
+                span: tok.span,
                 valid: expected,
                 found: tok,
             });
@@ -272,7 +272,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         self.is_at_end()
             .then_some(())
             .ok_or(ParsingError::Expected {
-                loc: self.tokens.get(0).unwrap().span,
+                span: self.tokens.get(0).unwrap().span,
                 expected: TokenType::Eof,
                 found: *self.tokens.get(0).unwrap(),
             })

@@ -6,7 +6,7 @@ use super::{Ty, TypecheckingError};
 pub trait IntrinsicExt {
     fn is_valid_for<'arena>(
         &self,
-        loc: Span<'arena>,
+        span: Span<'arena>,
         generics: &[Ty<'arena>],
     ) -> Result<(), TypecheckingError<'arena>>;
 }
@@ -21,13 +21,13 @@ fn generic_count(intrinsic: Intrinsic) -> usize {
 impl IntrinsicExt for Intrinsic {
     fn is_valid_for<'arena>(
         &self,
-        loc: Span<'arena>,
+        span: Span<'arena>,
         generics: &[Ty<'arena>],
     ) -> Result<(), TypecheckingError<'arena>> {
         let required_generics = generic_count(*self);
         if generics.len() != required_generics {
             return Err(TypecheckingError::MismatchingGenericCount(
-                loc,
+                span,
                 generics.len(),
                 required_generics,
             ));
@@ -46,7 +46,7 @@ impl IntrinsicExt for Intrinsic {
             | Intrinsic::Forget => generics[0]
                 .is_sized()
                 .then_some(())
-                .ok_or_else(|| TypecheckingError::NonSizedType(loc, generics[0])),
+                .ok_or_else(|| TypecheckingError::NonSizedType(span, generics[0])),
             // ┌────────────────────────┐
             // │ Genericless Intrinsics │
             // └────────────────────────┘

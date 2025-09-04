@@ -42,119 +42,119 @@ pub enum ParsingError<'arena> {
     #[error("Expected {expected}, but found {found}.")]
     Expected {
         #[primary_label("Expected {expected}")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         expected: TokenType,
         found: Token<'arena>,
     },
     #[error("Expected {expected} but found {found}")]
     ExpectedToktype {
         #[primary_label("Expected {expected}")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         expected: TokenType,
         found: TokenType,
     },
     #[error("Expected one of {}, but found {found}.", ExpectedOneOfDisplay(valid))]
     ExpectedOneOf {
         #[primary_label("Expected one of {}", ExpectedOneOfDisplay(valid))]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         valid: &'static [TokenType],
         found: Token<'arena>,
     },
     #[error("unresolved import `{}`", IdentDisplay(*name))]
     CannotResolveModule {
         #[primary_label("cannot find module {}", IdentDisplay(*name))]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("Expected one of let, fn, extern, struct, use, or trait, but found {tok}")]
     ExpectedElementForPub {
         #[primary_label("Expected one of let, fn, extern, struct, use, or trait")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         tok: Token<'arena>,
     },
     #[error("Output register must start with '='")]
     #[note("Try using \"={}\"", output.escape_debug())]
     OutputNotStartingWithEqual {
         #[primary_label("Register isn't starting with an '='")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         output: Symbol<'arena>,
     },
     #[error("Input register cannot start with '=' or '~'")]
     #[note("Try using {:?}", &input[1..])]
     InputStartingWithInvalidChar {
         #[primary_label("Register is starting with either '=' or '~'")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         input: Symbol<'arena>,
     },
     #[error("A bound register with name {} was already defined", IdentDisplay(*name))]
     DuplicateAsmReplacer {
         #[primary_label("redefinition here")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("Attribute `{}` cannot be applied to functions", IdentDisplay(*name))]
     InvalidFunctionAttribute {
         #[primary_label("attribute applied here")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("{} is an invalid intrinsic", IdentDisplay(*name))]
     InvalidIntrinsic {
         #[primary_label("no such intrinsic")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("invalid calling convention: found `{}`", IdentDisplay(*name))]
     InvalidCallConv {
         #[primary_label("invalid calling convention")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("Expected a type, but found `{found}`")]
     ExpectedType {
         #[primary_label("expected a type")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         found: TokenType,
     },
     #[error("Expected a function call")]
     ExpectedFunctionCall {
         #[primary_label("expected a function call")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
     },
     #[error("Expected one of ',', or ')', but found {found}")]
     ExpectedFunctionArgument {
         #[primary_label("Expected one of ',', or ')'")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         found: Token<'arena>,
     },
     #[error("Expected one of ',', or ']', but found {found}")]
     ExpectedArrayElement {
         #[primary_label("Expected one of ',', or ']'")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         found: TokenType,
     },
     #[error("Expected an expression or ')', but found {found}")]
     ExpectedFunctionArgumentExpression {
         #[primary_label("Expected an expression or ')'")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         found: TokenType,
     },
     #[error("Expected one of '=', or '{{', but found {found}")]
     ExpectedFunctionBody {
         #[primary_label("Expected one of '=', or {{")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         found: TokenType,
     },
     #[error("Expected an expression, but found {found}")]
     ExpectedExpression {
         #[primary_label("expected an expression")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         found: TokenType,
     },
     #[error("Expected an identifier, but found {found}")]
     ExpectedIdentifier {
         #[primary_label("Expected an identifier")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         found: TokenType,
     },
     #[error("Incorrect Tokenization")]
@@ -163,13 +163,13 @@ pub enum ParsingError<'arena> {
     #[error("Keyword `{keyword}` is not allowed here")]
     InvalidKeyword {
         #[primary_label("Keyword not allowed")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         keyword: &'static str,
     },
     #[error("Redefinition of name {}", IdentDisplay(*name))]
     ItemAlreadyDefined {
         #[primary_label("redefinition here")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
         #[primary_label("`{name}` was originally defined here")]
         first: Span<'arena>,
@@ -177,15 +177,15 @@ pub enum ParsingError<'arena> {
     #[error("Redefinition of name `{}`", IdentDisplay(*name))]
     FunctionAlreadyDefined {
         #[primary_label("redefinition here")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
         #[primary_label("`{name}` was originally defined here")]
-        first_func_loc: Span<'arena>,
+        first_func_span: Span<'arena>,
     },
-    #[error("{loc:?}: Expected one of {}fn or '}}', but found {found:?}", is_trait_impl.then_some("impl, ").unwrap_or(""))]
+    #[error("Expected one of {}fn or '}}', but found {found:?}", is_trait_impl.then_some("impl, ").unwrap_or(""))]
     StructImplRegionExpect {
         #[primary_label("Expected one of {}fn or '}}'", is_trait_impl.then_some("impl, ").unwrap_or(""))]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         found: TokenType,
         is_trait_impl: bool,
     },
@@ -198,14 +198,14 @@ pub enum ParsingError<'arena> {
     #[error("{thing} is not a valid receiver for annotation `{name}`")]
     AnnotationDoesNotGoOn {
         #[primary_label("annotation `{name}` is invalid here")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         name: &'static str,
         thing: AnnotationReceiver,
     },
     #[error("Unknown annotation `{name}`")]
     UnknownAnnotation {
         #[primary_label("Undefined annotation")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         name: String,
     },
     #[error("{error}")]

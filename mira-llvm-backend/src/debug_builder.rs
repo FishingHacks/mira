@@ -63,7 +63,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         &mut self,
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
-        loc: Span<'arena>,
+        span: Span<'arena>,
         ty: Ty<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
@@ -77,13 +77,13 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             &name,
             arg,
             self.modules[module].1,
-            loc.with_source_file(self.ctx.source_map()).lookup_pos().0,
+            span.with_source_file(self.ctx.source_map()).lookup_pos().0,
             ty,
             true,
             DIFlags::ZERO,
         );
         self.builder
-            .insert_declare_at_end(ptr, Some(info), None, self.location(scope, loc), bb)
+            .insert_declare_at_end(ptr, Some(info), None, self.location(scope, span), bb)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -91,7 +91,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         &mut self,
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
-        loc: Span<'arena>,
+        span: Span<'arena>,
         ty: Ty<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
@@ -107,23 +107,23 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             scope,
             &name,
             self.modules[module].1,
-            loc.with_source_file(self.ctx.source_map()).lookup_pos().0,
+            span.with_source_file(self.ctx.source_map()).lookup_pos().0,
             ty,
             true,
             DIFlags::ZERO,
             alignment,
         );
         self.builder
-            .insert_declare_at_end(ptr, Some(info), None, self.location(scope, loc), bb)
+            .insert_declare_at_end(ptr, Some(info), None, self.location(scope, span), bb)
     }
 
     pub fn new_block(
         &self,
         parent_scope: DIScope<'ctx>,
-        loc: Span<'arena>,
+        span: Span<'arena>,
         module: StoreKey<TypedModule<'arena>>,
     ) -> DILexicalBlock<'ctx> {
-        let (line, column) = loc.with_source_file(self.ctx.source_map()).lookup_pos();
+        let (line, column) = span.with_source_file(self.ctx.source_map()).lookup_pos();
         self.builder
             .create_lexical_block(parent_scope, self.modules[module].1, line, column)
     }
@@ -529,7 +529,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         .as_type()
                 }
                 TyKind::SizedArray {
-                    typ: child,
+                    ty: child,
                     number_elements,
                     ..
                 } => {

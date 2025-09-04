@@ -70,11 +70,11 @@ impl<'arena> TypedLiteral<'arena> {
             TypedLiteral::Static(id) => ctx.statics.read()[*id].type_,
             TypedLiteral::String(_) => default_types::str_ref,
             TypedLiteral::Array(ty, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
-                typ: *ty,
+                ty: *ty,
                 number_elements: elems.len(),
             }),
             TypedLiteral::ArrayInit(ty, _, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
-                typ: *ty,
+                ty: *ty,
                 number_elements: *elems,
             }),
             TypedLiteral::Struct(struct_id, _) => ctx.ctx.intern_ty(TyKind::Struct {

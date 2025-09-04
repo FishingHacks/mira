@@ -149,7 +149,7 @@ impl<'arena> TypeckCtx<'arena> {
                 if let Err(e) = lang_items_writer.push_static(
                     static_key.cast(),
                     annotation.get_langitem(),
-                    static_reader[static_key.cast()].loc,
+                    static_reader[static_key.cast()].span,
                 ) {
                     self.ctx.emit_diag(e);
                 }
@@ -174,7 +174,7 @@ impl<'arena> TypeckCtx<'arena> {
                 if let Err(e) = lang_items_writer.push_trait(
                     trait_key.cast(),
                     annotation.get_langitem(),
-                    trait_reader[trait_key.cast()].location,
+                    trait_reader[trait_key.cast()].span,
                 ) {
                     self.ctx.emit_diag(e);
                 }
@@ -205,16 +205,16 @@ impl<'arena> TypeckCtx<'arena> {
         let function_reader = self.functions.read();
         let module = struct_writer[struct_key.cast()].module_id;
 
-        for (name, implementation, loc) in trait_impl {
+        for (name, implementation, span) in trait_impl {
             let trait_id =
-                match resolve_import(context, module.cast(), &[name], loc, &mut HashSet::new()) {
+                match resolve_import(context, module.cast(), &[name], span, &mut HashSet::new()) {
                     Err(e) => {
                         self.ctx.emit_diag(e);
                         continue;
                     }
                     Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
                     Ok(_) => {
-                        self.ctx.emit_unbound_ident(loc, name.symbol());
+                        self.ctx.emit_unbound_ident(span, name.symbol());
                         continue;
                     }
                 };
@@ -234,7 +234,7 @@ impl<'arena> TypeckCtx<'arena> {
             let mut trait_impl = Vec::new();
             for (name, args, return_type, ..) in &typed_trait.functions {
                 let Some(&func_id) = implementation.get(name) else {
-                    self.ctx.emit_missing_trait_item(loc, name.symbol());
+                    self.ctx.emit_missing_trait_item(span, name.symbol());
                     continue;
                 };
 
@@ -513,7 +513,7 @@ impl<'arena> TypeckCtx<'arena> {
         if !self.ctx.errors_happened(tracker) {
             self.traits.write()[trait_id.cast()] = TypedTrait {
                 name,
-                location: span,
+                span,
                 id: trait_id.cast(),
                 module_id: module_id.cast(),
                 annotations,

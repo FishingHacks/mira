@@ -866,7 +866,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 s.push(']');
             }
             T::SizedArray {
-                typ,
+                ty: typ,
                 number_elements,
             } => {
                 s.push('[');

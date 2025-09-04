@@ -34,10 +34,10 @@ pub fn parse<'arena>(
     mut tokens: TokenStream<'arena>,
     _: SharedCtx<'arena>,
 ) -> Result<IntrinsicAnnotation, ParsingError<'arena>> {
-    let (name, loc) = tokens.expect_string()?;
+    let (name, span) = tokens.expect_string()?;
     let v = Intrinsic::from_str(&name)
         .map(IntrinsicAnnotation)
-        .map_err(|_| ParsingError::InvalidIntrinsic { loc, name })?;
+        .map_err(|_| ParsingError::InvalidIntrinsic { span, name })?;
     tokens.finish()?;
     Ok(v)
 }

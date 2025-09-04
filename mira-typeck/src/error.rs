@@ -213,7 +213,7 @@ pub enum TypecheckingError<'arena> {
     #[error("could not find item {}", IdentDisplay(*name))]
     ItemNotFound {
         #[primary_label("No such item found")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("cyclic dependency detected")]
@@ -221,81 +221,81 @@ pub enum TypecheckingError<'arena> {
     #[error("Unbound identifier {}", IdentDisplay(*name))]
     UnboundIdent {
         #[primary_label("unbound identifier")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("Expected a {expected}, but found a {found}")]
     MismatchingScopeType {
         #[primary_label("Expected a {expected}")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         expected: ScopeKind,
         found: ScopeKind,
     },
     #[error("Recursive type detected")]
     RecursiveTypeDetected {
         #[primary_label("recursive type")]
-        location: Span<'arena>,
+        span: Span<'arena>,
     },
     #[error("The function does not always return but is also not void")]
     BodyDoesNotAlwaysReturn {
         #[primary_label("Function sometimes returns void")]
-        location: Span<'arena>,
+        span: Span<'arena>,
     },
     #[error("Expected {expected}, but found {found}")]
     MismatchingType {
         #[primary_label("types don't match")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         expected: Ty<'arena>,
         found: Ty<'arena>,
     },
     #[error("{} is not a struct type", IdentDisplay(*name))]
     IdentifierIsNotStruct {
         #[primary_label("Tried to construct a non-struct type as a struct")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("no such field named {} found!", IdentDisplay(*name))]
     NoSuchFieldFound {
         #[primary_label("no such field found")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("missing field {}", IdentDisplay(*name))]
     MissingField {
         #[primary_label("missing {}", IdentDisplay(*name))]
-        location: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("Expected a function")]
     TypeIsNotAFunction {
         #[primary_label("expected a function")]
-        location: Span<'arena>,
+        span: Span<'arena>,
     },
     #[error("Function misses arguments")]
     MissingArguments {
         #[primary_label("too little arguments supplied")]
-        location: Span<'arena>,
+        span: Span<'arena>,
     },
     #[error("Function expects no more arguments")]
     TooManyArguments {
         #[primary_label("Last expected argument")]
-        location: Span<'arena>,
+        span: Span<'arena>,
     },
     #[error("A module cannot have generics")]
     UnexpectedGenerics {
         #[primary_label("generics not allowed")]
-        location: Span<'arena>,
+        span: Span<'arena>,
     },
     #[error("{} is not a member of the trait.", IdentDisplay(*name))]
     IsNotTraitMember {
         #[primary_label("No such method exists on the trait")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("missing trait item {}", IdentDisplay(*name))]
     MissingTraitItem {
         #[primary_label("Missing implementation for trait item")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         name: Symbol<'arena>,
     },
     #[error("Type {_1} is expected to implement the traits{}", _2.iter().map(|v| format!(" {}", IdentDisplay(*v))).collect::<String>())]
@@ -311,14 +311,14 @@ pub enum TypecheckingError<'arena> {
     )]
     MismatchingArguments {
         #[primary_label("Mismatching arguments")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         expected: Vec<Ty<'arena>>,
         found: Vec<Ty<'arena>>,
     },
     #[error("Expected fn(...) -> {expected} but fund fn(...) -> {found}")]
     MismatchingReturnType {
         #[primary_label("Mismatching return type")]
-        location: Span<'arena>,
+        span: Span<'arena>,
         expected: Ty<'arena>,
         found: Ty<'arena>,
     },

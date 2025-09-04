@@ -48,7 +48,7 @@ pub fn parse<'a>(
             "cold" => function_attr.hotness = Some(false),
             _ => {
                 return Err(ParsingError::InvalidFunctionAttribute {
-                    loc: ident.span(),
+                    span: ident.span(),
                     name: ident.symbol(),
                 });
             }

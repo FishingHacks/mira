@@ -225,7 +225,7 @@ impl<'arena> TypeRef<'arena> {
                     if !args.is_empty() {
                         if !parser.match_tok(TokenType::Comma) {
                             return Err(ParsingError::ExpectedFunctionArgument {
-                                loc: parser.peek().span,
+                                span: parser.peek().span,
                                 found: parser.peek(),
                             });
                         }
@@ -272,14 +272,14 @@ impl<'arena> TypeRef<'arena> {
                 });
             } else {
                 return Err(ParsingError::ExpectedType {
-                    loc: parser.peek().span,
+                    span: parser.peek().span,
                     found: parser.peek().typ,
                 });
             }
         }
 
         Err(ParsingError::ExpectedType {
-            loc: parser.peek().span,
+            span: parser.peek().span,
             found: TokenType::Eof,
         })
     }
@@ -287,7 +287,7 @@ impl<'arena> TypeRef<'arena> {
     fn parse_dyn(
         parser: &mut Parser<'_, 'arena>,
         num_references: u8,
-        loc: Span<'arena>,
+        span: Span<'arena>,
     ) -> Result<Self, ParsingError<'arena>> {
         parser.dismiss();
         let mut traits = vec![];
@@ -305,7 +305,7 @@ impl<'arena> TypeRef<'arena> {
 
         Ok(Self::DynReference {
             num_references,
-            span: loc,
+            span,
             traits,
         })
     }
@@ -445,8 +445,8 @@ impl<'arena> Generic<'arena> {
                 parser.expect(TokenType::Plus)?;
             }
 
-            let loc = parser.peek().span;
-            bounds.push((PathWithoutGenerics::parse(parser)?, loc));
+            let span = parser.peek().span;
+            bounds.push((PathWithoutGenerics::parse(parser)?, span));
         }
         Ok(Self {
             sized,

@@ -20,13 +20,13 @@ pub enum LexingError<'arena> {
     #[error("unclosed macro invocation")]
     UnclosedMacro {
         #[primary_label("expected a `{bracket}`")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         bracket: char,
     },
     #[error("expected one of `(`, `[` or `{{`, but found `{character}`")]
     MacroExpectedBracket {
         #[primary_label("expected one of `(`, `[`, or `{{`")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         character: char,
     },
     #[error("Module-level doc comment have to be the first token in the file.")]

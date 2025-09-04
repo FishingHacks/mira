@@ -51,10 +51,10 @@ macro_rules! lang_item_def {
             /// Pushes a struct as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_struct(&mut self, id: StoreKey<TypedStruct<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            pub fn push_struct(&mut self, id: StoreKey<TypedStruct<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
-                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(loc, stringify!($ty)).to_error()),)*
-                    $(stringify!($lang_item) => lang_item_def!(expect_struct $ty, self, $lang_item, id, loc),)*
+                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(span, stringify!($ty)).to_error()),)*
+                    $(stringify!($lang_item) => lang_item_def!(expect_struct $ty, self, $lang_item, id, span),)*
                     _ => return Ok(false),
                 }
                 Ok(true)
@@ -63,10 +63,10 @@ macro_rules! lang_item_def {
             /// Pushes a trait as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_trait(&mut self, id: StoreKey<TypedTrait<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            pub fn push_trait(&mut self, id: StoreKey<TypedTrait<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
-                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(loc, stringify!($ty)).to_error()),)*
-                    $(stringify!($lang_item) => lang_item_def!(expect_trait $ty, self, $lang_item, id, loc),)*
+                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(span, stringify!($ty)).to_error()),)*
+                    $(stringify!($lang_item) => lang_item_def!(expect_trait $ty, self, $lang_item, id, span),)*
                     _ => return Ok(false),
                 }
                 Ok(true)
@@ -75,20 +75,20 @@ macro_rules! lang_item_def {
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_static(&mut self, id: StoreKey<TypedStatic<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            pub fn push_static(&mut self, id: StoreKey<TypedStatic<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
-                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(loc, stringify!($ty)).to_error()),)*
-                    $(stringify!($lang_item) => lang_item_def!(expect_static $ty, self, $lang_item, id, loc),)*
+                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(span, stringify!($ty)).to_error()),)*
+                    $(stringify!($lang_item) => lang_item_def!(expect_static $ty, self, $lang_item, id, span),)*
                     _ => return Ok(false),
                 }
                 Ok(true)
             }
 
             #[allow(unreachable_code)]
-            fn internal_push_fn(&mut self, _: FunctionLangItem<'arena>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            fn internal_push_fn(&mut self, _: FunctionLangItem<'arena>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
-                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(loc, stringify!($ty)).to_error()),)*
-                    $(stringify!($lang_item) => lang_item_def!(expect_function $ty, self, $lang_item, id, loc),)*
+                    $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(span, stringify!($ty)).to_error()),)*
+                    $(stringify!($lang_item) => lang_item_def!(expect_function $ty, self, $lang_item, id, span),)*
                     _ => return Ok(false),
                 }
                 Ok(true)
@@ -96,14 +96,14 @@ macro_rules! lang_item_def {
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_external_function(&mut self, id: StoreKey<TypedExternalFunction<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
-                self.internal_push_fn(FunctionLangItem::External(id), lang_item, loc)
+            pub fn push_external_function(&mut self, id: StoreKey<TypedExternalFunction<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+                self.internal_push_fn(FunctionLangItem::External(id), lang_item, span)
             }
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_function(&mut self, id: StoreKey<TypedFunction<'arena>>, lang_item: &str, loc: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
-                self.internal_push_fn(FunctionLangItem::Internal(id), lang_item, loc)
+            pub fn push_function(&mut self, id: StoreKey<TypedFunction<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+                self.internal_push_fn(FunctionLangItem::Internal(id), lang_item, span)
             }
 
         }
@@ -114,17 +114,17 @@ macro_rules! lang_item_def {
     (underlying_typ Function) => { FunctionLangItem<'arena> };
     (underlying_typ Static) => { StoreKey<TypedStatic<'arena>> };
 
-    (expect_struct Struct, $self: ident, $key: ident, $id: ident, $loc: ident) => { $self.$key = Some($id) };
-    (expect_struct $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Struct, expected: LangItemType::$expected_ty }.to_error()) };
+    (expect_struct Struct, $self: ident, $key: ident, $id: ident, $span: ident) => { $self.$key = Some($id) };
+    (expect_struct $expected_ty: ident, $self: ident, $key: ident, $id: ident, $span: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), span: $span, got: LangItemType::Struct, expected: LangItemType::$expected_ty }.to_error()) };
 
-    (expect_trait Trait, $self: ident, $key: ident, $id: ident, $loc: ident) => { $self.$key = Some($id) };
-    (expect_trait $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Trait, expected: LangItemType::$expected_ty }.to_error()) };
+    (expect_trait Trait, $self: ident, $key: ident, $id: ident, $span: ident) => { $self.$key = Some($id) };
+    (expect_trait $expected_ty: ident, $self: ident, $key: ident, $id: ident, $span: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), span: $span, got: LangItemType::Trait, expected: LangItemType::$expected_ty }.to_error()) };
 
-    (expect_static Static, $self: ident, $key: ident, $id: ident, $loc: ident) => { $self.$key = Some($id) };
-    (expect_static $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Static, expected: LangItemType::$expected_ty }.to_error()) };
+    (expect_static Static, $self: ident, $key: ident, $id: ident, $span: ident) => { $self.$key = Some($id) };
+    (expect_static $expected_ty: ident, $self: ident, $key: ident, $id: ident, $span: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), span: $span, got: LangItemType::Static, expected: LangItemType::$expected_ty }.to_error()) };
 
-    (expect_function Function, $self: ident, $key: ident, $id: ident, $loc: ident) => { $self.$key = Some($id) };
-    (expect_function $expected_ty: ident, $self: ident, $key: ident, $id: ident, $loc: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), loc: $loc, got: LangItemType::Function, expected: LangItemType::$expected_ty }.to_error()) };
+    (expect_function Function, $self: ident, $key: ident, $id: ident, $span: ident) => { $self.$key = Some($id) };
+    (expect_function $expected_ty: ident, $self: ident, $key: ident, $id: ident, $span: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), span: $span, got: LangItemType::Function, expected: LangItemType::$expected_ty }.to_error()) };
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -159,7 +159,7 @@ pub enum LangItemAssignmentError<'arena> {
     #[error("expected lang item `{lang_item}` to be a {expected}, but got a {got}")]
     InvalidLangItemError {
         #[primary_label("lang item defined here")]
-        loc: Span<'arena>,
+        span: Span<'arena>,
         lang_item: &'static str,
         got: LangItemType,
         expected: LangItemType,
@@ -391,6 +391,7 @@ lang_item_def! {
 
     clone_trait => Trait, // done
     copy_trait => Trait, // done
+    drop_trait => Trait, // done
     allocator_trait => Trait, // done
     eq_trait => Trait,
     neq_trait => Trait,
@@ -529,6 +530,16 @@ impl<'arena> LangItems<'arena> {
         }
     }
 
+    fn drop_trait(&self) -> LangItemTrait<'arena> {
+        // trait Clone { fn clone(self: &Self) -> Self; }
+        LangItemTrait {
+            funcs: vec![(
+                self.ctx.intern_str("clone"),
+                LangItemFunction::new(vec![default_types::self_ref], default_types::void),
+            )],
+        }
+    }
+
     pub fn check(&self, context: &TypeckCtx<'arena>) {
         let trait_reader = context.traits.read();
         let struct_reader = context.structs.read();
@@ -536,6 +547,7 @@ impl<'arena> LangItems<'arena> {
 
         check_langitem!(required self.allocator_trait: Trait; trait_reader context);
         check_langitem!(required self.clone_trait: Trait; trait_reader context);
+        check_langitem!(required self.drop_trait: Trait; trait_reader context);
         check_langitem!(required self.copy_trait: Trait; trait_reader context);
         check_langitem!(required self.allocator: Static; static_reader context);
         check_langitem!(self.bool: Struct; struct_reader context);

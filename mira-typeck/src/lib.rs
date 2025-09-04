@@ -85,7 +85,7 @@ pub struct TypedTrait<'arena> {
         Span<'arena>,
         DocComment,
     )>,
-    pub location: Span<'arena>,
+    pub span: Span<'arena>,
     pub module_id: StoreKey<TypedModule<'arena>>,
     pub id: StoreKey<TypedTrait<'arena>>,
     pub annotations: Annotations<'arena>,
@@ -120,7 +120,7 @@ pub struct TypedStatic<'arena> {
     /// guaranteed to not be `Dynamic`, `Intrinsic` or `Static`
     pub value: TypedLiteral<'arena>,
     pub module_id: StoreKey<TypedModule<'arena>>,
-    pub loc: Span<'arena>,
+    pub span: Span<'arena>,
     pub annotations: Annotations<'arena>,
     pub name: Ident<'arena>,
     pub comment: DocComment,
@@ -131,7 +131,7 @@ impl<'arena> TypedStatic<'arena> {
         type_: Ty<'arena>,
         literal: TypedLiteral<'arena>,
         module: StoreKey<TypedModule<'arena>>,
-        loc: Span<'arena>,
+        span: Span<'arena>,
         annotations: Annotations<'arena>,
         name: Ident<'arena>,
         comment: DocComment,
@@ -140,7 +140,7 @@ impl<'arena> TypedStatic<'arena> {
             type_,
             value: literal,
             module_id: module,
-            loc,
+            span,
             annotations,
             name,
             comment,
@@ -299,7 +299,7 @@ impl<'arena> TypeckCtx<'arena> {
                 TypedTrait {
                     name: Ident::EMPTY,
                     functions: Vec::new(),
-                    location: traits_reader[key].span,
+                    span: traits_reader[key].span,
                     module_id: StoreKey::undefined(),
                     id: key.cast(),
                     annotations: Annotations::default(),
@@ -361,14 +361,9 @@ impl<'arena> TypeckCtx<'arena> {
         let mut typechecked_module_writer = self.modules.write();
         let module_reader = context.modules.read();
         for key in module_reader.indices() {
-            for (name, (location, import)) in module_reader[key].imports.iter() {
-                let res = resolve_import(
-                    &context,
-                    key,
-                    &import.entries,
-                    *location,
-                    &mut HashSet::new(),
-                );
+            for (name, (span, import)) in module_reader[key].imports.iter() {
+                let res =
+                    resolve_import(&context, key, &import.entries, *span, &mut HashSet::new());
                 match res {
                     Err(diag) => self.ctx.emit_diag(diag),
                     Ok(k) => {
@@ -393,19 +388,20 @@ impl<'arena> TypeckCtx<'arena> {
             TypeRef::DynReference {
                 traits,
                 num_references,
-                span: loc,
+                span,
             } => {
                 let mut trait_refs = Vec::with_capacity(traits.len());
                 for trait_name in traits.iter() {
                     let v = self.typed_resolve_import(
                         module_id,
                         trait_name.as_slice(),
-                        *loc,
+                        *span,
                         &mut HashSet::new(),
                     );
                     let Ok(ModuleScopeValue::Trait(id)) = v else {
                         return Err(
-                            TypecheckingError::CannotFindTrait(*loc, trait_name.clone()).to_error()
+                            TypecheckingError::CannotFindTrait(*span, trait_name.clone())
+                                .to_error(),
                         );
                     };
                     trait_refs.push((id.cast(), *trait_name.as_slice().last().unwrap()));
@@ -442,7 +438,7 @@ impl<'arena> TypeckCtx<'arena> {
             TypeRef::Reference {
                 num_references,
                 type_name,
-                span: loc,
+                span,
             } => {
                 if type_name.entries.len() == 1
                     && type_name.entries[0].1.is_empty()
@@ -466,12 +462,12 @@ impl<'arena> TypeckCtx<'arena> {
                 for (.., generics) in type_name.entries.iter() {
                     if !generics.is_empty() {
                         return Err(
-                            TypecheckingError::UnexpectedGenerics { location: *loc }.to_error()
+                            TypecheckingError::UnexpectedGenerics { span: *span }.to_error()
                         );
                     }
                 }
 
-                match self.typed_resolve_import(module_id, &path, *loc, &mut HashSet::new())? {
+                match self.typed_resolve_import(module_id, &path, *span, &mut HashSet::new())? {
                     ModuleScopeValue::Struct(id) => Ok(with_refcount(
                         self.ctx,
                         self.ctx.intern_ty(TyKind::Struct {
@@ -481,7 +477,7 @@ impl<'arena> TypeckCtx<'arena> {
                         *num_references,
                     )),
                     v => Err(TypecheckingError::MismatchingScopeType {
-                        location: *loc,
+                        span: *span,
                         expected: ScopeKind::Type,
                         found: v.into(),
                     }
@@ -508,7 +504,7 @@ impl<'arena> TypeckCtx<'arena> {
             } => Ok(with_refcount(
                 self.ctx,
                 self.ctx.intern_ty(TyKind::SizedArray {
-                    typ: self.resolve_type(module_id, child, generics)?,
+                    ty: self.resolve_type(module_id, child, generics)?,
                     number_elements: *number_elements,
                 }),
                 *num_references,
@@ -774,7 +770,7 @@ impl<'arena> TypeckCtx<'arena> {
             } => Some(with_refcount(
                 self.ctx,
                 self.ctx.intern_ty(TyKind::SizedArray {
-                    typ: self
+                    ty: self
                         .type_resolution_resolve_type(child, generics, module, context, left)?,
                     number_elements: *number_elements,
                 }),
@@ -829,7 +825,7 @@ impl<'arena> TypeckCtx<'arena> {
             thing = ModuleScopeValue::Module(package.cast());
         } else {
             return Err(TypecheckingError::ItemNotFound {
-                location: span,
+                span,
                 name: import[0].symbol(),
             }
             .to_error());
@@ -844,7 +840,7 @@ impl<'arena> TypeckCtx<'arena> {
             }
 
             _ => Err(TypecheckingError::ItemNotFound {
-                location: import[1].span(),
+                span: import[1].span(),
                 name: import[1].symbol(),
             }
             .to_error()),
@@ -856,12 +852,12 @@ fn resolve_import<'arena>(
     context: &ModuleContext<'arena>,
     current_module: StoreKey<Module<'arena>>,
     import: &[Ident<'arena>],
-    location: Span<'arena>,
+    span: Span<'arena>,
     already_included: &mut HashSet<(StoreKey<Module<'arena>>, Symbol<'arena>)>,
 ) -> Result<ModuleScopeValue<'arena>, Diagnostic<'arena>> {
     assert!(!import.is_empty());
     if !already_included.insert((current_module, import[0].symbol())) {
-        return Err(TypecheckingError::CyclicDependency(location).to_error());
+        return Err(TypecheckingError::CyclicDependency(span).to_error());
     }
 
     let module_reader = context.modules.read();
@@ -873,19 +869,19 @@ fn resolve_import<'arena>(
         thing = ModuleScopeValue::Module(cur_mod.parent);
     } else if let Some(value) = cur_mod.scope.get(&import[0].symbol()) {
         thing = *value;
-    } else if let Some((location, import)) = cur_mod.imports.get(&import[0].symbol()) {
+    } else if let Some((span, import)) = cur_mod.imports.get(&import[0].symbol()) {
         thing = resolve_import(
             context,
             current_module,
             &import.entries,
-            *location,
+            *span,
             already_included,
         )?
     } else if let Some(package) = context.dependencies[cur_mod.package_root].get(&*import[0]) {
         thing = ModuleScopeValue::Module(*package);
     } else {
         return Err(TypecheckingError::ItemNotFound {
-            location,
+            span,
             name: import[0].symbol(),
         }
         .to_error());
@@ -896,11 +892,11 @@ fn resolve_import<'arena>(
     }
     match thing {
         ModuleScopeValue::Module(module) => {
-            resolve_import(context, module, &import[1..], location, already_included)
+            resolve_import(context, module, &import[1..], span, already_included)
         }
 
         _ => Err(TypecheckingError::ItemNotFound {
-            location: import[1].span(),
+            span: import[1].span(),
             name: import[1].symbol(),
         }
         .to_error()),

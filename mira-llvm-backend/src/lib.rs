@@ -233,7 +233,7 @@ impl<'ctx, 'arena> TyKindExt<'ctx, 'arena> for TyKind<'arena> {
                 )
                 .into(),
             TyKind::SizedArray {
-                typ,
+                ty: typ,
                 number_elements,
                 ..
             } => typ
@@ -693,7 +693,7 @@ fn build_deref<'ctx, 'arena>(
             Ok(value.into())
         }
         TyKind::SizedArray {
-            typ,
+            ty: typ,
             number_elements,
             ..
         } => {
@@ -799,7 +799,7 @@ fn build_ptr_store<'ctx, 'arena>(
             }
         }
         TyKind::SizedArray {
-            typ: ty,
+            ty,
             number_elements,
             ..
         } => {
@@ -1682,7 +1682,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                         self.push_value(*dst, value.into());
                         Ok(())
                     }
-                    TyKind::SizedArray { typ, .. } => {
+                    TyKind::SizedArray { ty: typ, .. } => {
                         let offset = match offset {
                             OffsetValue::Dynamic(id) => self.get_value(*id).into_int_value(),
                             OffsetValue::Static(v) => {

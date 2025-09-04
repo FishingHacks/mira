@@ -94,7 +94,7 @@ pub enum TyKind<'arena> {
     },
     UnsizedArray(Ty<'arena>),
     SizedArray {
-        typ: Ty<'arena>,
+        ty: Ty<'arena>,
         number_elements: usize,
     },
     Tuple(TyList<'arena>),
@@ -262,11 +262,54 @@ impl<'arena> Ty<'arena> {
     }
 }
 impl<'arena> TyKind<'arena> {
-    pub fn implements(
-        &self,
-        traits: &[StoreKey<TypedTrait<'arena>>],
-        tc_ctx: &TypeckCtx<'arena>,
-    ) -> bool {
+    pub fn needs_drop(&self, tcx: &TypeckCtx<'_>) -> bool {
+        match self {
+            // we don't know if this type has to be dropped or not, so always invoke the drop impl.
+            TyKind::DynType(_) => true,
+            TyKind::UnsizedArray(ty) | TyKind::SizedArray { ty, .. } => ty.needs_drop(tcx),
+            TyKind::Struct { struct_id, .. } => {
+                let drop_trait = tcx.lang_items.read().drop_trait;
+                if let Some(drop_trait) = drop_trait
+                    && self.implements(&[drop_trait], tcx)
+                {
+                    return true;
+                }
+                tcx.structs.read()[struct_id]
+                    .elements
+                    .iter()
+                    .any(|v| v.1.needs_drop(tcx))
+            }
+            TyKind::Tuple(tys) => tys.iter().any(|v| v.needs_drop(tcx)),
+            // primitives and pointers (fn(_) -> _ is a pointer) don't need to be dropped.
+            TyKind::Function(_)
+            | TyKind::PrimitiveVoid
+            | TyKind::PrimitiveNever
+            | TyKind::PrimitiveI8
+            | TyKind::PrimitiveI16
+            | TyKind::PrimitiveI32
+            | TyKind::PrimitiveI64
+            | TyKind::PrimitiveISize
+            | TyKind::PrimitiveU8
+            | TyKind::PrimitiveU16
+            | TyKind::PrimitiveU32
+            | TyKind::PrimitiveU64
+            | TyKind::PrimitiveUSize
+            | TyKind::PrimitiveF32
+            | TyKind::PrimitiveF64
+            | TyKind::PrimitiveStr
+            | TyKind::PrimitiveBool
+            | TyKind::Ref(_) => false,
+            TyKind::Generic { bounds, .. } => tcx
+                .lang_items
+                .read()
+                .copy_trait
+                .map(|v| !bounds.contains(&v))
+                .unwrap_or(true),
+            TyKind::PrimitiveSelf => unreachable!("Self should be resolved by now."),
+        }
+    }
+
+    pub fn implements(&self, traits: &[StoreKey<TypedTrait<'_>>], tc_ctx: &TypeckCtx<'_>) -> bool {
         match self {
             TyKind::Ref(v) => {
                 if let TyKind::DynType(trait_refs) = &***v {
@@ -328,7 +371,7 @@ impl<'arena> TyKind<'arena> {
                 .map(|v| v.1.alignment(ptr_size, structs))
                 .max()
                 .unwrap_or(1),
-            TyKind::SizedArray { typ, .. } => typ.alignment(ptr_size, structs),
+            TyKind::SizedArray { ty: typ, .. } => typ.alignment(ptr_size, structs),
             TyKind::Tuple(elements) => elements
                 .iter()
                 .map(|v| v.alignment(ptr_size, structs))
@@ -379,7 +422,7 @@ impl<'arena> TyKind<'arena> {
                 (align(size, alignment), alignment)
             }
             TyKind::SizedArray {
-                typ,
+                ty: typ,
                 number_elements,
             } => {
                 let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
@@ -612,7 +655,7 @@ impl Display for TyKind<'_> {
                 f.write_char(']')
             }
             TyKind::SizedArray {
-                typ,
+                ty: typ,
                 number_elements,
                 ..
             } => {
@@ -735,7 +778,7 @@ impl<'arena> TypeSuggestion<'arena> {
             | TypeSuggestion::UnsizedArray(type_suggestion) => type_suggestion
                 .to_type(ctx)
                 .map(|typ| TyKind::SizedArray {
-                    typ,
+                    ty: typ,
                     number_elements: 0,
                 })
                 .map(|typ| ctx.ctx.intern_ty(typ)),
@@ -776,7 +819,7 @@ impl<'arena> TypeSuggestion<'arena> {
             | TyKind::PrimitiveNever
             | TyKind::DynType { .. } => Self::Unknown,
             TyKind::Struct { struct_id, .. } => Self::Struct(*struct_id),
-            TyKind::SizedArray { typ, .. } => Self::Array(Box::new(Self::from_type(*typ))),
+            TyKind::SizedArray { ty: typ, .. } => Self::Array(Box::new(Self::from_type(*typ))),
             TyKind::UnsizedArray(typ) => Self::UnsizedArray(Box::new(Self::from_type(*typ))),
             TyKind::PrimitiveI8 => Self::Number(NumberType::I8),
             TyKind::PrimitiveI16 => Self::Number(NumberType::I16),

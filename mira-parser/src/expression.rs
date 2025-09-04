@@ -570,8 +570,8 @@ impl Display for Expression<'_> {
 }
 
 impl<'arena> Expression<'arena> {
-    pub fn bool(value: bool, loc: Span<'arena>) -> Self {
-        Self::Literal(LiteralValue::Bool(value), loc)
+    pub fn bool(value: bool, span: Span<'arena>) -> Self {
+        Self::Literal(LiteralValue::Bool(value), span)
     }
 
     pub fn string(value: Symbol<'arena>, span: Span<'arena>) -> Self {
@@ -765,19 +765,19 @@ impl<'arena> Parser<'_, 'arena> {
                     break 'outputs;
                 }
                 // [v] "=r" (ty)
-                let loc = self.peek().span;
+                let span = self.peek().span;
                 // let (replacer, register, type_name, span) = self.parse_asm_binding()?;
                 let asm_binding = self.parse_asm_binding()?;
                 let replacer_string = format!("%[{}]", asm_binding.name);
                 if replacers.iter().any(|v| v.0 == replacer_string) {
                     return Err(ParsingError::DuplicateAsmReplacer {
-                        loc,
+                        span,
                         name: asm_binding.name,
                     });
                 }
                 if !asm_binding.bound.starts_with('=') {
                     return Err(ParsingError::OutputNotStartingWithEqual {
-                        loc,
+                        span,
                         output: asm_binding.bound,
                     });
                 }
@@ -786,7 +786,7 @@ impl<'arena> Parser<'_, 'arena> {
                 output = TypeRef::Reference {
                     num_references: 0,
                     type_name: Path::new(asm_binding.type_or_name, Vec::new()),
-                    span: loc,
+                    span,
                 }
             };
 
@@ -803,18 +803,18 @@ impl<'arena> Parser<'_, 'arena> {
                     }
                 }
 
-                let loc = self.peek().span;
+                let span = self.peek().span;
                 let asm_binding = self.parse_asm_binding()?;
                 let replacer_string = format!("%[{}]", asm_binding.name);
                 if replacers.iter().any(|v| v.0 == replacer_string) {
                     return Err(ParsingError::DuplicateAsmReplacer {
-                        loc,
+                        span,
                         name: asm_binding.name,
                     });
                 }
                 if asm_binding.bound.starts_with('=') || asm_binding.bound.starts_with('~') {
                     return Err(ParsingError::InputStartingWithInvalidChar {
-                        loc,
+                        span,
                         input: asm_binding.bound,
                     });
                 }
@@ -823,7 +823,7 @@ impl<'arena> Parser<'_, 'arena> {
                     registers.push(',');
                 }
                 registers.push_str(&asm_binding.bound);
-                inputs.push((loc, asm_binding.type_or_name));
+                inputs.push((span, asm_binding.type_or_name));
             }
 
             if self.current().typ != TokenType::Colon {
@@ -926,7 +926,7 @@ impl<'arena> Parser<'_, 'arena> {
                         span: span.combine_with([expr_span], self.ctx.span_interner),
                     };
                 }
-                e => return Err(ParsingError::ExpectedFunctionCall { loc: e.span() }),
+                e => return Err(ParsingError::ExpectedFunctionCall { span: e.span() }),
             }
         }
 
@@ -938,13 +938,13 @@ impl<'arena> Parser<'_, 'arena> {
 
         while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
             let inclusive = self.current().typ == TokenType::RangeInclusive;
-            let loc = self.current().span;
+            let span = self.current().span;
             let right_side = Box::new(self.parse_expression()?);
             expr = Expression::Range {
                 left_side: Box::new(expr),
                 right_side,
                 inclusive,
-                span: loc,
+                span,
             };
         }
 
@@ -1130,19 +1130,19 @@ impl<'arena> Parser<'_, 'arena> {
                         // , or ), but ) is alr handled by the thing above
                         if self.eat().typ != TokenType::Comma {
                             return Err(ParsingError::ExpectedFunctionArgument {
-                                loc: self.current().span,
+                                span: self.current().span,
                                 found: self.current(),
                             });
                         }
                     }
 
-                    let next_loc = self.peek().span;
+                    let next_span = self.peek().span;
                     let next_typ = self.peek().typ;
                     if let Ok(expr) = self.parse_expression() {
                         arguments.push(expr);
                     } else {
                         return Err(ParsingError::ExpectedFunctionArgumentExpression {
-                            loc: next_loc,
+                            span: next_span,
                             found: next_typ,
                         });
                     }
@@ -1272,7 +1272,7 @@ impl<'arena> Parser<'_, 'arena> {
 
         // functions/callables
         if self.peek().typ == TokenType::Fn {
-            let loc = self.peek().span;
+            let span = self.peek().span;
             return Ok(Expression::Literal(
                 self.parse_callable(true, false)
                     .and_then(|(callable, body)| {
@@ -1285,7 +1285,7 @@ impl<'arena> Parser<'_, 'arena> {
                             Box::new(body),
                         ))
                     })?,
-                loc,
+                span,
             ));
         }
 
@@ -1293,14 +1293,14 @@ impl<'arena> Parser<'_, 'arena> {
             let current = self.pos();
             if let Ok(path) = Path::parse(self) {
                 // StructName { ... };
-                let loc = self.peek().span;
+                let span = self.peek().span;
                 if let Some(obj) = self.try_object() {
                     return match obj {
-                        Ok(v) => Ok(Expression::Literal(LiteralValue::Struct(v, path), loc)),
+                        Ok(v) => Ok(Expression::Literal(LiteralValue::Struct(v, path), span)),
                         Err(e) => Err(e),
                     };
                 } else {
-                    return Ok(Expression::Literal(LiteralValue::Dynamic(path), loc));
+                    return Ok(Expression::Literal(LiteralValue::Dynamic(path), span));
                 }
             } else {
                 self.set_pos(current);
@@ -1319,7 +1319,7 @@ impl<'arena> Parser<'_, 'arena> {
 
         let found_token = self.peek();
         Err(ParsingError::ExpectedExpression {
-            loc: self.peek().span,
+            span: self.peek().span,
             found: found_token.typ,
         })
     }
@@ -1327,7 +1327,7 @@ impl<'arena> Parser<'_, 'arena> {
     fn try_array(&mut self) -> Result<Option<Expression<'arena>>, ParsingError<'arena>> {
         let span = self.peek().span;
         if self.match_tok(TokenType::BracketLeft) {
-            let loc = self.current().span;
+            let inner_span = self.current().span;
             let mut arr = vec![];
             while !self.match_tok(TokenType::BracketRight) {
                 if arr.len() == 1 && self.match_tok(TokenType::Semicolon) {
@@ -1338,14 +1338,14 @@ impl<'arena> Parser<'_, 'arena> {
                             Box::new(arr.remove(0)),
                             amount,
                         )),
-                        loc,
+                        inner_span,
                     )));
                 }
                 if !arr.is_empty() {
                     // expect a comma
                     if !self.match_tok(TokenType::Comma) {
                         return Err(ParsingError::ExpectedArrayElement {
-                            loc: self.peek().span,
+                            span: self.peek().span,
                             found: self.peek().typ,
                         });
                     }
@@ -1397,14 +1397,14 @@ impl<'arena> Parser<'_, 'arena> {
                     Ok(v) => v,
                     Err(e) => return Some(Err(e)),
                 };
-                let location = self.current().span;
+                let span = self.current().span;
 
                 if let Err(e) = self.expect(TokenType::Colon) {
                     return Some(Err(e));
                 }
 
                 match self.parse_expression() {
-                    Ok(expr) => obj.insert(key, (location, expr)),
+                    Ok(expr) => obj.insert(key, (span, expr)),
                     Err(e) => return Some(Err(e)),
                 };
             }

@@ -552,7 +552,7 @@ impl<'arena> Parser<'_, 'arena> {
             ($kw: literal) => {
                 return Err(ParsingError::InvalidKeyword {
                     keyword: $kw,
-                    loc: self.peek().span,
+                    span: self.peek().span,
                 })
             };
         }
@@ -685,7 +685,7 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::Use => self.parse_use(true),
             TokenType::Mod => self.parse_mod(true),
             _ => Err(ParsingError::ExpectedElementForPub {
-                loc: self.peek().span,
+                span: self.peek().span,
                 tok: self.peek(),
             }),
         }
@@ -778,7 +778,7 @@ impl<'arena> Parser<'_, 'arena> {
             if !args.is_empty() {
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
-                        loc: self.peek().span,
+                        span: self.peek().span,
                         found: self.peek(),
                     });
                 }
@@ -1116,15 +1116,15 @@ impl<'arena> Parser<'_, 'arena> {
                             .expect("non-anonymous function without name");
                         if let Some(other_func) = global_impl.get(&name) {
                             return Err(ParsingError::FunctionAlreadyDefined {
-                                loc: func.0.span,
+                                span: func.0.span,
                                 name: name.symbol(),
-                                first_func_loc: other_func.0.span,
+                                first_func_span: other_func.0.span,
                             });
                         }
                         global_impl.insert(name, (func.0.contract, func.1));
                     }
                     TokenType::Impl => {
-                        let loc = self.eat().span;
+                        let span = self.eat().span;
                         let trait_name = self.expect_identifier()?;
                         let mut current_impl = HashMap::<
                             Ident<'arena>,
@@ -1142,7 +1142,7 @@ impl<'arena> Parser<'_, 'arena> {
                             if self.peek().typ != TokenType::Fn {
                                 self.current_doc_comment = None;
                                 return Err(ParsingError::StructImplRegionExpect {
-                                    loc: self.peek().span,
+                                    span: self.peek().span,
                                     found: self.peek().typ,
                                     is_trait_impl: true,
                                 });
@@ -1159,18 +1159,18 @@ impl<'arena> Parser<'_, 'arena> {
                                 .expect("non-anonymous function without name");
                             if let Some(other_func) = current_impl.get(&name) {
                                 return Err(ParsingError::FunctionAlreadyDefined {
-                                    loc: func.0.span,
+                                    span: func.0.span,
                                     name: name.symbol(),
-                                    first_func_loc: other_func.0.span,
+                                    first_func_span: other_func.0.span,
                                 });
                             }
                             current_impl.insert(name, (func.0.contract, func.1));
                         }
-                        impls.push((trait_name, current_impl, loc));
+                        impls.push((trait_name, current_impl, span));
                     }
                     token => {
                         return Err(ParsingError::StructImplRegionExpect {
-                            loc: self.peek().span,
+                            span: self.peek().span,
                             found: token,
                             is_trait_impl: false,
                         });
@@ -1195,7 +1195,7 @@ impl<'arena> Parser<'_, 'arena> {
     pub fn expect_identifier(&mut self) -> Result<Ident<'arena>, ParsingError<'arena>> {
         if !self.match_tok(TokenType::IdentifierLiteral) {
             return Err(ParsingError::ExpectedIdentifier {
-                loc: self.peek().span,
+                span: self.peek().span,
                 found: self.peek().typ,
             });
         }
@@ -1224,7 +1224,7 @@ impl<'arena> Parser<'_, 'arena> {
 
             _ => {
                 return Err(ParsingError::ExpectedIdentifier {
-                    loc: self.peek().span,
+                    span: self.peek().span,
                     found: self.peek().typ,
                 });
             }
@@ -1239,7 +1239,7 @@ impl<'arena> Parser<'_, 'arena> {
             match self.peek().typ {
                 TokenType::Eof => {
                     return Err(ParsingError::Expected {
-                        loc: self.peek().span,
+                        span: self.peek().span,
                         expected: TokenType::ParenRight,
                         found: Token::new(
                             TokenType::Eof,
@@ -1324,14 +1324,14 @@ impl<'arena> Parser<'_, 'arena> {
         &mut self,
         public: bool,
     ) -> Result<Statement<'arena>, ParsingError<'arena>> {
-        let location = self.eat().span;
+        let span = self.eat().span;
         self.parse_any_callable(false, false, false, public)
             .and_then(|(mut callable, body)| {
                 callable
                     .contract
                     .annotations
                     .are_annotations_valid_for(AnnotationReceiver::ExternalFunction)?;
-                callable.contract.span = location;
+                callable.contract.span = span;
                 Ok(Statement::ExternalFunction {
                     contract: callable.contract,
                     body: body.map(Box::new),
@@ -1387,7 +1387,7 @@ impl<'arena> Parser<'_, 'arena> {
             if !arguments.is_empty() {
                 if !self.match_tok(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
-                        loc: self.peek().span,
+                        span: self.peek().span,
                         found: self.peek(),
                     });
                 }
@@ -1418,16 +1418,16 @@ impl<'arena> Parser<'_, 'arena> {
                 TokenType::Equal => {
                     self.dismiss();
                     let expr = self.parse_expression()?;
-                    let return_location = expr.span();
+                    let return_span = expr.span();
                     if !anonymous {
                         // needs a semicolon if this isnt anonymous
                         self.consume_semicolon()?;
                     }
-                    Statement::Return(Some(expr), return_location)
+                    Statement::Return(Some(expr), return_span)
                 }
                 _ => {
                     return Err(ParsingError::ExpectedFunctionBody {
-                        loc: self.peek().span,
+                        span: self.peek().span,
                         found: self.peek().typ,
                     });
                 }

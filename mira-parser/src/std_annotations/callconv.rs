@@ -55,7 +55,7 @@ pub fn parse<'a>(
         "cold" | "Cold" => Ok(CallConvAnnotation::Cold),
         "inline" | "Inline" => Ok(CallConvAnnotation::Inline),
         _ => Err(ParsingError::InvalidIntrinsic {
-            loc: ident.span(),
+            span: ident.span(),
             name: ident.symbol(),
         }),
     }
