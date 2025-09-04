@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+export RUSTDOCFLAGS="-Z unstable-options --show-type-layout"
 # generate clap alone -- bunching clap in with other dependencies for some reason stops cargo from being able to find it.
 cargo +nightly doc --no-deps -p clap
 cargo +nightly doc --no-deps -p pulldown-cmark
