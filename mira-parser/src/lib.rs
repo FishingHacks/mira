@@ -85,11 +85,11 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         self.dismiss();
 
         while !self.is_at_end() {
-            if self.current().typ == TokenType::CurlyRight {
+            if self.current().ty == TokenType::CurlyRight {
                 break;
             }
 
-            match self.peek().typ {
+            match self.peek().ty {
                 TokenType::Struct
                 | TokenType::Fn
                 | TokenType::If

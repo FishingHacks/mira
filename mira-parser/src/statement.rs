@@ -559,7 +559,7 @@ impl<'arena> Parser<'_, 'arena> {
 
         if !self.current_annotations.is_empty()
             && !matches!(
-                self.peek().typ,
+                self.peek().ty,
                 TokenType::AnnotationIntroducer
                     | TokenType::Extern
                     | TokenType::Fn
@@ -586,9 +586,9 @@ impl<'arena> Parser<'_, 'arena> {
                 None => self.current_doc_comment = Some(doc_comment),
             }
         }
-        let consumes_doc_comment = self.peek().typ != TokenType::AnnotationIntroducer;
+        let consumes_doc_comment = self.peek().ty != TokenType::AnnotationIntroducer;
 
-        let maybe_statement = match self.peek().typ {
+        let maybe_statement = match self.peek().ty {
             TokenType::Extern if !is_global => invalid_kw!("external value/function"),
             TokenType::Fn if !is_global => invalid_kw!("function"),
             TokenType::Struct if !is_global => invalid_kw!("struct definition"),
@@ -662,7 +662,7 @@ impl<'arena> Parser<'_, 'arena> {
 
     fn parse_pub(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
         self.dismiss();
-        match self.peek().typ {
+        match self.peek().ty {
             TokenType::Fn => self
                 .parse_callable(false, true)
                 .and_then(|(callable, body)| {
@@ -1084,20 +1084,20 @@ impl<'arena> Parser<'_, 'arena> {
             }
             let name = self.expect_identifier()?;
             self.expect(TokenType::Colon)?;
-            let typ = TypeRef::parse(self)?;
-            elements.push((name, typ, comment));
+            let ty = TypeRef::parse(self)?;
+            elements.push((name, ty, comment));
         }
 
         let mut global_impl =
             HashMap::<Ident<'arena>, (FunctionContract<'arena>, Statement<'arena>)>::new();
         let mut impls = Vec::new();
 
-        if self.current().typ == TokenType::Semicolon {
+        if self.current().ty == TokenType::Semicolon {
             // implementation area. has a list of functions
             // or has impl <TraitName> { <list of functions for the trait> }
 
             while !self.match_tok(TokenType::CurlyRight) {
-                match self.peek().typ {
+                match self.peek().ty {
                     TokenType::Fn => {
                         if let Some(doc_comment) = self.eat_doc_comment() {
                             // overriding here is fine because we don't parse annotations,
@@ -1139,11 +1139,11 @@ impl<'arena> Parser<'_, 'arena> {
                                 self.current_doc_comment = Some(doc_comment);
                             }
 
-                            if self.peek().typ != TokenType::Fn {
+                            if self.peek().ty != TokenType::Fn {
                                 self.current_doc_comment = None;
                                 return Err(ParsingError::StructImplRegionExpect {
                                     span: self.peek().span,
-                                    found: self.peek().typ,
+                                    found: self.peek().ty,
                                     is_trait_impl: true,
                                 });
                             }
@@ -1196,16 +1196,16 @@ impl<'arena> Parser<'_, 'arena> {
         if !self.match_tok(TokenType::IdentifierLiteral) {
             return Err(ParsingError::ExpectedIdentifier {
                 span: self.peek().span,
-                found: self.peek().typ,
+                found: self.peek().ty,
             });
         }
         Ok(self.current().into())
     }
     pub fn parse_annotation(&mut self) -> Result<(), ParsingError<'arena>> {
         let span = self.peek().span;
-        assert_eq!(self.eat().typ, TokenType::AnnotationIntroducer);
+        assert_eq!(self.eat().ty, TokenType::AnnotationIntroducer);
 
-        let name = match self.peek().typ {
+        let name = match self.peek().ty {
             TokenType::If => symbols::Keywords::If,
             TokenType::While => symbols::Keywords::While,
             TokenType::For => symbols::Keywords::For,
@@ -1225,7 +1225,7 @@ impl<'arena> Parser<'_, 'arena> {
             _ => {
                 return Err(ParsingError::ExpectedIdentifier {
                     span: self.peek().span,
-                    found: self.peek().typ,
+                    found: self.peek().ty,
                 });
             }
         };
@@ -1236,7 +1236,7 @@ impl<'arena> Parser<'_, 'arena> {
         let mut args = vec![];
 
         loop {
-            match self.peek().typ {
+            match self.peek().ty {
                 TokenType::Eof => {
                     return Err(ParsingError::Expected {
                         span: self.peek().span,
@@ -1271,12 +1271,12 @@ impl<'arena> Parser<'_, 'arena> {
 #[derive(Debug, Clone)]
 pub struct Argument<'arena> {
     pub name: Ident<'arena>,
-    pub typ: TypeRef<'arena>,
+    pub ty: TypeRef<'arena>,
 }
 
 impl<'arena> Argument<'arena> {
-    pub fn new(typ: TypeRef<'arena>, name: Ident<'arena>) -> Self {
-        Self { name, typ }
+    pub fn new(ty: TypeRef<'arena>, name: Ident<'arena>) -> Self {
+        Self { name, ty }
     }
 }
 
@@ -1284,7 +1284,7 @@ impl Display for Argument<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.name, f)?;
         f.write_str(": ")?;
-        Display::fmt(&self.typ, f)
+        Display::fmt(&self.ty, f)
     }
 }
 
@@ -1413,7 +1413,7 @@ impl<'arena> Parser<'_, 'arena> {
         let body = if !needs_body && self.match_tok(TokenType::Semicolon) {
             None
         } else {
-            Some(match self.peek().typ {
+            Some(match self.peek().ty {
                 TokenType::CurlyLeft => self.parse_block_stmt()?,
                 TokenType::Equal => {
                     self.dismiss();
@@ -1428,7 +1428,7 @@ impl<'arena> Parser<'_, 'arena> {
                 _ => {
                     return Err(ParsingError::ExpectedFunctionBody {
                         span: self.peek().span,
-                        found: self.peek().typ,
+                        found: self.peek().ty,
                     });
                 }
             })

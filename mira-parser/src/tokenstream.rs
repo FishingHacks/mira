@@ -68,7 +68,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         assert!(
             !token_slice[0..token_slice.len().saturating_sub(1)]
                 .iter()
-                .any(|v| v.typ == TokenType::Eof)
+                .any(|v| v.ty == TokenType::Eof)
         );
         Self {
             tokens,
@@ -81,7 +81,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
     pub fn tokens(&self) -> impl Iterator<Item = Token<'arena>> {
         self.tokens.as_ref()[self.pos..]
             .iter()
-            .filter(|v| v.typ != TokenType::DocComment)
+            .filter(|v| v.ty != TokenType::DocComment)
             .copied()
     }
 
@@ -90,7 +90,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         self.tokens.as_ref()[..self.pos]
             .iter()
             .rev()
-            .filter(|v| v.typ != TokenType::DocComment)
+            .filter(|v| v.ty != TokenType::DocComment)
             .copied()
     }
 
@@ -112,7 +112,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         let token = toks.next();
         match token {
             _ if toks.next().is_some() => false,
-            Some(v) if v.typ != TokenType::Eof => false,
+            Some(v) if v.ty != TokenType::Eof => false,
             _ => true,
         }
     }
@@ -143,7 +143,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
     pub fn eat(&mut self) -> Token<'arena> {
         loop {
             match self.tokens.get(self.pos).copied() {
-                Some(tok) if tok.typ == TokenType::DocComment => self.pos += 1,
+                Some(tok) if tok.ty == TokenType::DocComment => self.pos += 1,
                 Some(tok) => {
                     self.pos += 1;
                     return tok;
@@ -162,7 +162,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
 
     pub fn eat_doc_comment(&mut self) -> Option<DocComment> {
         let tok = self.tokens.get(self.pos)?;
-        if tok.typ != TokenType::DocComment {
+        if tok.ty != TokenType::DocComment {
             return None;
         }
         self.pos += 1;
@@ -170,7 +170,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
             unreachable!()
         };
         assert_ne!(
-            self.tokens.get(self.pos).map(|v| v.typ),
+            self.tokens.get(self.pos).map(|v| v.ty),
             Some(TokenType::DocComment),
         );
         Some(v)
@@ -204,7 +204,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
             });
         }
         let tok = self.peek();
-        if tok.typ != expected {
+        if tok.ty != expected {
             return Err(ParsingError::Expected {
                 span: tok.span,
                 expected,
@@ -226,7 +226,7 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
             });
         }
         let tok = self.peek();
-        if !expected.contains(&tok.typ) {
+        if !expected.contains(&tok.ty) {
             return Err(ParsingError::ExpectedOneOf {
                 span: tok.span,
                 valid: expected,
@@ -242,16 +242,16 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         Ok(Ident::new(tok.string_literal(), tok.span))
     }
 
-    pub fn match_tok(&mut self, typ: TokenType) -> bool {
-        let res = self.peek().typ == typ;
+    pub fn match_tok(&mut self, ty: TokenType) -> bool {
+        let res = self.peek().ty == ty;
         if res {
             self.dismiss();
         }
         res
     }
 
-    pub fn matches(&mut self, typ: &[TokenType]) -> bool {
-        let res = typ.contains(&self.peek().typ);
+    pub fn matches(&mut self, ty: &[TokenType]) -> bool {
+        let res = ty.contains(&self.peek().ty);
         if res {
             self.dismiss();
         }
@@ -282,10 +282,10 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
 impl<'arena, Holder: MutableTokenHolder<'arena>> TokenStream<'arena, Holder> {
     /// pushes the token to the end of the tokenstream, maintaining the last token as eof.
     pub fn push_token(&mut self, tok: Token<'arena>) {
-        assert_ne!(tok.typ, TokenType::Eof);
+        assert_ne!(tok.ty, TokenType::Eof);
         self.tokens.push(tok);
         let len = self.tokens.len();
-        if len > 1 && self.tokens.get(self.tokens.len() - 2).unwrap().typ == TokenType::Eof {
+        if len > 1 && self.tokens.get(self.tokens.len() - 2).unwrap().ty == TokenType::Eof {
             self.tokens.swap(len - 1, len - 2);
         }
     }
@@ -298,7 +298,7 @@ impl<'arena, Holder: MutableTokenHolder<'arena>> TokenStream<'arena, Holder> {
                 .get(0..self.tokens.len().saturating_sub(1))
                 .unwrap()
                 .iter()
-                .any(|v| v.typ == TokenType::Eof)
+                .any(|v| v.ty == TokenType::Eof)
         );
     }
 }

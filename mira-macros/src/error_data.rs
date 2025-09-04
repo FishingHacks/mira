@@ -322,8 +322,8 @@ fn generate_labeled_spans_for_fields(fields: &Fields) -> Result<TokenStream, Err
             .unwrap_or_else(|| Ident::new(&format!("_{idx}"), field.span()));
 
         for v in parse_field_attrs(&field.attrs) {
-            let (typ, format) = v?;
-            match typ {
+            let (ty, format) = v?;
+            match ty {
                 ParsedLabeledSpanType::Primary => stream.extend(quote! {
                     labels.push(mira_errors::LabeledSpan::primary(format!(#format), MaybeCopy::copy(#field_name)));
                 }),

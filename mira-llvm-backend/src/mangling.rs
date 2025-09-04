@@ -99,7 +99,7 @@ pub fn mangle_static<'arena>(ctx: &TypeckCtx<'arena>, id: StoreKey<TypedStatic<'
     mangle_path_segment(static_.name.symbol().to_str(), &mut mangled);
 
     let mut hasher = DefaultHasher::new();
-    static_.type_.hash(&mut hasher);
+    static_.ty.hash(&mut hasher);
     static_.module_id.hash(&mut hasher);
     write!(mangled, "17h{:x}E", hasher.finish()).expect("writing to a string should never fail");
     mangled

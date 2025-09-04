@@ -50,7 +50,7 @@ impl<'arena> Lexer<'arena> {
         }
 
         self.tokens.push(Token {
-            typ: TokenType::Eof,
+            ty: TokenType::Eof,
             literal: None,
             span: self
                 .ctx
@@ -108,7 +108,7 @@ impl<'arena> Lexer<'arena> {
     fn scan_token(&mut self) -> Result<(), LexingError<'arena>> {
         let tok = self.int_scan_token()?;
         let Some(tok) = tok else { return Ok(()) };
-        match tok.typ {
+        match tok.ty {
             TokenType::IdentifierLiteral if self.if_char_advance('!') => match &tok.literal {
                 Some(Literal::String(sym)) => {
                     let span = self
@@ -196,7 +196,7 @@ impl<'arena> Lexer<'arena> {
             // gets parsed as "meow\nmeow"
             '/' if matches!(self.peek(), '/' | '*') && self.peek2() == '!' => {
                 if self.tokens.len() > 1
-                    || (!self.tokens.is_empty() && self.tokens[0].typ != TokenType::Eof)
+                    || (!self.tokens.is_empty() && self.tokens[0].ty != TokenType::Eof)
                 {
                     let now = self.current;
                     let single_line = self.advance() == '/';
@@ -253,7 +253,7 @@ impl<'arena> Lexer<'arena> {
             '"' => self.parse_string('"'),
             '`' => {
                 let mut tok = self.parse_string('`')?;
-                tok.typ = TokenType::IdentifierLiteral;
+                tok.ty = TokenType::IdentifierLiteral;
                 Ok(tok)
             }
             _ if Self::is_valid_identifier_char(c) && !c.is_ascii_digit() => {
@@ -456,15 +456,15 @@ impl<'arena> Lexer<'arena> {
         is_negative: bool,
         allow_float: bool,
     ) -> Result<Token<'arena>, LexingError<'arena>> {
-        let mut typ = String::from(first_char);
+        let mut ty = String::from(first_char);
         let first_type_char = self.current - 1;
 
         loop {
             match self.peek() {
-                'a'..='z' | '0'..='9' => typ.push(self.advance()),
+                'a'..='z' | '0'..='9' => ty.push(self.advance()),
                 _ => {
                     let err = LexingError::InvalidNumberType(self.span_from(first_type_char));
-                    let Ok(number_type) = NumberType::from_str(&typ) else {
+                    let Ok(number_type) = NumberType::from_str(&ty) else {
                         return Err(err);
                     };
                     return match number_type {
@@ -659,7 +659,7 @@ impl<'arena> Lexer<'arena> {
         }
 
         let mut str = String::new();
-        let mut typ = String::new();
+        let mut ty = String::new();
 
         if is_negative {
             str.push('-');
@@ -671,9 +671,9 @@ impl<'arena> Lexer<'arena> {
         str.push(first_char);
 
         while !self.is_at_end() {
-            if !typ.is_empty() {
+            if !ty.is_empty() {
                 if self.peek().is_ascii_alphanumeric() {
-                    typ.push(self.advance());
+                    ty.push(self.advance());
                     continue;
                 }
                 break;
@@ -696,12 +696,12 @@ impl<'arena> Lexer<'arena> {
                 is_float = true;
                 str.push(self.advance());
             } else if Self::is_valid_identifier_char(self.peek()) {
-                typ.push(self.advance());
+                ty.push(self.advance());
             } else {
                 break;
             }
         }
-        let number_type = match NumberType::from_str(&typ) {
+        let number_type = match NumberType::from_str(&ty) {
             Ok(v @ (NumberType::F32 | NumberType::F64)) => v,
             Ok(v @ (NumberType::U8 | NumberType::U16 | NumberType::U32 | NumberType::U64))
                 if !is_negative && !is_float =>
@@ -709,7 +709,7 @@ impl<'arena> Lexer<'arena> {
                 v
             }
             Ok(v) if !is_float => v,
-            Err(_) if typ.is_empty() => NumberType::None,
+            Err(_) if ty.is_empty() => NumberType::None,
             _ => {
                 return Err(LexingError::InvalidNumberType(self.span_from(start_byte)));
             }
@@ -891,7 +891,7 @@ mod test {
 
     fn check_tokens(tokens: &[Token]) {
         for token in tokens {
-            match (&token.typ, &token.literal) {
+            match (&token.ty, &token.literal) {
                 (TokenType::IdentifierLiteral, Some(Literal::String(..)))
                 | (TokenType::StringLiteral, Some(Literal::String(..)))
                 | (TokenType::SIntLiteral, Some(Literal::SInt(..)))
@@ -906,7 +906,7 @@ mod test {
                 | (TokenType::FloatLiteral, _)
                 | (TokenType::BooleanLiteral, _)
                 | (TokenType::VoidLiteral, _) => {
-                    panic!("invalid literal {:?} for {:?}", token.literal, token.typ)
+                    panic!("invalid literal {:?} for {:?}", token.literal, token.ty)
                 }
                 _ => (),
             }
@@ -942,7 +942,7 @@ mod test {
                     .literal
                     .unwrap()
                     .doc_comment_as_symbol_eq(expected.1.as_ref().unwrap(), ctx));
-            if tok.typ != expected.0 || !literals_eq {
+            if tok.ty != expected.0 || !literals_eq {
                 if let Some(Literal::DocComment(left)) = tok.literal {
                     ctx.with_doc_comment(left, |s| println!("Left: {s:?}"));
                 }

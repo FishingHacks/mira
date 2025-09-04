@@ -116,7 +116,7 @@ impl Hash for TypedStruct<'_> {
 
 #[derive(Debug, Clone)]
 pub struct TypedStatic<'arena> {
-    pub type_: Ty<'arena>,
+    pub ty: Ty<'arena>,
     /// guaranteed to not be `Dynamic`, `Intrinsic` or `Static`
     pub value: TypedLiteral<'arena>,
     pub module_id: StoreKey<TypedModule<'arena>>,
@@ -128,7 +128,7 @@ pub struct TypedStatic<'arena> {
 
 impl<'arena> TypedStatic<'arena> {
     pub fn new(
-        type_: Ty<'arena>,
+        ty: Ty<'arena>,
         literal: TypedLiteral<'arena>,
         module: StoreKey<TypedModule<'arena>>,
         span: Span<'arena>,
@@ -137,7 +137,7 @@ impl<'arena> TypedStatic<'arena> {
         comment: DocComment,
     ) -> Self {
         Self {
-            type_,
+            ty,
             value: literal,
             module_id: module,
             span,
@@ -377,14 +377,14 @@ impl<'arena> TypeckCtx<'arena> {
     pub fn resolve_type(
         &self,
         module_id: StoreKey<TypedModule<'arena>>,
-        typ: &TypeRef<'arena>,
+        ty: &TypeRef<'arena>,
         generics: &[TypedGeneric<'arena>],
     ) -> Result<Ty<'arena>, Diagnostic<'arena>> {
-        if let Some(primitive) = resolve_primitive_type(self.ctx, typ) {
+        if let Some(primitive) = resolve_primitive_type(self.ctx, ty) {
             return Ok(primitive);
         }
 
-        match typ {
+        match ty {
             TypeRef::DynReference {
                 traits,
                 num_references,
@@ -600,14 +600,14 @@ impl<'arena> TypeckCtx<'arena> {
         drop(writer);
 
         for element in elements {
-            if let Some(typ) = self.type_resolution_resolve_type(
+            if let Some(ty) = self.type_resolution_resolve_type(
                 &element.1,
                 &typed_struct.generics,
                 module_id.cast(),
                 context.clone(),
                 left,
             ) {
-                typed_struct.elements.push((element.0, typ, element.2));
+                typed_struct.elements.push((element.0, ty, element.2));
             }
         }
         self.structs.write()[id.cast()] = typed_struct;
@@ -618,16 +618,16 @@ impl<'arena> TypeckCtx<'arena> {
 
     fn type_resolution_resolve_type(
         &self,
-        typ: &TypeRef<'arena>,
+        ty: &TypeRef<'arena>,
         generics: &[TypedGeneric<'arena>],
         module: StoreKey<TypedModule<'arena>>,
         context: Arc<ModuleContext<'arena>>,
         left: &mut HashMap<StoreKey<BakedStruct<'arena>>, ResolvingState>,
     ) -> Option<Ty<'arena>> {
-        if let Some(typ) = resolve_primitive_type(self.ctx, typ) {
-            return Some(typ);
+        if let Some(ty) = resolve_primitive_type(self.ctx, ty) {
+            return Some(ty);
         }
-        match typ {
+        match ty {
             TypeRef::DynReference {
                 traits,
                 num_references,

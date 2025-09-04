@@ -67,7 +67,7 @@ impl<'arena> TypedLiteral<'arena> {
                 };
                 ctx.ctx.intern_ty(TyKind::Function(fn_type))
             }
-            TypedLiteral::Static(id) => ctx.statics.read()[*id].type_,
+            TypedLiteral::Static(id) => ctx.statics.read()[*id].ty,
             TypedLiteral::String(_) => default_types::str_ref,
             TypedLiteral::Array(ty, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
                 ty: *ty,
@@ -133,7 +133,7 @@ impl<'arena> TypedLiteral<'arena> {
                 ty.is_primitive().then_some(ty)
             }
             TypedLiteral::Static(id) => {
-                let ty = ctx.statics.read()[*id].type_;
+                let ty = ctx.statics.read()[*id].ty;
                 ty.is_primitive().then_some(ty)
             }
             TypedLiteral::Array(..)

@@ -37,7 +37,7 @@ pub fn parse<'arena>(
     mut tokens: TokenStream<'arena>,
     ctx: SharedCtx<'arena>,
 ) -> Result<DocAnnotation, ParsingError<'arena>> {
-    if tokens.peek().typ == TokenType::DocComment {
+    if tokens.peek().ty == TokenType::DocComment {
         let Some(Literal::DocComment(v)) = tokens.eat().literal else {
             unreachable!()
         };
@@ -49,7 +49,7 @@ pub fn parse<'arena>(
         let v = ctx.add_doc_comment(tokens.current().string_literal().to_str());
         tokens.finish()?;
         Ok(DocAnnotation::DocComment(v))
-    } else if tokens.peek().typ == TokenType::IdentifierLiteral
+    } else if tokens.peek().ty == TokenType::IdentifierLiteral
         && tokens.peek().string_literal() == symbols::DefaultIdents::hidden
     {
         tokens.eat();

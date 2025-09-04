@@ -12,7 +12,7 @@ impl StaticDisplay<'_> {
         f.write_str("static static_")?;
         f.write_value(&id)?;
         f.write_str(": ")?;
-        f.write_value(&self.0.type_)?;
+        f.write_value(&self.0.ty)?;
         f.write_str(" = ")?;
         Tld(&self.0.value).fmt(f)?;
         f.write_char(';')

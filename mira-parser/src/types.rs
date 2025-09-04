@@ -207,7 +207,7 @@ impl<'arena> TypeRef<'arena> {
                 });
             } else if parser.match_tok(TokenType::VoidLiteral) {
                 return Ok(Self::Void(parser.span_from(span), num_references));
-            } else if parser.peek().typ == TokenType::IdentifierLiteral {
+            } else if parser.peek().ty == TokenType::IdentifierLiteral {
                 let name = parser.peek().string_literal();
                 return if *name == "dyn" {
                     Self::parse_dyn(parser, num_references, span)
@@ -273,7 +273,7 @@ impl<'arena> TypeRef<'arena> {
             } else {
                 return Err(ParsingError::ExpectedType {
                     span: parser.peek().span,
-                    found: parser.peek().typ,
+                    found: parser.peek().ty,
                 });
             }
         }
@@ -297,7 +297,7 @@ impl<'arena> TypeRef<'arena> {
                 break;
             }
 
-            if parser.peek().typ != TokenType::IdentifierLiteral {
+            if parser.peek().ty != TokenType::IdentifierLiteral {
                 break;
             }
             traits.push(PathWithoutGenerics::parse(parser)?);
@@ -440,7 +440,7 @@ impl<'arena> Generic<'arena> {
                 bounds,
             });
         }
-        while parser.peek().typ == TokenType::Plus || bounds.is_empty() {
+        while parser.peek().ty == TokenType::Plus || bounds.is_empty() {
             if !bounds.is_empty() {
                 parser.expect(TokenType::Plus)?;
             }

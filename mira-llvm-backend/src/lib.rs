@@ -233,10 +233,10 @@ impl<'ctx, 'arena> TyKindExt<'ctx, 'arena> for TyKind<'arena> {
                 )
                 .into(),
             TyKind::SizedArray {
-                ty: typ,
+                ty,
                 number_elements,
                 ..
-            } => typ
+            } => ty
                 .to_llvm_basic_type(default_types, structs, ctx)
                 .array_type(*number_elements as u32)
                 .into(),
@@ -568,8 +568,8 @@ fn to_basic_value<'ctx, 'arena>(
 }
 
 macro_rules! f_s_u {
-    ($ctx:expr, $typ: expr, $lhs: expr, $rhs: expr, $sint: ident($($sint_val:expr),*), $uint: ident($($uint_val:expr),*), $float: ident($($float_val:expr),*), $err:literal) => {
-        match **$typ {
+    ($ctx:expr, $ty: expr, $lhs: expr, $rhs: expr, $sint: ident($($sint_val:expr),*), $uint: ident($($uint_val:expr),*), $float: ident($($float_val:expr),*), $err:literal) => {
+        match **$ty {
             TyKind::PrimitiveI8
             | TyKind::PrimitiveI16
             | TyKind::PrimitiveI32
@@ -587,11 +587,11 @@ macro_rules! f_s_u {
             TyKind::PrimitiveF32 | TyKind::PrimitiveF64 => $ctx
                 .$float($($float_val,)* $lhs.into_float_value(), $rhs.into_float_value(), "")?
                 .into(),
-            _ => unreachable!(concat!($err, "  -- Type: {}"), $typ),
+            _ => unreachable!(concat!($err, "  -- Type: {}"), $ty),
         }
     };
-    (with_bool $ctx:expr, $typ: expr, $lhs: expr, $rhs: expr, $sint: ident, $uint: ident, $float: ident, $bool: ident, $err:literal) => {
-        match **$typ {
+    (with_bool $ctx:expr, $ty: expr, $lhs: expr, $rhs: expr, $sint: ident, $uint: ident, $float: ident, $bool: ident, $err:literal) => {
+        match **$ty {
             Type::PrimitiveI8(0)
             | Type::PrimitiveI16(0)
             | Type::PrimitiveI32(0)
@@ -693,12 +693,12 @@ fn build_deref<'ctx, 'arena>(
             Ok(value.into())
         }
         TyKind::SizedArray {
-            ty: typ,
+            ty,
             number_elements,
             ..
         } => {
             let llvm_element_ty =
-                typ.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
+                ty.to_llvm_basic_type(&ctx.default_types, ctx.structs, ctx.context);
             let mut value = llvm_element_ty
                 .array_type(*number_elements as u32)
                 .get_poison();
@@ -711,7 +711,7 @@ fn build_deref<'ctx, 'arena>(
                         "",
                     )
                 }?;
-                let element_val = build_deref(offset_val, *typ, ctx, volatile)?;
+                let element_val = build_deref(offset_val, *ty, ctx, volatile)?;
                 value = ctx
                     .build_insert_value(value, element_val, i as u32, "")?
                     .into_array_value();
@@ -891,13 +891,13 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 self.push_value(*dst, fat_ptr);
                 Ok(())
             }
-            TypedExpression::DeclareVariable(span, id, typ, name) => {
+            TypedExpression::DeclareVariable(span, id, ty, name) => {
                 let ptr = self.get_value_ptr(*id);
                 self.debug_ctx.declare_variable(
                     ptr,
                     scope,
                     *span,
-                    *typ,
+                    *ty,
                     *name,
                     self.current_block,
                     module_id,
@@ -926,7 +926,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                         self.build_return(None)?
                     }
                     TypedLiteral::Static(id)
-                        if self.tc_ctx.statics.read()[*id].type_ == default_types::void =>
+                        if self.tc_ctx.statics.read()[*id].ty == default_types::void =>
                     {
                         self.build_return(None)?
                     }
@@ -1118,7 +1118,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                         return Ok(());
                     }
                     TypedLiteral::Static(id) => {
-                        let llvm_ty = self.tc_ctx.statics.read()[*id].type_.to_llvm_basic_type(
+                        let llvm_ty = self.tc_ctx.statics.read()[*id].ty.to_llvm_basic_type(
                             &self.default_types,
                             self.structs,
                             self.context,
@@ -1154,7 +1154,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                         self.get_value(*id).into_pointer_value(),
                     ),
                     TypedLiteral::Static(id) => (
-                        &self.tc_ctx.statics.read()[*id].type_,
+                        &self.tc_ctx.statics.read()[*id].ty,
                         self.statics[*id].as_pointer_value(),
                     ),
                     TypedLiteral::Function(..) => unreachable!(
@@ -1235,10 +1235,10 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::Add(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].ty;
+                let ty = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_nsw_add(),
@@ -1252,10 +1252,10 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::Sub(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].ty;
+                let ty = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_nsw_sub(),
@@ -1269,10 +1269,10 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::Mul(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].ty;
+                let ty = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_nsw_mul(),
@@ -1286,10 +1286,10 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::Div(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].ty;
+                let ty = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_signed_div(),
@@ -1303,10 +1303,10 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::Mod(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].ty;
+                let ty = &self.tc_scope[*dst].ty;
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_signed_rem(),
@@ -1318,10 +1318,10 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 Ok(())
             }
             TypedExpression::BAnd(_, dst, lhs, rhs) => {
-                let typ = lhs.to_type(self.tc_scope, self.tc_ctx);
+                let ty = lhs.to_type(self.tc_scope, self.tc_ctx);
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                if typ.is_int_like() || typ == default_types::bool {
+                if ty.is_int_like() || ty == default_types::bool {
                     self.push_value(
                         *dst,
                         self.build_and(lhs.into_int_value(), rhs.into_int_value(), "")?
@@ -1337,8 +1337,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::BOr(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].ty;
-                if typ.is_int_like() || *typ == default_types::bool {
+                let ty = &self.tc_scope[*dst].ty;
+                if ty.is_int_like() || *ty == default_types::bool {
                     self.push_value(
                         *dst,
                         self.build_or(lhs.into_int_value(), rhs.into_int_value(), "")?
@@ -1354,8 +1354,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::BXor(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].ty;
-                if typ.is_int_like() || *typ == default_types::bool {
+                let ty = &self.tc_scope[*dst].ty;
+                if ty.is_int_like() || *ty == default_types::bool {
                     self.push_value(
                         *dst,
                         self.build_xor(lhs.into_int_value(), rhs.into_int_value(), "")?
@@ -1367,14 +1367,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 Ok(())
             }
             TypedExpression::GreaterThan(_, dst, lhs, rhs) => {
-                let typ = lhs
+                let ty = lhs
                     .to_primitive_type(self.tc_scope, self.tc_ctx)
                     .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_compare(IntPredicate::SGT),
@@ -1386,14 +1386,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 Ok(())
             }
             TypedExpression::LessThan(_, dst, lhs, rhs) => {
-                let typ = lhs
+                let ty = lhs
                     .to_primitive_type(self.tc_scope, self.tc_ctx)
                     .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_compare(IntPredicate::SLT),
@@ -1455,14 +1455,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 Ok(())
             }
             TypedExpression::GreaterThanEq(_, dst, lhs, rhs) => {
-                let typ = lhs
+                let ty = lhs
                     .to_primitive_type(self.tc_scope, self.tc_ctx)
                     .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_compare(IntPredicate::SGE),
@@ -1474,14 +1474,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 Ok(())
             }
             TypedExpression::LessThanEq(_, dst, lhs, rhs) => {
-                let typ = lhs
+                let ty = lhs
                     .to_primitive_type(self.tc_scope, self.tc_ctx)
                     .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_compare(IntPredicate::SLE),
@@ -1493,14 +1493,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 Ok(())
             }
             TypedExpression::Eq(_, dst, lhs, rhs) => {
-                let typ = lhs
+                let ty = lhs
                     .to_primitive_type(self.tc_scope, self.tc_ctx)
                     .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_compare(IntPredicate::EQ),
@@ -1512,14 +1512,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                 Ok(())
             }
             TypedExpression::Neq(_, dst, lhs, rhs) => {
-                let typ = lhs
+                let ty = lhs
                     .to_primitive_type(self.tc_scope, self.tc_ctx)
                     .expect("tc should have errored if you try to compare 2 non-number values");
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
                 let v = f_s_u!(
                     self,
-                    typ,
+                    ty,
                     lhs,
                     rhs,
                     build_int_compare(IntPredicate::NE),
@@ -1533,8 +1533,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::LShift(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].ty;
-                if typ.is_int_like() {
+                let ty = &self.tc_scope[*dst].ty;
+                if ty.is_int_like() {
                     self.push_value(
                         *dst,
                         self.build_left_shift(lhs.into_int_value(), rhs.into_int_value(), "")?
@@ -1548,8 +1548,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
             TypedExpression::RShift(_, dst, lhs, rhs) => {
                 let lhs = self.lit_to_basic_value(lhs);
                 let rhs = self.lit_to_basic_value(rhs);
-                let typ = &self.tc_scope[*dst].ty;
-                if typ.is_int_like() {
+                let ty = &self.tc_scope[*dst].ty;
+                if ty.is_int_like() {
                     self.push_value(
                         *dst,
                         self.build_right_shift(
@@ -1682,7 +1682,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                         self.push_value(*dst, value.into());
                         Ok(())
                     }
-                    TyKind::SizedArray { ty: typ, .. } => {
+                    TyKind::SizedArray { ty, .. } => {
                         let offset = match offset {
                             OffsetValue::Dynamic(id) => self.get_value(*id).into_int_value(),
                             OffsetValue::Static(v) => {
@@ -1691,7 +1691,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                         };
                         let value = unsafe {
                             self.build_in_bounds_gep(
-                                typ.to_llvm_basic_type(
+                                ty.to_llvm_basic_type(
                                     &self.default_types,
                                     self.structs,
                                     self.context,
@@ -1704,7 +1704,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                         self.push_value(*dst, value.into());
                         Ok(())
                     }
-                    TyKind::UnsizedArray(typ) => {
+                    TyKind::UnsizedArray(ty) => {
                         let offset = match offset {
                             OffsetValue::Dynamic(id) => self.get_value(*id).into_int_value(),
                             OffsetValue::Static(v) => {
@@ -1720,7 +1720,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                             .into_pointer_value();
                         let value = unsafe {
                             self.build_in_bounds_gep(
-                                typ.to_llvm_basic_type(
+                                ty.to_llvm_basic_type(
                                     &self.default_types,
                                     self.structs,
                                     self.context,
@@ -2157,10 +2157,10 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_> {
                             let size = self.build_load(self.default_types.isize, vtable_ptr, "")?;
                             self.push_value(dst, size);
                         }
-                        TyKind::UnsizedArray(typ) => {
+                        TyKind::UnsizedArray(ty) => {
                             let fat_ptr = self.lit_to_basic_value(&args[0]).into_struct_value();
                             let len = self.build_extract_value(fat_ptr, 1, "")?.into_int_value();
-                            let size_single = typ
+                            let size_single = ty
                                 .size_and_alignment(self.pointer_size, &self.tc_ctx.structs.read())
                                 .0;
                             let total_size = self.build_int_nuw_mul(

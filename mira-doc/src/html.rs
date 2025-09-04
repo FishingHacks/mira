@@ -427,7 +427,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s.push_str("let ");
         s.escaped().push_str(v.name.symbol().to_str());
         s.push_str(": ");
-        self.write_ty(&mut s, v.type_, curfile);
+        self.write_ty(&mut s, v.ty, curfile);
         s.push_str("</code></pre>");
         self.generate_doc_comment(v.comment, &mut s, v.module_id, curfile);
 
@@ -866,11 +866,11 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 s.push(']');
             }
             T::SizedArray {
-                ty: typ,
+                ty,
                 number_elements,
             } => {
                 s.push('[');
-                self.write_ty(s, *typ, curfile);
+                self.write_ty(s, *ty, curfile);
                 s.push_str("; ");
                 s.push_fmt(format_args!("{number_elements}"));
                 s.push(']');

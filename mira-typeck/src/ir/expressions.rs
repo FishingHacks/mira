@@ -36,7 +36,7 @@ pub enum TypedExpression<'arena> {
     // _dst = _lhs.._rhs
     Range {
         span: Span<'arena>,
-        typ: Ty<'arena>,
+        ty: Ty<'arena>,
         lhs: TypedLiteral<'arena>,
         rhs: TypedLiteral<'arena>,
         inclusive: bool,

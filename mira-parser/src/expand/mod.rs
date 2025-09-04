@@ -133,7 +133,7 @@ impl<'arena> MacroParser<'arena> {
             match loc {
                 MatcherLoc::Token(expected) => {
                     // if the token matches, we can move on
-                    if expected.typ == token.typ && expected.literal == token.literal {
+                    if expected.ty == token.ty && expected.literal == token.literal {
                         pos.index += 1;
                         self.next_pos.push(pos);
                     }
@@ -186,7 +186,7 @@ impl<'arena> MacroParser<'arena> {
                     });
 
                     // if the token matches, go to the next location
-                    if token.typ == separator.typ && token.literal == separator.literal {
+                    if token.ty == separator.ty && token.literal == separator.literal {
                         pos.index += 1;
                         self.next_pos.push(pos);
                     }
@@ -201,7 +201,7 @@ impl<'arena> MacroParser<'arena> {
                 MatcherLoc::Eof => {
                     assert_eq!(pos.index, matcher.len() - 1);
                     // the parser has successfully parsed all the tokens, if the next token is `eof`
-                    if token.typ == TokenType::Eof {
+                    if token.ty == TokenType::Eof {
                         fully_matched.add_position(pos);
                     }
                 }
@@ -210,7 +210,7 @@ impl<'arena> MacroParser<'arena> {
 
         // If we reached the end of input, check that there is EXACTLY ONE possible matcher.
         // Otherwise, either the parse is ambiguous (which is an error) or there is a syntax error.
-        if token.typ == TokenType::Eof {
+        if token.ty == TokenType::Eof {
             Some(match fully_matched {
                 FullyMatchedParsers::None => ParseResult::Failure(
                     MacroError::MissingTokens(token.span).to_error(),

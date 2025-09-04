@@ -396,14 +396,14 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             // thin pointer
             if ty.has_refs() && ty.is_thin_ptr() {
                 let base_typ = self.get_type(ty.deref().unwrap(), structs);
-                let typ = self.builder.create_pointer_type(
+                let ty = self.builder.create_pointer_type(
                     &name,
                     base_typ,
                     self.default_types.isize.get_bit_width() as u64,
                     self.default_types.isize.get_bit_width(),
                     AddressSpace::default(),
                 );
-                break 'out typ.as_type();
+                break 'out ty.as_type();
             // fat pointer
             } else if ty.has_refs() {
                 // &&_ should always be a thin pointer
@@ -417,9 +417,9 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                             self.get_type(default_types::void_ref, structs),
                             self.get_type(default_types::void_ref, structs),
                         ),
-                        TyKind::UnsizedArray(typ) => (
+                        TyKind::UnsizedArray(ty) => (
                             self.get_type(default_types::usize, structs),
-                            self.get_type(typ.take_ref(self.ctx), structs),
+                            self.get_type(ty.take_ref(self.ctx), structs),
                         ),
                         TyKind::PrimitiveStr => (
                             self.get_type(default_types::usize, structs),

@@ -44,10 +44,10 @@ fn parse_tree<'arena>(
     diagnostics: &mut Diagnostics<'arena>,
     span_interner: &SpanInterner<'arena>,
 ) -> Result<TokenTree<'arena>, ()> {
-    let res = match tokens.eat().typ {
+    let res = match tokens.eat().ty {
         TokenType::Dollar => {
             let next = tokens.eat();
-            match next.typ {
+            match next.ty {
                 TokenType::ParenLeft => {
                     let span_start = next.span;
                     let Some(toks) = match_paren(tokens, ParenType::Paren) else {
@@ -65,11 +65,11 @@ fn parse_tree<'arena>(
                         span_interner,
                     );
                     // match <tok>?<kleene>
-                    let separator = match tokens.peek().typ {
+                    let separator = match tokens.peek().ty {
                         TokenType::Asterix | TokenType::Plus | TokenType::QuestionMark => None,
                         _ => Some(tokens.eat()),
                     };
-                    let kleene = match tokens.eat().typ {
+                    let kleene = match tokens.eat().ty {
                         TokenType::Asterix => KleeneOp::ZeroOrMore,
                         TokenType::Plus => KleeneOp::OneOrMore,
                         TokenType::QuestionMark if separator.is_some() => {
@@ -99,7 +99,7 @@ fn parse_tree<'arena>(
                     let name = Ident::new(next.string_literal(), next.span);
                     // check if there is a :type following in case we're parsing a definition
                     if parse_def {
-                        if tokens.eat().typ != TokenType::Colon {
+                        if tokens.eat().ty != TokenType::Colon {
                             diagnostics.add_expected(
                                 tokens.current().span,
                                 TokenType::Colon,
@@ -107,7 +107,7 @@ fn parse_tree<'arena>(
                             );
                             return Err(());
                         }
-                        if tokens.eat().typ != TokenType::IdentifierLiteral {
+                        if tokens.eat().ty != TokenType::IdentifierLiteral {
                             diagnostics.add_expected(
                                 tokens.current().span,
                                 TokenType::IdentifierLiteral,
@@ -156,11 +156,11 @@ fn parse_tree<'arena>(
     }?;
     // clump multiple tokens in the body together
     if !parse_def && let TokenTree::Token(tok) = res {
-        if !tokens.is_at_end() && tokens.peek().typ == TokenType::Dollar {
+        if !tokens.is_at_end() && tokens.peek().ty == TokenType::Dollar {
             return Ok(res);
         }
         let mut toks = vec![tok];
-        while !tokens.is_at_end() && tokens.peek().typ != TokenType::Dollar {
+        while !tokens.is_at_end() && tokens.peek().ty != TokenType::Dollar {
             toks.push(tokens.eat());
         }
         return Ok(TokenTree::Tokens(toks.into_boxed_slice()));
@@ -202,7 +202,7 @@ pub(super) fn match_paren<'arena, 'tok>(
     let start = tokens.pos();
     let (left, right) = parens.to_tt();
     loop {
-        let tok = tokens.eat().typ;
+        let tok = tokens.eat().ty;
         if tok == left {
             paren_count += 1;
         } else if tok == right {

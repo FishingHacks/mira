@@ -526,7 +526,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         for (key, static_element) in static_reader.index_value_iter() {
             let global = module.add_global(
                 static_element
-                    .type_
+                    .ty
                     .to_llvm_basic_type(&default_types, &structs, context),
                 None,
                 &mangle_static(&ctx, key),

@@ -65,7 +65,7 @@ impl<'arena> MacroExpander<'arena> {
         let mut tokens = BorrowedTokenStream::new(tokens, eof_span);
         let mut is_macro = false;
         while !tokens.is_at_end() {
-            match tokens.eat_with_doc_comments().typ {
+            match tokens.eat_with_doc_comments().ty {
                 TokenType::MacroDef if !can_define_macros => {
                     diagnostics.add_unexpected_token(tokens.current().span);
                     has_err = true;
@@ -88,7 +88,7 @@ impl<'arena> MacroExpander<'arena> {
         toks.extend_from_slice(&tokens.token_holder()[..tokens.pos() - 1]);
 
         while !tokens.is_at_end() {
-            if tokens.current().typ == TokenType::MacroDef {
+            if tokens.current().ty == TokenType::MacroDef {
                 let name = err!(tokens.expect(TokenType::IdentifierLiteral)).string_literal();
                 let name_span = tokens.current().span;
                 let start_span = err!(tokens.expect(TokenType::CurlyLeft)).span;
@@ -105,7 +105,7 @@ impl<'arena> MacroExpander<'arena> {
                     Ok(_) => {}
                     Err(()) => has_err = true,
                 }
-            } else if tokens.current().typ == TokenType::MacroInvocation {
+            } else if tokens.current().ty == TokenType::MacroInvocation {
                 let name = tokens.current().string_literal();
                 let name_span = tokens.current().span;
                 let tok = err!(tokens.expect_one_of(&[
@@ -113,7 +113,7 @@ impl<'arena> MacroExpander<'arena> {
                     TokenType::BracketLeft,
                     TokenType::CurlyLeft
                 ]));
-                let paren = ParenType::from_tt(tok.typ).unwrap();
+                let paren = ParenType::from_tt(tok.ty).unwrap();
                 if builtin_macros::get_builtin_macro(&name).is_none()
                     && !self.macros.contains_key(&name)
                 {
@@ -172,7 +172,7 @@ impl<'arena> MacroExpander<'arena> {
 
             while !tokens.is_at_end() {
                 let tok = tokens.eat_with_doc_comments();
-                match tok.typ {
+                match tok.ty {
                     TokenType::MacroDef if !can_define_macros => {
                         diagnostics.add_unexpected_token(tok.span);
                         has_err = true;

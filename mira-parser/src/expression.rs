@@ -208,9 +208,9 @@ impl Display for LiteralValue<'_> {
             }
             LiteralValue::Bool(b) => f.write_str(if *b { "true" } else { "false" }),
             LiteralValue::Dynamic(d) => Display::fmt(d, f),
-            LiteralValue::UInt(v, typ) => f.write_fmt(format_args!("{}{}", *v, *typ)),
-            LiteralValue::SInt(v, typ) => f.write_fmt(format_args!("{}{}", *v, *typ)),
-            LiteralValue::Float(v, typ) => f.write_fmt(format_args!("{}{}", *v, *typ)),
+            LiteralValue::UInt(v, ty) => f.write_fmt(format_args!("{}{}", *v, *ty)),
+            LiteralValue::SInt(v, ty) => f.write_fmt(format_args!("{}{}", *v, *ty)),
+            LiteralValue::Float(v, ty) => f.write_fmt(format_args!("{}{}", *v, *ty)),
             LiteralValue::String(v) => Debug::fmt(v, f),
             LiteralValue::Array(v) => {
                 f.write_char('[')?;
@@ -298,16 +298,16 @@ impl<'arena> LiteralValue<'arena> {
     }
 
     fn from_token(value: Token<'arena>) -> Option<Self> {
-        match value.typ {
+        match value.ty {
             TokenType::StringLiteral
             | TokenType::BooleanLiteral
             | TokenType::FloatLiteral
             | TokenType::UIntLiteral
             | TokenType::SIntLiteral => value.literal.as_ref().map(|v| match v {
                 Literal::Bool(boolean) => LiteralValue::Bool(*boolean),
-                Literal::Float(float, typ) => LiteralValue::Float(*float, *typ),
-                Literal::SInt(int, typ) => LiteralValue::SInt(*int, *typ),
-                Literal::UInt(uint, typ) => LiteralValue::UInt(*uint, *typ),
+                Literal::Float(float, ty) => LiteralValue::Float(*float, *ty),
+                Literal::SInt(int, ty) => LiteralValue::SInt(*int, *ty),
+                Literal::UInt(uint, ty) => LiteralValue::UInt(*uint, *ty),
                 Literal::String(string) => LiteralValue::String(*string),
                 Literal::DocComment(_) => unreachable!(),
             }),
@@ -404,7 +404,7 @@ pub enum Expression<'arena> {
     },
     TypeCast {
         left_side: Box<Expression<'arena>>,
-        new_type: TypeRef<'arena>,
+        new_ty: TypeRef<'arena>,
         span: Span<'arena>,
     },
     Asm {
@@ -510,7 +510,7 @@ impl Display for Expression<'_> {
             }
             Expression::TypeCast {
                 left_side,
-                new_type,
+                new_ty: new_type,
                 span: _,
             } => {
                 f.write_str("(type-cast ")?;
@@ -721,12 +721,12 @@ impl<'arena> Parser<'_, 'arena> {
         self.expect(TokenType::BracketRight)?;
         let bound = self.expect(TokenType::StringLiteral)?.string_literal();
         self.expect(TokenType::ParenLeft)?;
-        let type_ = self.expect_identifier()?;
+        let ty = self.expect_identifier()?;
         self.expect(TokenType::ParenRight)?;
         Ok(AsmBinding {
             name,
             bound,
-            type_or_name: type_,
+            type_or_name: ty,
         })
     }
 
@@ -755,13 +755,13 @@ impl<'arena> Parser<'_, 'arena> {
         }
 
         let span2 = 'out: {
-            if self.current().typ != TokenType::Colon {
+            if self.current().ty != TokenType::Colon {
                 break 'out self.last().span;
             }
 
             // outputs
             'outputs: {
-                if self.peek().typ == TokenType::Colon {
+                if self.peek().ty == TokenType::Colon {
                     break 'outputs;
                 }
                 // [v] "=r" (ty)
@@ -826,7 +826,7 @@ impl<'arena> Parser<'_, 'arena> {
                 inputs.push((span, asm_binding.type_or_name));
             }
 
-            if self.current().typ != TokenType::Colon {
+            if self.current().ty != TokenType::Colon {
                 break 'out self.expect(TokenType::ParenRight)?.span;
             }
             if self.match_tok(TokenType::ParenRight) {
@@ -841,7 +841,7 @@ impl<'arena> Parser<'_, 'arena> {
             registers.push('}');
 
             loop {
-                if self.peek().typ == TokenType::ParenRight {
+                if self.peek().ty == TokenType::ParenRight {
                     break self.eat().span;
                 }
                 self.expect(TokenType::Comma)?;
@@ -870,7 +870,7 @@ impl<'arena> Parser<'_, 'arena> {
     }
 
     pub fn parse_expression(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
-        if self.peek().typ == TokenType::Asm {
+        if self.peek().ty == TokenType::Asm {
             return self.parse_asm();
         }
         self.comparison()
@@ -880,14 +880,14 @@ impl<'arena> Parser<'_, 'arena> {
         let mut expr = self.pipe_operator()?;
 
         loop {
-            let op = match self.peek().typ {
+            let op = match self.peek().ty {
                 TokenType::EqualEqual => BinaryOp::Equals,
                 TokenType::NotEquals => BinaryOp::NotEquals,
                 TokenType::LogicalAnd => BinaryOp::LogicalAnd,
                 TokenType::LogicalOr => BinaryOp::LogicalOr,
-                TokenType::LessThan if self.peek2().typ == TokenType::Equal => BinaryOp::LessThanEq,
+                TokenType::LessThan if self.peek2().ty == TokenType::Equal => BinaryOp::LessThanEq,
                 TokenType::LessThan => BinaryOp::LessThan,
-                TokenType::GreaterThan if self.peek2().typ == TokenType::Equal => {
+                TokenType::GreaterThan if self.peek2().ty == TokenType::Equal => {
                     BinaryOp::GreaterThanEq
                 }
                 TokenType::GreaterThan => BinaryOp::GreaterThan,
@@ -937,7 +937,7 @@ impl<'arena> Parser<'_, 'arena> {
         let mut expr = self.term()?;
 
         while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
-            let inclusive = self.current().typ == TokenType::RangeInclusive;
+            let inclusive = self.current().ty == TokenType::RangeInclusive;
             let span = self.current().span;
             let right_side = Box::new(self.parse_expression()?);
             expr = Expression::Range {
@@ -966,13 +966,13 @@ impl<'arena> Parser<'_, 'arena> {
                 .span()
                 .combine_with([right.span()], self.ctx.span_interner);
 
-            match operator.typ {
+            match operator.ty {
                 TokenType::PlusAssign => {
-                    operator.typ = TokenType::Plus;
+                    operator.ty = TokenType::Plus;
                     assign_set!(expr, right, BinaryOp::Plus, span);
                 }
                 TokenType::MinusAssign => {
-                    operator.typ = TokenType::Minus;
+                    operator.ty = TokenType::Minus;
                     assign_set!(expr, right, BinaryOp::Minus, span);
                 }
                 TokenType::Plus => expr = Expression::binary(BinaryOp::Plus, span, expr, right),
@@ -988,7 +988,7 @@ impl<'arena> Parser<'_, 'arena> {
         let mut expr = self.unary()?;
 
         loop {
-            let op = match (self.peek().typ, self.peek2().typ) {
+            let op = match (self.peek().ty, self.peek2().ty) {
                 (TokenType::Divide, _) => BinaryOp::Divide,
                 (TokenType::Modulo, _) => BinaryOp::Modulo,
                 (TokenType::Asterix, _) => BinaryOp::Multiply,
@@ -1024,7 +1024,7 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::BitwiseNot,
             TokenType::LogicalNot,
         ]) {
-            let operator = match self.current().typ {
+            let operator = match self.current().ty {
                 TokenType::Plus => UnaryOp::Plus,
                 TokenType::Minus => UnaryOp::Minus,
                 TokenType::BitwiseNot => UnaryOp::BitwiseNot,
@@ -1066,7 +1066,7 @@ impl<'arena> Parser<'_, 'arena> {
                 .combine_with([new_type.span()], self.ctx.span_interner);
             expr = Expression::TypeCast {
                 left_side: Box::new(expr),
-                new_type,
+                new_ty: new_type,
                 span,
             };
         }
@@ -1119,16 +1119,16 @@ impl<'arena> Parser<'_, 'arena> {
         let mut expr = self.primary()?;
 
         while self.matches(&[TokenType::BracketLeft, TokenType::ParenLeft, TokenType::Dot]) {
-            if self.current().typ == TokenType::ParenLeft {
+            if self.current().ty == TokenType::ParenLeft {
                 // function call
                 let mut arguments: Vec<Expression> = vec![];
                 loop {
-                    if self.peek().typ == TokenType::ParenRight {
+                    if self.peek().ty == TokenType::ParenRight {
                         self.dismiss();
                         break;
                     } else if !arguments.is_empty() {
                         // , or ), but ) is alr handled by the thing above
-                        if self.eat().typ != TokenType::Comma {
+                        if self.eat().ty != TokenType::Comma {
                             return Err(ParsingError::ExpectedFunctionArgument {
                                 span: self.current().span,
                                 found: self.current(),
@@ -1137,7 +1137,7 @@ impl<'arena> Parser<'_, 'arena> {
                     }
 
                     let next_span = self.peek().span;
-                    let next_typ = self.peek().typ;
+                    let next_typ = self.peek().ty;
                     if let Ok(expr) = self.parse_expression() {
                         arguments.push(expr);
                     } else {
@@ -1148,7 +1148,7 @@ impl<'arena> Parser<'_, 'arena> {
                     }
                 }
 
-                if self.last().typ == TokenType::ParenRight {
+                if self.last().ty == TokenType::ParenRight {
                     expr = Expression::FunctionCall {
                         span: self
                             .current()
@@ -1188,7 +1188,7 @@ impl<'arena> Parser<'_, 'arena> {
                         arguments,
                     };
                 }
-            } else if self.current().typ == TokenType::BracketLeft {
+            } else if self.current().ty == TokenType::BracketLeft {
                 let indexing_expr = self.parse_expression()?;
 
                 self.expect(TokenType::BracketRight)?;
@@ -1200,7 +1200,7 @@ impl<'arena> Parser<'_, 'arena> {
                     left_side: Box::new(expr),
                     right_side: Box::new(indexing_expr),
                 };
-            } else if self.current().typ == TokenType::Dot {
+            } else if self.current().ty == TokenType::Dot {
                 let name = self.expect_identifier()?;
                 if let Expression::MemberAccess { index, .. } = &mut expr {
                     index.push(name);
@@ -1226,10 +1226,10 @@ impl<'arena> Parser<'_, 'arena> {
         let span1 = self.peek().span;
         if self.match_tok(TokenType::Dot) {
             // .{} / .[] / .()
-            let typ = self.peek().typ;
-            if typ == TokenType::ParenLeft || typ == TokenType::BracketLeft {
+            let ty = self.peek().ty;
+            if ty == TokenType::ParenLeft || ty == TokenType::BracketLeft {
                 self.eat();
-                let matching_tok = if typ == TokenType::ParenLeft {
+                let matching_tok = if ty == TokenType::ParenLeft {
                     TokenType::ParenRight
                 } else {
                     TokenType::BracketRight
@@ -1251,7 +1251,7 @@ impl<'arena> Parser<'_, 'arena> {
                     .span
                     .combine_with([span1], self.ctx.span_interner);
                 return Ok(Expression::Literal(LiteralValue::Tuple(elements), span));
-            } else if typ == TokenType::CurlyLeft {
+            } else if ty == TokenType::CurlyLeft {
                 return self
                     .try_object()
                     .expect("this should never return None as we ensured the next token is of type CurlyLeft.")
@@ -1271,7 +1271,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
 
         // functions/callables
-        if self.peek().typ == TokenType::Fn {
+        if self.peek().ty == TokenType::Fn {
             let span = self.peek().span;
             return Ok(Expression::Literal(
                 self.parse_callable(true, false)
@@ -1289,7 +1289,7 @@ impl<'arena> Parser<'_, 'arena> {
             ));
         }
 
-        if matches!(self.peek().typ, TokenType::IdentifierLiteral) {
+        if matches!(self.peek().ty, TokenType::IdentifierLiteral) {
             let current = self.pos();
             if let Ok(path) = Path::parse(self) {
                 // StructName { ... };
@@ -1320,7 +1320,7 @@ impl<'arena> Parser<'_, 'arena> {
         let found_token = self.peek();
         Err(ParsingError::ExpectedExpression {
             span: self.peek().span,
-            found: found_token.typ,
+            found: found_token.ty,
         })
     }
 
@@ -1346,7 +1346,7 @@ impl<'arena> Parser<'_, 'arena> {
                     if !self.match_tok(TokenType::Comma) {
                         return Err(ParsingError::ExpectedArrayElement {
                             span: self.peek().span,
-                            found: self.peek().typ,
+                            found: self.peek().ty,
                         });
                     }
                     // in order to allow stuff like [1, 2, 3, ]

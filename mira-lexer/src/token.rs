@@ -198,14 +198,14 @@ impl Literal<'_> {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Token<'arena> {
-    pub typ: TokenType,
+    pub ty: TokenType,
     pub literal: Option<Literal<'arena>>,
     pub span: Span<'arena>,
 }
 
 impl<'arena> From<Token<'arena>> for Ident<'arena> {
     fn from(value: Token<'arena>) -> Self {
-        assert_eq!(value.typ, TokenType::IdentifierLiteral);
+        assert_eq!(value.ty, TokenType::IdentifierLiteral);
         let Some(Literal::String(s)) = value.literal else {
             unreachable!("expected value.literal to be Some(Literal::String(_))")
         };
@@ -272,10 +272,10 @@ fn display_ident(f: &mut std::fmt::Formatter, ident: &str) -> std::fmt::Result {
 
 impl Display for Token<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.typ.as_str().is_some() {
-            return Display::fmt(&self.typ, f);
+        if self.ty.as_str().is_some() {
+            return Display::fmt(&self.ty, f);
         }
-        match self.typ {
+        match self.ty {
             TokenType::BooleanLiteral => match &self.literal {
                 Some(Literal::Bool(v)) => Display::fmt(v, f),
                 _ => f.write_str("bool(malformed data)"),
@@ -285,15 +285,15 @@ impl Display for Token<'_> {
                 _ => f.write_str("identifier(malformed data)"),
             },
             TokenType::FloatLiteral => match self.literal {
-                Some(Literal::Float(v, typ)) => f.write_fmt(format_args!("{v}{typ}")),
+                Some(Literal::Float(v, ty)) => f.write_fmt(format_args!("{v}{ty}")),
                 _ => f.write_str("float(malformed data)"),
             },
             TokenType::SIntLiteral => match self.literal {
-                Some(Literal::SInt(v, typ)) => f.write_fmt(format_args!("{v}{typ}")),
+                Some(Literal::SInt(v, ty)) => f.write_fmt(format_args!("{v}{ty}")),
                 _ => f.write_str("int(malformed data)"),
             },
             TokenType::UIntLiteral => match self.literal {
-                Some(Literal::UInt(v, typ)) => f.write_fmt(format_args!("{v}{typ}")),
+                Some(Literal::UInt(v, ty)) => f.write_fmt(format_args!("{v}{ty}")),
                 _ => f.write_str("uint(malformed data)"),
             },
             TokenType::StringLiteral => match &self.literal {
@@ -313,8 +313,8 @@ impl Display for Token<'_> {
 }
 
 impl<'arena> Token<'arena> {
-    pub fn new(typ: TokenType, literal: Option<Literal<'arena>>, span: Span<'arena>) -> Self {
-        Self { typ, span, literal }
+    pub fn new(ty: TokenType, literal: Option<Literal<'arena>>, span: Span<'arena>) -> Self {
+        Self { ty, span, literal }
     }
 
     pub fn void_literal(&self) {

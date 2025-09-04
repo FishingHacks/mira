@@ -35,12 +35,12 @@ impl ExpressionDisplay<'_> {
     pub fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self.0 {
             TypedExpression::Unreachable(_) => f.write_str("unreachable"),
-            TypedExpression::DeclareVariable(_, id, typ, name) => {
+            TypedExpression::DeclareVariable(_, id, ty, name) => {
                 // let <name>: <ty> = _<id>
                 f.write_str("declare ")?;
                 f.write_value(name)?;
                 f.write_str(": ")?;
-                f.write_value(typ)?;
+                f.write_value(ty)?;
                 f.write_str(" = _")?;
                 f.write_value(id)
             }

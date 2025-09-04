@@ -104,7 +104,7 @@ fn macro_concat<'arena>(
 ) -> Result<Vec<Token<'arena>>, ()> {
     let mut concat_str = String::new();
     for arg in args {
-        match arg.typ {
+        match arg.ty {
             TokenType::IdentifierLiteral
             | TokenType::StringLiteral
             | TokenType::SIntLiteral
@@ -135,7 +135,7 @@ fn macro_concat<'arena>(
         }
     }
     Ok(vec![Token {
-        typ: TokenType::StringLiteral,
+        ty: TokenType::StringLiteral,
         literal: Some(Literal::String(ctx.intern_str(&concat_str))),
         span,
     }])
@@ -149,7 +149,7 @@ fn macro_concat_idents<'arena>(
 ) -> Result<Vec<Token<'arena>>, ()> {
     let mut concat_str = String::new();
     for arg in args {
-        match arg.typ {
+        match arg.ty {
             TokenType::IdentifierLiteral | TokenType::Comma => (),
             _ => {
                 diagnostics.add_concat_idents_only_expects_literals(arg.span, *arg);
@@ -165,7 +165,7 @@ fn macro_concat_idents<'arena>(
         }
     }
     Ok(vec![Token {
-        typ: TokenType::IdentifierLiteral,
+        ty: TokenType::IdentifierLiteral,
         literal: Some(Literal::String(ctx.intern_str(&concat_str))),
         span,
     }])
@@ -190,7 +190,7 @@ fn macro_line<'arena>(
     Ok(vec![Token {
         span,
         literal: Some(Literal::UInt(line as u64, NumberType::U32)),
-        typ: TokenType::UIntLiteral,
+        ty: TokenType::UIntLiteral,
     }])
 }
 
@@ -209,7 +209,7 @@ fn macro_column<'arena>(
     Ok(vec![Token {
         span,
         literal: Some(Literal::UInt(column as u64, NumberType::U32)),
-        typ: TokenType::UIntLiteral,
+        ty: TokenType::UIntLiteral,
     }])
 }
 
@@ -235,7 +235,7 @@ fn macro_file<'arena>(
                     .to_string(),
             ),
         )),
-        typ: TokenType::StringLiteral,
+        ty: TokenType::StringLiteral,
     }])
 }
 
@@ -279,6 +279,6 @@ fn macro_stringify<'arena>(
     Ok(vec![Token {
         span,
         literal: Some(Literal::String(ctx.intern_str(&strn))),
-        typ: TokenType::StringLiteral,
+        ty: TokenType::StringLiteral,
     }])
 }

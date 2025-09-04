@@ -57,7 +57,7 @@ fn parse_single<'arena>(
     let mut comment = None;
 
     if let Some(tok) = tokens.first()
-        && tok.typ == TokenType::ModuleDocComment
+        && tok.ty == TokenType::ModuleDocComment
     {
         let Some(Literal::DocComment(v)) = tok.literal else {
             unreachable!()

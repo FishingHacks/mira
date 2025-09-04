@@ -384,7 +384,7 @@ impl<'arena> TypeckCtx<'arena> {
         for arg in arguments {
             match self.resolve_type(
                 module_id.cast(),
-                &arg.typ,
+                &arg.ty,
                 &resolved_function_contract.generics,
             ) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
@@ -430,7 +430,7 @@ impl<'arena> TypeckCtx<'arena> {
         }
 
         for arg in arguments {
-            match self.resolve_type(module_id.cast(), &arg.typ, &[]) {
+            match self.resolve_type(module_id.cast(), &arg.ty, &[]) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
                 Err(e) => self.ctx.emit_diag(e),
             }
@@ -448,11 +448,11 @@ impl<'arena> TypeckCtx<'arena> {
         let name = writer[static_id].name;
         let annotations = std::mem::take(&mut writer[static_id].annotations);
         let dummy_type = TypeRef::Void(writer[static_id].ty.span(), 0);
-        let typ = std::mem::replace(&mut writer[static_id].ty, dummy_type);
+        let ty = std::mem::replace(&mut writer[static_id].ty, dummy_type);
         let module_id = writer[static_id].module;
         let comment = writer[static_id].comment;
         drop(writer);
-        match self.resolve_type(module_id.cast(), &typ, &[]) {
+        match self.resolve_type(module_id.cast(), &ty, &[]) {
             Ok(v) => {
                 self.statics.write()[static_id.cast()] = TypedStatic::new(
                     v,
@@ -494,7 +494,7 @@ impl<'arena> TypeckCtx<'arena> {
             let mut typed_arguments = Vec::new();
 
             for arg in &func.args {
-                match self.resolve_type(module_id.cast(), &arg.typ, &[]) {
+                match self.resolve_type(module_id.cast(), &arg.ty, &[]) {
                     Ok(v) => typed_arguments.push((arg.name, v)),
                     Err(e) => self.ctx.emit_diag(e),
                 }

@@ -144,14 +144,14 @@ impl<'arena> Annotations<'arena> {
 
     pub fn are_annotations_valid_for(
         &self,
-        typ: AnnotationReceiver,
+        ty: AnnotationReceiver,
     ) -> Result<(), ParsingError<'arena>> {
         for (annotation, span) in &self.0 {
-            if !annotation.is_valid_for(typ, self) {
+            if !annotation.is_valid_for(ty, self) {
                 return Err(ParsingError::AnnotationDoesNotGoOn {
                     span: *span,
                     name: annotation.get_name(),
-                    thing: typ,
+                    thing: ty,
                 });
             }
         }

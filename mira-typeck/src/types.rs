@@ -149,9 +149,9 @@ pub fn with_refcount<'arena>(
 
 pub fn resolve_primitive_type<'arena>(
     ctx: TypeCtx<'arena>,
-    typ: &TypeRef<'arena>,
+    ty: &TypeRef<'arena>,
 ) -> Option<Ty<'arena>> {
-    match typ {
+    match ty {
         TypeRef::Never(_) => Some(default_types::never),
         TypeRef::Void(_, 0) => Some(default_types::void),
         TypeRef::Void(_, refcount) => Some(with_refcount(ctx, default_types::void, *refcount)),
@@ -344,8 +344,8 @@ impl<'arena> TyKind<'arena> {
         let structure = &structs[struct_id];
         assert!(element < structure.elements.len());
         let mut offset = 0;
-        for (_, typ, _) in &structure.elements[0..element] {
-            let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
+        for (_, ty, _) in &structure.elements[0..element] {
+            let (size, alignment) = ty.size_and_alignment(ptr_size, structs);
             offset = align(offset, alignment) + size;
         }
         offset = align(
@@ -371,7 +371,7 @@ impl<'arena> TyKind<'arena> {
                 .map(|v| v.1.alignment(ptr_size, structs))
                 .max()
                 .unwrap_or(1),
-            TyKind::SizedArray { ty: typ, .. } => typ.alignment(ptr_size, structs),
+            TyKind::SizedArray { ty, .. } => ty.alignment(ptr_size, structs),
             TyKind::Tuple(elements) => elements
                 .iter()
                 .map(|v| v.alignment(ptr_size, structs))
@@ -422,10 +422,10 @@ impl<'arena> TyKind<'arena> {
                 (align(size, alignment), alignment)
             }
             TyKind::SizedArray {
-                ty: typ,
+                ty,
                 number_elements,
             } => {
-                let (size, alignment) = typ.size_and_alignment(ptr_size, structs);
+                let (size, alignment) = ty.size_and_alignment(ptr_size, structs);
                 (size * *number_elements as u64, alignment)
             }
             TyKind::Tuple(elements) => {
@@ -649,18 +649,18 @@ impl Display for TyKind<'_> {
                 }
                 f.write_char(')')
             }
-            TyKind::UnsizedArray(typ) => {
+            TyKind::UnsizedArray(ty) => {
                 f.write_char('[')?;
-                Display::fmt(typ, f)?;
+                Display::fmt(ty, f)?;
                 f.write_char(']')
             }
             TyKind::SizedArray {
-                ty: typ,
+                ty,
                 number_elements,
                 ..
             } => {
                 f.write_char('[')?;
-                Display::fmt(typ, f)?;
+                Display::fmt(ty, f)?;
                 f.write_str("; ")?;
                 Display::fmt(number_elements, f)?;
                 f.write_char(']')
@@ -668,11 +668,11 @@ impl Display for TyKind<'_> {
             TyKind::Function(contract) => {
                 f.write_str("fn")?;
                 f.write_char('(')?;
-                for (idx, typ) in contract.arguments.iter().enumerate() {
+                for (idx, ty) in contract.arguments.iter().enumerate() {
                     if idx != 0 {
                         f.write_str(", ")?;
                     }
-                    Display::fmt(typ, f)?;
+                    Display::fmt(ty, f)?;
                 }
                 f.write_char(')')?;
                 if contract.return_type == default_types::void {
@@ -777,11 +777,11 @@ impl<'arena> TypeSuggestion<'arena> {
             TypeSuggestion::Array(type_suggestion)
             | TypeSuggestion::UnsizedArray(type_suggestion) => type_suggestion
                 .to_type(ctx)
-                .map(|typ| TyKind::SizedArray {
-                    ty: typ,
+                .map(|ty| TyKind::SizedArray {
+                    ty,
                     number_elements: 0,
                 })
-                .map(|typ| ctx.ctx.intern_ty(typ)),
+                .map(|ty| ctx.ctx.intern_ty(ty)),
             TypeSuggestion::Number(number_type) => Some(match number_type {
                 NumberType::F32 => default_types::f32,
                 NumberType::F64 => default_types::f64,
@@ -809,8 +809,8 @@ impl<'arena> TypeSuggestion<'arena> {
         }
     }
 
-    pub fn from_type(typ: Ty<'arena>) -> Self {
-        match &**typ {
+    pub fn from_type(ty: Ty<'arena>) -> Self {
+        match &**ty {
             TyKind::PrimitiveStr
             | TyKind::PrimitiveSelf
             | TyKind::Generic { .. }
@@ -819,8 +819,8 @@ impl<'arena> TypeSuggestion<'arena> {
             | TyKind::PrimitiveNever
             | TyKind::DynType { .. } => Self::Unknown,
             TyKind::Struct { struct_id, .. } => Self::Struct(*struct_id),
-            TyKind::SizedArray { ty: typ, .. } => Self::Array(Box::new(Self::from_type(*typ))),
-            TyKind::UnsizedArray(typ) => Self::UnsizedArray(Box::new(Self::from_type(*typ))),
+            TyKind::SizedArray { ty, .. } => Self::Array(Box::new(Self::from_type(*ty))),
+            TyKind::UnsizedArray(ty) => Self::UnsizedArray(Box::new(Self::from_type(*ty))),
             TyKind::PrimitiveI8 => Self::Number(NumberType::I8),
             TyKind::PrimitiveI16 => Self::Number(NumberType::I16),
             TyKind::PrimitiveI32 => Self::Number(NumberType::I32),

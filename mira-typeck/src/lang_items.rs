@@ -346,7 +346,7 @@ macro_rules! check_langitem {
     };
     ($lang_item:ident: Static; $self:ident $reader:ident $context:ident) => {
         if let Some(static_id) = $self.$lang_item {
-            $self.$lang_item(|arr| does_static_match(arr, $reader[static_id].type_, stringify!($lang_item), $context));
+            $self.$lang_item(|arr| does_static_match(arr, $reader[static_id].ty, stringify!($lang_item), $context));
         }
     };
     ($lang_item:ident: Struct; $self:ident $reader:ident $context:ident) => {
@@ -744,12 +744,12 @@ fn does_struct_match<'arena>(
 
 fn does_static_match<'arena>(
     traits: &[StoreKey<TypedTrait<'arena>>],
-    typ: Ty<'arena>,
+    ty: Ty<'arena>,
     lang_item: &'static str,
     context: &TypeckCtx<'arena>,
 ) -> bool {
     let trait_reader = context.traits.read();
-    match &**typ {
+    match &**ty {
         TyKind::DynType(trait_refs) => {
             let tracker = context.ctx.track_errors();
             for trait_id in traits.iter().copied() {
