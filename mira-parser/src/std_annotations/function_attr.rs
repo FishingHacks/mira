@@ -12,7 +12,7 @@ impl Annotation for FunctionAttr {
         "function_attr"
     }
 
-    fn is_valid_for(&self, thing: AnnotationReceiver, _: &Annotations) -> bool {
+    fn is_valid_for(&self, thing: AnnotationReceiver, _: &Annotations<'_>) -> bool {
         thing == AnnotationReceiver::ExternalFunction || thing == AnnotationReceiver::Function
     }
 }

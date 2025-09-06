@@ -99,12 +99,6 @@ macro_rules! parse_res {
             Err(e) => return ParseResult::Failure(e, $pos),
         }
     };
-    (@err $res:expr) => {
-        match $res {
-            Ok(v) => v,
-            Err(e) => return ParseResult::Err(e),
-        }
-    };
 }
 
 struct ExpandContext<'arena> {

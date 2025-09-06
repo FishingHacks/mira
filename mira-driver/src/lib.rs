@@ -2,6 +2,7 @@ use std::{fmt::Arguments, fs::File, io::Write, path::Path, sync::Arc};
 
 use mira_common::store::StoreKey;
 use mira_context::DiagEmitter as DiagEmitMethod;
+use mira_context::ErrorEmitted;
 use mira_context::SharedCtx;
 use mira_errors::{Diagnostic, Diagnostics, FileOpenError, IoWriteError, StdoutWriteError};
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
@@ -21,15 +22,14 @@ use mira_context::GlobalCtx;
 use mira_spans::Arena;
 #[cfg(feature = "typeck")]
 use mira_typeck::GlobalContext;
+#[cfg(feature = "typeck")]
+use mira_typeck::{TypeCtx, TypeckCtx, TypedFunction, ir_displayer::Formatter};
 
 #[cfg(feature = "macros")]
 use mira_lexer::Token;
 
 #[cfg(feature = "parsing")]
 use mira_parser::module::{Module, ModuleContext};
-
-#[cfg(feature = "typeck")]
-use mira_typeck::{TypeCtx, TypeckCtx, TypedFunction, ir_displayer::Formatter};
 
 #[cfg(feature = "codegen")]
 use mira_llvm_backend::{CodegenConfig, CodegenContext, CodegenContextBuilder, CodegenError};
@@ -40,8 +40,6 @@ use mira_linking::LinkerInput;
 use mira_target::Target;
 #[cfg(feature = "linking")]
 use std::path::PathBuf;
-
-pub struct ErrorEmitted;
 
 pub type EmitResult<T> = Result<T, ErrorEmitted>;
 
@@ -111,7 +109,7 @@ impl EmitMethod {
     }
 
     /// emits the error into the diagnostics struct, returning if the operating was successful.
-    pub fn emit_diags(&mut self, data: &[u8], diagnostics: &mut Diagnostics) -> bool {
+    pub fn emit_diags(&mut self, data: &[u8], diagnostics: &mut Diagnostics<'_>) -> bool {
         self.emit(data).map_err(|v| _ = diagnostics.add(v)).is_ok()
     }
 }
@@ -290,10 +288,7 @@ impl<'ctx> Context<'ctx> {
             libtree,
         );
         self.data.progress_bar.remove(parser_item);
-        let v = res
-            .map_err(|v| self.ctx.emit_diags(v))
-            .map_err(|()| ErrorEmitted)?;
-        Ok(v)
+        res.map_err(|v| self.ctx.emit_diags(v))
     }
 
     pub fn add_progress_item(&mut self, item: impl Into<Box<str>>) -> ProgressItemRef {
@@ -326,8 +321,6 @@ impl<'ctx> Context<'ctx> {
         module_ctx: &Arc<ModuleContext<'ctx>>,
         typechecking_item: ProgressItemRef,
     ) -> EmitResult<Arc<TypeckCtx<'ctx>>> {
-        use mira_typeck::TypeckCtx;
-
         let type_resolution_item =
             self.add_progress_item_child(typechecking_item, "Type Resolution");
 
@@ -424,7 +417,6 @@ impl<'ctx> Context<'ctx> {
         typeck_ctx
             .validate_main_function(main_module)
             .map_err(|v| self.ctx.emit_diag(v.to_error()))
-            .map_err(|()| ErrorEmitted)
     }
 
     #[cfg(feature = "typeck")]
@@ -441,8 +433,6 @@ impl<'ctx> Context<'ctx> {
     #[cfg(feature = "typeck")]
     pub fn emit_ir(&self, typeck_ctx: &TypeckCtx<'ctx>, mut method: EmitMethod) -> EmitResult<()> {
         use mira_typeck::ir_displayer::{ReadOnlyTypecheckingContext, TCContextDisplay};
-
-        use crate::EmitMethodWithDiags;
 
         let readonly_ctx = ReadOnlyTypecheckingContext {
             modules: &typeck_ctx.modules.read(),
@@ -477,8 +467,6 @@ impl<'ctx> Context<'ctx> {
     where
         'ctx: 'cg_ctx,
     {
-        use mira_llvm_backend::CodegenError;
-
         let file = typeck_ctx.modules.read()[main_module].file.path.clone();
         let filename = file
             .file_name()
@@ -488,7 +476,7 @@ impl<'ctx> Context<'ctx> {
         let mut codegen_context = builder
             .build(typeck_ctx.clone(), &filename, file.clone(), codegen_opts)
             .expect("failed to create the llvm context");
-        let mut errs = Diagnostics::new();
+        let tracker = self.ctx.track_errors();
 
         for (fn_id, (contract, _)) in typeck_ctx.functions.read().index_value_iter() {
             use mira_parser::std_annotations::{
@@ -505,9 +493,7 @@ impl<'ctx> Context<'ctx> {
             let item =
                 self.add_progress_item_child(codegen_item, format!("Codegening function #{fn_id}"));
 
-            if let Err(e) = codegen_context.compile_fn(fn_id) {
-                errs.add_err(CodegenError::from(e));
-            }
+            _ = codegen_context.compile_fn(fn_id);
             self.remove_progress_item(item);
         }
 
@@ -517,19 +503,11 @@ impl<'ctx> Context<'ctx> {
                 format!("Codegening external function #{fn_id}"),
             );
 
-            if let Err(e) = codegen_context.compile_external_fn(fn_id) {
-                errs.add_err(CodegenError::from(e));
-            }
+            _ = codegen_context.compile_external_fn(fn_id);
             self.remove_progress_item(item);
         }
 
-        (
-            codegen_context,
-            (errs.is_empty())
-                .then_some(())
-                .ok_or(ErrorEmitted)
-                .inspect_err(|_| self.ctx.emit_diags(errs)),
-        )
+        (codegen_context, self.ctx.errors_happened_res(tracker))
     }
 
     #[cfg(feature = "codegen")]
@@ -590,8 +568,7 @@ impl<'ctx> Context<'ctx> {
     ) -> EmitResult<()> {
         let asm = codegen_ctx
             .gen_assembly()
-            .map_err(|v| self.ctx.emit_diag(v.to_error()))
-            .map_err(|()| ErrorEmitted)?;
+            .map_err(|v| self.ctx.emit_diag(v.to_error()))?;
         match method.emit(asm.as_slice()) {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -607,26 +584,21 @@ impl<'ctx> Context<'ctx> {
         codegen_ctx: &CodegenContext<'_, 'ctx>,
         path: &Path,
     ) -> EmitResult<()> {
-        use mira_errors::FileOpenError;
-        use std::fs::File;
-
         let mut obj_file = File::options()
             .write(true)
             .create(true)
             .truncate(true)
             .open(path)
             .map_err(|e| FileOpenError(path.to_path_buf(), e).to_error())
-            .map_err(|e| self.ctx.emit_diag(e))
-            .map_err(|()| ErrorEmitted)?;
+            .map_err(|e| self.ctx.emit_diag(e))?;
 
         codegen_ctx
             .write_object(&mut obj_file)
             .map_err(|e| self.ctx.emit_diag(e.to_error()))
-            .map_err(|()| ErrorEmitted)
     }
 
     #[cfg(feature = "linking")]
-    pub fn link(&self, mut opts: LinkOpts) -> EmitResult<()> {
+    pub fn link(&self, mut opts: LinkOpts<'_>) -> EmitResult<()> {
         use mira_linking::{LinkOptions, LinkerError};
 
         let Some((linker, linker_path)) = mira_linking::search_for_linker(
@@ -656,7 +628,6 @@ impl<'ctx> Context<'ctx> {
                 target: opts.target,
             })
             .map_err(|v| self.ctx.emit_diag(v.to_error()))
-            .map_err(|()| ErrorEmitted)
     }
 }
 

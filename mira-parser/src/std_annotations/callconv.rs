@@ -14,7 +14,7 @@ impl Annotation for CallConvAnnotation {
         "callconv"
     }
 
-    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations) -> bool {
+    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations<'_>) -> bool {
         if thing == AnnotationReceiver::Function
             || (thing == AnnotationReceiver::ExternalFunction
                 && *self != CallConvAnnotation::Inline)

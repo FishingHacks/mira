@@ -889,7 +889,7 @@ mod test {
 
     use super::*;
 
-    fn check_tokens(tokens: &[Token]) {
+    fn check_tokens(tokens: &[Token<'_>]) {
         for token in tokens {
             match (&token.ty, &token.literal) {
                 (TokenType::IdentifierLiteral, Some(Literal::String(..)))
@@ -925,8 +925,8 @@ mod test {
 
     fn assert_token_eq(
         src: &str,
-        expected_tokens: &[(TokenType, Option<Literal>)],
-        ctx: SharedCtx,
+        expected_tokens: &[(TokenType, Option<Literal<'_>>)],
+        ctx: SharedCtx<'_>,
     ) {
         let eof_token = (TokenType::Eof, None);
         let (tokens, errs) = get_tokens(ctx, src);
@@ -993,12 +993,6 @@ mod test {
         };
         ($ty: ident, $lit:ident($val:expr, _)) => {
             (TokenType::$ty, Some(Literal::$lit($val, NumberType::None)))
-        };
-        ($ty: ident, $lit:ident($val:expr, $numty:ident)) => {
-            (
-                TokenType::$ty,
-                Some(Literal::$lit($val, NumberType::$numty)),
-            )
         };
     }
 

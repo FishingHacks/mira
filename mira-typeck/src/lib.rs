@@ -10,17 +10,16 @@ use std::{
 use type_resolution::ResolvingState;
 
 use ir::TypedLiteral;
-use types::{FunctionType, resolve_primitive_type, with_refcount};
+use types::{resolve_primitive_type, with_refcount};
 
-use crate::{error::TypecheckingErrorEmitterExt, ir::IR, lang_items::LangItems};
+use crate::{error::TypecheckingErrorEmitterExt, ir::IR};
+pub use lang_items::LangItems;
 use mira_common::store::{AssociatedStore, Store, StoreKey};
 use mira_context::DocComment;
 use mira_parser::{
-    Trait, TypeRef,
+    TypeRef,
     annotations::Annotations,
-    module::{
-        BakedStruct, ExternalFunction, Function, Module, ModuleContext, ModuleScopeValue, Static,
-    },
+    module::{BakedStruct, Module, ModuleContext, ModuleScopeValue},
 };
 use mira_spans::{
     ArenaList, Ident, SourceFile, Span,
@@ -40,7 +39,7 @@ mod type_resolution;
 pub mod typechecking;
 mod types;
 pub use error::{FunctionList, TypecheckingError, TypecheckingErrorDiagnosticsExt};
-pub use types::{Ty, TyKind, TyList, TypeInterner, TypeListInterner, default_types};
+pub use types::{FunctionType, Ty, TyKind, TyList, TypeInterner, TypeListInterner, default_types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedGeneric<'arena> {
@@ -62,7 +61,7 @@ pub struct TypedFunctionContract<'arena> {
 }
 
 impl Hash for TypedFunctionContract<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         match &self.name {
             None => "{{anon_fn}}".hash(state),
             Some(v) => v.hash(state),
@@ -210,17 +209,12 @@ impl<'arena> TypeckCtx<'arena> {
         let functions_reader = module_context.functions.read();
         let external_functions_reader = module_context.external_functions.read();
 
-        let mut traits = AssociatedStore::<TypedTrait, Trait>::with_capacity(traits_reader.len());
-        let mut structs =
-            AssociatedStore::<TypedStruct, BakedStruct>::with_capacity(structs_reader.len());
-        let mut statics =
-            AssociatedStore::<TypedStatic, Static>::with_capacity(statics_reader.len());
-        let mut functions =
-            AssociatedStore::<TypedFunction, Function>::with_capacity(functions_reader.len());
+        let mut traits = AssociatedStore::with_capacity(traits_reader.len());
+        let mut structs = AssociatedStore::with_capacity(structs_reader.len());
+        let mut statics = AssociatedStore::with_capacity(statics_reader.len());
+        let mut functions = AssociatedStore::with_capacity(functions_reader.len());
         let mut external_functions =
-            AssociatedStore::<TypedExternalFunction, ExternalFunction>::with_capacity(
-                external_functions_reader.len(),
-            );
+            AssociatedStore::with_capacity(external_functions_reader.len());
 
         for key in structs_reader.indices() {
             structs.insert(
@@ -365,7 +359,7 @@ impl<'arena> TypeckCtx<'arena> {
                 let res =
                     resolve_import(&context, key, &import.entries, *span, &mut HashSet::new());
                 match res {
-                    Err(diag) => self.ctx.emit_diag(diag),
+                    Err(diag) => _ = self.ctx.emit_diag(diag),
                     Ok(k) => {
                         typechecked_module_writer[key.cast()].scope.insert(*name, k);
                     }
@@ -566,7 +560,7 @@ impl<'arena> TypeckCtx<'arena> {
                     *span,
                     &mut HashSet::new(),
                 ) {
-                    Err(e) => self.ctx.emit_diag(e),
+                    Err(e) => _ = self.ctx.emit_diag(e),
                     Ok(ModuleScopeValue::Trait(trait_id)) => bounds.push(trait_id.cast()),
                     Ok(_) => {
                         self.ctx.emit_unbound_ident(
@@ -904,7 +898,7 @@ fn resolve_import<'arena>(
 }
 
 impl From<ModuleScopeValue<'_>> for ScopeKind {
-    fn from(value: ModuleScopeValue) -> Self {
+    fn from(value: ModuleScopeValue<'_>) -> Self {
         match value {
             ModuleScopeValue::Trait(_) => Self::Trait,
             ModuleScopeValue::Struct(_) => Self::Type,

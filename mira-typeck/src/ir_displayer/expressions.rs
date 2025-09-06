@@ -5,13 +5,13 @@ use crate::types::EMPTY_TYLIST;
 use super::{formatter::Formatter, typed_literal::Tld};
 
 #[repr(transparent)]
-pub struct ExpressionDisplay<'a>(pub &'a TypedExpression<'a>);
+pub(super) struct ExpressionDisplay<'a>(pub &'a TypedExpression<'a>);
 
 macro_rules! expr {
     (binary $f:ident, $dst:expr, $lhs:expr, $rhs:expr, $operator:literal) => {{
         let _: &ValueId = $dst;
-        let _: &TypedLiteral = $lhs;
-        let _: &TypedLiteral = $rhs;
+        let _: &TypedLiteral<'_> = $lhs;
+        let _: &TypedLiteral<'_> = $rhs;
         $f.write_value($dst)?;
         $f.write_str(" = ")?;
         Tld($lhs).fmt($f)?;
@@ -21,7 +21,7 @@ macro_rules! expr {
 
     (unary $f:ident, $dst:expr, $lhs:expr, $operator:literal) => {{
         let _: &ValueId = $dst;
-        let _: &TypedLiteral = $lhs;
+        let _: &TypedLiteral<'_> = $lhs;
         $f.write_value($dst)?;
         $f.write_str(concat!(" = ", $operator))?;
         Tld($lhs).fmt($f)
@@ -29,7 +29,7 @@ macro_rules! expr {
 }
 
 impl ExpressionDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter, ir: &IR<'_>) -> std::fmt::Result {
+    pub(super) fn fmt(&self, f: &mut Formatter<'_, '_, '_>, ir: &IR<'_>) -> std::fmt::Result {
         match self.0 {
             TypedExpression::Unreachable(_) => f.write_str("unreachable"),
             TypedExpression::DeclareVariable(_, id, ty, name) => {
@@ -220,7 +220,6 @@ impl ExpressionDisplay<'_> {
                 expr!(binary f, dst, lhs, rhs, "<")
             }
             TypedExpression::LAnd(_, dst, lhs, rhs, blk) => {
-                f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(lhs).fmt(f)?;
@@ -232,7 +231,6 @@ impl ExpressionDisplay<'_> {
                 Tld(rhs).fmt(f)
             }
             TypedExpression::LOr(_, dst, lhs, rhs, blk) => {
-                f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(lhs).fmt(f)?;
@@ -256,7 +254,6 @@ impl ExpressionDisplay<'_> {
             TypedExpression::Reference(_, lhs, rhs) => expr!(unary f, lhs, rhs, "&"),
             TypedExpression::Dereference(_, lhs, rhs) => expr!(unary f, lhs, rhs, "*"),
             TypedExpression::Offset(_, lhs, rhs, offsets) => {
-                f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = offset(")?;
                 Tld(rhs).fmt(f)?;
@@ -265,7 +262,6 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::OffsetNonPointer(_, lhs, rhs, offset_value) => {
-                f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = offset_non_ptr(")?;
                 Tld(rhs).fmt(f)?;
@@ -274,7 +270,6 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::DynCall(_, dst, args, offset) => {
-                f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = dyncall(")?;
                 f.write_value(offset)?;
@@ -290,7 +285,6 @@ impl ExpressionDisplay<'_> {
             | TypedExpression::Alias(_, lhs, rhs)
             | TypedExpression::StripMetadata(_, lhs, rhs)
             | TypedExpression::IntCast(_, lhs, rhs) => {
-                f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)?;
@@ -304,7 +298,6 @@ impl ExpressionDisplay<'_> {
                 Tld(rhs).fmt(f)
             }
             TypedExpression::AttachVtable(_, lhs, rhs, (_, traits)) => {
-                f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = attach_vtable(")?;
                 Tld(rhs).fmt(f)?;
@@ -313,7 +306,6 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::MakeUnsizedSlice(_, lhs, rhs, size) => {
-                f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = attach_size_metadata(")?;
                 Tld(rhs).fmt(f)?;
@@ -339,7 +331,11 @@ impl ExpressionDisplay<'_> {
     }
 }
 
-pub fn write_block(f: &mut Formatter, block: BlockId, ir: &IR<'_>) -> std::fmt::Result {
+pub(super) fn write_block(
+    f: &mut Formatter<'_, '_, '_>,
+    block: BlockId,
+    ir: &IR<'_>,
+) -> std::fmt::Result {
     let exprs = ir.get_block_exprs(block);
     f.write_char('{')?;
     f.push_indent();
@@ -353,7 +349,11 @@ pub fn write_block(f: &mut Formatter, block: BlockId, ir: &IR<'_>) -> std::fmt::
 
 // writes a block to `f` unless the block is a single expression of type
 // `TypedExpression::Block`, in which case it will print the block.
-pub fn write_implicit_block(f: &mut Formatter, block: BlockId, ir: &IR<'_>) -> std::fmt::Result {
+pub(super) fn write_implicit_block(
+    f: &mut Formatter<'_, '_, '_>,
+    block: BlockId,
+    ir: &IR<'_>,
+) -> std::fmt::Result {
     let exprs = ir.get_block_exprs(block);
     if exprs.len() == 1 && matches!(exprs[0], TypedExpression::Block(..)) {
         ExpressionDisplay(&exprs[0]).fmt(f, ir)

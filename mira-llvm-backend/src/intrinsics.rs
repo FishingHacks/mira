@@ -12,14 +12,14 @@ pub(super) struct Intrinsics<'ctx, 'arena> {
 }
 
 impl<'ctx, 'tctx> Intrinsics<'ctx, 'tctx> {
-    pub fn new(ctx: &'ctx Context) -> Self {
+    pub(crate) fn new(ctx: &'ctx Context) -> Self {
         Self {
             values: HashMap::new(),
             ctx,
         }
     }
 
-    pub fn get_intrinsic(
+    pub(crate) fn get_intrinsic(
         &mut self,
         sym: Symbol<'tctx>,
         types: impl Iterator<Item = Ty<'tctx>>,

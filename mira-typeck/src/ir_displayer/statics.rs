@@ -4,10 +4,14 @@ use mira_common::store::StoreKey;
 use super::Formatter;
 use super::typed_literal::Tld;
 
-pub struct StaticDisplay<'a>(pub &'a TypedStatic<'a>);
+pub(super) struct StaticDisplay<'a>(pub &'a TypedStatic<'a>);
 
 impl StaticDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter, id: StoreKey<TypedStatic>) -> std::fmt::Result {
+    pub(super) fn fmt(
+        &self,
+        f: &mut Formatter<'_, '_, '_>,
+        id: StoreKey<TypedStatic<'_>>,
+    ) -> std::fmt::Result {
         f.write_value(&self.0.annotations)?;
         f.write_str("static static_")?;
         f.write_value(&id)?;

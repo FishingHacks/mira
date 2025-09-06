@@ -15,6 +15,7 @@ use mira_lexer::{Token, TokenType};
 use mira_spans::{BytePos, SourceFile, SpanData};
 use module::Module;
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
+pub use statement::{TraitFunction, Variable};
 use tokenstream::{BorrowedTokenStream, TokenStream};
 pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, TypeRef};
 
@@ -114,7 +115,7 @@ impl<'a, 'arena> Deref for Parser<'a, 'arena> {
     }
 }
 
-impl<'arena> DerefMut for Parser<'_, 'arena> {
+impl DerefMut for Parser<'_, '_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.stream
     }

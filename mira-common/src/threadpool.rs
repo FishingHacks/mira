@@ -121,7 +121,7 @@ impl ThreadPool {
         &'env mut self,
         func: F,
     ) {
-        let me = Rc::new(RefCell::new(self as *mut _));
+        let me = Rc::new(RefCell::new(&raw mut *self));
         let handle = ThreadpoolHandle(me.clone(), PhantomData, PhantomData);
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| func(&handle)));
         unsafe { (&mut **handle.0.borrow_mut()).finish() };
@@ -156,7 +156,7 @@ pub struct ThreadpoolHandle<'scope, 'env: 'scope>(
     PhantomData<&'env mut &'env ()>,
 );
 
-impl<'scope, 'env> ThreadpoolHandle<'scope, 'env> {
+impl<'scope> ThreadpoolHandle<'scope, '_> {
     pub fn spawn<F: FnOnce() + Send + 'scope>(&'scope self, func: F) {
         unsafe { (&mut **self.0.borrow_mut()).spawn(func) };
     }

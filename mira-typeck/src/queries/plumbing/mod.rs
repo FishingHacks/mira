@@ -2,7 +2,7 @@ mod cache;
 mod key;
 use std::{cell::Cell, marker::PhantomData};
 
-pub use cache::QueryCache;
+pub use cache::{DefaultCache, QueryCache, SingleCache};
 pub use key::QueryKey;
 use mira_common::store::StoreKey;
 use mira_errors::{Diagnostic, ErrorData, FatalError, Severity};
@@ -28,7 +28,7 @@ impl<'arena> QuerySystem<'arena> {
     }
 }
 
-impl<'arena> Default for QuerySystem<'arena> {
+impl Default for QuerySystem<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -135,13 +135,13 @@ macro_rules! define_modules {
                 res
             }
 
-            $crate::macro_if!{if($($($desc_args)*)?) {
+            $crate::macro_if!{if($($($desc_args)+)?) {
                     pub fn description(ctx: &TypeckCtx, $($key_name)?: Key) -> String {
                         $($(let $ctx_name = ctx;)?)?
                         $(format!($($desc_args)+))?
                     }
                 }
-                else pub fn description(_: &TypeckCtx, _: Key) -> String {
+                else pub fn description(_: &TypeckCtx<'_>, _: Key<'_>) -> String {
                     format!(stringify!($name))
                 }
             }
@@ -191,7 +191,7 @@ macro_rules! define_system {
             pub(crate) jobs: parking_lot::RwLock<mira_common::store::Store<$crate::queries::plumbing::QueryJob<'arena>>>,
         }
         impl<'arena> $crate::TypeckCtx<'arena> {
-            $(pub fn $name(&self, key: queries::$name::Key<'arena>) -> queries::$name::Value<'arena> { queries::$name::run(self.query_system(), self, key) })*
+            $(pub fn $name(&self, key: queries::$name::Key<'arena>) -> queries::$name::Value<'arena> { queries::$name::run(self.query_system(), self, key) })+
         }
     };
 }
@@ -200,7 +200,7 @@ pub(crate) type JobId<'arena> = StoreKey<QueryJob<'arena>>;
 
 struct NeedsSendSync<T: Send + Sync>(PhantomData<T>);
 
-const _: NeedsSendSync<QuerySystem> = NeedsSendSync(PhantomData);
+const _: NeedsSendSync<QuerySystem<'_>> = NeedsSendSync(PhantomData);
 
 impl<'arena> TypeckCtx<'arena> {
     pub fn query_system(&self) -> &'arena QuerySystem<'arena> {
@@ -208,14 +208,14 @@ impl<'arena> TypeckCtx<'arena> {
     }
 }
 
-pub struct QueryJob<'arena> {
+pub(crate) struct QueryJob<'arena> {
     desc: Box<str>,
     parent: StoreKey<QueryJob<'arena>>,
     _marker: PhantomData<&'arena ()>,
 }
 
 impl<'arena> QueryJob<'arena> {
-    pub fn new(desc: Box<str>, parent: JobId<'arena>) -> Self {
+    pub(crate) fn new(desc: Box<str>, parent: JobId<'arena>) -> Self {
         Self {
             desc,
             parent,

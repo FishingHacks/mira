@@ -251,7 +251,7 @@ impl Display for TokenType {
     }
 }
 
-fn display_ident(f: &mut std::fmt::Formatter, ident: &str) -> std::fmt::Result {
+fn display_ident(f: &mut std::fmt::Formatter<'_>, ident: &str) -> std::fmt::Result {
     // only idents that are >= 1 character and only alphanumeric + #, $, _ and don't start with a
     // number can be printed without a string
     let needs_str = matches!(ident.chars().next(), Some('0'..='9') | None)

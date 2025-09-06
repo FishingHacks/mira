@@ -90,7 +90,7 @@ impl<'arena> Path<'arena> {
             .combine_with(self.entries[1..].iter().map(|v| v.0.span()), span_interner);
     }
 
-    pub fn parse<'a>(parser: &mut Parser<'a, 'arena>) -> Result<Self, ParsingError<'arena>> {
+    pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
         let name = parser.expect_identifier()?;
         let generics = if parser.match_tok(TokenType::LessThan) {
             Self::parse_generics(parser)?
@@ -313,7 +313,7 @@ impl<'arena> LiteralValue<'arena> {
             }),
             TokenType::VoidLiteral => Some(LiteralValue::Void),
             TokenType::IdentifierLiteral => match value.literal {
-                Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(crate::Path::new(
+                Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(Path::new(
                     Ident::new(*v, value.span),
                     Vec::new(),
                 ))),
@@ -1121,7 +1121,7 @@ impl<'arena> Parser<'_, 'arena> {
         while self.matches(&[TokenType::BracketLeft, TokenType::ParenLeft, TokenType::Dot]) {
             if self.current().ty == TokenType::ParenLeft {
                 // function call
-                let mut arguments: Vec<Expression> = vec![];
+                let mut arguments = vec![];
                 loop {
                     if self.peek().ty == TokenType::ParenRight {
                         self.dismiss();

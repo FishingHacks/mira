@@ -303,7 +303,6 @@ dependencies = [
  "mira-parser",
  "mira-spans",
  "mira-typeck",
- "parking_lot",
  "pulldown-cmark",
 ]
 
@@ -345,7 +344,6 @@ dependencies = [
  "mira-context",
  "mira-errors",
  "mira-spans",
- "parking_lot",
 ]
 
 [[package]]
@@ -372,7 +370,6 @@ dependencies = [
  "mira-spans",
  "mira-target",
  "mira-typeck",
- "parking_lot",
 ]
 
 [[package]]
@@ -428,7 +425,6 @@ dependencies = [
  "mira-lexer",
  "mira-macros",
  "mira-parser",
- "mira-progress-bar",
  "mira-spans",
  "parking_lot",
 ]
@@ -438,13 +434,11 @@ name = "mirac"
 version = "0.2.1"
 dependencies = [
  "mira-argparse",
+ "mira-context",
  "mira-driver",
- "mira-errors",
  "mira-llvm-backend",
  "mira-spans",
  "mira-target",
- "mira-typeck",
- "parking_lot",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@ use mira_spans::Span;
 
 use crate::{ErrorData, LabeledSpan};
 
-pub struct ErrorSimple(pub u32);
+pub(crate) struct ErrorSimple(pub u32);
 
 impl ErrorData for ErrorSimple {
     fn message<'ctx>(
@@ -14,7 +14,7 @@ impl ErrorData for ErrorSimple {
     }
 }
 
-pub struct ErrorCode;
+pub(crate) struct ErrorCode;
 
 impl ErrorData for ErrorCode {
     fn message<'ctx>(
@@ -30,7 +30,7 @@ impl ErrorData for ErrorCode {
     }
 }
 
-pub struct WithSpans<'arena>(pub Span<'arena>, pub Span<'arena>);
+pub(crate) struct WithSpans<'arena>(pub Span<'arena>, pub Span<'arena>);
 
 impl ErrorData for WithSpans<'_> {
     fn message<'ctx>(
@@ -41,7 +41,7 @@ impl ErrorData for WithSpans<'_> {
         cb(format_args!("spans error"))
     }
 
-    fn labeled_spans(&'_ self, _: crate::FormattingCtx<'_>) -> Vec<crate::LabeledSpan<'_>> {
+    fn labeled_spans(&'_ self, _: crate::FormattingCtx<'_>) -> Vec<LabeledSpan<'_>> {
         vec![
             LabeledSpan::primary("primary", self.0),
             LabeledSpan::secondary("secondary", self.1),
@@ -49,7 +49,7 @@ impl ErrorData for WithSpans<'_> {
     }
 }
 
-pub struct WithNote(pub &'static str);
+pub(crate) struct WithNote(pub &'static str);
 
 impl ErrorData for WithNote {
     fn message<'ctx>(

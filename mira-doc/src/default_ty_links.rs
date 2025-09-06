@@ -17,7 +17,7 @@ pub(crate) const F64: &str = "https://fishinghacks.github.io/mira/std/langitems/
 pub(crate) const BOOL: &str = "https://fishinghacks.github.io/mira/std/langitems/bool_t.html";
 pub(crate) const STR: &str = "https://fishinghacks.github.io/mira/std/langitems/str_t.html";
 
-pub fn primitive_ty_to_link(ty: &TyKind) -> &'static str {
+pub(crate) fn primitive_ty_to_link(ty: &TyKind<'_>) -> &'static str {
     match ty {
         TyKind::PrimitiveVoid => VOID,
         TyKind::PrimitiveNever => NEVER,
@@ -42,7 +42,7 @@ pub fn primitive_ty_to_link(ty: &TyKind) -> &'static str {
 /// maps a string matching a primitive type to it's link. e.g, returns
 /// [`Some`]`(`[`crate::default_ty_links::VOID`]`)` for "void", but [`None`] for "CAlloc". Returns
 /// [`crate::default_ty_links::NEVER`] for both "never" and "!".
-pub fn primitive_link_from_str(s: &str) -> Option<&'static str> {
+pub(crate) fn primitive_link_from_str(s: &str) -> Option<&'static str> {
     match s {
         "never" | "!" => Some(NEVER),
         "void" => Some(VOID),

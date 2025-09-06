@@ -31,14 +31,14 @@ use super::{
 
 #[allow(non_upper_case_globals)]
 #[allow(non_snake_case)]
-pub mod BasicTypeEncoding {
-    pub const Boolean: u32 = 2;
-    pub const Float: u32 = 4;
-    pub const Signed: u32 = 5;
-    pub const Unsigned: u32 = 7;
+pub(crate) mod BasicTypeEncoding {
+    pub(crate) const Boolean: u32 = 2;
+    pub(crate) const Float: u32 = 4;
+    pub(crate) const Signed: u32 = 5;
+    pub(crate) const Unsigned: u32 = 7;
 }
 
-pub struct DebugContext<'ctx, 'arena> {
+pub(crate) struct DebugContext<'ctx, 'arena> {
     ctx: TypeCtx<'arena>,
     pub(super) builder: DebugInfoBuilder<'ctx>,
     global_scope: DIScope<'ctx>,
@@ -52,14 +52,14 @@ pub struct DebugContext<'ctx, 'arena> {
 }
 
 impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
-    pub fn location(&self, scope: DIScope<'ctx>, span: Span<'arena>) -> DILocation<'ctx> {
+    pub(crate) fn location(&self, scope: DIScope<'ctx>, span: Span<'arena>) -> DILocation<'ctx> {
         let (line, column) = span.with_source_file(self.ctx.source_map()).lookup_pos();
         self.builder
             .create_debug_location(self.context, line, column, scope, None)
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn declare_param(
+    pub(crate) fn declare_param(
         &mut self,
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
@@ -87,7 +87,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn declare_variable(
+    pub(crate) fn declare_variable(
         &mut self,
         ptr: PointerValue<'ctx>,
         scope: DIScope<'ctx>,
@@ -117,7 +117,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             .insert_declare_at_end(ptr, Some(info), None, self.location(scope, span), bb)
     }
 
-    pub fn new_block(
+    pub(crate) fn new_block(
         &self,
         parent_scope: DIScope<'ctx>,
         span: Span<'arena>,
@@ -128,7 +128,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             .create_lexical_block(parent_scope, self.modules[module].1, line, column)
     }
 
-    pub fn new(
+    pub(crate) fn new(
         context: &'ctx Context,
         module: &Module<'ctx>,
         default_types: DefaultTypes<'ctx>,
@@ -305,7 +305,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         me
     }
 
-    pub fn get_type(
+    pub(crate) fn get_type(
         &mut self,
         ty: Ty<'arena>,
         structs: &Store<TypedStruct<'arena>>,
@@ -592,7 +592,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         *self.type_store.entry(ty).insert_entry(di_typ).get()
     }
 
-    pub fn get_file(&self, file: &Path) -> DIFile<'ctx> {
+    pub(crate) fn get_file(&self, file: &Path) -> DIFile<'ctx> {
         let file_name = file
             .file_name()
             .map(|v| v.to_string_lossy())

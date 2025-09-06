@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 clap.workspace = true
 mira-target.workspace = true
+
+[lints]
+workspace = true

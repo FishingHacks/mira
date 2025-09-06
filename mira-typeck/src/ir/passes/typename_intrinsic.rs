@@ -5,7 +5,7 @@ use crate::{
     ir::{MutVisitor, Scope, TypedExpression, TypedLiteral},
 };
 
-pub struct TypenameIntrinsicPass;
+pub(super) struct TypenameIntrinsicPass;
 
 impl<'a> MutVisitor<'a> for TypenameIntrinsicPass {
     fn visit_expr(

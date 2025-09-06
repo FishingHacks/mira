@@ -16,7 +16,7 @@ impl Annotation for LLVMIntrinsicAnnotation {
         "llvm_intrinsic"
     }
 
-    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations) -> bool {
+    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations<'_>) -> bool {
         thing == AnnotationReceiver::Function
             && annotations.get_annotations::<Self>().nth(1).is_none()
     }

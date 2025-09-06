@@ -20,7 +20,7 @@ use mira_target::{Target, NATIVE_TARGET};
 
 use super::about::print_about;
 
-pub fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
+pub(crate) fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
     let Some(libmirastd) = find_library("mirastd") else {
         println!("Failed to find mirastd");
         return Ok(());
@@ -209,13 +209,13 @@ fn parse_opts(args: &str) -> Vec<String> {
 }
 
 fn compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
-    let _ = std::fs::remove_file("/tmp/mira_executable");
-    let _ = std::fs::remove_file("/tmp/mira_object.o");
+    drop(std::fs::remove_file("/tmp/mira_executable"));
+    drop(std::fs::remove_file("/tmp/mira_object.o"));
     let now = Instant::now();
     _compile_run(rest, repl, run);
     println!("Compilation took {:?}", now.elapsed());
-    let _ = std::fs::remove_file("/tmp/mira_executable");
-    let _ = std::fs::remove_file("/tmp/mira_object.o");
+    drop(std::fs::remove_file("/tmp/mira_executable"));
+    drop(std::fs::remove_file("/tmp/mira_object.o"));
 }
 
 fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {

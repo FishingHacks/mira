@@ -36,7 +36,7 @@ mod debug_builder;
 mod error;
 mod intrinsics;
 
-static DUMMY_IR: LazyLock<IR> = LazyLock::new(|| IR::new(std::iter::empty(), Span::DUMMY));
+static DUMMY_IR: LazyLock<IR<'_>> = LazyLock::new(|| IR::new(std::iter::empty(), Span::DUMMY));
 
 impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     pub fn make_function_codegen_context<'me, 'a>(
@@ -310,7 +310,7 @@ fn static_to_basic_type(static_value: GlobalValue<'_>) -> BasicTypeEnum<'_> {
     }
 }
 
-fn get_alignment(ty: BasicTypeEnum) -> u32 {
+fn get_alignment(ty: BasicTypeEnum<'_>) -> u32 {
     match ty {
         BasicTypeEnum::FloatType(ty) => ty
             .size_of()
@@ -343,7 +343,7 @@ fn to_basic_value<'ctx, 'arena>(
     statics: &StaticsStore<'ctx, 'arena>,
     functions: &FunctionsStore<'ctx, 'arena>,
     ext_functions: &ExternalFunctionsStore<'ctx, 'arena>,
-    string_map: &HashMap<Symbol, GlobalValue<'ctx>>,
+    string_map: &HashMap<Symbol<'_>, GlobalValue<'ctx>>,
     ctx: &'ctx Context,
 ) -> BasicValueEnum<'ctx> {
     match ty {
@@ -580,31 +580,6 @@ macro_rules! f_s_u {
                 .$float($($float_val,)* $lhs.into_float_value(), $rhs.into_float_value(), "")?
                 .into(),
             _ => unreachable!(concat!($err, "  -- Type: {}"), $ty),
-        }
-    };
-    (with_bool $ctx:expr, $ty: expr, $lhs: expr, $rhs: expr, $sint: ident, $uint: ident, $float: ident, $bool: ident, $err:literal) => {
-        match **$ty {
-            Type::PrimitiveI8(0)
-            | Type::PrimitiveI16(0)
-            | Type::PrimitiveI32(0)
-            | Type::PrimitiveI64(0)
-            | Type::PrimitiveISize(0) => $ctx
-                .$sint($lhs.into_int_value(), $rhs.into_int_value(), "")?
-                .into(),
-            Type::PrimitiveU8(0)
-            | Type::PrimitiveU16(0)
-            | Type::PrimitiveU32(0)
-            | Type::PrimitiveU64(0)
-            | Type::PrimitiveUSize(0) => $ctx
-                .$uint($lhs.into_int_value(), $rhs.into_int_value(), "")?
-                .into(),
-            Type::PrimitiveF32(0) | Type::PrimitiveF64(0) => $ctx
-                .$float($lhs.into_float_value(), $rhs.into_float_value(), "")?
-                .into(),
-            Type::PrimitiveBool(0) => $ctx
-                .$bool($lhs.into_int_value(), $rhs.into_int_value(), "")?
-                .into(),
-            _ => unreachable!($err),
         }
     };
 }

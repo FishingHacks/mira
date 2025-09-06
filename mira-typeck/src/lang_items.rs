@@ -27,11 +27,13 @@ struct LangItemFunction<'arena> {
 }
 
 impl<'arena> LangItemFunction<'arena> {
-    pub fn new(args: Vec<Ty<'arena>>, return_type: Ty<'arena>) -> Self {
+    fn new(args: Vec<Ty<'arena>>, return_type: Ty<'arena>) -> Self {
         Self { args, return_type }
     }
 }
 
+// TODO: Remove whyen there's a function langitem
+#[allow(unused_macro_rules)]
 macro_rules! lang_item_def {
     ($($lang_item: ident => $ty: ident),* $(,)?) => {
         #[derive(Debug)]
@@ -130,13 +132,13 @@ macro_rules! lang_item_def {
 #[derive(Debug, Clone, Copy)]
 // TODO: remove after adding a function langitem
 #[allow(dead_code)]
-pub enum FunctionLangItem<'arena> {
+enum FunctionLangItem<'arena> {
     External(StoreKey<TypedExternalFunction<'arena>>),
     Internal(StoreKey<TypedFunction<'arena>>),
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum LangItemType {
+enum LangItemType {
     Trait,
     Struct,
     Static,
@@ -155,7 +157,7 @@ impl Display for LangItemType {
 }
 
 #[derive(Clone, Debug, ErrorData)]
-pub enum LangItemAssignmentError<'arena> {
+enum LangItemAssignmentError<'arena> {
     #[error("expected lang item `{lang_item}` to be a {expected}, but got a {got}")]
     InvalidLangItemError {
         #[primary_label("lang item defined here")]
@@ -185,7 +187,7 @@ impl Display for GenericList<'_, '_> {
 }
 
 #[derive(Clone, ErrorData, Debug)]
-pub enum LangItemError<'arena> {
+enum LangItemError<'arena> {
     #[error("No lang item for `{langitem}` found (type: {ty})")]
     MissingItem {
         langitem: &'static str,
@@ -328,6 +330,8 @@ pub enum LangItemError<'arena> {
     },
 }
 
+// TODO: Remove whyen there's a function langitem
+#[allow(unused_macro_rules)]
 macro_rules! check_langitem {
     (required $self:ident.$lang_item:ident: $ty:ident; $reader:ident $context:ident) => {
         if $self.$lang_item.is_none() {

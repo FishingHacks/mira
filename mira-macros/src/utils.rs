@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Fields, Ident, Variant, spanned::Spanned};
 
-pub fn enum_make_match(variant: &Variant) -> TokenStream {
+pub(crate) fn enum_make_match(variant: &Variant) -> TokenStream {
     let ident = &variant.ident;
     match &variant.fields {
         Fields::Named(fields_named) => {
@@ -19,7 +19,7 @@ pub fn enum_make_match(variant: &Variant) -> TokenStream {
     }
 }
 
-pub fn struct_make_fields(fields: &Fields) -> TokenStream {
+pub(crate) fn struct_make_fields(fields: &Fields) -> TokenStream {
     match fields {
         Fields::Named(fields_named) => {
             let fields = fields_named.named.iter().map(|v| v.ident.as_ref().unwrap());

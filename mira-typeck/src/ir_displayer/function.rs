@@ -4,14 +4,14 @@ use mira_lexer::token::IdentDisplay;
 
 use super::{expressions::write_implicit_block, formatter::Formatter};
 
-pub struct FuncDisplay<'a>(pub &'a TypedFunctionContract<'a>, pub Option<&'a IR<'a>>);
+pub(super) struct FuncDisplay<'a>(pub &'a TypedFunctionContract<'a>, pub Option<&'a IR<'a>>);
 
 impl FuncDisplay<'_> {
-    pub fn fmt(
+    pub(super) fn fmt(
         &self,
-        f: &mut Formatter,
+        f: &mut Formatter<'_, '_, '_>,
         is_external: bool,
-        id: StoreKey<TypedFunction>,
+        id: StoreKey<TypedFunction<'_>>,
     ) -> std::fmt::Result {
         for annotation in self.0.annotations.iter() {
             f.write_value(&annotation)?;

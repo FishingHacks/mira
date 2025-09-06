@@ -4,10 +4,10 @@ use crate::TypedStruct;
 
 use super::Formatter;
 
-pub struct StructDisplay<'a>(pub &'a TypedStruct<'a>);
+pub(super) struct StructDisplay<'a>(pub &'a TypedStruct<'a>);
 
 impl StructDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+    pub(super) fn fmt(&self, f: &mut Formatter<'_, '_, '_>) -> std::fmt::Result {
         f.write_value(&self.0.annotations)?;
         f.write_str("struct struct_")?;
         f.write_value(&self.0.id)?;

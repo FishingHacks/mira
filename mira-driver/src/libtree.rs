@@ -36,7 +36,7 @@ pub struct LibraryBuilder<'tree> {
     dependencies: HashMap<Arc<str>, LibraryId>,
 }
 
-impl<'tree> LibraryBuilder<'tree> {
+impl LibraryBuilder<'_> {
     #[must_use]
     pub fn with_source(mut self, source: Arc<str>) -> Self {
         self.input = LibraryInput::String(source);

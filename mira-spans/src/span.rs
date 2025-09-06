@@ -1,5 +1,5 @@
 use crate::interner::SpanInterner;
-use monotonic::MonotonicVec;
+pub use monotonic::MonotonicVec;
 use parking_lot::{RwLock, RwLockReadGuard};
 use std::{
     fmt::{Debug, Display},
@@ -78,7 +78,7 @@ impl<'arena> Span<'arena> {
         }
 
         Self {
-            inner: (*interner.intern(data) as *const SpanData).addr() as u64,
+            inner: <*const _>::addr(*interner.intern(data)) as u64,
             _data: PhantomData,
         }
     }
@@ -394,6 +394,7 @@ pub trait FileLoader {
     fn read_binfile(&self, path: &Path) -> io::Result<Arc<[u8]>>;
 }
 
+#[derive(Clone, Copy)]
 pub struct RealFileLoader;
 
 impl FileLoader for RealFileLoader {
@@ -451,7 +452,7 @@ impl FileLoader for RealFileLoader {
         let n = loop {
             match file.read(&mut probe) {
                 Ok(0) => return Ok(bytes),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
                 Ok(n) => break n,
             }

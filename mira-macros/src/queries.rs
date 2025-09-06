@@ -32,7 +32,7 @@ struct DescAnnotation {
 }
 
 impl Parse for DescAnnotation {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let ctx_name;
         let args;
         if input.parse::<Token![|]>().is_ok() {
@@ -64,7 +64,7 @@ struct Annotations {
 }
 
 impl Parse for Annotations {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut me = Self::default();
         // annotation
         while input.parse::<Token![#]>().is_ok() {
@@ -128,7 +128,7 @@ struct Query {
 }
 
 impl Parse for Query {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let annotations = input.parse()?;
         let name = input.parse()?;
         let inner;
@@ -149,7 +149,7 @@ impl Parse for Query {
 struct Queries(Box<[Query]>);
 
 impl Parse for Queries {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut vec = Vec::new();
         while !input.is_empty() {
             vec.push(input.parse()?);
@@ -158,7 +158,7 @@ impl Parse for Queries {
     }
 }
 
-pub fn run(input: proc_macro::TokenStream) -> Result<TokenStream, Error> {
+pub(crate) fn run(input: proc_macro::TokenStream) -> Result<TokenStream, Error> {
     let queries: Queries = syn::parse(input)?;
     let mut names = TokenStream::new();
     for e in queries.0.iter() {

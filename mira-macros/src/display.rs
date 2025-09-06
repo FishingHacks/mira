@@ -4,7 +4,7 @@ use syn::{Attribute, DataEnum, DataStruct, DeriveInput, Error, Generics, parse_m
 
 use crate::utils::{enum_make_match, struct_make_fields};
 
-pub fn derive_display(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub(crate) fn derive_display(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match input.data {
         syn::Data::Struct(s) => derive_for_struct(s, &input.attrs, input.ident, input.generics)

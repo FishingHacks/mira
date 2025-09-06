@@ -4,7 +4,7 @@ use mira_spans::Arena;
 
 use super::compile::to_emit;
 
-pub fn expand_main(args: ExpandArgs) {
+pub(crate) fn expand_main(args: ExpandArgs) {
     let arena = Arena::new();
     let (ctx, data) = ContextData::new(&arena, None, DiagEmitter::Stdout);
     let mut context = data.to_context(ctx.ty_ctx());

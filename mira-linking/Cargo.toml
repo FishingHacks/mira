@@ -9,3 +9,6 @@ mira-macros.workspace = true
 mira-errors.workspace = true
 mira-spans.workspace = true
 mira-context.workspace = true
+
+[lints]
+workspace = true

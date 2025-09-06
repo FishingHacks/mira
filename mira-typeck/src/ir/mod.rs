@@ -222,11 +222,11 @@ impl<'ctx> IR<'ctx> {
     }
 
     pub fn visit_mut<V: MutVisitor<'ctx>>(&mut self, visitor: &mut V, tcx: TypeCtx<'ctx>) {
-        visit::walk_mut_block(self.get_entry_block(), self, visitor, tcx);
+        walk_mut_block(self.get_entry_block(), self, visitor, tcx);
     }
 
     pub fn visit<V: Visitor<'ctx>>(&self, visitor: &mut V, tcx: TypeCtx<'ctx>) {
-        visit::walk_block(self.get_entry_block(), self, visitor, tcx);
+        walk_block(self.get_entry_block(), self, visitor, tcx);
     }
 }
 
@@ -322,6 +322,7 @@ impl<'ctx> ScopedIR<'ctx> {
     ) -> (BlockId, R) {
         let old = self.current_block;
         let block = self.create_block(span);
+        self.goto(block);
         let v = f(self);
         self.goto(old);
         (block, v)
@@ -336,7 +337,7 @@ impl<'ctx> Deref for ScopedIR<'ctx> {
     }
 }
 
-impl<'ctx> DerefMut for ScopedIR<'ctx> {
+impl DerefMut for ScopedIR<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.ir
     }

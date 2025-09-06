@@ -101,7 +101,7 @@ impl<'arena> MacroExpander<'arena> {
                     diagnostics,
                     self.ctx.ctx.span_interner,
                 ) {
-                    Ok(v) if can_define_macros => _ = self.macros.insert(name, v),
+                    Ok(v) if can_define_macros => drop(self.macros.insert(name, v)),
                     Ok(_) => {}
                     Err(()) => has_err = true,
                 }

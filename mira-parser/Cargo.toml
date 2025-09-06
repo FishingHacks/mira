@@ -11,3 +11,6 @@ mira-errors.workspace = true
 mira-macros.workspace = true
 parking_lot.workspace = true
 mira-context.workspace = true
+
+[lints]
+workspace = true

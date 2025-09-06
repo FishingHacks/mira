@@ -136,7 +136,7 @@ pub struct Target {
     pub abi: Abi,
 }
 
-impl std::fmt::Display for Target {
+impl Display for Target {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.arch, f)?;
         f.write_char('-')?;
@@ -231,7 +231,7 @@ impl Target {
     }
 }
 
-impl std::str::FromStr for Target {
+impl FromStr for Target {
     type Err = TargetParsingError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

@@ -10,6 +10,7 @@ macro_rules! interner {
         #[derive(Clone, Copy, Eq)]
         pub struct $internee<'arena>(&'arena $ty);
 
+        #[allow(single_use_lifetimes, trivial_casts)]
         impl<'arena> std::hash::Hash for $internee<'arena> {
             fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
                 (self.0 as *const $ty).hash(state);
@@ -34,6 +35,7 @@ macro_rules! interner {
             }
         }
 
+        #[allow(single_use_lifetimes, trivial_casts)]
         impl<'arena, T> PartialEq<T> for $internee<'arena>
         where
             $ty: PartialEq<T>,
@@ -43,6 +45,7 @@ macro_rules! interner {
             }
         }
 
+        #[allow(unreachable_pub)]
         pub struct $interner<'arena> {
             arena: &'arena Arena,
             values: std::collections::HashSet<&'arena $ty>,
@@ -50,6 +53,7 @@ macro_rules! interner {
 
         $(const _: () = $interner::check_default($default_values);)?
 
+        #[allow(unreachable_pub)]
         impl<'arena> $interner<'arena> {
             #[allow(unused, dead_code)]
             const fn check_default(_: &[&'static $internee<'arena>]) {}
@@ -87,6 +91,7 @@ macro_rules! interner {
 #[macro_export]
 macro_rules! owned_intern {
     ($interner:ident, $internee:ident, $ty:ty, |$arena:ident, $value:ident| $blk: expr) => {
+        #[allow(unreachable_pub)]
         impl<'arena> $interner<'arena> {
             pub fn intern_owned(&mut self, $value: $ty) -> $internee<'arena> {
                 if let Some(v) = self.values.get(&$value) {
@@ -172,7 +177,7 @@ macro_rules! symbols {
 
         $(#[allow(non_upper_case_globals, non_snake_case)] pub mod $category {
             use super::Symbol;
-            $(pub static $sym: Symbol<'static> = Symbol(unsafe { &*(symbols!(value $sym $(= $value)?) as *const _) });)*
+            $(pub static $sym: Symbol<'static> = Symbol(symbols!(value $sym $(= $value)?));)*
         })*
 
         pub(super) static ALL_SYMBOLS: &[&Symbol<'static>] = &[&EMPTY_SYM, $($(&$category::$sym),*),*];
@@ -202,7 +207,7 @@ mod test {
     }
 
     #[test]
-    pub fn interner_interns() {
+    fn interner_interns() {
         let arena = Arena::new();
         let mut interner = SymbolInterner::new(&arena);
         println!(

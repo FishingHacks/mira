@@ -10,6 +10,8 @@ mira-errors.workspace = true
 mira-common.workspace = true
 mira-parser.workspace = true
 mira-driver = { workspace = true, features = ["typeck"] }
-parking_lot.workspace = true
 pulldown-cmark.workspace = true
 mira-context.workspace = true
+
+[lints]
+workspace = true

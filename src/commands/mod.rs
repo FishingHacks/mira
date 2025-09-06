@@ -1,4 +1,4 @@
-pub mod about;
-pub mod compile;
-pub mod expand;
-pub mod repl;
+pub(crate) mod about;
+pub(crate) mod compile;
+pub(crate) mod expand;
+pub(crate) mod repl;

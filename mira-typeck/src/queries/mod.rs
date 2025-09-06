@@ -3,7 +3,7 @@ use crate::TypedModule;
 use crate::define_system;
 use mira_common::store::StoreKey;
 use mira_macros::queries;
-pub use plumbing::{QueryCache, QueryKey};
+pub use plumbing::{DefaultCache, QueryCache, QueryKey, SingleCache};
 
 queries! {
     #[manually_allocated(u8)]

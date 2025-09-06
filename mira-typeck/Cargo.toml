@@ -14,4 +14,6 @@ mira-lexer.workspace = true
 mira-parser.workspace = true
 mira-common.workspace = true
 mira-context.workspace = true
-mira-progress-bar.workspace = true
+
+[lints]
+workspace = true

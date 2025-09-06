@@ -247,7 +247,7 @@ impl<T> Store<T> {
         self.values.values_mut()
     }
 
-    pub fn indices(&self) -> impl Iterator<Item = StoreKey<T>> + use<'_, T> {
+    pub fn indices(&self) -> impl Iterator<Item = StoreKey<T>> {
         self.values.keys().copied()
     }
 
@@ -385,7 +385,7 @@ impl<T, O: ?Sized> AssociatedStore<T, O> {
         self.values.values_mut()
     }
 
-    pub fn indices(&self) -> impl Iterator<Item = StoreKey<T>> + use<'_, T, O> {
+    pub fn indices(&self) -> impl Iterator<Item = StoreKey<T>> {
         self.values.keys().copied()
     }
 }

@@ -20,7 +20,7 @@ pub struct FormattingCtx<'a> {
     pub unicode: bool,
 }
 
-impl<'a> FormattingCtx<'a> {
+impl FormattingCtx<'_> {
     pub fn display_span(self, span: Span<'_>) -> SpanWithFile {
         span.with_source_file(self.source_map)
     }
@@ -148,6 +148,14 @@ impl<'arena> Diagnostic<'arena> {
     /// are usually fairly expensive to construct.
     pub fn dismiss(mut self) {
         self.diagnostic.take();
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.diagnostic
+            .as_ref()
+            .expect("cannot access inner")
+            .severity
+            == Severity::Error
     }
 
     pub(crate) fn take_inner(

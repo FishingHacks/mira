@@ -3,6 +3,7 @@ use std::{fmt::Arguments, path::Path};
 use crate::printers::{color_from_severity, get_loc, print_line_left};
 use crate::{Formatter, LabeledSpanStyle, Loc, Severity, StyledPrinter, Styles};
 
+#[derive(Clone, Copy)]
 pub struct AsciiPrinter {
     styles: Styles,
     severity_color: &'static str,

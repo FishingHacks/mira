@@ -253,7 +253,7 @@ impl DiagnosticFormatter {
         &mut self.output
     }
 
-    pub fn with_output<R>(&mut self, f: impl FnOnce(Formatter) -> R) -> R {
+    pub fn with_output<R>(&mut self, f: impl FnOnce(Formatter<'_>) -> R) -> R {
         let ctx = FormattingCtx {
             source_map: &self.source_map,
             unicode: self.unicode,
@@ -288,7 +288,7 @@ impl DiagnosticFormatter {
     ) -> std::fmt::Result {
         let ctx = f.ctx;
 
-        let mut files_and_spans: HashMap<FileId, Vec<Loc>> = HashMap::new();
+        let mut files_and_spans: HashMap<FileId, Vec<Loc<'_>>> = HashMap::new();
         let err_labels = diagnostic.err.labeled_spans(ctx);
         for label in diagnostic.labels.iter().chain(err_labels.iter()) {
             let data = label.span.get_span_data();
@@ -345,7 +345,7 @@ impl DiagnosticFormatter {
     /// locs have to be sorted by `loc.line` and then by `loc.start`
     fn print_file_spans(
         file: Arc<SourceFile>,
-        locs: &[Loc],
+        locs: &[Loc<'_>],
         f: &mut Formatter<'_>,
         printer: &dyn StyledPrinter,
     ) -> std::fmt::Result {
@@ -469,6 +469,7 @@ impl<'a, 'b> Iterator for LineSplitter<'a, 'b> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct FatalError;
 
 impl FatalError {

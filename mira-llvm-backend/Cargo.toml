@@ -18,5 +18,7 @@ mira-parser.workspace = true
 mira-common.workspace = true
 inkwell.workspace = true
 mira-target.workspace = true
-parking_lot.workspace = true
 mira-context.workspace = true
+
+[lints]
+workspace = true

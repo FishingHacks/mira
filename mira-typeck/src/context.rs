@@ -1,6 +1,8 @@
 use std::{fmt::Debug, sync::Arc};
 
-use mira_context::{DiagCtx, DiagEmitter, DocComment, DocCommentStore, ErrorTracker, SharedCtx};
+use mira_context::{
+    DiagCtx, DiagEmitter, DocComment, DocCommentStore, ErrorEmitted, ErrorTracker, SharedCtx,
+};
 use mira_errors::{Diagnostic, StyledPrinter, Styles};
 use parking_lot::Mutex;
 
@@ -107,15 +109,16 @@ impl<'arena> TypeCtx<'arena> {
         &self.0.source_map
     }
 
-    pub fn emit_diags(&self, diags: impl IntoIterator<Item = Diagnostic<'arena>>) {
+    pub fn emit_diags(&self, diags: impl IntoIterator<Item = Diagnostic<'arena>>) -> ErrorEmitted {
         let mut dctx = self.0.diag_ctx.lock();
         for diag in diags {
             dctx.emit_diag(diag);
         }
+        ErrorEmitted
     }
 
-    pub fn emit_diag(&self, diag: Diagnostic<'arena>) {
-        self.0.diag_ctx.lock().emit_diag(diag);
+    pub fn emit_diag(&self, diag: Diagnostic<'arena>) -> ErrorEmitted {
+        self.0.diag_ctx.lock().emit_diag(diag)
     }
 
     pub fn err_count(&self) -> usize {
@@ -127,6 +130,18 @@ impl<'arena> TypeCtx<'arena> {
     }
 
     pub fn errors_happened(&self, tracker: ErrorTracker) -> bool {
+        self.0.diag_ctx.lock().errors_happened(tracker)
+    }
+
+    pub fn errors_happened_res(&self, tracker: ErrorTracker) -> Result<(), ErrorEmitted> {
+        if self.0.diag_ctx.lock().errors_happened(tracker) {
+            Err(ErrorEmitted)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn errors_happened_result(&self, tracker: ErrorTracker) -> bool {
         self.0.diag_ctx.lock().errors_happened(tracker)
     }
 

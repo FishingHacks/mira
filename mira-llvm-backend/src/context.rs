@@ -18,7 +18,7 @@ use super::{
 use inkwell::{
     AddressSpace, OptimizationLevel,
     attributes::{Attribute, AttributeLoc},
-    builder::{Builder, BuilderError},
+    builder::Builder,
     context::Context,
     debug_info::AsDIScope,
     llvm_sys::LLVMCallConv,
@@ -35,6 +35,7 @@ use inkwell::{
 };
 
 use mira_common::store::{AssociatedStore, StoreKey};
+use mira_context::ErrorEmitted;
 use mira_parser::std_annotations::{
     alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
     intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation, noinline::Noinline,
@@ -65,11 +66,13 @@ pub(super) struct DefaultTypes<'ctx> {
     pub empty_struct: StructType<'ctx>,
 }
 
-pub type FunctionsStore<'ctx, 'arena> = AssociatedStore<FunctionValue<'ctx>, TypedFunction<'arena>>;
-pub type ExternalFunctionsStore<'ctx, 'arena> =
+pub(crate) type FunctionsStore<'ctx, 'arena> =
+    AssociatedStore<FunctionValue<'ctx>, TypedFunction<'arena>>;
+pub(crate) type ExternalFunctionsStore<'ctx, 'arena> =
     AssociatedStore<FunctionValue<'ctx>, TypedExternalFunction<'arena>>;
-pub type StructsStore<'ctx, 'arena> = AssociatedStore<StructType<'ctx>, TypedStruct<'arena>>;
-pub type StaticsStore<'ctx, 'arena> = AssociatedStore<GlobalValue<'ctx>, TypedStatic<'arena>>;
+pub(crate) type StructsStore<'ctx, 'arena> = AssociatedStore<StructType<'ctx>, TypedStruct<'arena>>;
+pub(crate) type StaticsStore<'ctx, 'arena> =
+    AssociatedStore<GlobalValue<'ctx>, TypedStatic<'arena>>;
 
 pub struct CodegenContextBuilder(Context);
 
@@ -84,7 +87,7 @@ impl CodegenContextBuilder {
         module: &str,
         path: Arc<Path>,
         config: CodegenConfig<'ctx>,
-    ) -> Result<CodegenContext<'ctx, 'arena>, CodegenError> {
+    ) -> Result<CodegenContext<'ctx, 'arena>, CodegenError<'arena>> {
         CodegenContext::new(&self.0, ctx, module, path, config)
     }
 }
@@ -236,7 +239,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         self.module.print_to_string()
     }
 
-    pub fn gen_assembly(&self) -> Result<MemoryBuffer, CodegenError> {
+    pub fn gen_assembly(&self) -> Result<MemoryBuffer, CodegenError<'arena>> {
         self.machine
             .write_to_memory_buffer(&self.module, FileType::Assembly)
             .map_err(CodegenError::from)
@@ -252,7 +255,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         writer.write_all(string.to_bytes())
     }
 
-    pub fn write_assembly(&self, writer: &mut dyn Write) -> Result<(), CodegenError> {
+    pub fn write_assembly(&self, writer: &mut dyn Write) -> Result<(), CodegenError<'arena>> {
         let buffer = self
             .machine
             .write_to_memory_buffer(&self.module, FileType::Assembly)
@@ -262,7 +265,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             .map_err(CodegenError::WriteAssemblyError)
     }
 
-    pub fn write_object(&self, writer: &mut dyn Write) -> Result<(), CodegenError> {
+    pub fn write_object(&self, writer: &mut dyn Write) -> Result<(), CodegenError<'arena>> {
         let buffer = self
             .machine
             .write_to_memory_buffer(&self.module, FileType::Object)
@@ -278,7 +281,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         module: &str,
         path: Arc<Path>,
         config: CodegenConfig<'ctx>,
-    ) -> Result<Self, CodegenError> {
+    ) -> Result<Self, CodegenError<'arena>> {
         let shared_ctx = ctx.ctx;
         LLVMTarget::initialize_all(&InitializationConfig::default());
         let triple = TargetTriple::create(&config.target.to_llvm());
@@ -635,20 +638,20 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     pub fn compile_external_fn(
         &mut self,
         fn_id: StoreKey<TypedExternalFunction<'arena>>,
-    ) -> Result<(), BuilderError> {
+    ) -> Result<(), ErrorEmitted> {
         self.internal_compile_fn(fn_id.cast(), true)
     }
     pub fn compile_fn(
         &mut self,
         fn_id: StoreKey<TypedFunction<'arena>>,
-    ) -> Result<(), BuilderError> {
+    ) -> Result<(), ErrorEmitted> {
         self.internal_compile_fn(fn_id, false)
     }
     fn internal_compile_fn(
         &mut self,
         fn_id: StoreKey<TypedFunction<'arena>>,
         is_external: bool,
-    ) -> Result<(), BuilderError> {
+    ) -> Result<(), ErrorEmitted> {
         let ext_fn_reader = self.tc_ctx.external_functions.read();
         let fn_reader = self.tc_ctx.functions.read();
         // if there's no body to an external function, don't try to generate one.
@@ -739,20 +742,18 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         drop(structs_reader);
 
         let exprs = ir.get_entry_block_exprs();
+        let tracker = function_ctx.tc_ctx.ctx.track_errors();
         for expr in exprs {
-            function_ctx.codegen(expr, scope, contract.module_id)?;
+            _ = function_ctx
+                .codegen(expr, scope, contract.module_id)
+                .map_err(|e| {
+                    function_ctx
+                        .tc_ctx
+                        .ctx
+                        .emit_diag(CodegenError::Builder(e, expr.span()).to_error())
+                });
         }
-
-        let Some(insert_block) = function_ctx.builder.get_insert_block() else {
-            unreachable!(
-                "builder does not have a basic block to insert into even though it just built a function"
-            )
-        };
-        assert!(
-            insert_block.get_terminator().is_some(),
-            "basic block does not have a terminator"
-        );
-        Ok(())
+        function_ctx.tc_ctx.ctx.errors_happened_res(tracker)
     }
 
     pub fn write_object_file(&self, path: impl AsRef<Path>) -> Result<(), LLVMString> {

@@ -46,7 +46,7 @@ impl Display for AnnotationReceiver {
 pub trait Annotation: Display + Debug + Any {
     fn get_name(&self) -> &'static str;
     #[allow(unused_variables)]
-    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations) -> bool {
+    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations<'_>) -> bool {
         true
     }
 }

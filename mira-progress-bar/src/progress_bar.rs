@@ -126,7 +126,7 @@ impl ProgressBar {
 
     fn print_inner(
         &self,
-        f: &mut SizedLineWriter,
+        f: &mut SizedLineWriter<'_>,
         children: &[ProgressItemRef],
         last_item: *mut Indent,
         root_node: *const Indent,
@@ -192,7 +192,7 @@ impl ProgressBar {
 struct Indent(IndentType, *const Indent);
 
 impl Indent {
-    pub const fn new(ty: IndentType) -> Self {
+    pub(crate) const fn new(ty: IndentType) -> Self {
         Self(ty, std::ptr::null())
     }
 }

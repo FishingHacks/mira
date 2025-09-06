@@ -31,7 +31,7 @@ impl Drop for ProgressBarThread {
             return;
         };
         if let Some(v) = Arc::get_mut(inner) {
-            _ = v.sender.send(ProgressMessage::StopThread);
+            drop(v.sender.send(ProgressMessage::StopThread));
             if let Err(e) = v
                 .handle
                 .take()
@@ -66,9 +66,11 @@ impl ProgressBarThread {
             return ProgressItemRef(0);
         };
         let item = self.next_progbar_ref();
-        _ = inner
-            .sender
-            .send(ProgressMessage::AddChild { name, item, parent });
+        drop(
+            inner
+                .sender
+                .send(ProgressMessage::AddChild { name, item, parent }),
+        );
         item
     }
 
@@ -77,7 +79,7 @@ impl ProgressBarThread {
             return ProgressItemRef(0);
         };
         let item = self.next_progbar_ref();
-        _ = inner.sender.send(ProgressMessage::Add { name, item });
+        drop(inner.sender.send(ProgressMessage::Add { name, item }));
         item
     }
 
@@ -85,14 +87,14 @@ impl ProgressBarThread {
         let ProgressBarThread::Threaded(inner) = self else {
             return;
         };
-        _ = inner.sender.send(ProgressMessage::Remove(item));
+        drop(inner.sender.send(ProgressMessage::Remove(item)));
     }
 
     pub fn clear_children(&self, item: ProgressItemRef) {
         let ProgressBarThread::Threaded(inner) = self else {
             return;
         };
-        _ = inner.sender.send(ProgressMessage::ClearChildren(item));
+        drop(inner.sender.send(ProgressMessage::ClearChildren(item)));
     }
 
     pub fn print_stdout(&self, s: String) {

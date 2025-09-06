@@ -112,15 +112,16 @@ impl<'arena> SharedCtx<'arena> {
         self.doc_comment_store.lock().clear_doc_comment(v);
     }
 
-    pub fn emit_diags(&self, diags: impl IntoIterator<Item = Diagnostic<'arena>>) {
+    pub fn emit_diags(&self, diags: impl IntoIterator<Item = Diagnostic<'arena>>) -> ErrorEmitted {
         let mut dctx = self.dctx.lock();
         for diag in diags {
             dctx.emit_diag(diag);
         }
+        ErrorEmitted
     }
 
-    pub fn emit_diag(&self, diag: Diagnostic<'arena>) {
-        self.dctx.lock().emit_diag(diag);
+    pub fn emit_diag(&self, diag: Diagnostic<'arena>) -> ErrorEmitted {
+        self.dctx.lock().emit_diag(diag)
     }
 
     pub fn err_count(&self) -> usize {

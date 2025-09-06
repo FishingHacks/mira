@@ -163,7 +163,7 @@ fn inner_typecheck_function<'arena>(
         args.iter().map(|&(name, ty)| (name, name.span(), ty)),
         span.combine_with([statement.span()], context.ctx.span_interner()),
     );
-    let always_returns = typecheck_statement(
+    let always_returns = typecheck_block_inline(
         context,
         &mut ir,
         statement,
@@ -199,6 +199,28 @@ fn inner_typecheck_function<'arena>(
         assert!(ir.is_empty());
     }
     Ok(())
+}
+
+fn typecheck_block_inline<'arena>(
+    context: &TypeckCtx<'arena>,
+    ir: &mut ScopedIR<'arena>,
+    statement: &Statement<'arena>,
+    module: StoreKey<TypedModule<'arena>>,
+    return_type: Ty<'arena>,
+    errs: &mut Diagnostics<'arena>,
+) -> Result<bool, ()> {
+    if let Statement::Block(stmts, _, _) = statement {
+        for stmt in stmts {
+            if let Ok(true) = typecheck_statement(context, ir, stmt, module, return_type, errs) {
+                if !matches!(statement, Statement::Return(..)) {
+                    ir.append(TypedExpression::Unreachable(statement.span()));
+                }
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+    typecheck_statement(context, ir, statement, module, return_type, errs)
 }
 
 /// Typechecks a statement that *acts* like a block, or a block. This means that
@@ -348,8 +370,11 @@ fn typecheck_statement<'arena>(
             ir.append(TypedExpression::Return(*span, typed_expression));
             Ok(true)
         }
-        Statement::Block(..) => {
-            typecheck_quasi_block(context, ir, statement, module, return_type, errs).map(|v| v.1)
+        Statement::Block(_, span, annotations) => {
+            let (block, always_returns) =
+                typecheck_quasi_block(context, ir, statement, module, return_type, errs)?;
+            ir.append(TypedExpression::Block(*span, block, annotations.clone()));
+            Ok(always_returns)
         }
         Statement::Var(var) => {
             let expected_typ = var
@@ -379,14 +404,9 @@ fn typecheck_statement<'arena>(
                 return Err(());
             }
 
-            let value = match expr {
-                TypedLiteral::Dynamic(id) => id,
-                _ => {
-                    let id = ir.add_value(ty);
-                    ir.append(TypedExpression::Literal(var.value.span(), id, expr));
-                    id
-                }
-            };
+            let value = ir.add_value(ty);
+            ir.append(TypedExpression::Literal(var.value.span(), value, expr));
+
             ir.scope_value(var.name, value);
             ir.append(TypedExpression::DeclareVariable(
                 var.span,

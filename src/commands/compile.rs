@@ -7,15 +7,15 @@ use std::{
 };
 
 use mira_argparse::{CompileArgs, OptimizationMode, PathOrStdout};
+use mira_context::ErrorEmitted;
 use mira_driver::{
-    find_library, ContextData, DiagEmitter, EmitMethod, ErrorEmitted, LibraryTree, LinkOpts,
-    ProgressBarStyle,
+    find_library, ContextData, DiagEmitter, EmitMethod, LibraryTree, LinkOpts, ProgressBarStyle,
 };
 use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder};
 use mira_spans::Arena;
 use mira_target::Target;
 
-pub fn opt_mode_to_codegen_cfg(
+pub(crate) fn opt_mode_to_codegen_cfg(
     mode: OptimizationMode,
     target: Target,
     cpu_features: Option<&'_ str>,
@@ -40,7 +40,7 @@ pub(super) fn to_emit(value: Option<PathOrStdout>) -> Option<EmitMethod> {
     }
 }
 
-pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
+pub(crate) fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
     let Some(libmirastd) = find_library("mirastd") else {
         println!("Failed to find mirastd");
         return Ok(());
@@ -99,7 +99,7 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
     );
 
     if let Some(v) = tmp_obj_path {
-        _ = std::fs::remove_file(v);
+        drop(std::fs::remove_file(v));
     }
     if res.is_err() {
         return Ok(());
@@ -125,7 +125,7 @@ pub fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile(
     libtree: &LibraryTree,
-    codegen_opts: CodegenConfig,
+    codegen_opts: CodegenConfig<'_>,
     llvm_ir_writer: Option<EmitMethod>,
     llvm_bc_writer: Option<EmitMethod>,
     asm_writer: Option<EmitMethod>,
@@ -162,11 +162,12 @@ pub(crate) fn compile(
         codegen_item,
     );
     drop(tc_ctx);
-    err?;
-    ctx.optimize(&codegen_ctx, codegen_item)?;
+    let res = ctx.optimize(&codegen_ctx, codegen_item);
     if let Some(llvm_ir_writer) = llvm_ir_writer {
         ctx.emit_llvm_ir(&codegen_ctx, llvm_ir_writer)?;
     }
+    err?;
+    res?;
     if let Some(llvm_bc_writer) = llvm_bc_writer {
         ctx.emit_llvm_bc(&codegen_ctx, llvm_bc_writer)?;
     }

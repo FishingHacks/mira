@@ -5,7 +5,7 @@ use std::{mem::MaybeUninit, ptr::NonNull};
 const PAGE: usize = 4000;
 
 fn default_capacity_for<T>() -> usize {
-    (std::mem::size_of::<T>() / PAGE).max(1)
+    (size_of::<T>() / PAGE).max(1)
 }
 
 struct ArenaChunk<T> {
@@ -14,7 +14,7 @@ struct ArenaChunk<T> {
 }
 
 impl<T> ArenaChunk<T> {
-    pub fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
             storage: NonNull::from(Box::leak(Box::new_uninit_slice(capacity))),
             entries: 0,
@@ -34,14 +34,14 @@ impl<T> ArenaChunk<T> {
         NonNull::from(unsafe { p.assume_init_mut() })
     }
 
-    pub fn allocate(&mut self, value: T) -> Option<NonNull<T>> {
+    pub(crate) fn allocate(&mut self, value: T) -> Option<NonNull<T>> {
         if !self.can_allocate(1) {
             return None;
         }
         Some(unsafe { self.allocate_inner(value) })
     }
 
-    pub fn allocate_slice(
+    pub(crate) fn allocate_slice(
         &mut self,
         mut values: impl ExactSizeIterator<Item = T>,
     ) -> Option<NonNull<[T]>> {
@@ -64,11 +64,11 @@ impl<T> ArenaChunk<T> {
         }))
     }
 
-    pub const fn capacity(&self) -> usize {
+    pub(crate) const fn capacity(&self) -> usize {
         self.storage.len()
     }
 
-    pub const fn can_allocate(&self, amount: usize) -> bool {
+    pub(crate) const fn can_allocate(&self, amount: usize) -> bool {
         self.entries + amount <= self.capacity()
     }
 }

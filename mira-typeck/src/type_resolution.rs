@@ -22,7 +22,7 @@ use super::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ResolvingState {
+pub(crate) enum ResolvingState {
     Working,
     Pending,
 }
@@ -34,7 +34,7 @@ impl<'arena> TypeckCtx<'arena> {
     /// and don't free them until fully resolving a value. This module is designed in a way that
     /// such a deadlock should never happen but.. uhh... :3c :3
     /// meow
-    pub fn resolve_types<'a>(&'a self, context: Arc<ModuleContext<'arena>>) {
+    pub fn resolve_types(&self, context: Arc<ModuleContext<'arena>>) {
         let mut lang_items_writer = self.lang_items.write();
         let lang_items_writer = &mut *lang_items_writer;
 
@@ -350,7 +350,7 @@ impl<'arena> TypeckCtx<'arena> {
                                 .symbol(),
                         );
                     }
-                    Err(e) => self.ctx.emit_diag(e),
+                    Err(e) => _ = self.ctx.emit_diag(e),
                 }
             }
             generics.push(TypedGeneric {
@@ -378,7 +378,7 @@ impl<'arena> TypeckCtx<'arena> {
             &resolved_function_contract.generics,
         ) {
             Ok(v) => resolved_function_contract.return_type = v,
-            Err(e) => self.ctx.emit_diag(e),
+            Err(e) => _ = self.ctx.emit_diag(e),
         }
 
         for arg in arguments {
@@ -388,7 +388,7 @@ impl<'arena> TypeckCtx<'arena> {
                 &resolved_function_contract.generics,
             ) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                Err(e) => self.ctx.emit_diag(e),
+                Err(e) => _ = self.ctx.emit_diag(e),
             }
         }
 
@@ -426,13 +426,13 @@ impl<'arena> TypeckCtx<'arena> {
         let tracker = self.ctx.track_errors();
         match self.resolve_type(module_id.cast(), &return_type, &[]) {
             Ok(v) => resolved_function_contract.return_type = v,
-            Err(e) => self.ctx.emit_diag(e),
+            Err(e) => _ = self.ctx.emit_diag(e),
         }
 
         for arg in arguments {
             match self.resolve_type(module_id.cast(), &arg.ty, &[]) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                Err(e) => self.ctx.emit_diag(e),
+                Err(e) => _ = self.ctx.emit_diag(e),
             }
         }
 
@@ -464,7 +464,7 @@ impl<'arena> TypeckCtx<'arena> {
                     comment,
                 );
             }
-            Err(e) => self.ctx.emit_diag(e),
+            Err(e) => _ = self.ctx.emit_diag(e),
         }
     }
 
@@ -496,7 +496,7 @@ impl<'arena> TypeckCtx<'arena> {
             for arg in &func.args {
                 match self.resolve_type(module_id.cast(), &arg.ty, &[]) {
                     Ok(v) => typed_arguments.push((arg.name, v)),
-                    Err(e) => self.ctx.emit_diag(e),
+                    Err(e) => _ = self.ctx.emit_diag(e),
                 }
             }
 

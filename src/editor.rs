@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub fn get_path() -> Option<PathBuf> {
+pub(crate) fn get_path() -> Option<PathBuf> {
     let mut editor_path = std::env::var_os("EDITOR")
         .map(PathBuf::from)
         .filter(|v| v.exists());
@@ -30,7 +30,7 @@ pub fn get_path() -> Option<PathBuf> {
     editor_path
 }
 
-pub fn run_editor(buffer: &mut String, editor: &Path) {
+pub(crate) fn run_editor(buffer: &mut String, editor: &Path) {
     let tmp_file = format!(
         "/tmp/mira_repl_content_{}.mr",
         std::time::SystemTime::now()
@@ -48,14 +48,14 @@ pub fn run_editor(buffer: &mut String, editor: &Path) {
         Ok(v) => v,
         Err(e) => {
             println!("Failed to spawn editor: {e:?}");
-            let _ = std::fs::remove_file(&tmp_file);
+            drop(std::fs::remove_file(&tmp_file));
             return;
         }
     };
     match child.wait_with_output() {
         Err(e) => {
             println!("Failed to spawn editor: {e:?}");
-            let _ = std::fs::remove_file(&tmp_file);
+            drop(std::fs::remove_file(&tmp_file));
         }
         Ok(v) => {
             if !v.status.success() {
@@ -97,7 +97,7 @@ pub fn run_editor(buffer: &mut String, editor: &Path) {
                 }
                 Ok(v) => {
                     *buffer = v;
-                    let _ = std::fs::remove_file(&tmp_file);
+                    drop(std::fs::remove_file(&tmp_file));
                 }
             }
         }

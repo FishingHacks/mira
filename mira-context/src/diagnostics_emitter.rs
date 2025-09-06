@@ -6,6 +6,9 @@ use mira_spans::SourceMap;
 
 use crate::ErrorTracker;
 
+#[derive(Clone, Copy)]
+pub struct ErrorEmitted;
+
 pub enum DiagEmitter {
     Stdout(ProgressBarThread),
     Stderr(ProgressBarThread),
@@ -62,10 +65,13 @@ impl DiagCtx {
         }
     }
 
-    pub fn emit_diag(&mut self, diag: Diagnostic<'_>) {
+    pub fn emit_diag(&mut self, diag: Diagnostic<'_>) -> ErrorEmitted {
+        if diag.is_error() {
+            self.err_count += 1;
+        }
         if matches!(self.emitter, DiagEmitter::Discard) {
             diag.dismiss();
-            return;
+            return ErrorEmitted;
         }
         self.printer
             .display_diagnostic(diag)
@@ -95,6 +101,7 @@ impl DiagCtx {
             }
             DiagEmitter::Discard => unreachable!(),
         }
+        ErrorEmitted
     }
 
     pub fn err_count(&self) -> usize {

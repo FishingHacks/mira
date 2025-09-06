@@ -6,7 +6,7 @@ use crate::{error::ParsingErrorDiagnosticsExt as _, tokenstream::BorrowedTokenSt
 
 use super::{KleeneOp, MacroErrorDiagnosticsExt, MetaVarType, SequenceRepetition, TokenTree};
 
-pub fn parse_token_tree<'arena>(
+pub(super) fn parse_token_tree<'arena>(
     mut input: BorrowedTokenStream<'arena, '_>,
     // if this is the body or the pattern of the macro
     parse_def: bool,
@@ -24,7 +24,7 @@ pub fn parse_token_tree<'arena>(
     success.then_some(res).ok_or(())
 }
 
-fn count_metavar_decls(matcher: &[TokenTree]) -> usize {
+fn count_metavar_decls(matcher: &[TokenTree<'_>]) -> usize {
     matcher
         .iter()
         .map(|tt| match tt {
@@ -169,14 +169,14 @@ fn parse_tree<'arena>(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParenType {
+pub(super) enum ParenType {
     Paren,
     Bracket,
     Curly,
 }
 
 impl ParenType {
-    pub fn to_tt(self) -> (TokenType, TokenType) {
+    pub(super) fn to_tt(self) -> (TokenType, TokenType) {
         match self {
             ParenType::Paren => (TokenType::ParenLeft, TokenType::ParenRight),
             ParenType::Bracket => (TokenType::BracketLeft, TokenType::BracketRight),
@@ -184,7 +184,7 @@ impl ParenType {
         }
     }
 
-    pub fn from_tt(tt: TokenType) -> Option<Self> {
+    pub(super) fn from_tt(tt: TokenType) -> Option<Self> {
         match tt {
             TokenType::ParenLeft => Some(ParenType::Paren),
             TokenType::BracketLeft => Some(ParenType::Bracket),

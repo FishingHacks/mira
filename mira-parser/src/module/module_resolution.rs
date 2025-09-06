@@ -13,7 +13,7 @@ use mira_spans::{Ident, SourceMap, Span, interner::SpanInterner};
 //   -> return an err
 //
 // this is exactly like how rust does it.
-pub fn resolve_module<'arena>(
+pub(super) fn resolve_module<'arena>(
     span_interner: &SpanInterner<'arena>,
     name: Ident<'arena>,
     module: &Module<'arena>,

@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 parking_lot.workspace = true
+
+[lints]
+workspace = true

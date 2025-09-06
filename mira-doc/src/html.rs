@@ -20,19 +20,19 @@ use mira_typeck::{
     TypedStruct, TypedTrait, default_types,
 };
 
-pub mod err_fs {
-    use std::{fs, path::PathBuf, result::Result};
+pub(crate) mod err_fs {
+    use std::{fs, path::PathBuf};
 
     use mira_errors::{Diagnostic, IoCreateDirError, IoWriteError};
 
-    pub fn create_dir_all(dir: PathBuf) -> Result<PathBuf, Diagnostic<'static>> {
+    pub(crate) fn create_dir_all(dir: PathBuf) -> Result<PathBuf, Diagnostic<'static>> {
         match fs::create_dir_all(&dir) {
             Ok(_) => Ok(dir),
             Err(e) => Err(IoCreateDirError(dir, e).to_error()),
         }
     }
 
-    pub fn write_file(
+    pub(crate) fn write_file(
         file: PathBuf,
         data: impl AsRef<[u8]>,
     ) -> Result<PathBuf, Diagnostic<'static>> {
@@ -53,7 +53,7 @@ static NOSCRIPT_CSS: &str = include_str!("../mock/noscript.css");
 /// (e.g. the result for the intrinsics module in std would be `$root/std/intrinsics/index.html`, ["std", "intrinsics"], [module<std>])
 type QualifiedPaths<'ctx> = (PathBuf, Vec<Symbol<'ctx>>, Vec<StoreKey<TypedModule<'ctx>>>);
 
-pub struct HTMLGenerateContext<'ctx> {
+pub(crate) struct HTMLGenerateContext<'ctx> {
     pub path: PathBuf,
     pub generated: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
     pub queued: RefCell<HashMap<ModuleScopeValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
@@ -62,7 +62,7 @@ pub struct HTMLGenerateContext<'ctx> {
 }
 
 impl<'ctx> HTMLGenerateContext<'ctx> {
-    pub fn new(
+    pub(crate) fn new(
         dir: PathBuf,
         tc_ctx: Arc<TypeckCtx<'ctx>>,
         modules: Vec<StoreKey<TypedModule<'ctx>>>,
@@ -88,7 +88,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     /// std::intrinsics::type_name) and the list of modules to get there (e.g. std::intrinsics).
     /// Note that if you put in a module however, the module path does *not* contain that module
     /// (e.g. the result for the intrinsics module in std would be `$root/std/intrinsics/index.html`, ["std", "intrinsics"], [module<std>])
-    pub fn get_path(&self, mut item: ModuleScopeValue<'ctx>) -> QualifiedPaths<'ctx> {
+    pub(crate) fn get_path(&self, mut item: ModuleScopeValue<'ctx>) -> QualifiedPaths<'ctx> {
         let mut symbol_path = Vec::new();
         let mut module_path = Vec::new();
         let is_module = matches!(item, ModuleScopeValue::Module(_));
@@ -144,7 +144,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         (path, symbol_path, module_path)
     }
 
-    pub fn ensure_exists(&self, item: ModuleScopeValue<'ctx>) {
+    pub(crate) fn ensure_exists(&self, item: ModuleScopeValue<'ctx>) {
         if self.generated.borrow().contains_key(&item) || self.queued.borrow().contains_key(&item) {
             return;
         }
@@ -157,7 +157,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         }
     }
 
-    pub fn get_item_path(&self, item: ModuleScopeValue<'ctx>, my_path: &Path) -> String {
+    pub(crate) fn get_item_path(&self, item: ModuleScopeValue<'ctx>, my_path: &Path) -> String {
         let generated = self.generated.borrow();
         let mut queued = self.queued.borrow();
         let path = match generated.get(&item).or_else(|| queued.get(&item)) {
@@ -207,7 +207,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s
     }
 
-    pub fn generate_css_js_links(&self, output: &mut String, my_path: &Path) {
+    pub(crate) fn generate_css_js_links(&self, output: &mut String, my_path: &Path) {
         let my_path = my_path.strip_prefix(&self.path).unwrap();
         let mut s = String::new();
         // we have to skip the first normal, because ../ in a/b/c.html goes to  a/ instead of
@@ -247,7 +247,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         output.push_str("></script>");
     }
 
-    pub fn generate_file_start(&self, curfile: &Path, item_name: &str) -> String {
+    pub(crate) fn generate_file_start(&self, curfile: &Path, item_name: &str) -> String {
         let mut s = HTML_HEAD.to_string();
         s.push_str("<title>");
         s.escaped().push_str(item_name);
@@ -270,7 +270,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s
     }
 
-    pub fn generate_header(
+    pub(crate) fn generate_header(
         &self,
         output: &mut String,
         path: &QualifiedPaths<'ctx>,
@@ -304,14 +304,14 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         output.push_str("</span></h1>");
     }
 
-    pub fn generate_annotations(annotations: &Annotations<'_>, s: &mut String) {
+    pub(crate) fn generate_annotations(annotations: &Annotations<'_>, s: &mut String) {
         for annotation in annotations.iter() {
             s.escaped().push_fmt(format_args!("{annotation}"));
             s.push('\n');
         }
     }
 
-    pub fn generate_function(
+    pub(crate) fn generate_function(
         &mut self,
         fully_qualified_path: &QualifiedPaths<'ctx>,
         key: StoreKey<TypedFunction<'ctx>>,
@@ -366,7 +366,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s
     }
 
-    pub fn generate_external_function(
+    pub(crate) fn generate_external_function(
         &mut self,
         fully_qualified_path: &QualifiedPaths<'ctx>,
         key: StoreKey<TypedExternalFunction<'ctx>>,
@@ -407,7 +407,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s
     }
 
-    pub fn generate_static(
+    pub(crate) fn generate_static(
         &mut self,
         fully_qualified_path: &QualifiedPaths<'ctx>,
         key: StoreKey<TypedStatic<'ctx>>,
@@ -435,7 +435,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s
     }
 
-    pub fn generate_trait(
+    pub(crate) fn generate_trait(
         &mut self,
         fully_qualified_path: &QualifiedPaths<'ctx>,
         key: StoreKey<TypedTrait<'ctx>>,
@@ -498,7 +498,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         s
     }
 
-    pub fn generate_struct(
+    pub(crate) fn generate_struct(
         &mut self,
         fully_qualified_path: &QualifiedPaths<'ctx>,
         key: StoreKey<TypedStruct<'ctx>>,
@@ -662,7 +662,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         }
     }
 
-    pub fn generate_module(
+    pub(crate) fn generate_module(
         &mut self,
         fully_qualified_path: &QualifiedPaths<'ctx>,
         module_id: StoreKey<TypedModule<'ctx>>,
@@ -944,7 +944,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     }
 
     /// generates the search index of all generated and queued values.
-    pub fn generate_search_index(&self) -> String {
+    pub(crate) fn generate_search_index(&self) -> String {
         let mut s = "window.search_index = [".to_string();
         for (i, qualified_path) in self.generated.borrow().values().enumerate() {
             if i != 0 {
@@ -999,11 +999,11 @@ fn unsubstitute_self<'ctx>(ctx: TypeCtx<'ctx>, ty: Ty<'ctx>, selfty: Ty<'ctx>) -
     }
 }
 
-pub fn urlencode(s: &'_ str) -> UrlEncoded<'_> {
+pub(crate) fn urlencode(s: &'_ str) -> UrlEncoded<'_> {
     UrlEncoded(s)
 }
 
-pub struct UrlEncoded<'a>(&'a str);
+pub(crate) struct UrlEncoded<'a>(&'a str);
 impl Display for UrlEncoded<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut c = [0u8; 4];
@@ -1027,7 +1027,7 @@ impl Display for UrlEncoded<'_> {
     }
 }
 
-pub struct HTMLEscapeStr<'a>(&'a mut String);
+pub(crate) struct HTMLEscapeStr<'a>(&'a mut String);
 impl Write for HTMLEscapeStr<'_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         self.push_str(s);
@@ -1040,15 +1040,15 @@ impl Write for HTMLEscapeStr<'_> {
     }
 }
 impl HTMLEscapeStr<'_> {
-    pub fn push_fmt(&mut self, fmt: Arguments<'_>) {
+    pub(crate) fn push_fmt(&mut self, fmt: Arguments<'_>) {
         self.write_fmt(fmt).unwrap();
     }
-    pub fn push_str(&mut self, s: &str) {
+    pub(crate) fn push_str(&mut self, s: &str) {
         for c in s.chars() {
             self.push(c);
         }
     }
-    pub fn push(&mut self, c: char) {
+    pub(crate) fn push(&mut self, c: char) {
         match c {
             '<' => self.0.push_str("&lt;"),
             '>' => self.0.push_str("&gt;"),
@@ -1058,7 +1058,7 @@ impl HTMLEscapeStr<'_> {
         }
     }
 }
-pub trait StringExt {
+pub(crate) trait StringExt {
     fn push_fmt(&mut self, args: Arguments<'_>);
 }
 impl StringExt for String {
@@ -1066,7 +1066,7 @@ impl StringExt for String {
         self.write_fmt(args).unwrap()
     }
 }
-pub trait HTMLEscapeExt {
+pub(crate) trait HTMLEscapeExt {
     fn escaped(&'_ mut self) -> HTMLEscapeStr<'_>;
 }
 impl HTMLEscapeExt for String {

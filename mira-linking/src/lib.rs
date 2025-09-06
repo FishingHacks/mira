@@ -32,7 +32,7 @@ pub trait Linker: Send + Sync {
     fn can_link_crt(&self) -> bool;
     fn exists_in(&self, path: &Path) -> Option<PathBuf>;
     #[allow(clippy::result_large_err)]
-    fn link(&self, opts: LinkOptions) -> Result<(), LinkerError>;
+    fn link(&self, opts: LinkOptions<'_>) -> Result<(), LinkerError>;
 }
 
 macro_rules! arg_if {
@@ -82,7 +82,7 @@ impl Linker for LdLikeLinker {
         bin_path.exists().then_some(bin_path)
     }
 
-    fn link(&self, opts: LinkOptions) -> Result<(), LinkerError> {
+    fn link(&self, opts: LinkOptions<'_>) -> Result<(), LinkerError> {
         assert!(!opts.link_crt);
 
         let mut command = Command::new(opts.linker_path);
@@ -146,7 +146,7 @@ impl Linker for CcLikeLinker {
         bin_path.exists().then_some(bin_path)
     }
 
-    fn link(&self, opts: LinkOptions) -> Result<(), LinkerError> {
+    fn link(&self, opts: LinkOptions<'_>) -> Result<(), LinkerError> {
         let mut command = Command::new(opts.linker_path);
 
         #[allow(clippy::single_match)]

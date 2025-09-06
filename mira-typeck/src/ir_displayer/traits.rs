@@ -4,10 +4,10 @@ use crate::{TypedTrait, default_types};
 
 use super::Formatter;
 
-pub struct TraitDisplay<'a>(pub &'a TypedTrait<'a>);
+pub(super) struct TraitDisplay<'a>(pub &'a TypedTrait<'a>);
 
 impl TraitDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+    pub(super) fn fmt(&self, f: &mut Formatter<'_, '_, '_>) -> std::fmt::Result {
         f.write_value(&self.0.annotations)?;
         f.write_str("trait trait_")?;
         f.write_value(&self.0.id)?;

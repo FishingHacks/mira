@@ -66,7 +66,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         Some((link_url, link.reference))
     }
 
-    pub fn generate_markdown(
+    pub(crate) fn generate_markdown(
         &self,
         markdown: &str,
         output: &mut String,
@@ -85,7 +85,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         pulldown_cmark::html::push_html(output, passes);
     }
 
-    pub fn generate_ref_comment(
+    pub(crate) fn generate_ref_comment(
         &self,
         comment: DocComment,
         output: &mut String,
@@ -102,7 +102,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         });
     }
 
-    pub fn generate_doc_comment(
+    pub(crate) fn generate_doc_comment(
         &self,
         comment: DocComment,
         output: &mut String,

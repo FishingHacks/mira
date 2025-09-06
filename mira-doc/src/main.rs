@@ -2,7 +2,8 @@ use std::{path::PathBuf, process::ExitCode, rc::Rc};
 
 use html::err_fs;
 use mira_common::store::StoreKey;
-use mira_driver::{ContextData, DiagEmitter, EmitResult, ErrorEmitted, LibraryTree, find_library};
+use mira_context::ErrorEmitted;
+use mira_driver::{ContextData, DiagEmitter, EmitResult, LibraryTree, find_library};
 use mira_errors::IoWriteError;
 use mira_parser::module::ModuleScopeValue;
 use mira_spans::Arena;

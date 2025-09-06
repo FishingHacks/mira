@@ -55,7 +55,7 @@ macro_rules! newty {
     (@disp $name:ident display($($disp:tt)+)) => {
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_fmt(format_args!($($disp)*, self.to_u32()))
+                f.write_fmt(format_args!($($disp)+, self.to_u32()))
             }
         }
     };

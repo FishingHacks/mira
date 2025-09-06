@@ -1,4 +1,4 @@
-pub struct SizedLineWriter<'a> {
+pub(crate) struct SizedLineWriter<'a> {
     pub max_width: usize,
     pub width_left: usize,
     pub underlying: &'a mut dyn std::io::Write,
@@ -6,14 +6,14 @@ pub struct SizedLineWriter<'a> {
 }
 
 impl SizedLineWriter<'_> {
-    pub fn write_str(&mut self, s: &str) -> std::io::Result<()> {
+    pub(crate) fn write_str(&mut self, s: &str) -> std::io::Result<()> {
         for c in s.chars() {
             self.write_char(c)?
         }
         Ok(())
     }
 
-    pub fn write_char(&mut self, c: char) -> std::io::Result<()> {
+    pub(crate) fn write_char(&mut self, c: char) -> std::io::Result<()> {
         let mut c_bytes = [0u8; 4];
         let c_bytes = c.encode_utf8(&mut c_bytes).as_bytes();
         if c == '\r' || c == '\n' {
@@ -32,7 +32,7 @@ impl SizedLineWriter<'_> {
 }
 
 impl<'a> SizedLineWriter<'a> {
-    pub fn new(max_width: usize, writer: &'a mut dyn std::io::Write) -> Self {
+    pub(crate) fn new(max_width: usize, writer: &'a mut dyn std::io::Write) -> Self {
         Self {
             max_width,
             width_left: max_width,

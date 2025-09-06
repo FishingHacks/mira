@@ -41,7 +41,7 @@ pub enum TypedLiteral<'arena> {
 }
 
 impl<'ctx> TypedLiteral<'ctx> {
-    pub fn to_type<'a>(&self, scope: &'a Scope<'ctx>, ctx: &TypeckCtx<'ctx>) -> Ty<'ctx> {
+    pub fn to_type(&self, scope: &Scope<'ctx>, ctx: &TypeckCtx<'ctx>) -> Ty<'ctx> {
         match self {
             TypedLiteral::Void => default_types::void,
             TypedLiteral::Dynamic(id) => scope[*id].ty,

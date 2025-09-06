@@ -60,19 +60,19 @@ impl Formatter<'_, '_, '_> {
     }
 
     pub fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        <Self as std::fmt::Write>::write_str(self, s)
+        <Self as Write>::write_str(self, s)
     }
 
     pub fn write_char(&mut self, c: char) -> std::fmt::Result {
-        <Self as std::fmt::Write>::write_char(self, c)
+        <Self as Write>::write_char(self, c)
     }
 
     pub fn write_fmt(&mut self, args: Arguments<'_>) -> std::fmt::Result {
-        <Self as std::fmt::Write>::write_fmt(self, args)
+        <Self as Write>::write_fmt(self, args)
     }
 }
 
-impl std::fmt::Write for Formatter<'_, '_, '_> {
+impl Write for Formatter<'_, '_, '_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         for (idx, split) in s.split('\n').enumerate() {
             if idx != 0 {

@@ -449,9 +449,9 @@ impl Display for Statement<'_> {
     }
 }
 
-pub fn display_contract(
+pub(crate) fn display_contract(
     f: &mut std::fmt::Formatter<'_>,
-    contract: &FunctionContract,
+    contract: &FunctionContract<'_>,
     is_external: bool,
 ) -> std::fmt::Result {
     Display::fmt(&contract.annotations, f)?;
@@ -826,7 +826,7 @@ impl<'arena> Parser<'_, 'arena> {
         self.expect(TokenType::CurlyLeft)?;
 
         let annotations = std::mem::take(&mut self.current_annotations);
-        annotations.are_annotations_valid_for(crate::annotations::AnnotationReceiver::Trait)?;
+        annotations.are_annotations_valid_for(AnnotationReceiver::Trait)?;
         let mut functions = Vec::new();
 
         let mut func_comment = None;

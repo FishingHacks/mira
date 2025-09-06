@@ -3,7 +3,7 @@ use std::io::Write;
 type Cmd<Data> = fn(&str, &mut Repl<Data>);
 type CmdList<Data> = Vec<(&'static str, Cmd<Data>)>;
 
-pub struct Repl<Data> {
+pub(crate) struct Repl<Data> {
     pub commands: CmdList<Data>,
     pub on_no_input: Cmd<Data>,
     pub buf: String,
@@ -26,7 +26,12 @@ fn get_line_start(mut line: usize, buffer: &str) -> Result<usize, usize> {
 }
 
 impl<Data> Repl<Data> {
-    pub fn new(commands: CmdList<Data>, on_no_input: Cmd<Data>, data: Data, buf: String) -> Self {
+    pub(crate) fn new(
+        commands: CmdList<Data>,
+        on_no_input: Cmd<Data>,
+        data: Data,
+        buf: String,
+    ) -> Self {
         Self {
             commands,
             on_no_input,
@@ -35,7 +40,7 @@ impl<Data> Repl<Data> {
         }
     }
 
-    pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub(crate) fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
             let mut output = std::io::stdout();
             write!(output, "> ")?;

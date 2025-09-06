@@ -6,11 +6,7 @@ impl Annotation for ExternAliasAnnotation {
     fn get_name(&self) -> &'static str {
         "alias"
     }
-    fn is_valid_for(
-        &self,
-        thing: super::AnnotationReceiver,
-        annotations: &super::Annotations,
-    ) -> bool {
+    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations<'_>) -> bool {
         thing == AnnotationReceiver::ExternalFunction
             && annotations.get_annotations::<Self>().count() < 2
     }

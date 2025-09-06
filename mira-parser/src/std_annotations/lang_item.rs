@@ -8,7 +8,7 @@ impl Annotation for LangItemAnnotation {
         "lang"
     }
 
-    fn is_valid_for(&self, thing: AnnotationReceiver, _: &Annotations) -> bool {
+    fn is_valid_for(&self, thing: AnnotationReceiver, _: &Annotations<'_>) -> bool {
         matches!(
             thing,
             AnnotationReceiver::Function

@@ -1,7 +1,7 @@
 use parking_lot::Mutex;
 use std::{alloc::Layout, fmt::Debug, hash::Hash, mem::MaybeUninit, ops::Deref};
 
-const MAX_ALIGNMENT: usize = std::mem::align_of::<u64>();
+const MAX_ALIGNMENT: usize = align_of::<u64>();
 const PAGE: usize = 4096;
 const HUGE_PAGE: usize = 2 * 1024 * 1024;
 
@@ -38,6 +38,7 @@ impl Chunk {
             return None;
         }
         self.start += size;
+        #[allow(trivial_casts)]
         Some(&self.data[start..start + size] as *const _ as *mut _)
     }
 }
@@ -146,7 +147,7 @@ impl Default for Arena {
 }
 
 #[derive(Clone, Copy)]
-pub struct ArenaList<'arena, T: 'arena>(&'arena [T]);
+pub struct ArenaList<'arena, T>(&'arena [T]);
 
 impl<'arena, T: 'arena + Copy> ArenaList<'arena, T> {
     pub fn new(arena: &'arena Arena, entries: &[T]) -> Self {
@@ -212,11 +213,11 @@ mod test {
         assert!((arena.alloc_raw(Layout::new::<T>()) as *const T).is_aligned())
     }
     fn addr<T: ?Sized>(v: &T) -> usize {
-        (v as *const T).addr()
+        (&raw const *v).addr()
     }
     fn addr_range<T: ?Sized>(v: &T) -> Range<usize> {
-        let addr = (v as *const T).addr();
-        addr..addr + std::mem::size_of_val::<T>(v)
+        let addr = (&raw const *v).addr();
+        addr..addr + size_of_val::<T>(v)
     }
 
     fn all_unique(ranges: &[Range<usize>]) -> bool {
@@ -280,10 +281,7 @@ mod test {
         assert_eq!(addr(arena.alloc_slice::<u16>(&[])), 2);
         assert_eq!(addr(arena.alloc_slice::<u32>(&[])), 4);
         assert_eq!(addr(arena.alloc_slice::<u64>(&[])), 8);
-        assert_eq!(
-            addr(arena.alloc_slice::<usize>(&[])),
-            std::mem::align_of::<usize>()
-        );
+        assert_eq!(addr(arena.alloc_slice::<usize>(&[])), align_of::<usize>());
         let v = arena.alloc(());
         *v = ();
     }

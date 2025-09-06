@@ -7,7 +7,7 @@ use super::{
 pub struct TCContextDisplay;
 
 impl TCContextDisplay {
-    pub fn fmt(self, f: &mut Formatter) -> std::fmt::Result {
+    pub fn fmt(self, f: &mut Formatter<'_, '_, '_>) -> std::fmt::Result {
         for (id, module) in f.ctx.modules.index_value_iter() {
             f.write_str("\n\n")?;
             ModuleDisplay(module).fmt(f, id)?;

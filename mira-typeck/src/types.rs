@@ -53,7 +53,7 @@ pub mod default_types {
     ];
 }
 
-pub static EMPTY_TYLIST: TyList<'static> = TyList(&[]);
+pub(crate) static EMPTY_TYLIST: TyList<'static> = TyList(&[]);
 interner!(
     TypeListInterner,
     TyList,
@@ -135,7 +135,7 @@ pub enum TyKind<'arena> {
 /// wraps the type in the amount of references, adding to the already existing references.
 /// e.g.(u8, 6) -> &&&&&&u8
 /// e.g. (&&u8, 2) -> &&&&u8
-pub fn with_refcount<'arena>(
+pub(crate) fn with_refcount<'arena>(
     ctx: TypeCtx<'arena>,
     mut ty: Ty<'arena>,
     mut refcount: u8,
@@ -147,7 +147,7 @@ pub fn with_refcount<'arena>(
     ty
 }
 
-pub fn resolve_primitive_type<'arena>(
+pub(crate) fn resolve_primitive_type<'arena>(
     ctx: TypeCtx<'arena>,
     ty: &TypeRef<'arena>,
 ) -> Option<Ty<'arena>> {
@@ -737,7 +737,7 @@ impl Display for TyKind<'_> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub enum TypeSuggestion<'arena> {
+pub(crate) enum TypeSuggestion<'arena> {
     Struct(StoreKey<TypedStruct<'arena>>),
     Array(Box<TypeSuggestion<'arena>>),
     UnsizedArray(Box<TypeSuggestion<'arena>>),
@@ -773,7 +773,7 @@ impl Display for TypeSuggestion<'_> {
 }
 
 impl<'arena> TypeSuggestion<'arena> {
-    pub fn to_type(&self, ctx: &TypeckCtx<'arena>) -> Option<Ty<'arena>> {
+    pub(crate) fn to_type(&self, ctx: &TypeckCtx<'arena>) -> Option<Ty<'arena>> {
         match self {
             TypeSuggestion::Struct(id) => Some(ctx.ctx.intern_ty(TyKind::Struct {
                 struct_id: *id,
@@ -814,7 +814,7 @@ impl<'arena> TypeSuggestion<'arena> {
         }
     }
 
-    pub fn from_type(ty: Ty<'arena>) -> Self {
+    pub(crate) fn from_type(ty: Ty<'arena>) -> Self {
         match &**ty {
             TyKind::PrimitiveStr
             | TyKind::PrimitiveSelf

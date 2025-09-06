@@ -6,10 +6,14 @@ use mira_parser::module::ModuleScopeValue;
 use super::formatter::Formatter;
 
 #[repr(transparent)]
-pub struct ModuleDisplay<'a>(pub &'a TypedModule<'a>);
+pub(super) struct ModuleDisplay<'a>(pub &'a TypedModule<'a>);
 
 impl ModuleDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter, id: StoreKey<TypedModule>) -> std::fmt::Result {
+    pub(super) fn fmt(
+        &self,
+        f: &mut Formatter<'_, '_, '_>,
+        id: StoreKey<TypedModule<'_>>,
+    ) -> std::fmt::Result {
         f.write_str("@root_path(")?;
         f.write_debug(&self.0.file.package_root)?;
         f.write_str(")\nmodule mod_")?;
@@ -61,7 +65,10 @@ impl ModuleDisplay<'_> {
     }
 }
 
-fn fmt_module_scope_value(value: &ModuleScopeValue, f: &mut Formatter) -> std::fmt::Result {
+fn fmt_module_scope_value(
+    value: &ModuleScopeValue<'_>,
+    f: &mut Formatter<'_, '_, '_>,
+) -> std::fmt::Result {
     match value {
         ModuleScopeValue::Function(id) => {
             f.write_str("fn_")?;

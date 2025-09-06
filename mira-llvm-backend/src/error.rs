@@ -1,15 +1,18 @@
 use inkwell::{builder::BuilderError, support::LLVMString, targets::TargetTriple};
 use mira_macros::ErrorData;
+use mira_spans::Span;
 
 #[derive(ErrorData, Debug)]
-#[no_arena_lifetime]
-pub enum CodegenError {
-    #[error("[LLVM Native]: {}", _0)]
+pub enum CodegenError<'arena> {
+    #[error("[LLVM]: {_0}")]
     LLVMNative(String),
     #[error("Unknown Triple: {_0}")]
     UnknownTriple(String),
     #[error("{_0}")]
-    Builder(BuilderError),
+    Builder(
+        BuilderError,
+        #[primary_label("while trying to build an operation for")] Span<'arena>,
+    ),
     #[error("Failed to write assembly: {_0}")]
     WriteAssemblyError(std::io::Error),
     #[error("Failed to write binary object: {_0}")]
@@ -20,20 +23,14 @@ pub enum CodegenError {
     WriteLLVMIRError(std::io::Error),
 }
 
-impl From<LLVMString> for CodegenError {
+impl From<LLVMString> for CodegenError<'_> {
     fn from(value: LLVMString) -> Self {
         Self::LLVMNative(value.to_string())
     }
 }
 
-impl CodegenError {
+impl CodegenError<'_> {
     pub fn unknown_triple(triple: TargetTriple) -> Self {
         Self::UnknownTriple(triple.to_string())
-    }
-}
-
-impl From<BuilderError> for CodegenError {
-    fn from(value: BuilderError) -> Self {
-        Self::Builder(value)
     }
 }

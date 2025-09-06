@@ -7,7 +7,7 @@ use syn::{
 
 use crate::utils::{enum_make_match, struct_make_fields};
 
-pub fn derive_error_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub(crate) fn derive_error_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let with_arena_lifetime = parse_with_arena_lifetime(&input.attrs);
     match input.data {
@@ -80,7 +80,7 @@ fn derive_for_enum(
     let diagnostics_ext = enum_diagnostics_ext(&ident, s.variants.iter());
 
     Ok(quote! {
-        #[allow(unused, dead_code, deprecated)]
+        #[allow(unused, dead_code, deprecated, single_use_lifetimes)]
         impl #impl_generics mira_errors::ErrorData for #ident #ty_generics #where_clauses {
             fn message<'ctx>(
                 &'ctx self,
@@ -117,6 +117,7 @@ fn derive_for_enum(
             }
         }
 
+        #[allow(unused, dead_code, deprecated, single_use_lifetimes)]
         impl #impl_generics #ident #ty_generics #where_clauses {
             pub fn to_error(self) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, mira_errors::Severity::Error) }
             pub fn to_warning(self) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, mira_errors::Severity::Warn) }
@@ -140,6 +141,7 @@ fn to_camel_case(s: &str) -> String {
     result
 }
 
+#[allow(single_use_lifetimes)]
 fn enum_diagnostics_ext<'a>(
     ident: &Ident,
     variants: impl Iterator<Item = &'a Variant>,
@@ -219,9 +221,13 @@ fn enum_diagnostics_ext<'a>(
     }
 
     quote! {
+        #[allow(single_use_lifetimes)]
         pub trait #diagnostics_ext_trait<'arena> { #diagnostics_def }
+        #[allow(single_use_lifetimes)]
         impl<'arena> #diagnostics_ext_trait<'arena> for mira_errors::Diagnostics<'arena> { #diagnostics_impl }
+        #[allow(single_use_lifetimes)]
         pub trait #emitter_ext_trait<'arena>: mira_errors::DiagEmitter<'arena> { #emitter_def }
+        #[allow(single_use_lifetimes)]
         impl<'arena> #emitter_ext_trait<'arena> for mira_context::SharedCtx<'arena> {}
     }
 }
@@ -263,9 +269,11 @@ fn struct_diagnostics_ext(fields: &Fields, attrs: &[Attribute], ident: &Ident) -
         Fields::Unit => constructor = quote! { #ident },
     }
     quote! {
+        #[allow(single_use_lifetimes)]
         trait #ext_trait<'arena> {
             fn #camel_case_name(&mut self, #function_args) -> &mut mira_errors::Diagnostic<'arena>;
         }
+        #[allow(single_use_lifetimes)]
         impl<'arena> #ext_trait<'arena> for mira_errors::Diagnostics<'arena> {
             fn #camel_case_name(&mut self, #function_args) -> &mut mira_errors::Diagnostic<'arena> {
                 self.#add_func(#constructor)
@@ -369,7 +377,7 @@ fn derive_for_struct(
     };
 
     Ok(quote! {
-        #[allow(unused, dead_code, deprecated)]
+        #[allow(unused, dead_code, deprecated, single_use_lifetimes)]
         impl #impl_generics mira_errors::ErrorData for #ident #ty_generics #where_clauses {
             fn message<'ctx>(
                 &'ctx self,
@@ -402,6 +410,7 @@ fn derive_for_struct(
             }
         }
 
+        #[allow(single_use_lifetimes)]
         impl #impl_generics #ident #ty_generics #where_clauses {
             pub fn to_error(self) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, mira_errors::Severity::Error) }
             pub fn to_warning(self) -> mira_errors::Diagnostic #diagnostic_generics { mira_errors::Diagnostic::new(self, mira_errors::Severity::Warn) }

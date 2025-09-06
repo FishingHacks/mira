@@ -121,7 +121,9 @@ fn parse_single<'arena>(
         cur_entry.name,
         comment.unwrap_or(DocComment::EMPTY),
     );
-    _ = current_parser;
+    // `current_parser` is partially moved and can't be dropped with `drop(..)`
+    #[allow(let_underscore_drop)]
+    let _ = current_parser;
     if let Err(errs) = module.push_all(
         statements,
         cur_entry.module_key,
@@ -149,7 +151,7 @@ fn parse_single<'arena>(
 /// `source` - The source that will be parsed
 ///
 /// Returns the parsed module context as well as the main module.
-pub fn parse_all<'arena>(
+pub(crate) fn parse_all<'arena>(
     ctx: SharedCtx<'arena>,
     progress_bar: ProgressBarThread,
     parsing_item: ProgressItemRef,
