@@ -25,75 +25,6 @@ use super::{
     types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
 };
 
-// pub struct Scopes<'arena> {
-//     entries: Vec<HashMap<Ident<'arena>, ScopeValueId<'arena>>>,
-//     values: VecStore<ScopeEntry<'arena>>,
-// }
-//
-// impl<'arena> Scopes<'arena> {
-//     pub fn new() -> Self {
-//         Self {
-//             entries: vec![HashMap::new()],
-//             values: VecStore::new(),
-//         }
-//     }
-//
-//     pub fn get(&self, key: Ident<'arena>) -> Option<(ScopeEntry<'arena>, ScopeValueId<'arena>)> {
-//         let len = self.entries.len();
-//         for i in 1..=len {
-//             if let Some(v) = self.entries[len - i].get(&key) {
-//                 return Some((self.values[*v], *v));
-//             }
-//         }
-//         None
-//     }
-//
-//     pub fn make_stack_allocated(&mut self, id: ScopeValueId<'arena>) {
-//         self.values[id].stack_allocated = true;
-//     }
-//
-//     pub fn insert_value(&mut self, key: Ident<'arena>, value: Ty<'arena>) -> ScopeValueId<'arena> {
-//         let id = self.push(value);
-//         self.insert(key, id);
-//         id
-//     }
-//
-//     pub fn insert(&mut self, key: Ident<'arena>, value: ScopeValueId<'arena>) {
-//         debug_assert!(!self.entries.is_empty());
-//         let idx = self.entries.len() - 1;
-//         self.entries[idx].insert(key, value);
-//     }
-//
-//     pub fn push(&mut self, ty: Ty<'arena>) -> ScopeValueId<'arena> {
-//         if !ty.is_sized() {
-//             panic!("unsized type: {ty:?}");
-//         }
-//         self.values.insert(ScopeEntry {
-//             ty,
-//             stack_allocated: false,
-//         })
-//     }
-//
-//     pub fn push_scope(&mut self) {
-//         self.entries.push(HashMap::new());
-//     }
-//
-//     /// Returns if it could pop a scope or not.
-//     pub fn pop_scope(&mut self) -> bool {
-//         if self.entries.len() == 1 {
-//             return false;
-//         }
-//         assert!(self.entries.pop().is_some(), "a scope should always exist");
-//         true
-//     }
-// }
-//
-// impl<'arena> Default for Scopes<'arena> {
-//     fn default() -> Self {
-//         Self::new()
-//     }
-// }
-
 pub fn typecheck_static<'arena>(
     context: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
@@ -186,8 +117,6 @@ fn inner_typecheck_function<'arena>(
         (statement, module_id)
     };
 
-    // let mut scope = Scopes::new();
-
     let (return_type, args, span) = if is_external {
         let contract = &context.external_functions.read()[function_id.cast()].0;
         (
@@ -229,12 +158,6 @@ fn inner_typecheck_function<'arena>(
         errs.add_unsized_argument(span, *arg);
     }
     (errs.len() == errs_start_len).then_some(()).ok_or(())?;
-
-    // let mut exprs = vec![];
-    // for arg in args {
-    //     let id = scope.insert_value(arg.0, arg.1);
-    //     scope.make_stack_allocated(id);
-    // }
 
     let mut ir = ScopedIR::new(
         args.iter().map(|&(name, ty)| (name, name.span(), ty)),

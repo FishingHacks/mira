@@ -131,13 +131,11 @@ impl ThreadPool {
     }
 
     fn finish(&mut self) {
-        // println!("finishing :3");
         _ = self.sender.send(ThreadPoolMessage::Exit);
         self.sender = crossbeam_channel::bounded(0).0;
 
         let threads: Vec<JoinHandle<()>> = std::mem::take(&mut self.threads).into();
         for (i, handle) in threads.into_iter().enumerate() {
-            // println!("joining thread #{i}");
             if let Err(payload) = handle.join() {
                 if let Some(v) = payload.downcast_ref::<&'static str>() {
                     println!("threadpool thread #{i} panicked: {v:?}");
@@ -147,9 +145,7 @@ impl ThreadPool {
                     panic!("threadpool thread #{i} panicked");
                 }
             }
-            // println!("joined thread #{i}");
         }
-        // println!("clearing jobs");
         self.jobs.lock().unwrap().clear();
     }
 }
