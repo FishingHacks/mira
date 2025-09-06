@@ -16,22 +16,19 @@ macro_rules! newty {
     (@inner $(#[$($meta:tt)*])* $vis:vis, $name:ident $($const_name:ident $val:literal)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         $vis struct $name {
-            __priv: std::num::NonZeroU32,
+            __priv: std::num::NonZeroUsize,
         }
 
         impl $name {
             $vis const ZERO: Self = Self::new(0);
-            $vis const MAX: Self = Self::new(u32::MAX - 1);
+            $vis const MAX: Self = Self::new(usize::MAX - 1);
             $($vis const $const_name: Self = Self::new($val);)*
 
-            $vis const fn new(v: u32) -> Self {
-                Self { __priv: std::num::NonZeroU32::new(v + 1).unwrap() }
-            }
-            $vis const fn to_u32(self) -> u32 {
-                self.__priv.get() - 1
+            $vis const fn new(v: usize) -> Self {
+                Self { __priv: std::num::NonZeroUsize::new(v + 1).unwrap() }
             }
             $vis const fn to_usize(self) -> usize {
-                self.to_u32() as usize
+                self.__priv.get() - 1
             }
         }
 
@@ -47,7 +44,7 @@ macro_rules! newty {
             }
 
             fn from_usize(u: usize) -> Self {
-                Self::new(u as u32)
+                Self::new(u)
             }
         }
     };
@@ -55,7 +52,7 @@ macro_rules! newty {
     (@disp $name:ident display($($disp:tt)+)) => {
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_fmt(format_args!($($disp)+, self.to_u32()))
+                f.write_fmt(format_args!($($disp)+, self.to_usize()))
             }
         }
     };
