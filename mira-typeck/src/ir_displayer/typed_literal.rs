@@ -12,7 +12,7 @@ impl Tld<'_> {
     pub fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self.0 {
             TypedLiteral::Void => f.write_str("void"),
-            TypedLiteral::Dynamic(id) => f.write_fmt(format_args!("_{id}")),
+            TypedLiteral::Dynamic(id) => f.write_value(id),
             TypedLiteral::Function(id, _) => {
                 if let Some(name) = &f.ctx.functions[*id].0.name {
                     f.write_str("@name(")?;

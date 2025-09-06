@@ -5,7 +5,8 @@ use mira_parser::{annotations::Annotations, std_annotations::intrinsic::Intrinsi
 use mira_spans::{Span, Symbol};
 
 use crate::{
-    Ty, TyList, TypedExternalFunction, TypedFunction, TypedTrait, typechecking::ScopeValueId,
+    Ty, TyList, TypedExternalFunction, TypedFunction, TypedTrait,
+    ir::{BlockId, ValueId},
 };
 
 use super::TypedLiteral;
@@ -13,23 +14,19 @@ use super::TypedLiteral;
 #[derive(Debug)]
 pub enum TypedExpression<'arena> {
     Return(Span<'arena>, TypedLiteral<'arena>),
-    Block(
-        Span<'arena>,
-        Box<[TypedExpression<'arena>]>,
-        Annotations<'arena>,
-    ),
+    Block(Span<'arena>, BlockId, Annotations<'arena>),
     If {
         span: Span<'arena>,
         cond: TypedLiteral<'arena>,
-        if_block: (Box<[TypedExpression<'arena>]>, Span<'arena>),
-        else_block: Option<(Box<[TypedExpression<'arena>]>, Span<'arena>)>,
+        if_block: BlockId,
+        else_block: Option<BlockId>,
         annotations: Annotations<'arena>,
     },
     While {
         span: Span<'arena>,
-        cond_block: Box<[TypedExpression<'arena>]>,
+        cond_block: BlockId,
         cond: TypedLiteral<'arena>,
-        body: (Box<[TypedExpression<'arena>]>, Span<'arena>),
+        body: BlockId,
     },
 
     // _dst = _lhs..=_rhs
@@ -40,13 +37,13 @@ pub enum TypedExpression<'arena> {
         lhs: TypedLiteral<'arena>,
         rhs: TypedLiteral<'arena>,
         inclusive: bool,
-        dst: ScopeValueId<'arena>,
+        dst: ValueId,
     },
     // _1 = asm(...)
     Asm {
         span: Span<'arena>,
-        dst: ScopeValueId<'arena>,
-        inputs: Vec<ScopeValueId<'arena>>,
+        dst: ValueId,
+        inputs: Vec<ValueId>,
         registers: String,
         volatile: bool,
         asm: String,
@@ -56,14 +53,14 @@ pub enum TypedExpression<'arena> {
     // _1 = _2(_3.1, _3.2, d, ...)
     Call(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         Vec<TypedLiteral<'arena>>,
     ),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectCall(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         StoreKey<TypedFunction<'arena>>,
         Vec<TypedLiteral<'arena>>,
         TyList<'arena>,
@@ -71,14 +68,14 @@ pub enum TypedExpression<'arena> {
     // _1 = func(_3.1, _3.2, d, ...)
     DirectExternCall(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         StoreKey<TypedExternalFunction<'arena>>,
         Vec<TypedLiteral<'arena>>,
     ),
     // _1 = intrinsic(_3.1, _3.2, ...)
     IntrinsicCall(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         Intrinsic,
         Vec<TypedLiteral<'arena>>,
         TyList<'arena>,
@@ -86,186 +83,166 @@ pub enum TypedExpression<'arena> {
     // _1 = llvm_intrinsic._2(_3.1, _3.2, ...)
     LLVMIntrinsicCall(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         Symbol<'arena>,
         Vec<TypedLiteral<'arena>>,
     ),
     // _1 = +_2
-    Pos(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    Pos(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // _1 = -_2
-    Neg(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    Neg(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // _1 = !_2
-    LNot(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    LNot(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // _1 = ~_2
-    BNot(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    BNot(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // _1 = _2 + _3
     Add(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 - _3
     Sub(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 * _3
     Mul(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 / _3
     Div(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 % _3
     Mod(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 & _3
     BAnd(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 | _3
     BOr(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _2 ^ _3
     BXor(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 > _2
     GreaterThan(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 > _2
     LessThan(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 && _2
     LAnd(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
-        Box<[TypedExpression<'arena>]>,
+        BlockId,
     ),
     // _1 = _1 || _2
     LOr(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
-        Box<[TypedExpression<'arena>]>,
+        BlockId,
     ),
     // _1 = _1 >= _2
     GreaterThanEq(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 <= _2
     LessThanEq(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 == _2
     Eq(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 != _2
     Neq(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 << _2
     LShift(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = _1 >> _2
     RShift(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         TypedLiteral<'arena>,
     ),
     // _1 = &_1
     //                                v- guaranteed to either be `Dynamic`, `Static` or `Void`
-    Reference(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    Reference(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // _1 = *_1
-    Dereference(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    Dereference(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = &(*_2).a[3].c.d; This is required, because we will offset the _2 pointer by the required
     // offsets
-    Offset(
-        Span<'arena>,
-        ScopeValueId<'arena>,
-        TypedLiteral<'arena>,
-        OffsetValue<'arena>,
-    ),
+    Offset(Span<'arena>, ValueId, TypedLiteral<'arena>, OffsetValue),
     // NOTE: the indexes into structs will be turned into their respective index
     // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
     // _1 = _2.a.b.c.d
-    OffsetNonPointer(
-        Span<'arena>,
-        ScopeValueId<'arena>,
-        TypedLiteral<'arena>,
-        usize,
-    ),
+    OffsetNonPointer(Span<'arena>, ValueId, TypedLiteral<'arena>, usize),
     // Eq::val(&dyn Eq, ...)
     // The last value is the offset into the function pointer part of the vtable.
-    DynCall(
-        Span<'arena>,
-        ScopeValueId<'arena>,
-        Vec<TypedLiteral<'arena>>,
-        u32,
-    ),
+    DynCall(Span<'arena>, ValueId, Vec<TypedLiteral<'arena>>, u32),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
-    Literal(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
-    DeclareVariable(
-        Span<'arena>,
-        ScopeValueId<'arena>,
-        Ty<'arena>,
-        Symbol<'arena>,
-    ),
+    Literal(Span<'arena>, ValueId, TypedLiteral<'arena>),
+    DeclareVariable(Span<'arena>, ValueId, Ty<'arena>, Symbol<'arena>),
     Empty(Span<'arena>),
     Unreachable(Span<'arena>),
     // ### CASTS ###
@@ -277,37 +254,32 @@ pub enum TypedExpression<'arena> {
     // &[T] to (&T, usize)
     // &T to &[T; 1]
     // &A to &B
-    Alias(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    Alias(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // casting u_ to i_ (for integers of the same size)
-    Bitcast(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    Bitcast(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // i_ or u_ or f_ or bool to i_ or u_ or f_ or bool
-    IntCast(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    IntCast(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // casts &void to usize (only valid for thin pointers)
-    PtrToInt(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    PtrToInt(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // casts usize to &void (only valid for thin pointers)
-    IntToPtr(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    IntToPtr(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // Strips the metadata from a fat pointer, &[T] to &T
-    StripMetadata(Span<'arena>, ScopeValueId<'arena>, TypedLiteral<'arena>),
+    StripMetadata(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // _2: &[_; _3]
     // let _1 = attach_metadata(_2, _3)
-    MakeUnsizedSlice(
-        Span<'arena>,
-        ScopeValueId<'arena>,
-        TypedLiteral<'arena>,
-        usize,
-    ),
+    MakeUnsizedSlice(Span<'arena>, ValueId, TypedLiteral<'arena>, usize),
     // _2: &<value>
     // let _1 = attach_vtable(_2, trait_1, trait_2)
     AttachVtable(
         Span<'arena>,
-        ScopeValueId<'arena>,
+        ValueId,
         TypedLiteral<'arena>,
         (Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>),
     ),
     // if (_2) drop_in_place(&_1);
-    DropIf(Span<'arena>, ScopeValueId<'arena>, ScopeValueId<'arena>),
+    DropIf(Span<'arena>, ValueId, ValueId),
     // drop_in_place(&_1);
-    Drop(Span<'arena>, ScopeValueId<'arena>),
+    Drop(Span<'arena>, ValueId),
     None,
 }
 
@@ -373,13 +345,13 @@ impl<'arena> TypedExpression<'arena> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum OffsetValue<'arena> {
+pub enum OffsetValue {
     // its guaranteed the type of this is usize.
-    Dynamic(ScopeValueId<'arena>),
+    Dynamic(ValueId),
     Static(usize),
 }
 
-impl Display for OffsetValue<'_> {
+impl Display for OffsetValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OffsetValue::Dynamic(id) => {

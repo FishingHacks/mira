@@ -45,7 +45,7 @@ use mira_target::{NATIVE_TARGET, Target};
 use mira_typeck::{
     Ty, TyKind, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
     TypedTrait, default_types,
-    ir::{TypedExpression, TypedLiteral},
+    ir::{IR, TypedExpression, TypedLiteral, Visitor},
 };
 
 #[derive(Clone, Copy)]
@@ -326,7 +326,11 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         );
 
         let builder = context.create_builder();
-        let (mut strings, mut vtables) = collect_data(&ctx);
+        let StringVtableCollector {
+            mut strings,
+            mut vtables,
+        } = collect_data(&ctx);
+
         let mut string_map = HashMap::new();
         for strn in strings.drain() {
             let constant = context.const_string(strn.as_bytes(), false);
@@ -695,7 +699,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         } else {
             &function_reader[fn_id].0
         };
-        let body = if is_external {
+        let ir = if is_external {
             let Some(v) = &ext_function_reader[fn_id.cast()].1 else {
                 unreachable!()
             };
@@ -703,30 +707,28 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         } else {
             &function_reader[fn_id].1
         };
-        function_ctx.add_tc_scope(&body.values);
+        function_ctx.set_ir(ir);
 
         function_ctx
             .builder
             .set_current_debug_location(function_ctx.debug_ctx.location(scope, contract.span));
 
         let mut param_idx = 0;
-        for (idx, (name, arg)) in contract.arguments.iter().enumerate() {
-            if *arg == default_types::void || *arg == default_types::never {
-                function_ctx.push_value(StoreKey::from_usize(idx), void_arg);
+        for (idx, param) in ir.params().iter().enumerate() {
+            let ty = ir.get_ty(param.value);
+            if ty == default_types::void || ty == default_types::never {
+                function_ctx.push_value(param.value, void_arg);
             } else {
-                function_ctx.push_value(
-                    StoreKey::from_usize(idx),
-                    func.get_nth_param(param_idx).unwrap(),
-                );
+                function_ctx.push_value(param.value, func.get_nth_param(param_idx).unwrap());
                 param_idx += 1;
             }
-            let ptr = function_ctx.get_value_ptr(StoreKey::from_usize(idx));
+            let ptr = function_ctx.get_value_ptr(param.value);
             function_ctx.debug_ctx.declare_param(
                 ptr,
                 scope,
                 contract.span,
-                *arg,
-                name.symbol(),
+                ty,
+                param.name.symbol(),
                 function_ctx.current_block,
                 contract.module_id,
                 &structs_reader,
@@ -736,7 +738,8 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 
         drop(structs_reader);
 
-        for expr in body.exprs.iter() {
+        let exprs = ir.get_entry_block_exprs();
+        for expr in exprs {
             function_ctx.codegen(expr, scope, contract.module_id)?;
         }
 
@@ -758,149 +761,69 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
     }
 }
 
+#[derive(Default)]
+struct StringVtableCollector<'ctx> {
+    strings: HashSet<Symbol<'ctx>>,
+    vtables: HashSet<(Ty<'ctx>, Vec<StoreKey<TypedTrait<'ctx>>>)>,
+}
+
+impl<'ctx> StringVtableCollector<'ctx> {
+    fn visit_lit_standalone(&mut self, lit: &TypedLiteral<'ctx>) {
+        match lit {
+            &TypedLiteral::String(s) => _ = self.strings.insert(s),
+
+            TypedLiteral::ArrayInit(_, lit, _) => self.visit_lit_standalone(lit),
+            TypedLiteral::Array(_, lits)
+            | TypedLiteral::Struct(_, lits)
+            | TypedLiteral::Tuple(lits) => {
+                for lit in lits {
+                    self.visit_lit_standalone(lit);
+                }
+            }
+
+            _ => {}
+        }
+    }
+}
+
+impl<'ctx> Visitor<'ctx> for StringVtableCollector<'ctx> {
+    fn visit_expr(
+        &mut self,
+        expr: &TypedExpression<'ctx>,
+        _: &IR<'ctx>,
+        _: mira_typeck::TypeCtx<'ctx>,
+    ) {
+        if let TypedExpression::AttachVtable(_, _, _, (ty, traits)) = expr {
+            self.vtables.insert((*ty, traits.clone()));
+        }
+    }
+
+    fn visit_lit(&mut self, lit: &TypedLiteral<'ctx>, _: &IR<'ctx>, _: mira_typeck::TypeCtx<'ctx>) {
+        if let &TypedLiteral::String(s) = lit {
+            self.strings.insert(s);
+        }
+    }
+}
+
 #[allow(clippy::type_complexity)]
-fn collect_data<'arena>(
-    ctx: &TypeckCtx<'arena>,
-) -> (
-    HashSet<Symbol<'arena>>,
-    HashSet<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
-) {
+fn collect_data<'ctx>(ctx: &TypeckCtx<'ctx>) -> StringVtableCollector<'ctx> {
+    let mut collector = StringVtableCollector::default();
+
     let function_reader = ctx.functions.read();
     let ext_function_reader = ctx.external_functions.read();
     let statics_reader = ctx.statics.read();
-    let mut strings = HashSet::new();
-    let mut vtables = HashSet::new();
 
     for (_, body) in function_reader.iter() {
-        collect_strings_for_expressions(&body.exprs, &mut strings, &mut vtables);
+        body.visit(&mut collector, ctx.ctx);
     }
     for (_, body) in ext_function_reader.iter() {
         if let Some(body) = body {
-            collect_strings_for_expressions(&body.exprs, &mut strings, &mut vtables);
+            body.visit(&mut collector, ctx.ctx);
         }
     }
     for static_value in statics_reader.iter() {
-        collect_strings_for_typed_literal(&static_value.value, &mut strings);
+        collector.visit_lit_standalone(&static_value.value);
     }
 
-    (strings, vtables)
-}
-
-fn collect_strings_for_expressions<'arena>(
-    exprs: &[TypedExpression<'arena>],
-    strings: &mut HashSet<Symbol<'arena>>,
-    vtables: &mut HashSet<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>)>,
-) {
-    for expr in exprs {
-        match expr {
-            TypedExpression::Block(_, exprs, _) => {
-                collect_strings_for_expressions(exprs, strings, vtables)
-            }
-            TypedExpression::If {
-                cond,
-                if_block,
-                else_block,
-                ..
-            } => {
-                collect_strings_for_typed_literal(cond, strings);
-                collect_strings_for_expressions(&if_block.0, strings, vtables);
-                _ = else_block
-                    .as_ref()
-                    .map(|v| collect_strings_for_expressions(&v.0, strings, vtables));
-            }
-            TypedExpression::While {
-                cond_block,
-                cond,
-                body,
-                ..
-            } => {
-                collect_strings_for_expressions(cond_block, strings, vtables);
-                collect_strings_for_expressions(&body.0, strings, vtables);
-                collect_strings_for_typed_literal(cond, strings);
-            }
-            TypedExpression::Call(_, _, lhs, args) => {
-                collect_strings_for_typed_literal(lhs, strings);
-                for v in args {
-                    collect_strings_for_typed_literal(v, strings);
-                }
-            }
-            TypedExpression::DirectCall(.., args, _)
-            | TypedExpression::DynCall(.., args, _)
-            | TypedExpression::DirectExternCall(.., args)
-            | TypedExpression::LLVMIntrinsicCall(.., args)
-            | TypedExpression::IntrinsicCall(.., args, _) => {
-                for v in args {
-                    collect_strings_for_typed_literal(v, strings);
-                }
-            }
-            TypedExpression::Range { lhs, rhs, .. }
-            | TypedExpression::StoreAssignment(_, lhs, rhs)
-            | TypedExpression::Add(.., lhs, rhs)
-            | TypedExpression::Sub(.., lhs, rhs)
-            | TypedExpression::Mul(.., lhs, rhs)
-            | TypedExpression::Div(.., lhs, rhs)
-            | TypedExpression::Mod(.., lhs, rhs)
-            | TypedExpression::BAnd(.., lhs, rhs)
-            | TypedExpression::BOr(.., lhs, rhs)
-            | TypedExpression::BXor(.., lhs, rhs)
-            | TypedExpression::GreaterThan(.., lhs, rhs)
-            | TypedExpression::LessThan(.., lhs, rhs)
-            | TypedExpression::GreaterThanEq(.., lhs, rhs)
-            | TypedExpression::LessThanEq(.., lhs, rhs)
-            | TypedExpression::Eq(.., lhs, rhs)
-            | TypedExpression::Neq(.., lhs, rhs)
-            | TypedExpression::LShift(.., lhs, rhs)
-            | TypedExpression::RShift(.., lhs, rhs) => {
-                collect_strings_for_typed_literal(lhs, strings);
-                collect_strings_for_typed_literal(rhs, strings);
-            }
-
-            TypedExpression::LAnd(.., lhs, rhs, blk) | TypedExpression::LOr(.., lhs, rhs, blk) => {
-                collect_strings_for_typed_literal(lhs, strings);
-                collect_strings_for_expressions(blk, strings, vtables);
-                collect_strings_for_typed_literal(rhs, strings);
-            }
-            TypedExpression::Return(_, lit)
-            | TypedExpression::Reference(.., lit)
-            | TypedExpression::Dereference(.., lit)
-            | TypedExpression::Offset(.., lit, _)
-            | TypedExpression::OffsetNonPointer(.., lit, _)
-            | TypedExpression::Literal(.., lit)
-            | TypedExpression::MakeUnsizedSlice(.., lit, _)
-            | TypedExpression::Pos(.., lit)
-            | TypedExpression::Neg(.., lit)
-            | TypedExpression::LNot(.., lit)
-            | TypedExpression::Bitcast(.., lit)
-            | TypedExpression::IntCast(.., lit)
-            | TypedExpression::PtrToInt(.., lit)
-            | TypedExpression::IntToPtr(.., lit)
-            | TypedExpression::Alias(.., lit)
-            | TypedExpression::StripMetadata(.., lit)
-            | TypedExpression::BNot(.., lit) => collect_strings_for_typed_literal(lit, strings),
-            TypedExpression::AttachVtable(_, _, lit, (ty, traits)) => {
-                collect_strings_for_typed_literal(lit, strings);
-                vtables.insert((*ty, traits.clone()));
-            }
-            TypedExpression::Empty(_)
-            | TypedExpression::Unreachable(_)
-            | TypedExpression::DeclareVariable(..)
-            | TypedExpression::Drop(..)
-            | TypedExpression::DropIf(..)
-            | TypedExpression::Asm { .. }
-            | TypedExpression::None => (),
-        }
-    }
-}
-fn collect_strings_for_typed_literal<'arena>(
-    lit: &TypedLiteral<'arena>,
-    strings: &mut HashSet<Symbol<'arena>>,
-) {
-    match lit {
-        TypedLiteral::String(global_str) => _ = strings.insert(*global_str),
-        TypedLiteral::Array(_, vec) | TypedLiteral::Tuple(vec) | TypedLiteral::Struct(_, vec) => {
-            vec.iter()
-                .for_each(|v| collect_strings_for_typed_literal(v, strings))
-        }
-        _ => (),
-    }
+    collector
 }

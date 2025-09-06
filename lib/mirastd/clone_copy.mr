@@ -9,3 +9,9 @@ pub trait Copy {}
 pub trait Clone {
     fn clone(self: &Self) -> Self;
 }
+
+@lang("drop_trait")
+/// Gives the ability for the user to Clone the type.
+pub trait Drop {
+    fn drop(self: &Self);
+}

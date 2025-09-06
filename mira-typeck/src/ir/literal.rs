@@ -1,18 +1,20 @@
 use std::ops::BitAnd;
 
-use mira_common::store::{StoreKey, VecStore};
+use mira_common::store::StoreKey;
 use mira_parser::std_annotations::intrinsic::Intrinsic;
 use mira_spans::Symbol;
 
 use crate::{
     Ty, TyKind, TyList, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
-    default_types, ir::ScopeEntry, typechecking::ScopeValueId, types::FunctionType,
+    default_types,
+    ir::{Scope, ValueId},
+    types::FunctionType,
 };
 
 #[derive(Debug, Clone)]
 pub enum TypedLiteral<'arena> {
     Void,
-    Dynamic(ScopeValueId<'arena>),
+    Dynamic(ValueId),
     Function(StoreKey<TypedFunction<'arena>>, TyList<'arena>),
     ExternalFunction(StoreKey<TypedExternalFunction<'arena>>),
     Static(StoreKey<TypedStatic<'arena>>),
@@ -38,12 +40,8 @@ pub enum TypedLiteral<'arena> {
     LLVMIntrinsic(Symbol<'arena>),
 }
 
-impl<'arena> TypedLiteral<'arena> {
-    pub fn to_type<'a>(
-        &self,
-        scope: &'a VecStore<ScopeEntry<'arena>>,
-        ctx: &TypeckCtx<'arena>,
-    ) -> Ty<'arena> {
+impl<'ctx> TypedLiteral<'ctx> {
+    pub fn to_type<'a>(&self, scope: &'a Scope<'ctx>, ctx: &TypeckCtx<'ctx>) -> Ty<'ctx> {
         match self {
             TypedLiteral::Void => default_types::void,
             TypedLiteral::Dynamic(id) => scope[*id].ty,
@@ -109,9 +107,9 @@ impl<'arena> TypedLiteral<'arena> {
 
     pub fn to_primitive_type(
         &self,
-        scope: &VecStore<ScopeEntry<'arena>>,
-        ctx: &TypeckCtx<'arena>,
-    ) -> Option<Ty<'arena>> {
+        scope: &Scope<'ctx>,
+        ctx: &TypeckCtx<'ctx>,
+    ) -> Option<Ty<'ctx>> {
         match self {
             TypedLiteral::F64(_) => Some(default_types::f64),
             TypedLiteral::F32(_) => Some(default_types::f32),

@@ -13,7 +13,7 @@ use ir::TypedLiteral;
 use types::{FunctionType, resolve_primitive_type, with_refcount};
 
 use crate::{error::TypecheckingErrorEmitterExt, ir::IR, lang_items::LangItems};
-use mira_common::store::{AssociatedStore, Store, StoreKey, VecStore};
+use mira_common::store::{AssociatedStore, Store, StoreKey};
 use mira_context::DocComment;
 use mira_parser::{
     Trait, TypeRef,
@@ -269,7 +269,7 @@ impl<'arena> TypeckCtx<'arena> {
                         generics: Vec::new(),
                         comment: DocComment::EMPTY,
                     },
-                    IR::new(Vec::new(), VecStore::new()),
+                    IR::new(std::iter::empty(), functions_reader[key].0.span),
                 ),
             );
         }

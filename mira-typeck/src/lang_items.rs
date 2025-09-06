@@ -534,7 +534,7 @@ impl<'arena> LangItems<'arena> {
         // trait Clone { fn clone(self: &Self) -> Self; }
         LangItemTrait {
             funcs: vec![(
-                self.ctx.intern_str("clone"),
+                self.ctx.intern_str("drop"),
                 LangItemFunction::new(vec![default_types::self_ref], default_types::void),
             )],
         }

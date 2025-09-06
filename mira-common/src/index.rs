@@ -13,7 +13,7 @@ pub trait Idx: Copy + Hash + PartialEq + Eq + Debug {
 
 #[macro_export]
 macro_rules! newty {
-    ($(#[$($meta:tt)*])* $vis:vis struct $name:ident { $(const $const_name:ident = $val:literal;)* }) => {
+    (@inner $(#[$($meta:tt)*])* $vis:vis, $name:ident $($const_name:ident $val:literal)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         $vis struct $name {
             __priv: std::num::NonZeroU32,
@@ -47,12 +47,29 @@ macro_rules! newty {
             }
 
             fn from_usize(u: usize) -> Self {
-                Self::new(u)
+                Self::new(u as u32)
             }
         }
     };
+
+    (@disp $name:ident display($($disp:tt)+)) => {
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_fmt(format_args!($($disp)*, self.to_u32()))
+            }
+        }
+    };
+    (@disp $($t:tt)*) => {};
+
+    ($( $(#[$($meta:tt)*])* $vis:vis struct $name:ident { $(const $const_name:ident = $val:literal;)* } )+) => {
+        $(
+            $crate::newty!(@inner $(#[$($meta)*])* $vis, $name $($const_name $val)* );
+            $($crate::newty!(@disp $name $($meta)*);)*
+        )+
+    }
 }
 
+#[derive(Debug)]
 pub struct IndexVec<I: Idx, V> {
     next_idx: I,
     values: Vec<V>,
@@ -135,6 +152,14 @@ impl<I: Idx, V> IndexVec<I, V> {
 
     pub fn get_mut(&mut self, key: I) -> Option<&mut V> {
         self.values.get_mut(key.as_usize())
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub const fn len(&self) -> usize {
+        self.values.len()
     }
 }
 

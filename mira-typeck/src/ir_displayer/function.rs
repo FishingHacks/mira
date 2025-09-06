@@ -1,16 +1,10 @@
-use crate::{
-    TypedFunction, TypedFunctionContract, default_types,
-    ir::{TypedExpression, TypedLiteral},
-};
+use crate::{TypedFunction, TypedFunctionContract, default_types, ir::IR};
 use mira_common::store::StoreKey;
 use mira_lexer::token::IdentDisplay;
 
 use super::{expressions::write_implicit_block, formatter::Formatter};
 
-pub struct FuncDisplay<'a>(
-    pub &'a TypedFunctionContract<'a>,
-    pub Option<&'a [TypedExpression<'a>]>,
-);
+pub struct FuncDisplay<'a>(pub &'a TypedFunctionContract<'a>, pub Option<&'a IR<'a>>);
 
 impl FuncDisplay<'_> {
     pub fn fmt(
@@ -49,16 +43,10 @@ impl FuncDisplay<'_> {
             f.write_str(" -> ")?;
             f.write_value(&self.0.return_type)?;
         }
-        let Some(mut exprs) = self.1 else {
-            return Ok(());
+        let Some(ir) = self.1 else {
+            return f.write_char(';');
         };
-        if exprs
-            .last()
-            .map(|v| matches!(v, TypedExpression::Return(_, TypedLiteral::Void)))
-            .unwrap_or(false)
-        {
-            exprs = &exprs[0..exprs.len() - 1];
-        }
-        write_implicit_block(f, exprs)
+        f.write_char(' ')?;
+        write_implicit_block(f, ir.get_entry_block(), ir)
     }
 }

@@ -15,12 +15,12 @@ impl TCContextDisplay {
 
         for (id, func) in f.ctx.functions.index_value_iter() {
             f.write_str("\n\n")?;
-            FuncDisplay(&func.0, Some(&func.1.exprs)).fmt(f, false, id)?;
+            FuncDisplay(&func.0, Some(&func.1)).fmt(f, false, id)?;
         }
 
         for (id, func) in f.ctx.external_functions.index_value_iter() {
             f.write_str("\n\n")?;
-            FuncDisplay(&func.0, func.1.as_ref().map(|v| &*v.exprs)).fmt(f, true, id.cast())?;
+            FuncDisplay(&func.0, func.1.as_ref()).fmt(f, true, id.cast())?;
         }
 
         for (id, static_value) in f.ctx.statics.index_value_iter() {

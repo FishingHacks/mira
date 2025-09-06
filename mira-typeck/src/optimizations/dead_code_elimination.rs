@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
     TypeckCtx, TypedFunction, TypedStatic,
-    ir::{TypedExpression, TypedLiteral},
+    ir::{BlockId, IR, TypedExpression, TypedLiteral},
 };
 use mira_common::store::StoreKey;
 
@@ -37,8 +37,8 @@ pub fn run_dce<'arena>(
         ctx.funcs_left.insert(*func);
     }
     for (_, ext_fn_body) in ctx.tc_ctx.external_functions.read().iter() {
-        let Some(body) = ext_fn_body else { continue };
-        run_block(&body.exprs, &mut ctx);
+        let Some(ir) = ext_fn_body else { continue };
+        run_block(ir.get_entry_block(), ir, &mut ctx);
     }
     while let Some(func) = ctx.funcs_left.iter().next().copied() {
         if !ctx.used_functions.contains(&func) {
@@ -60,13 +60,14 @@ fn run_fn<'arena>(func: StoreKey<TypedFunction<'arena>>, ctx: &mut DceContext<'_
     ctx.funcs_left.remove(&func);
     ctx.used_functions.insert(func);
     let func_reader = ctx.tc_ctx.functions.read();
-    let Some((_, func_body)) = func_reader.get(&func) else {
+    let Some((_, ir)) = func_reader.get(&func) else {
         return;
     };
-    run_block(&func_body.exprs, ctx);
+    run_block(ir.get_entry_block(), ir, ctx);
 }
 
-fn run_block<'arena>(block: &[TypedExpression<'arena>], ctx: &mut DceContext<'_, 'arena>) {
+fn run_block<'ctx>(block: BlockId, ir: &IR<'ctx>, ctx: &mut DceContext<'_, 'ctx>) {
+    let block = ir.get_block_exprs(block);
     for expr in block {
         match expr {
             TypedExpression::If {
@@ -76,9 +77,9 @@ fn run_block<'arena>(block: &[TypedExpression<'arena>], ctx: &mut DceContext<'_,
                 ..
             } => {
                 run_literal(cond, ctx);
-                run_block(&if_block.0, ctx);
-                if let Some((else_block, _)) = else_block {
-                    run_block(else_block, ctx);
+                run_block(*if_block, ir, ctx);
+                if let &Some(else_block) = else_block {
+                    run_block(else_block, ir, ctx);
                 }
             }
             TypedExpression::While {
@@ -87,11 +88,11 @@ fn run_block<'arena>(block: &[TypedExpression<'arena>], ctx: &mut DceContext<'_,
                 body,
                 ..
             } => {
-                run_block(cond_block, ctx);
+                run_block(*cond_block, ir, ctx);
                 run_literal(cond, ctx);
-                run_block(&body.0, ctx);
+                run_block(*body, ir, ctx);
             }
-            TypedExpression::Block(_, block, _) => run_block(block, ctx),
+            &TypedExpression::Block(_, block, _) => run_block(block, ir, ctx),
             TypedExpression::DirectCall(_, _, func, lits, _) => {
                 if !ctx.used_functions.contains(func) {
                     ctx.funcs_left.insert(*func);
@@ -153,7 +154,7 @@ fn run_block<'arena>(block: &[TypedExpression<'arena>], ctx: &mut DceContext<'_,
             TypedExpression::LAnd(_, _, lit1, lit2, blk)
             | TypedExpression::LOr(_, _, lit1, lit2, blk) => {
                 run_literal(lit1, ctx);
-                run_block(blk, ctx);
+                run_block(*blk, ir, ctx);
                 run_literal(lit2, ctx);
             }
             TypedExpression::DirectExternCall(_, _, _, lits)
@@ -175,7 +176,7 @@ fn run_block<'arena>(block: &[TypedExpression<'arena>], ctx: &mut DceContext<'_,
     }
 }
 
-fn run_literal<'arena>(literal: &TypedLiteral<'arena>, ctx: &mut DceContext<'_, 'arena>) {
+fn run_literal<'ctx>(literal: &TypedLiteral<'ctx>, ctx: &mut DceContext<'_, 'ctx>) {
     match literal {
         TypedLiteral::Function(func, _) => {
             if !ctx.used_functions.contains(func) {

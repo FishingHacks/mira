@@ -1,7 +1,6 @@
-use crate::ir::ScopeEntry;
+use crate::ir::{BlockId, IR, ValueId};
 use crate::ir::{TypedExpression, TypedLiteral};
 use crate::types::EMPTY_TYLIST;
-use mira_common::store::StoreKey;
 
 use super::{formatter::Formatter, typed_literal::Tld};
 
@@ -10,10 +9,9 @@ pub struct ExpressionDisplay<'a>(pub &'a TypedExpression<'a>);
 
 macro_rules! expr {
     (binary $f:ident, $dst:expr, $lhs:expr, $rhs:expr, $operator:literal) => {{
-        let _: &StoreKey<ScopeEntry> = $dst;
+        let _: &ValueId = $dst;
         let _: &TypedLiteral = $lhs;
         let _: &TypedLiteral = $rhs;
-        $f.write_char('_')?;
         $f.write_value($dst)?;
         $f.write_str(" = ")?;
         Tld($lhs).fmt($f)?;
@@ -22,9 +20,8 @@ macro_rules! expr {
     }};
 
     (unary $f:ident, $dst:expr, $lhs:expr, $operator:literal) => {{
-        let _: &StoreKey<ScopeEntry> = $dst;
+        let _: &ValueId = $dst;
         let _: &TypedLiteral = $lhs;
-        $f.write_char('_')?;
         $f.write_value($dst)?;
         $f.write_str(concat!(" = ", $operator))?;
         Tld($lhs).fmt($f)
@@ -32,7 +29,7 @@ macro_rules! expr {
 }
 
 impl ExpressionDisplay<'_> {
-    pub fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+    pub fn fmt(&self, f: &mut Formatter, ir: &IR<'_>) -> std::fmt::Result {
         match self.0 {
             TypedExpression::Unreachable(_) => f.write_str("unreachable"),
             TypedExpression::DeclareVariable(_, id, ty, name) => {
@@ -52,7 +49,6 @@ impl ExpressionDisplay<'_> {
                 asm,
                 ..
             } => {
-                f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = asm")?;
                 if *volatile {
@@ -75,7 +71,6 @@ impl ExpressionDisplay<'_> {
                         if i != 0 {
                             f.write_str(", ")?
                         }
-                        f.write_char('_')?;
                         f.write_value(input)?;
                     }
                     f.write_char(')')?;
@@ -87,9 +82,9 @@ impl ExpressionDisplay<'_> {
                 f.write_str("return ")?;
                 Tld(typed_literal).fmt(f)
             }
-            TypedExpression::Block(_, exprs, annotations) => {
+            TypedExpression::Block(_, block, annotations) => {
                 f.write_value(annotations)?;
-                write_block(f, exprs)
+                write_block(f, *block, ir)
             }
             TypedExpression::If {
                 cond,
@@ -100,10 +95,10 @@ impl ExpressionDisplay<'_> {
                 f.write_str("if ")?;
                 Tld(cond).fmt(f)?;
                 f.write_char(' ')?;
-                write_implicit_block(f, &if_block.0)?;
+                write_implicit_block(f, *if_block, ir)?;
                 if let Some(else_block) = else_block {
                     f.write_str(" else ")?;
-                    write_implicit_block(f, &else_block.0)?;
+                    write_implicit_block(f, *else_block, ir)?;
                 }
                 Ok(())
             }
@@ -114,11 +109,11 @@ impl ExpressionDisplay<'_> {
                 ..
             } => {
                 f.write_str("while_cond_block ")?;
-                write_implicit_block(f, cond_block)?;
+                write_implicit_block(f, *cond_block, ir)?;
                 f.write_str("\nwhile ")?;
                 Tld(cond).fmt(f)?;
                 f.write_char(' ')?;
-                write_implicit_block(f, &body.0)
+                write_implicit_block(f, *body, ir)
             }
             TypedExpression::Range {
                 lhs,
@@ -127,7 +122,6 @@ impl ExpressionDisplay<'_> {
                 dst,
                 ..
             } => {
-                f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(lhs).fmt(f)?;
@@ -144,7 +138,6 @@ impl ExpressionDisplay<'_> {
                 Tld(rhs).fmt(f)
             }
             TypedExpression::Call(_, lhs, rhs, vec) => {
-                f.write_char('_')?;
                 f.write_value(lhs)?;
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)?;
@@ -157,7 +150,6 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::DirectCall(_, dst, func, vec, _) => {
-                f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(&TypedLiteral::Function(*func, EMPTY_TYLIST)).fmt(f)?;
@@ -171,7 +163,6 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::DirectExternCall(_, dst, func, vec) => {
-                f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(&TypedLiteral::ExternalFunction(*func)).fmt(f)?;
@@ -185,7 +176,6 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::LLVMIntrinsicCall(_, dst, intrinsic, vec) => {
-                f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(&TypedLiteral::LLVMIntrinsic(*intrinsic)).fmt(f)?;
@@ -199,7 +189,6 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::IntrinsicCall(_, dst, intrinsic, vec, _) => {
-                f.write_char('_')?;
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(&TypedLiteral::Intrinsic(*intrinsic, EMPTY_TYLIST)).fmt(f)?;
@@ -236,8 +225,8 @@ impl ExpressionDisplay<'_> {
                 f.write_str(" = ")?;
                 Tld(lhs).fmt(f)?;
                 f.write_str(" && ")?;
-                if !blk.is_empty() {
-                    write_block(f, blk)?;
+                if !ir.get_block_exprs(*blk).is_empty() {
+                    write_block(f, *blk, ir)?;
                     f.write_char(' ')?;
                 }
                 Tld(rhs).fmt(f)
@@ -248,8 +237,8 @@ impl ExpressionDisplay<'_> {
                 f.write_str(" = ")?;
                 Tld(lhs).fmt(f)?;
                 f.write_str(" || ")?;
-                if !blk.is_empty() {
-                    write_block(f, blk)?;
+                if !ir.get_block_exprs(*blk).is_empty() {
+                    write_block(f, *blk, ir)?;
                     f.write_char(' ')?;
                 }
                 Tld(rhs).fmt(f)
@@ -305,7 +294,8 @@ impl ExpressionDisplay<'_> {
                 f.write_value(lhs)?;
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)?;
-                f.write_str(" as <unknown type T>")
+                f.write_str(" as ")?;
+                f.write_value(&*ir.get_ty(*lhs))
             }
             TypedExpression::Literal(_, lhs, rhs) => {
                 f.write_str("_")?;
@@ -349,12 +339,13 @@ impl ExpressionDisplay<'_> {
     }
 }
 
-pub fn write_block(f: &mut Formatter, exprs: &[TypedExpression]) -> std::fmt::Result {
+pub fn write_block(f: &mut Formatter, block: BlockId, ir: &IR<'_>) -> std::fmt::Result {
+    let exprs = ir.get_block_exprs(block);
     f.write_char('{')?;
     f.push_indent();
     for expr in exprs {
         f.write_char('\n')?;
-        ExpressionDisplay(expr).fmt(f)?;
+        ExpressionDisplay(expr).fmt(f, ir)?;
     }
     f.pop_indent();
     f.write_str("\n}")
@@ -362,10 +353,11 @@ pub fn write_block(f: &mut Formatter, exprs: &[TypedExpression]) -> std::fmt::Re
 
 // writes a block to `f` unless the block is a single expression of type
 // `TypedExpression::Block`, in which case it will print the block.
-pub fn write_implicit_block(f: &mut Formatter, exprs: &[TypedExpression]) -> std::fmt::Result {
+pub fn write_implicit_block(f: &mut Formatter, block: BlockId, ir: &IR<'_>) -> std::fmt::Result {
+    let exprs = ir.get_block_exprs(block);
     if exprs.len() == 1 && matches!(exprs[0], TypedExpression::Block(..)) {
-        ExpressionDisplay(&exprs[0]).fmt(f)
+        ExpressionDisplay(&exprs[0]).fmt(f, ir)
     } else {
-        write_block(f, exprs)
+        write_block(f, block, ir)
     }
 }

@@ -1,17 +1,17 @@
-use mira_common::store::VecStore;
 use mira_parser::std_annotations::intrinsic::Intrinsic;
 
-use crate::{TypeCtx, default_types, ir::TypedLiteral};
-
-use super::super::{IRVisitor, ScopeEntry, TypedExpression};
+use crate::{
+    TypeCtx, default_types,
+    ir::{MutVisitor, Scope, TypedExpression, TypedLiteral},
+};
 
 pub struct TypenameIntrinsicPass;
 
-impl<'a> IRVisitor<'a> for TypenameIntrinsicPass {
+impl<'a> MutVisitor<'a> for TypenameIntrinsicPass {
     fn visit_expr(
         &mut self,
         expr: &mut TypedExpression<'a>,
-        values: &mut VecStore<ScopeEntry<'a>>,
+        scope: &mut Scope<'a>,
         tcx: TypeCtx<'a>,
     ) {
         if let TypedExpression::IntrinsicCall(pos, dst, Intrinsic::TypeName, _, generics) = expr {
@@ -19,7 +19,7 @@ impl<'a> IRVisitor<'a> for TypenameIntrinsicPass {
                 return;
             }
             assert_eq!(
-                values[*dst].ty,
+                scope.get_ty(*dst),
                 default_types::str_ref,
                 "type_name intrinsic doesn't return &str"
             );

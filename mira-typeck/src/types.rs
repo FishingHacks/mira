@@ -260,6 +260,11 @@ impl<'arena> Ty<'arena> {
     pub fn is_bool(self) -> bool {
         self == default_types::bool
     }
+
+    /// checks if self is `void` or `!`
+    pub fn is_voidlike(self) -> bool {
+        self == default_types::void || self == default_types::never
+    }
 }
 impl<'arena> TyKind<'arena> {
     pub fn needs_drop(&self, tcx: &TypeckCtx<'_>) -> bool {

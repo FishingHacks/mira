@@ -161,7 +161,7 @@ pub enum ProgressMessage {
 pub fn start_thread(style: Option<ProgressBarStyle>) -> ProgressBarThread {
     match style {
         Some(style) => start_thread_with(ProgressBar::new(style)),
-        None => start_thread_nobar(),
+        None => ProgressBarThread::NoThread,
     }
 }
 
@@ -247,8 +247,4 @@ pub fn start_thread_with(bar: ProgressBar) -> ProgressBarThread {
         sender: tx,
         handle: Some(handle),
     }))
-}
-
-pub fn start_thread_nobar() -> ProgressBarThread {
-    ProgressBarThread::NoThread
 }
