@@ -22,9 +22,9 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Path<'arena> {
-    pub entries: Vec<(Ident<'arena>, Vec<TypeRef<'arena>>)>,
-    pub span: Span<'arena>,
+pub struct Path<'ctx> {
+    pub entries: Vec<(Ident<'ctx>, Vec<TypeRef<'ctx>>)>,
+    pub span: Span<'ctx>,
 }
 
 impl Display for Path<'_> {
@@ -50,11 +50,11 @@ impl Display for Path<'_> {
     }
 }
 
-impl<'arena> Path<'arena> {
-    pub fn push(&mut self, name: Ident<'arena>, generics: Vec<TypeRef<'arena>>) {
+impl<'ctx> Path<'ctx> {
+    pub fn push(&mut self, name: Ident<'ctx>, generics: Vec<TypeRef<'ctx>>) {
         self.entries.push((name, generics));
     }
-    pub fn pop(&mut self) -> Option<(Ident<'arena>, Vec<TypeRef<'arena>>)> {
+    pub fn pop(&mut self) -> Option<(Ident<'ctx>, Vec<TypeRef<'ctx>>)> {
         // ensure this is at least 1 element
         if self.entries.len() > 1 {
             self.entries.pop()
@@ -62,7 +62,7 @@ impl<'arena> Path<'arena> {
             None
         }
     }
-    pub fn new(entry: Ident<'arena>, generics: Vec<TypeRef<'arena>>) -> Self {
+    pub fn new(entry: Ident<'ctx>, generics: Vec<TypeRef<'ctx>>) -> Self {
         Self {
             entries: vec![(entry, generics)],
             span: entry.span(),
@@ -70,8 +70,8 @@ impl<'arena> Path<'arena> {
     }
 
     fn parse_generics(
-        parser: &mut Parser<'_, 'arena>,
-    ) -> Result<Vec<TypeRef<'arena>>, ParsingError<'arena>> {
+        parser: &mut Parser<'_, 'ctx>,
+    ) -> Result<Vec<TypeRef<'ctx>>, ParsingError<'ctx>> {
         let mut types = vec![];
 
         while !parser.match_tok(TokenType::GreaterThan) {
@@ -83,32 +83,39 @@ impl<'arena> Path<'arena> {
         }
         Ok(types)
     }
-    pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'arena>) {
+    pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'ctx>) {
         self.span = self.entries[0]
             .0
             .span()
             .combine_with(self.entries[1..].iter().map(|v| v.0.span()), span_interner);
     }
 
-    pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
+    pub fn parse(parser: &mut Parser<'_, 'ctx>) -> Result<Self, ParsingError<'ctx>> {
         let name = parser.expect_identifier()?;
-        let generics = if parser.match_tok(TokenType::LessThan) {
-            Self::parse_generics(parser)?
+        if !parser.match_tok(TokenType::NamespaceAccess) {
+            return Ok(Self::new(name, Vec::new()));
+        }
+        let mut path;
+        if parser.match_tok(TokenType::LessThan) {
+            path = Self::new(name, Self::parse_generics(parser)?);
+            if !parser.match_tok(TokenType::NamespaceAccess) {
+                return Ok(path);
+            }
         } else {
-            Default::default()
+            path = Self::new(name, Vec::new());
         };
 
-        let mut path = Self::new(name, generics);
-
-        while parser.match_tok(TokenType::NamespaceAccess) {
+        loop {
             let subpath = parser.expect_identifier()?;
-            let generics = if parser.match_tok(TokenType::LessThan) {
-                Self::parse_generics(parser)?
-            } else {
-                Default::default()
-            };
-
-            path.push(subpath, generics);
+            if !parser.match_tok(TokenType::NamespaceAccess) {
+                break;
+            }
+            if parser.match_tok(TokenType::LessThan) {
+                path.push(subpath, Self::parse_generics(parser)?);
+                if !parser.match_tok(TokenType::NamespaceAccess) {
+                    break;
+                }
+            }
         }
         path.readjust_self_span(parser.ctx.span_interner);
 
@@ -117,16 +124,16 @@ impl<'arena> Path<'arena> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathWithoutGenerics<'arena> {
-    pub entries: Vec<Ident<'arena>>,
-    pub span: Span<'arena>,
+pub struct PathWithoutGenerics<'ctx> {
+    pub entries: Vec<Ident<'ctx>>,
+    pub span: Span<'ctx>,
 }
 
-impl<'arena> PathWithoutGenerics<'arena> {
-    pub fn push(&mut self, name: Ident<'arena>) {
+impl<'ctx> PathWithoutGenerics<'ctx> {
+    pub fn push(&mut self, name: Ident<'ctx>) {
         self.entries.push(name);
     }
-    pub fn pop(&mut self) -> Option<Ident<'arena>> {
+    pub fn pop(&mut self) -> Option<Ident<'ctx>> {
         // ensure this is at least 1 element
         if self.entries.len() > 1 {
             self.entries.pop()
@@ -134,18 +141,18 @@ impl<'arena> PathWithoutGenerics<'arena> {
             None
         }
     }
-    pub fn new(entry: Ident<'arena>) -> Self {
+    pub fn new(entry: Ident<'ctx>) -> Self {
         Self {
             span: entry.span(),
             entries: vec![entry],
         }
     }
-    pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'arena>) {
+    pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'ctx>) {
         self.span = self.entries[0]
             .span()
             .combine_with(self.entries[1..].iter().map(Ident::span), span_interner);
     }
-    pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
+    pub fn parse(parser: &mut Parser<'_, 'ctx>) -> Result<Self, ParsingError<'ctx>> {
         let mut path = Self::new(parser.expect_identifier()?);
 
         while parser.match_tok(TokenType::NamespaceAccess) {
@@ -157,7 +164,7 @@ impl<'arena> PathWithoutGenerics<'arena> {
         Ok(path)
     }
 
-    pub fn as_slice(&self) -> &[Ident<'arena>] {
+    pub fn as_slice(&self) -> &[Ident<'ctx>] {
         &self.entries
     }
 }
@@ -175,28 +182,28 @@ impl Display for PathWithoutGenerics<'_> {
 }
 
 #[derive(Debug, Clone)]
-pub enum ArrayLiteral<'arena> {
-    Values(Vec<Expression<'arena>>),
-    CopyInitialized(Box<Expression<'arena>>, usize),
+pub enum ArrayLiteral<'ctx> {
+    Values(Vec<Expression<'ctx>>),
+    CopyInitialized(Box<Expression<'ctx>>, usize),
 }
 
 #[derive(Debug, Clone)]
-pub enum LiteralValue<'arena> {
-    String(Symbol<'arena>),
-    Array(ArrayLiteral<'arena>),
+pub enum LiteralValue<'ctx> {
+    String(Symbol<'ctx>),
+    Array(ArrayLiteral<'ctx>),
     Struct(
-        HashMap<Ident<'arena>, (Span<'arena>, Expression<'arena>)>,
-        Path<'arena>,
+        HashMap<Ident<'ctx>, (Span<'ctx>, Expression<'ctx>)>,
+        Path<'ctx>,
     ),
-    AnonymousStruct(HashMap<Ident<'arena>, (Span<'arena>, Expression<'arena>)>),
-    Tuple(Vec<(Span<'arena>, Expression<'arena>)>),
+    AnonymousStruct(HashMap<Ident<'ctx>, (Span<'ctx>, Expression<'ctx>)>),
+    Tuple(Vec<(Span<'ctx>, Expression<'ctx>)>),
     Float(f64, NumberType),
     SInt(i64, NumberType),
     UInt(u64, NumberType),
     Bool(bool),
-    Dynamic(Path<'arena>),
-    AnonymousFunction(FunctionContract<'arena>, Box<Statement<'arena>>),
-    BakedAnonymousFunction(StoreKey<Function<'arena>>),
+    Dynamic(Path<'ctx>),
+    AnonymousFunction(FunctionContract<'ctx>, Box<Statement<'ctx>>),
+    BakedAnonymousFunction(StoreKey<Function<'ctx>>),
     Void,
 }
 
@@ -280,7 +287,7 @@ impl Display for LiteralValue<'_> {
     }
 }
 
-impl<'arena> LiteralValue<'arena> {
+impl<'ctx> LiteralValue<'ctx> {
     // NOTE: **ONLY** FOR ERROR MESSAGES!!!!!
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -297,7 +304,7 @@ impl<'arena> LiteralValue<'arena> {
         }
     }
 
-    fn from_token(value: Token<'arena>) -> Option<Self> {
+    fn from_token(value: Token<'ctx>) -> Option<Self> {
         match value.ty {
             TokenType::StringLiteral
             | TokenType::BooleanLiteral
@@ -357,63 +364,64 @@ pub enum UnaryOp {
 }
 
 #[derive(Debug, Clone)]
-pub enum Expression<'arena> {
-    Literal(LiteralValue<'arena>, Span<'arena>),
+pub enum Expression<'ctx> {
+    Literal(LiteralValue<'ctx>, Span<'ctx>),
     Unary {
         operator: UnaryOp,
-        span: Span<'arena>,
-        right_side: Box<Expression<'arena>>,
+        span: Span<'ctx>,
+        right_side: Box<Expression<'ctx>>,
     },
     Binary {
         operator: BinaryOp,
-        span: Span<'arena>,
-        right_side: Box<Expression<'arena>>,
-        left_side: Box<Expression<'arena>>,
+        span: Span<'ctx>,
+        right_side: Box<Expression<'ctx>>,
+        left_side: Box<Expression<'ctx>>,
     },
     FunctionCall {
-        identifier: Box<Expression<'arena>>,
-        arguments: Vec<Expression<'arena>>,
-        span: Span<'arena>,
+        identifier: Box<Expression<'ctx>>,
+        arguments: Vec<Expression<'ctx>>,
+        span: Span<'ctx>,
     },
     MemberCall {
-        identifier: Ident<'arena>,
-        lhs: Box<Expression<'arena>>,
-        arguments: Vec<Expression<'arena>>,
-        span: Span<'arena>,
+        identifier: Ident<'ctx>,
+        lhs: Box<Expression<'ctx>>,
+        generics: Vec<TypeRef<'ctx>>,
+        arguments: Vec<Expression<'ctx>>,
+        span: Span<'ctx>,
     },
     Indexing {
-        left_side: Box<Expression<'arena>>,
-        right_side: Box<Expression<'arena>>,
-        span: Span<'arena>,
+        left_side: Box<Expression<'ctx>>,
+        right_side: Box<Expression<'ctx>>,
+        span: Span<'ctx>,
     },
     MemberAccess {
-        left_side: Box<Expression<'arena>>,
-        index: Vec<Ident<'arena>>,
-        span: Span<'arena>,
+        left_side: Box<Expression<'ctx>>,
+        index: Vec<Ident<'ctx>>,
+        span: Span<'ctx>,
     },
     Assignment {
-        left_side: Box<Expression<'arena>>,
-        right_side: Box<Expression<'arena>>,
-        span: Span<'arena>,
+        left_side: Box<Expression<'ctx>>,
+        right_side: Box<Expression<'ctx>>,
+        span: Span<'ctx>,
     },
     Range {
-        left_side: Box<Expression<'arena>>,
-        right_side: Box<Expression<'arena>>,
+        left_side: Box<Expression<'ctx>>,
+        right_side: Box<Expression<'ctx>>,
         inclusive: bool,
-        span: Span<'arena>,
+        span: Span<'ctx>,
     },
     TypeCast {
-        left_side: Box<Expression<'arena>>,
-        new_ty: TypeRef<'arena>,
-        span: Span<'arena>,
+        left_side: Box<Expression<'ctx>>,
+        new_ty: TypeRef<'ctx>,
+        span: Span<'ctx>,
     },
     Asm {
-        span: Span<'arena>,
+        span: Span<'ctx>,
         asm: String,
         volatile: bool,
-        output: TypeRef<'arena>,
+        output: TypeRef<'ctx>,
         registers: String, // input + output + clobber
-        inputs: Vec<(Span<'arena>, Ident<'arena>)>,
+        inputs: Vec<(Span<'ctx>, Ident<'ctx>)>,
     },
 }
 
@@ -569,16 +577,16 @@ impl Display for Expression<'_> {
     }
 }
 
-impl<'arena> Expression<'arena> {
-    pub fn bool(value: bool, span: Span<'arena>) -> Self {
+impl<'ctx> Expression<'ctx> {
+    pub fn bool(value: bool, span: Span<'ctx>) -> Self {
         Self::Literal(LiteralValue::Bool(value), span)
     }
 
-    pub fn string(value: Symbol<'arena>, span: Span<'arena>) -> Self {
+    pub fn string(value: Symbol<'ctx>, span: Span<'ctx>) -> Self {
         Self::Literal(LiteralValue::String(value), span)
     }
 
-    pub fn unary(operator: UnaryOp, span: Span<'arena>, right: Expression<'arena>) -> Self {
+    pub fn unary(operator: UnaryOp, span: Span<'ctx>, right: Expression<'ctx>) -> Self {
         Self::Unary {
             operator,
             span,
@@ -588,9 +596,9 @@ impl<'arena> Expression<'arena> {
 
     pub fn binary(
         operator: BinaryOp,
-        span: Span<'arena>,
-        left: Expression<'arena>,
-        right: Expression<'arena>,
+        span: Span<'ctx>,
+        left: Expression<'ctx>,
+        right: Expression<'ctx>,
     ) -> Self {
         Self::Binary {
             operator,
@@ -600,7 +608,7 @@ impl<'arena> Expression<'arena> {
         }
     }
 
-    pub fn span(&self) -> Span<'arena> {
+    pub fn span(&self) -> Span<'ctx> {
         match self {
             Self::FunctionCall { span, .. }
             | Self::MemberAccess { span, .. }
@@ -618,9 +626,9 @@ impl<'arena> Expression<'arena> {
 
     pub fn bake_functions(
         &mut self,
-        module: &mut Module<'arena>,
-        module_key: StoreKey<Module<'arena>>,
-        context: &ModuleContext<'arena>,
+        module: &mut Module<'ctx>,
+        module_key: StoreKey<Module<'ctx>>,
+        context: &ModuleContext<'ctx>,
     ) {
         match self {
             Self::Asm { .. } => (),
@@ -706,16 +714,16 @@ macro_rules! assign_set {
     };
 }
 
-struct AsmBinding<'arena> {
-    name: Symbol<'arena>,
-    bound: Symbol<'arena>,
-    type_or_name: Ident<'arena>,
+struct AsmBinding<'ctx> {
+    name: Symbol<'ctx>,
+    bound: Symbol<'ctx>,
+    type_or_name: Ident<'ctx>,
 }
 
 // asm expression
-impl<'arena> Parser<'_, 'arena> {
+impl<'ctx> Parser<'_, 'ctx> {
     /// Parses [<.0>] "<.1>" (<.2>)
-    fn parse_asm_binding(&mut self) -> Result<AsmBinding<'arena>, ParsingError<'arena>> {
+    fn parse_asm_binding(&mut self) -> Result<AsmBinding<'ctx>, ParsingError<'ctx>> {
         self.expect(TokenType::BracketLeft)?;
         let name = self.expect_identifier()?.symbol();
         self.expect(TokenType::BracketRight)?;
@@ -730,7 +738,7 @@ impl<'arena> Parser<'_, 'arena> {
         })
     }
 
-    fn parse_asm(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn parse_asm(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let span1 = self.eat().span;
         let volatile = self.match_tok(TokenType::Volatile);
         self.expect(TokenType::ParenLeft)?;
@@ -869,17 +877,19 @@ impl<'arena> Parser<'_, 'arena> {
         })
     }
 
-    pub fn parse_expression(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    pub fn parse_expression(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         if self.peek().ty == TokenType::Asm {
             return self.parse_asm();
         }
         self.comparison()
     }
 
-    fn comparison(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn comparison(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.pipe_operator()?;
+        let mut first = false;
 
         loop {
+            let op_span = self.peek().span;
             let op = match self.peek().ty {
                 TokenType::EqualEqual => BinaryOp::Equals,
                 TokenType::NotEquals => BinaryOp::NotEquals,
@@ -895,6 +905,14 @@ impl<'arena> Parser<'_, 'arena> {
             };
             self.dismiss();
             let right = self.pipe_operator()?;
+
+            // error on a < b > _ to use a::<b>
+            if first {
+                let span = expr.span().combine_with([op_span], self.ctx.span_interner);
+                return Err(ParsingError::ChainedGenericLikeComparison(span));
+            }
+            first = true;
+
             expr = Expression::binary(
                 op,
                 expr.span()
@@ -907,7 +925,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(expr)
     }
 
-    fn pipe_operator(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn pipe_operator(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.range()?;
 
         while self.match_tok(TokenType::PipeOperator) {
@@ -933,7 +951,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(expr)
     }
 
-    fn range(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn range(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.term()?;
 
         while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
@@ -951,7 +969,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(expr)
     }
 
-    fn term(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn term(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.factor()?;
 
         while self.matches(&[
@@ -984,7 +1002,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(expr)
     }
 
-    fn factor(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn factor(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.unary()?;
 
         loop {
@@ -1017,7 +1035,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(expr)
     }
 
-    fn unary(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn unary(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         if self.matches(&[
             TokenType::Plus,
             TokenType::Minus,
@@ -1040,7 +1058,7 @@ impl<'arena> Parser<'_, 'arena> {
         self.assignment()
     }
 
-    fn assignment(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn assignment(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let expr = self.type_cast()?;
         if self.match_tok(TokenType::Equal) {
             let value = self.parse_expression()?;
@@ -1056,7 +1074,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(expr)
     }
 
-    fn type_cast(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn type_cast(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.references()?;
 
         while self.match_tok(TokenType::As) {
@@ -1074,7 +1092,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(expr)
     }
 
-    fn references(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn references(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         if self.match_tok(TokenType::Ampersand) {
             let right = self.references()?;
             let span = right
@@ -1115,7 +1133,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
     }
 
-    fn indexed(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    fn indexed(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.primary()?;
 
         while self.matches(&[TokenType::BracketLeft, TokenType::ParenLeft, TokenType::Dot]) {
@@ -1157,27 +1175,8 @@ impl<'arena> Parser<'_, 'arena> {
                         identifier: Box::new(expr),
                         arguments,
                     };
-                } else if let Expression::MemberAccess {
-                    left_side,
-                    mut index,
-                    span,
-                } = expr
-                {
-                    expr = Expression::MemberCall {
-                        arguments,
-                        span: self
-                            .current()
-                            .span
-                            .combine_with([span], self.ctx.span_interner),
-                        identifier: index
-                            .pop()
-                            .expect("member access did not access any members"),
-                        lhs: Box::new(Expression::MemberAccess {
-                            left_side,
-                            index,
-                            span,
-                        }),
-                    }
+                } else if let Expression::MemberAccess { .. } = expr {
+                    unreachable!();
                 } else {
                     expr = Expression::FunctionCall {
                         span: self
@@ -1202,18 +1201,28 @@ impl<'arena> Parser<'_, 'arena> {
                 };
             } else if self.current().ty == TokenType::Dot {
                 let name = self.expect_identifier()?;
-                if let Expression::MemberAccess { index, .. } = &mut expr {
-                    index.push(name);
-                    continue;
-                }
-                expr = Expression::MemberAccess {
-                    span: self
+                if self.peek().ty == TokenType::NamespaceAccess
+                    || self.peek().ty == TokenType::ParenLeft
+                {
+                    let span = self
                         .current()
                         .span
-                        .combine_with([expr.span()], self.ctx.span_interner),
-                    left_side: Box::new(expr),
-                    index: vec![name],
-                };
+                        .combine_with([expr.span()], self.ctx.span_interner);
+                    expr = self.parse_membercall(expr, span, name)?;
+                } else if let Expression::MemberAccess { index, span, .. } = &mut expr {
+                    index.push(name);
+                    span.combine_with([self.current().span], self.ctx.span_interner);
+                    continue;
+                } else {
+                    expr = Expression::MemberAccess {
+                        span: self
+                            .current()
+                            .span
+                            .combine_with([expr.span()], self.ctx.span_interner),
+                        left_side: Box::new(expr),
+                        index: vec![name],
+                    };
+                }
             } else {
                 unreachable!();
             }
@@ -1222,7 +1231,54 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(expr)
     }
 
-    fn primary(&mut self) -> Result<Expression<'arena>, ParsingError<'arena>> {
+    // parses ::<generics...>(...) of a membercall (.abcd::<>())
+    fn parse_membercall(
+        &mut self,
+        left_side: Expression<'ctx>,
+        span: Span<'ctx>,
+        identifier: Ident<'ctx>,
+    ) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
+        let mut generics = Vec::new();
+        // ::<...>
+        if self.match_tok(TokenType::NamespaceAccess) {
+            self.expect(TokenType::LessThan)?;
+            while !self.match_tok(TokenType::GreaterThan) {
+                if !generics.is_empty() {
+                    self.expect(TokenType::Comma)?;
+                    if self.match_tok(TokenType::GreaterThan) {
+                        break;
+                    }
+                }
+
+                generics.push(TypeRef::parse(self)?);
+            }
+            self.expect(TokenType::ParenLeft)?;
+        } else {
+            self.expect_one_of(&[TokenType::ParenLeft, TokenType::NamespaceAccess])?;
+        }
+        let mut arguments = Vec::new();
+
+        while !self.match_tok(TokenType::ParenRight) {
+            if !generics.is_empty() {
+                self.expect(TokenType::Comma)?;
+                if self.match_tok(TokenType::ParenRight) {
+                    break;
+                }
+            }
+
+            arguments.push(self.parse_expression()?);
+        }
+
+        Ok(Expression::MemberCall {
+            identifier,
+            lhs: Box::new(left_side),
+            generics,
+            arguments,
+            span: span.combine_with([self.current().span], self.ctx.span_interner),
+        })
+    }
+
+    fn primary(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let span1 = self.peek().span;
         if self.match_tok(TokenType::Dot) {
             // .{} / .[] / .()
@@ -1324,7 +1380,7 @@ impl<'arena> Parser<'_, 'arena> {
         })
     }
 
-    fn try_array(&mut self) -> Result<Option<Expression<'arena>>, ParsingError<'arena>> {
+    fn try_array(&mut self) -> Result<Option<Expression<'ctx>>, ParsingError<'ctx>> {
         let span = self.peek().span;
         if self.match_tok(TokenType::BracketLeft) {
             let inner_span = self.current().span;
@@ -1375,9 +1431,8 @@ impl<'arena> Parser<'_, 'arena> {
     #[allow(clippy::type_complexity)]
     fn try_object(
         &mut self,
-    ) -> Option<
-        Result<HashMap<Ident<'arena>, (Span<'arena>, Expression<'arena>)>, ParsingError<'arena>>,
-    > {
+    ) -> Option<Result<HashMap<Ident<'ctx>, (Span<'ctx>, Expression<'ctx>)>, ParsingError<'ctx>>>
+    {
         if self.match_tok(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
             while !self.match_tok(TokenType::CurlyRight) {

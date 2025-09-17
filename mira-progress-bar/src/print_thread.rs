@@ -202,9 +202,9 @@ pub fn start_thread_with(bar: ProgressBar) -> ProgressBarThread {
     let (tx, rx) = channel();
     let handle = std::thread::spawn(move || {
         let mut bar = bar;
-        loop {
+        'outer: loop {
             // wait for incoming message
-            let Ok(msg) = rx.recv() else { return };
+            let Ok(msg) = rx.recv() else { break };
             if matches!(
                 msg,
                 ProgressMessage::PrintStdout(_) | ProgressMessage::PrintStderr(_)
@@ -221,11 +221,11 @@ pub fn start_thread_with(bar: ProgressBar) -> ProgressBarThread {
                 match rx.try_recv() {
                     Ok(msg) => {
                         if handle_msg(msg, &mut bar) {
-                            break;
+                            break 'outer;
                         }
                     }
                     Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => return,
+                    Err(TryRecvError::Disconnected) => break 'outer,
                 }
             }
             // finally, print the progress bar

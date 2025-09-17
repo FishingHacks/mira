@@ -1,17 +1,22 @@
+// pub fn main() {
+//     if (get_bool() || get_bool()) "1".println();
+//     else "2".println();
+//
+//     if (get_bool() && get_bool()) "1".println();
+//     else "2".println();
+// }
+//
+// /// meow
+// /// This is a doc comment.
+// /**
+//  *  This is a multiline comment
+//     With spaces
+// *   and other stuff
+// */
+// /// and back to a single line doc comment
+// extern fn get_bool() -> bool;
+
 pub fn main() {
-    if (get_bool() || get_bool()) "1".println();
-    else "2".println();
-
-    if (get_bool() && get_bool()) "1".println();
-    else "2".println();
+    // "Hello, World!".println::<()>();
+    get_metadata<str>("a");
 }
-
-/// meow
-/// This is a doc comment.
-/**
- *  This is a multiline comment
-    With spaces
-*   and other stuff
-*/
-/// and back to a single line doc comment
-extern fn get_bool() -> bool;

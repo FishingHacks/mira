@@ -215,6 +215,9 @@ pub enum ParsingError<'arena> {
         #[primary_label("{label}")]
         label_span: Span<'arena>,
     },
+    #[error("Cannot chain comparison operators")]
+    #[note("use `::<...>` instead of `<...>` to specify type arguments.")]
+    ChainedGenericLikeComparison(#[primary_label("")] Span<'arena>),
 }
 
 #[derive(Debug, ErrorData)]

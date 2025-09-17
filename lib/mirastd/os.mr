@@ -13,4 +13,4 @@ pub fn exit(code: u32) -> ! = c_exit(code);
 /// Writes the buffer `buf` with `size` bytes to the file descriptor `fd`
 pub fn write(fd: i32, buf: &u8, size: usize) { c_write(fd, buf, size); }
 /// Writes the slice `slice` to the file descriptor `fd`
-pub fn write_slice(fd: i32, buf: &[u8]) { c_write(fd, buf as &u8, get_metadata<[u8]>(buf)); }
+pub fn write_slice(fd: i32, buf: &[u8]) { c_write(fd, buf as &u8, get_metadata::<[u8]>(buf)); }

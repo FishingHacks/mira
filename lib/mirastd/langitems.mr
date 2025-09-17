@@ -168,5 +168,5 @@ pub struct str_t {;
     /// Prints the string as well as a new line character (`'\n'`) to stdout
     fn println(self: &str) { print_str(self); print_newline(); }
     /// Gets the length of the string
-    fn len(self: &str) -> usize = get_metadata<str>(self);
+    fn len(self: &str) -> usize = get_metadata::<str>(self);
 }
