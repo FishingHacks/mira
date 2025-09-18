@@ -15,7 +15,7 @@ pub use literal::TypedLiteral;
 use mira_common::{index::IndexVec, newty};
 use mira_spans::{Ident, Span};
 
-use crate::{Ty, TypeCtx};
+use crate::{Ty, TypeCtx, monomorphisation::Substitute};
 
 newty! {
     #[display("Block(#{})")]
@@ -84,13 +84,22 @@ impl<'ctx> Index<ValueId> for Scope<'ctx> {
 }
 
 pub struct IR<'ctx> {
-    scope: Scope<'ctx>,
-    blocks: IndexVec<BlockId, Block<'ctx>>,
-    current_block: BlockId,
-    params: Vec<Param<'ctx>>,
+    pub(crate) scope: Scope<'ctx>,
+    pub(crate) blocks: IndexVec<BlockId, Block<'ctx>>,
+    pub(crate) current_block: BlockId,
+    pub(crate) params: Vec<Param<'ctx>>,
 }
 
 impl<'ctx> IR<'ctx> {
+    pub const fn dummy() -> Self {
+        Self {
+            scope: Scope(IndexVec::new()),
+            blocks: IndexVec::new(),
+            current_block: BlockId::ZERO,
+            params: Vec::new(),
+        }
+    }
+
     /// Creates a new ir, where ValueId 0..params.count() are the parameters.
     pub fn new(
         params: impl Iterator<Item = (Ident<'ctx>, Span<'ctx>, Ty<'ctx>)>,
@@ -340,5 +349,16 @@ impl<'ctx> Deref for ScopedIR<'ctx> {
 impl DerefMut for ScopedIR<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.ir
+    }
+}
+
+impl<'ctx> Substitute<'ctx> for Scope<'ctx> {
+    fn substitute(mut self, ctx: &crate::monomorphisation::SubstitutionCtx<'ctx, '_, '_>) -> Self {
+        self.0.iter_mut().for_each(|v| v.ty = v.ty.substitute(ctx));
+        self
+    }
+
+    fn would_substitute(&self) -> bool {
+        self.0.iter().any(|v| v.ty.would_substitute())
     }
 }

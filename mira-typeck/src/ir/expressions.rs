@@ -43,7 +43,7 @@ pub enum TypedExpression<'arena> {
     Asm {
         span: Span<'arena>,
         dst: ValueId,
-        inputs: Vec<ValueId>,
+        inputs: Box<[ValueId]>,
         registers: String,
         volatile: bool,
         asm: String,
@@ -55,14 +55,14 @@ pub enum TypedExpression<'arena> {
         Span<'arena>,
         ValueId,
         TypedLiteral<'arena>,
-        Vec<TypedLiteral<'arena>>,
+        Box<[TypedLiteral<'arena>]>,
     ),
     // _1 = func(_3.1, _3.2, d, ...)
     DirectCall(
         Span<'arena>,
         ValueId,
         StoreKey<TypedFunction<'arena>>,
-        Vec<TypedLiteral<'arena>>,
+        Box<[TypedLiteral<'arena>]>,
         TyList<'arena>,
     ),
     // _1 = func(_3.1, _3.2, d, ...)
@@ -70,14 +70,14 @@ pub enum TypedExpression<'arena> {
         Span<'arena>,
         ValueId,
         StoreKey<TypedExternalFunction<'arena>>,
-        Vec<TypedLiteral<'arena>>,
+        Box<[TypedLiteral<'arena>]>,
     ),
     // _1 = intrinsic(_3.1, _3.2, ...)
     IntrinsicCall(
         Span<'arena>,
         ValueId,
         Intrinsic,
-        Vec<TypedLiteral<'arena>>,
+        Box<[TypedLiteral<'arena>]>,
         TyList<'arena>,
     ),
     // _1 = llvm_intrinsic._2(_3.1, _3.2, ...)
@@ -85,7 +85,7 @@ pub enum TypedExpression<'arena> {
         Span<'arena>,
         ValueId,
         Symbol<'arena>,
-        Vec<TypedLiteral<'arena>>,
+        Box<[TypedLiteral<'arena>]>,
     ),
     // _1 = +_2
     Pos(Span<'arena>, ValueId, TypedLiteral<'arena>),
@@ -239,7 +239,7 @@ pub enum TypedExpression<'arena> {
     OffsetNonPointer(Span<'arena>, ValueId, TypedLiteral<'arena>, usize),
     // Eq::val(&dyn Eq, ...)
     // The last value is the offset into the function pointer part of the vtable.
-    DynCall(Span<'arena>, ValueId, Vec<TypedLiteral<'arena>>, u32),
+    DynCall(Span<'arena>, ValueId, Box<[TypedLiteral<'arena>]>, u32),
     // let _1 = <literal>; This **should never** contain a TypedLiteral::Dynamic as its 3rd element.
     Literal(Span<'arena>, ValueId, TypedLiteral<'arena>),
     DeclareVariable(Span<'arena>, ValueId, Ty<'arena>, Symbol<'arena>),
@@ -274,12 +274,21 @@ pub enum TypedExpression<'arena> {
         Span<'arena>,
         ValueId,
         TypedLiteral<'arena>,
-        (Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>),
+        (Ty<'arena>, Box<[StoreKey<TypedTrait<'arena>>]>),
     ),
     // if (_2) drop_in_place(&_1);
     DropIf(Span<'arena>, ValueId, ValueId),
     // drop_in_place(&_1);
     Drop(Span<'arena>, ValueId),
+    // <$ty as $trait_id>::$func($args...)
+    TraitCall {
+        span: Span<'arena>,
+        ty: Ty<'arena>,
+        trait_id: StoreKey<TypedTrait<'arena>>,
+        func: usize,
+        args: Box<[TypedLiteral<'arena>]>,
+        dst: ValueId,
+    },
     None,
 }
 
@@ -290,6 +299,7 @@ impl<'arena> TypedExpression<'arena> {
             | TypedExpression::Asm { span, .. }
             | TypedExpression::If { span, .. }
             | TypedExpression::While { span, .. }
+            | TypedExpression::TraitCall { span, .. }
             | TypedExpression::AttachVtable(span, ..)
             | TypedExpression::DeclareVariable(span, ..)
             | TypedExpression::LLVMIntrinsicCall(span, ..)

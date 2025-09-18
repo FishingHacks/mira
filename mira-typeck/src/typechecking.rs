@@ -1,15 +1,18 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Deref};
 
 use crate::{
+    TypedFunctionContract, TypedModule,
     context::TypeCtx,
     ir::{BlockId, ScopedIR},
     types::EMPTY_TYLIST,
 };
 use mira_common::store::StoreKey;
-use mira_errors::{Diagnostic, Diagnostics};
+use mira_context::ErrorEmitted;
+use mira_errors::Diagnostic;
 use mira_lexer::NumberType;
 use mira_parser::{
-    ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, UnaryOp,
+    ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, TypeRef, UnaryOp,
+    annotations::Annotations,
     module::{ModuleContext, ModuleScopeValue},
     std_annotations::{
         ext_vararg::ExternVarArg, intrinsic::IntrinsicAnnotation,
@@ -19,19 +22,19 @@ use mira_parser::{
 use mira_spans::{ArenaList, Ident, Span};
 
 use super::{
-    TypecheckingError, TypecheckingErrorDiagnosticsExt, TypeckCtx, TypedExternalFunction,
-    TypedFunction, TypedModule, TypedStatic, TypedTrait, default_types,
+    TypecheckingError, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic, TypedTrait,
+    default_types,
+    error::TypecheckingErrorEmitterExt,
     ir::{OffsetValue, TypedExpression, TypedLiteral},
     types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
 };
 
 pub fn typecheck_static<'arena>(
-    context: &TypeckCtx<'arena>,
+    ctx: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
     static_id: StoreKey<TypedStatic<'arena>>,
-    errs: &mut Diagnostics<'arena>,
-) -> bool {
-    let tc_module_reader = context.statics.read();
+) -> Result<(), ErrorEmitted> {
+    let tc_module_reader = ctx.statics.read();
     let ty = tc_module_reader[static_id].ty;
     let span = tc_module_reader[static_id].span;
     let expr = {
@@ -41,177 +44,212 @@ pub fn typecheck_static<'arena>(
         )
     };
 
+    let contract = TypedFunctionContract {
+        name: Some(tc_module_reader[static_id].name),
+        arguments: Vec::new(),
+        return_type: default_types::never,
+        annotations: Annotations::new(),
+        span,
+        module_id: tc_module_reader[static_id].module_id,
+        generics: Vec::new(),
+        comment: tc_module_reader[static_id].comment,
+    };
+
+    // TODO: Rename
+    let fn_ctx = FnContext {
+        tcx: ctx,
+        contract: &contract,
+    };
+
     match typecheck_expression(
-        context,
-        tc_module_reader[static_id].module_id,
+        fn_ctx,
         &mut ScopedIR::new(std::iter::empty(), span),
         &Expression::Literal(expr, span),
         TypeSuggestion::from_type(ty),
     ) {
-        Err(e) => {
-            errs.add(e);
-            return false;
-        }
+        Err(e) => return Err(ctx.emit_diag(e)),
         Ok((expr_typ, expr)) => {
-            if ty != expr_typ {
-                errs.add_mismatching_type(tc_module_reader[static_id].span, ty, expr_typ);
-                return false;
-            }
+            let tracker = ctx.track_errors();
             if !expr.is_entirely_literal() {
-                errs.add_statics_need_to_be_literal(tc_module_reader[static_id].span);
+                ctx.emit_statics_need_to_be_literal(tc_module_reader[static_id].span);
             }
+            if ty != expr_typ {
+                ctx.emit_mismatching_type(tc_module_reader[static_id].span, ty, expr_typ);
+            }
+            ctx.errors_happened_res(tracker)?;
             drop(tc_module_reader);
-            context.statics.write()[static_id].value = expr;
+            ctx.statics.write()[static_id].value = expr;
         }
     }
-    true
+    Ok(())
 }
 
 #[allow(clippy::result_unit_err)]
 pub fn typecheck_external_function<'arena>(
-    context: &TypeckCtx<'arena>,
+    ctx: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedExternalFunction<'arena>>,
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<(), ()> {
-    inner_typecheck_function(
-        context,
-        module_context,
-        function_id.cast(),
-        true,
-        diagnostics,
-    )
+) -> Result<(), ErrorEmitted> {
+    inner_typecheck_function(ctx, module_context, function_id.cast(), true)
+}
+
+#[derive(Clone, Copy)]
+struct FnContext<'ctx, 'tcx> {
+    tcx: &'tcx TypeckCtx<'ctx>,
+    contract: &'tcx TypedFunctionContract<'ctx>,
+}
+
+impl<'ctx> FnContext<'ctx, '_> {
+    fn resolve_type(
+        &self,
+        module_id: StoreKey<TypedModule<'ctx>>,
+        ty: &TypeRef<'ctx>,
+    ) -> Result<Ty<'ctx>, Diagnostic<'ctx>> {
+        self.tcx
+            .resolve_type(module_id, ty, &self.contract.generics)
+    }
+}
+
+impl<'ctx, 'tcx> Deref for FnContext<'ctx, 'tcx> {
+    type Target = TypeckCtx<'ctx>;
+
+    fn deref(&self) -> &'tcx Self::Target {
+        self.tcx
+    }
 }
 
 #[allow(clippy::result_unit_err)]
 pub fn typecheck_function<'arena>(
-    context: &TypeckCtx<'arena>,
+    ctx: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedFunction<'arena>>,
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<(), ()> {
-    inner_typecheck_function(context, module_context, function_id, false, diagnostics)
+) -> Result<(), ErrorEmitted> {
+    inner_typecheck_function(ctx, module_context, function_id, false)
+}
+
+fn is_invalid_extern_return_ty(ty: &TyKind<'_>) -> bool {
+    // unsized types are always invalid.
+    if !ty.is_sized() {
+        return true;
+    }
+    // primitive types are always valid.
+    if ty.is_primitive() {
+        return false;
+    }
+    // thin pointers are always vaoid
+    if ty.has_refs() && ty.is_thin_ptr() {
+        return false;
+    }
+    // everything else is invalid.
+    true
 }
 
 // NOTE: function_id has to be StoreKey<TypedExternalFunction> if is_external is set to true.
 fn inner_typecheck_function<'arena>(
-    context: &TypeckCtx<'arena>,
+    tc_ctx: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
     function_id: StoreKey<TypedFunction<'arena>>,
     is_external: bool,
-    errs: &mut Diagnostics<'arena>,
-) -> Result<(), ()> {
-    let errs_start_len = errs.len();
-
+) -> Result<(), ErrorEmitted> {
     let ext_fn_reader = module_context.external_functions.read();
     let fn_reader = module_context.functions.read();
-    let (statement, module_id) = if is_external {
-        let (_, ref statement, module_id) = ext_fn_reader[function_id.cast()];
-        if let Some(statement) = statement {
-            (statement, module_id)
-        } else {
+
+    let typ_ext_fn_reader = tc_ctx.external_functions.read();
+    let typ_fn_reader = tc_ctx.functions.read();
+
+    let statement = if is_external {
+        let Some(statement) = &ext_fn_reader[function_id.cast()].1 else {
             return Ok(());
-        }
+        };
+        statement
     } else {
-        let (_, ref statement, module_id) = fn_reader[function_id.cast()];
-        (statement, module_id)
+        &fn_reader[function_id.cast()].1
     };
 
-    let (return_type, args, span) = if is_external {
-        let contract = &context.external_functions.read()[function_id.cast()].0;
-        (
-            contract.return_type,
-            contract.arguments.clone(),
-            contract.span,
-        )
+    let contract = if is_external {
+        &typ_ext_fn_reader[function_id.cast()].0
     } else {
-        let reader = context.functions.read();
-        let contract = &reader[function_id].0;
+        let contract = &typ_fn_reader[function_id].0;
         if contract.annotations.has_annotation::<IntrinsicAnnotation>()
             || contract
                 .annotations
                 .has_annotation::<LLVMIntrinsicAnnotation>()
         {
             let span = contract.span;
-            drop(reader);
-            context.functions.write()[function_id]
+            drop(typ_fn_reader);
+            drop(typ_ext_fn_reader);
+            tc_ctx.functions.write()[function_id]
                 .1
                 .append(TypedExpression::Unreachable(span));
             return Ok(());
         }
-        (
-            contract.return_type,
-            contract.arguments.clone(),
-            contract.span,
-        )
+        contract
     };
 
-    if is_external
-        && (!return_type.is_primitive() || (return_type.has_refs() && !return_type.is_thin_ptr()))
-    {
-        errs.add_invalid_extern_return_type(span);
+    let ctx = FnContext {
+        tcx: tc_ctx,
+        contract,
+    };
+
+    let tracker = ctx.track_errors();
+    if !contract.return_type.is_sized() {
+        ctx.ctx
+            .emit_unsized_return_type(contract.span, contract.return_type);
     }
-    if !return_type.is_sized() {
-        errs.add_unsized_return_type(span, return_type);
+    if is_external && is_invalid_extern_return_ty(&contract.return_type) {
+        ctx.emit_invalid_extern_return_type(contract.span);
     }
-    for (_, arg) in args.iter().filter(|v| !v.1.is_sized()) {
-        errs.add_unsized_argument(span, *arg);
+    for (_, arg) in contract.arguments.iter().filter(|v| !v.1.is_sized()) {
+        ctx.emit_unsized_argument(contract.span, *arg);
     }
-    (errs.len() == errs_start_len).then_some(()).ok_or(())?;
+    ctx.errors_happened_res(tracker)?;
 
     let mut ir = ScopedIR::new(
-        args.iter().map(|&(name, ty)| (name, name.span(), ty)),
-        span.combine_with([statement.span()], context.ctx.span_interner()),
+        contract
+            .arguments
+            .iter()
+            .map(|&(name, ty)| (name, name.span(), ty)),
+        ctx.combine_spans([contract.span, statement.span()]),
     );
-    let always_returns = typecheck_block_inline(
-        context,
-        &mut ir,
-        statement,
-        module_id.cast(),
-        return_type,
-        errs,
-    )?;
-    if return_type != default_types::void && !always_returns {
-        errs.add_body_does_not_always_return(statement.span());
-        return Err(());
+    let always_returns = typecheck_block_inline(ctx, &mut ir, statement)?;
+    if contract.return_type != default_types::void && !always_returns {
+        ctx.ctx.emit_body_does_not_always_return(statement.span());
+        return Err(ErrorEmitted);
     }
     // add an implicit `return;` at the end of the function
     if !always_returns {
-        typecheck_statement(
-            context,
-            &mut ir,
-            &Statement::Return(None, statement.span()),
-            module_id.cast(),
-            return_type,
-            errs,
-        )?;
+        typecheck_statement(ctx, &mut ir, &Statement::Return(None, statement.span()))?;
     }
+
+    drop(fn_reader);
+    drop(ext_fn_reader);
+
+    drop(typ_fn_reader);
+    drop(typ_ext_fn_reader);
+
     if is_external {
         let mut ir = Some(ir.to_ir());
         std::mem::swap(
             &mut ir,
-            &mut context.external_functions.write()[function_id.cast()].1,
+            &mut tc_ctx.external_functions.write()[function_id.cast()].1,
         );
         assert!(ir.is_none())
     } else {
         let mut ir = ir.to_ir();
-        std::mem::swap(&mut ir, &mut context.functions.write()[function_id].1);
+        std::mem::swap(&mut ir, &mut tc_ctx.functions.write()[function_id].1);
         assert!(ir.is_empty());
     }
     Ok(())
 }
 
-fn typecheck_block_inline<'arena>(
-    context: &TypeckCtx<'arena>,
-    ir: &mut ScopedIR<'arena>,
-    statement: &Statement<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    return_type: Ty<'arena>,
-    errs: &mut Diagnostics<'arena>,
-) -> Result<bool, ()> {
+fn typecheck_block_inline<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    statement: &Statement<'ctx>,
+) -> Result<bool, ErrorEmitted> {
     if let Statement::Block(stmts, _, _) = statement {
         for stmt in stmts {
-            if let Ok(true) = typecheck_statement(context, ir, stmt, module, return_type, errs) {
+            if let Ok(true) = typecheck_statement(ctx, ir, stmt) {
                 if !matches!(statement, Statement::Return(..)) {
                     ir.append(TypedExpression::Unreachable(statement.span()));
                 }
@@ -220,28 +258,23 @@ fn typecheck_block_inline<'arena>(
         }
         return Ok(false);
     }
-    typecheck_statement(context, ir, statement, module, return_type, errs)
+    typecheck_statement(ctx, ir, statement)
 }
 
 /// Typechecks a statement that *acts* like a block, or a block. This means that
 /// - `if(a) b = c;` is `if _0 { _1 = _2; }`
 /// - `if(a) { b = c; }` is `if _0 { _1 = _2; }`, and not `if _0 { { _1 = _2 } }`
-fn typecheck_quasi_block<'arena>(
-    context: &TypeckCtx<'arena>,
-    ir: &mut ScopedIR<'arena>,
-    statement: &Statement<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    return_type: Ty<'arena>,
-    errs: &mut Diagnostics<'arena>,
-) -> Result<(BlockId, bool), ()> {
+fn typecheck_quasi_block<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    statement: &Statement<'ctx>,
+) -> Result<(BlockId, bool), ErrorEmitted> {
     if let Statement::Block(statements, span, _) = statement {
-        let errs_at_start = errs.len();
+        let tracker = ctx.track_errors();
         let (block, always_returns) = ir.with_new_block(*span, |ir| {
             let mut always_returns = false;
             for statement in statements.iter() {
-                if let Ok(true) =
-                    typecheck_statement(context, ir, statement, module, return_type, errs)
-                {
+                if let Ok(true) = typecheck_statement(ctx, ir, statement) {
                     always_returns = true;
                     if !matches!(statement, Statement::Return(..)) {
                         ir.append(TypedExpression::Unreachable(statement.span()));
@@ -252,27 +285,22 @@ fn typecheck_quasi_block<'arena>(
             always_returns
         });
 
-        if errs.len() != errs_at_start {
-            return Err(());
-        }
+        ctx.errors_happened_res(tracker)?;
         return Ok((block, always_returns));
     }
     let (block, res) = ir.with_new_block(statement.span(), |ir| {
-        typecheck_statement(context, ir, statement, module, return_type, errs)
+        typecheck_statement(ctx, ir, statement)
     });
     Ok((block, res?))
 }
 
 /// Returns if the statement and if it always returns
-fn typecheck_statement<'arena>(
-    context: &TypeckCtx<'arena>,
-    ir: &mut ScopedIR<'arena>,
-    statement: &Statement<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    return_type: Ty<'arena>,
-    errs: &mut Diagnostics<'arena>,
-) -> Result<bool, ()> {
-    let errs_at_start = errs.len();
+fn typecheck_statement<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    statement: &Statement<'ctx>,
+) -> Result<bool, ErrorEmitted> {
+    let tracker = ctx.track_errors();
     match statement {
         Statement::If {
             condition,
@@ -281,29 +309,23 @@ fn typecheck_statement<'arena>(
             span,
             annotations,
         } => {
-            let expr_result =
-                typecheck_expression(context, module, ir, condition, TypeSuggestion::Bool)
-                    .map_err(|v| _ = errs.add(v));
+            let expr_result = typecheck_expression(ctx, ir, condition, TypeSuggestion::Bool)
+                .map_err(|v| ctx.emit_diag(v));
 
-            let if_stmt_result =
-                typecheck_quasi_block(context, ir, if_stmt, module, return_type, errs);
+            let if_stmt_result = typecheck_quasi_block(ctx, ir, if_stmt);
             let else_stmt_result = if let Some(else_stmt) = else_stmt {
-                typecheck_quasi_block(context, ir, else_stmt, module, return_type, errs)
-                    .map(|(blk, exits)| (Some(blk), exits))
+                typecheck_quasi_block(ctx, ir, else_stmt).map(|(blk, exits)| (Some(blk), exits))
             } else {
                 Ok((None, false))
             };
-            let Ok((condition_ty, cond)) = expr_result else {
-                return Err(());
-            };
+            let (condition_ty, cond) = expr_result?;
             if condition_ty != default_types::bool {
-                errs.add_mismatching_type(*span, default_types::bool, condition_ty);
+                ctx.ctx
+                    .emit_mismatching_type(*span, default_types::bool, condition_ty);
             }
             let (if_block, if_stmt_exits) = if_stmt_result?;
             let (else_block, else_stmt_exits) = else_stmt_result?;
-            if errs.len() != errs_at_start {
-                return Err(());
-            }
+            ctx.errors_happened_res(tracker)?;
             ir.append(TypedExpression::If {
                 span: *span,
                 cond,
@@ -320,19 +342,19 @@ fn typecheck_statement<'arena>(
             ..
         } => {
             let (condition_body, condition_result) = ir.with_new_block(condition.span(), |ir| {
-                typecheck_expression(context, module, ir, condition, TypeSuggestion::Bool)
+                typecheck_expression(ctx, ir, condition, TypeSuggestion::Bool)
             });
-            let condition_result = condition_result.map_err(|v| _ = errs.add(v));
+            let condition_result = condition_result.map_err(|diag| ctx.emit_diag(diag));
 
-            let body_result = typecheck_quasi_block(context, ir, child, module, return_type, errs);
+            let body_result = typecheck_quasi_block(ctx, ir, child);
             let (condition_ty, cond) = condition_result?;
             if condition_ty != default_types::bool {
-                errs.add_mismatching_type(*span, default_types::bool, condition_ty);
+                ctx.ctx
+                    .emit_mismatching_type(*span, default_types::bool, condition_ty);
             }
             let (body, mut always_exits) = body_result?;
-            if errs.len() != errs_at_start {
-                return Err(());
-            }
+            ctx.errors_happened_res(tracker)?;
+
             // while (true) {} also never exits
             always_exits = always_exits || matches!(cond, TypedLiteral::Bool(true));
             ir.append(TypedExpression::While {
@@ -346,33 +368,33 @@ fn typecheck_statement<'arena>(
         }
         Statement::For { .. } => todo!("iterator (requires generics)"),
         Statement::Return(None, span) => {
-            if return_type == default_types::void {
+            if ctx.contract.return_type == default_types::void {
                 ir.append(TypedExpression::Return(*span, TypedLiteral::Void));
                 Ok(true)
             } else {
-                errs.add_mismatching_type(*span, return_type, default_types::void);
-                Err(())
+                ctx.ctx
+                    .emit_mismatching_type(*span, ctx.contract.return_type, default_types::void);
+                Err(ErrorEmitted)
             }
         }
         Statement::Return(Some(expression), span) => {
             let (ty, typed_expression) = typecheck_expression(
-                context,
-                module,
+                ctx,
                 ir,
                 expression,
-                TypeSuggestion::from_type(return_type),
+                TypeSuggestion::from_type(ctx.contract.return_type),
             )
-            .map_err(|e| _ = errs.add(e))?;
-            if ty != return_type {
-                errs.add_mismatching_type(expression.span(), return_type, ty);
-                return Err(());
+            .map_err(|diag| ctx.emit_diag(diag))?;
+            if ty != ctx.contract.return_type {
+                ctx.ctx
+                    .emit_mismatching_type(expression.span(), ctx.contract.return_type, ty);
+                return Err(ErrorEmitted);
             }
             ir.append(TypedExpression::Return(*span, typed_expression));
             Ok(true)
         }
         Statement::Block(_, span, annotations) => {
-            let (block, always_returns) =
-                typecheck_quasi_block(context, ir, statement, module, return_type, errs)?;
+            let (block, always_returns) = typecheck_quasi_block(ctx, ir, statement)?;
             ir.append(TypedExpression::Block(*span, block, annotations.clone()));
             Ok(always_returns)
         }
@@ -380,13 +402,12 @@ fn typecheck_statement<'arena>(
             let expected_typ = var
                 .ty
                 .as_ref()
-                .map(|v| context.resolve_type(module, v, &[]))
+                .map(|v| ctx.resolve_type(ctx.contract.module_id, v))
                 .transpose()
-                .map_err(|v| _ = errs.add(v))?;
+                .map_err(|diag| ctx.emit_diag(diag))?;
 
             let (ty, expr) = typecheck_expression(
-                context,
-                module,
+                ctx,
                 ir,
                 &var.value,
                 expected_typ
@@ -395,13 +416,13 @@ fn typecheck_statement<'arena>(
                     .map(TypeSuggestion::from_type)
                     .unwrap_or_default(),
             )
-            .map_err(|e| _ = errs.add(e))?;
+            .map_err(|diag| ctx.emit_diag(diag))?;
 
             if let Some(expected_typ) = expected_typ
                 && expected_typ != ty
             {
-                errs.add_mismatching_type(var.span, expected_typ, ty);
-                return Err(());
+                ctx.ctx.emit_mismatching_type(var.span, expected_typ, ty);
+                return Err(ErrorEmitted);
             }
 
             let value = ir.add_value(ty);
@@ -418,8 +439,8 @@ fn typecheck_statement<'arena>(
             Ok(false)
         }
         Statement::Expression(expression) => {
-            typecheck_expression(context, module, ir, expression, Default::default())
-                .map_err(|e| _ = errs.add(e))
+            typecheck_expression(ctx, ir, expression, Default::default())
+                .map_err(|diag| ctx.emit_diag(diag))
                 .map(|(ty, _)| ty == default_types::never)
         }
         Statement::Use { .. }
@@ -531,14 +552,12 @@ fn float_number_to_literal<'arena>(
     }
 }
 
-fn typecheck_expression<'arena>(
-    context: &TypeckCtx<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    ir: &mut ScopedIR<'arena>,
-    expression: &Expression<'arena>,
-    type_suggestion: TypeSuggestion<'arena>,
-) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
-    let ctx = context.ctx;
+fn typecheck_expression<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    expression: &Expression<'ctx>,
+    type_suggestion: TypeSuggestion<'ctx>,
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     match expression {
         &Expression::Literal(ref literal_value, span) => match literal_value {
             LiteralValue::String(global_str) => {
@@ -547,7 +566,7 @@ fn typecheck_expression<'arena>(
             LiteralValue::Array(ArrayLiteral::Values(vec)) if vec.is_empty() => {
                 let ty = match type_suggestion {
                     TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
-                        .to_type(context)
+                        .to_type(&ctx)
                         .ok_or_else(|| TypecheckingError::CannotInferArrayType(span).to_error())?,
                     _ => return Err(TypecheckingError::CannotInferArrayType(span).to_error()),
                 };
@@ -558,7 +577,7 @@ fn typecheck_expression<'arena>(
                     TypeSuggestion::UnsizedArray(v) | TypeSuggestion::Array(v) => *v,
                     _ => TypeSuggestion::Unknown,
                 };
-                let (ty, lit) = typecheck_expression(context, module, ir, value, suggested_typ)?;
+                let (ty, lit) = typecheck_expression(ctx, ir, value, suggested_typ)?;
                 Ok((
                     ctx.intern_ty(TyKind::SizedArray {
                         ty,
@@ -572,13 +591,12 @@ fn typecheck_expression<'arena>(
                     TypeSuggestion::UnsizedArray(v) | TypeSuggestion::Array(v) => *v,
                     _ => TypeSuggestion::Unknown,
                 };
-                let (ty, mut elements) =
-                    typecheck_expression(context, module, ir, &vec[0], suggested_typ)
-                        .map(|(ty, lit)| (ty, vec![lit]))?;
+                let (ty, mut elements) = typecheck_expression(ctx, ir, &vec[0], suggested_typ)
+                    .map(|(ty, lit)| (ty, vec![lit]))?;
                 let suggested_typ = TypeSuggestion::from_type(ty);
                 for expr in vec.iter().skip(1) {
                     let (el_typ, el_lit) =
-                        typecheck_expression(context, module, ir, expr, suggested_typ.clone())?;
+                        typecheck_expression(ctx, ir, expr, suggested_typ.clone())?;
                     if el_typ != ty {
                         return Err(TypecheckingError::MismatchingType {
                             expected: ty,
@@ -608,8 +626,7 @@ fn typecheck_expression<'arena>(
 
                 for (i, (_, value)) in values.iter().enumerate() {
                     let (ty, val) = typecheck_expression(
-                        context,
-                        module,
+                        ctx,
                         ir,
                         value,
                         suggested_element_types.get(i).cloned().unwrap_or_default(),
@@ -629,7 +646,7 @@ fn typecheck_expression<'arena>(
                     return Err(TypecheckingError::CannotInferAnonStructType(span).to_error());
                 };
 
-                let structure = &context.structs.read()[struct_id];
+                let structure = &ctx.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
@@ -650,13 +667,8 @@ fn typecheck_expression<'arena>(
                         }
                         .to_error());
                     };
-                    let (expr_typ, expr_lit) = typecheck_expression(
-                        context,
-                        module,
-                        ir,
-                        expr,
-                        TypeSuggestion::from_type(*ty),
-                    )?;
+                    let (expr_typ, expr_lit) =
+                        typecheck_expression(ctx, ir, expr, TypeSuggestion::from_type(*ty))?;
                     if *ty != expr_typ {
                         return Err(TypecheckingError::MismatchingType {
                             expected: *ty,
@@ -676,9 +688,9 @@ fn typecheck_expression<'arena>(
                 ))
             }
             LiteralValue::Struct(values, path) => {
-                let value = context
+                let value = ctx
                     .typed_resolve_import(
-                        module,
+                        ctx.contract.module_id,
                         &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
                         span,
                         &mut HashSet::new(),
@@ -689,7 +701,7 @@ fn typecheck_expression<'arena>(
                 let ModuleScopeValue::Struct(struct_id) = value else {
                     return Err(TypecheckingError::CannotFindValue(span, path.clone()).to_error());
                 };
-                let structure = &context.structs.read()[struct_id.cast()];
+                let structure = &ctx.structs.read()[struct_id.cast()];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
@@ -710,13 +722,8 @@ fn typecheck_expression<'arena>(
                         }
                         .to_error());
                     };
-                    let (expr_typ, expr_lit) = typecheck_expression(
-                        context,
-                        module,
-                        ir,
-                        expr,
-                        TypeSuggestion::from_type(*ty),
-                    )?;
+                    let (expr_typ, expr_lit) =
+                        typecheck_expression(ctx, ir, expr, TypeSuggestion::from_type(*ty))?;
                     if *ty != expr_typ {
                         return Err(TypecheckingError::MismatchingType {
                             expected: *ty,
@@ -759,9 +766,9 @@ fn typecheck_expression<'arena>(
                     generics.extend_from_slice(generic_value);
                 }
 
-                let value = context
+                let value = ctx
                     .typed_resolve_import(
-                        module,
+                        ctx.contract.module_id,
                         &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
                         span,
                         &mut HashSet::new(),
@@ -772,10 +779,9 @@ fn typecheck_expression<'arena>(
                     })?;
                 match value {
                     ModuleScopeValue::Function(id) => {
-                        let reader = &context.functions.read()[id.cast()];
-                        let mut return_type = reader.0.return_type;
-                        let mut arguments =
-                            reader.0.arguments.iter().map(|v| v.1).collect::<Vec<_>>();
+                        let reader = &ctx.functions.read()[id.cast()];
+                        let return_type = reader.0.return_type;
+                        let arguments = reader.0.arguments.iter().map(|v| v.1).collect::<Vec<_>>();
                         if reader.0.generics.len() != generics.len() {
                             return Err(TypecheckingError::MismatchingGenericCount(
                                 span,
@@ -786,7 +792,7 @@ fn typecheck_expression<'arena>(
                         }
                         let mut generic_types = Vec::with_capacity(generics.len());
                         for (i, ty) in generics.iter().enumerate() {
-                            let ty = context.resolve_type(module, ty, &[])?;
+                            let ty = ctx.resolve_type(ctx.contract.module_id, ty)?;
                             if reader.0.generics[i].sized && !ty.is_sized() {
                                 return Err(
                                     TypecheckingError::UnsizedForSizedGeneric(span, ty).to_error()
@@ -794,19 +800,10 @@ fn typecheck_expression<'arena>(
                             }
                             generic_types.push(ty);
                         }
-                        for argty in arguments
-                            .iter_mut()
-                            .chain(std::iter::once(&mut return_type))
-                        {
-                            let (refcount, ty) = argty.remove_refs();
-                            if let TyKind::Generic { generic_id, .. } = **ty {
-                                *argty = with_refcount(
-                                    ctx,
-                                    generic_types[generic_id as usize],
-                                    refcount,
-                                );
-                            }
-                        }
+
+                        let arguments = ctx.substitute(&generic_types, arguments);
+                        let return_type = ctx.substitute(&generic_types, return_type);
+
                         let function_ty = FunctionType {
                             arguments: ctx.intern_tylist(&arguments),
                             return_type,
@@ -833,7 +830,7 @@ fn typecheck_expression<'arena>(
                         Ok((ctx.intern_ty(TyKind::Function(function_ty)), literal))
                     }
                     ModuleScopeValue::ExternalFunction(id) => {
-                        let reader = &context.external_functions.read()[id.cast()];
+                        let reader = &ctx.external_functions.read()[id.cast()];
                         let function_typ = FunctionType {
                             return_type: reader.0.return_type,
                             arguments: ctx.intern_tylist(
@@ -850,7 +847,7 @@ fn typecheck_expression<'arena>(
                             return Err(TypecheckingError::UnexpectedGenerics { span }.to_error());
                         }
                         Ok((
-                            context.statics.read()[id.cast()].ty,
+                            ctx.statics.read()[id.cast()].ty,
                             TypedLiteral::Static(id.cast()),
                         ))
                     }
@@ -858,7 +855,7 @@ fn typecheck_expression<'arena>(
                 }
             }
             LiteralValue::BakedAnonymousFunction(fn_id) => {
-                let func = &context.functions.read()[fn_id.cast()].0;
+                let func = &ctx.functions.read()[fn_id.cast()].0;
                 let fn_typ = FunctionType {
                     return_type: func.return_type,
                     arguments: ctx
@@ -881,12 +878,12 @@ fn typecheck_expression<'arena>(
             inputs,
         } => {
             let name = match output {
-                mira_parser::TypeRef::Reference { type_name, .. } => Some(type_name.entries[0].0),
+                TypeRef::Reference { type_name, .. } => Some(type_name.entries[0].0),
                 _ => None,
             };
             // this should never fail unless this is an incompatible type (non-primitive)
-            let output = context
-                .resolve_type(module, output, &[])
+            let output = ctx
+                .resolve_type(ctx.contract.module_id, output)
                 .ok()
                 .filter(|v| (*v == default_types::void && name.is_none()) || v.is_asm_primitive())
                 .ok_or_else(|| {
@@ -911,7 +908,7 @@ fn typecheck_expression<'arena>(
             ir.append(TypedExpression::Asm {
                 span: *span,
                 dst: id,
-                inputs: typed_inputs,
+                inputs: typed_inputs.into_boxed_slice(),
                 registers: registers.clone(),
                 volatile: *volatile,
                 asm: asm.clone(),
@@ -927,15 +924,14 @@ fn typecheck_expression<'arena>(
             right_side,
             ..
         } if *operator == UnaryOp::Reference => {
-            typecheck_take_ref(context, module, ir, right_side, type_suggestion)
+            typecheck_take_ref(ctx, ir, right_side, type_suggestion)
         }
         Expression::Unary {
             operator,
             right_side,
             span,
         } => {
-            let (ty, right_side) =
-                typecheck_expression(context, module, ir, right_side, type_suggestion)?;
+            let (ty, right_side) = typecheck_expression(ctx, ir, right_side, type_suggestion)?;
             match operator {
                 UnaryOp::Plus if ty.is_int_like() => {
                     tc_res!(unary ir; Pos(*span, right_side, ty))
@@ -967,11 +963,9 @@ fn typecheck_expression<'arena>(
             span,
         } => {
             if matches!(operator, BinaryOp::LShift | BinaryOp::RShift) {
-                let (ty, left_side) =
-                    typecheck_expression(context, module, ir, left_side, type_suggestion)?;
+                let (ty, left_side) = typecheck_expression(ctx, ir, left_side, type_suggestion)?;
                 let (typ_right, right_side) = typecheck_expression(
-                    context,
-                    module,
+                    ctx,
                     ir,
                     right_side,
                     TypeSuggestion::Number(NumberType::Usize),
@@ -999,7 +993,7 @@ fn typecheck_expression<'arena>(
                 let span_left = left_side.span();
                 let span_right = right_side.span();
                 let (typ_left, left_side) =
-                    typecheck_expression(context, module, ir, left_side, TypeSuggestion::Bool)?;
+                    typecheck_expression(ctx, ir, left_side, TypeSuggestion::Bool)?;
                 if typ_left != default_types::bool {
                     return Err(TypecheckingError::MismatchingType {
                         span: span_left,
@@ -1009,7 +1003,7 @@ fn typecheck_expression<'arena>(
                     .to_error());
                 }
                 let (rhs_block, right_res) = ir.with_new_block(right_side.span(), |ir| {
-                    typecheck_expression(context, module, ir, right_side, TypeSuggestion::Bool)
+                    typecheck_expression(ctx, ir, right_side, TypeSuggestion::Bool)
                 });
                 let (typ_right, right_side) = right_res?;
                 if typ_right != default_types::bool {
@@ -1034,15 +1028,9 @@ fn typecheck_expression<'arena>(
                 }
                 return Ok((default_types::bool, TypedLiteral::Dynamic(id)));
             }
-            let (typ_left, left_side) =
-                typecheck_expression(context, module, ir, left_side, type_suggestion)?;
-            let (typ_right, right_side) = typecheck_expression(
-                context,
-                module,
-                ir,
-                right_side,
-                TypeSuggestion::from_type(typ_left),
-            )?;
+            let (typ_left, left_side) = typecheck_expression(ctx, ir, left_side, type_suggestion)?;
+            let (typ_right, right_side) =
+                typecheck_expression(ctx, ir, right_side, TypeSuggestion::from_type(typ_left))?;
             if typ_left != typ_right {
                 return Err(TypecheckingError::LhsNotRhs(*span, typ_left, typ_right).to_error());
             }
@@ -1116,14 +1104,11 @@ fn typecheck_expression<'arena>(
             }
         }
         Expression::FunctionCall {
-            identifier,
-            arguments,
-            ..
+            func, arguments, ..
         } => {
-            let (ty, function_expr) =
-                typecheck_expression(context, module, ir, identifier, TypeSuggestion::Unknown)?;
+            let (ty, function_expr) = typecheck_expression(ctx, ir, func, TypeSuggestion::Unknown)?;
             let has_vararg = if let TypedLiteral::ExternalFunction(id) = function_expr {
-                context.external_functions.read()[id]
+                ctx.external_functions.read()[id]
                     .0
                     .annotations
                     .has_annotation::<ExternVarArg>()
@@ -1131,17 +1116,11 @@ fn typecheck_expression<'arena>(
                 false
             };
             let TyKind::Function(function_type) = &**ty.without_ref() else {
-                return Err(TypecheckingError::TypeIsNotAFunction {
-                    span: identifier.span(),
-                }
-                .to_error());
+                return Err(TypecheckingError::TypeIsNotAFunction { span: func.span() }.to_error());
             };
             let mut typed_arguments = Vec::with_capacity(function_type.arguments.len());
             if arguments.len() < function_type.arguments.len() {
-                return Err(TypecheckingError::MissingArguments {
-                    span: identifier.span(),
-                }
-                .to_error());
+                return Err(TypecheckingError::MissingArguments { span: func.span() }.to_error());
             }
             if arguments.len() > function_type.arguments.len() && !has_vararg {
                 return Err(TypecheckingError::TooManyArguments {
@@ -1151,8 +1130,7 @@ fn typecheck_expression<'arena>(
             }
             for (i, arg) in arguments.iter().enumerate() {
                 let (ty, expr) = typecheck_expression(
-                    context,
-                    module,
+                    ctx,
                     ir,
                     arg,
                     function_type
@@ -1181,10 +1159,10 @@ fn typecheck_expression<'arena>(
                 let ty = function_type.return_type;
                 let id = ir.add_value(ty);
                 ir.append(TypedExpression::IntrinsicCall(
-                    identifier.span(),
+                    func.span(),
                     id,
                     intrinsic,
-                    typed_arguments,
+                    typed_arguments.into_boxed_slice(),
                     generics,
                 ));
                 Ok((ty, TypedLiteral::Dynamic(id)))
@@ -1192,38 +1170,38 @@ fn typecheck_expression<'arena>(
                 let ty = function_type.return_type;
                 let id = ir.add_value(ty);
                 ir.append(TypedExpression::LLVMIntrinsicCall(
-                    identifier.span(),
+                    func.span(),
                     id,
                     intrinsic,
-                    typed_arguments,
+                    typed_arguments.into_boxed_slice(),
                 ));
                 Ok((ty, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::Function(fn_id, generics) = function_expr {
                 let ty = function_type.return_type;
                 let id = ir.add_value(ty);
                 ir.append(TypedExpression::DirectCall(
-                    identifier.span(),
+                    func.span(),
                     id,
                     fn_id,
-                    typed_arguments,
+                    typed_arguments.into_boxed_slice(),
                     generics,
                 ));
                 Ok((ty, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::ExternalFunction(fn_id) = function_expr {
-                tc_res!(binary ir; DirectExternCall(identifier.span(), fn_id, typed_arguments, function_type.return_type))
+                tc_res!(binary ir; DirectExternCall(func.span(), fn_id, typed_arguments.into_boxed_slice(), function_type.return_type))
             } else {
-                tc_res!(binary ir; Call(identifier.span(), function_expr, typed_arguments, function_type.return_type))
+                tc_res!(binary ir; Call(func.span(), function_expr, typed_arguments.into_boxed_slice(), function_type.return_type))
             }
         }
         Expression::Indexing { .. } | Expression::MemberAccess { .. } => {
-            copy_resolve_indexing(context, module, ir, expression, type_suggestion)
+            copy_resolve_indexing(ctx, ir, expression, type_suggestion)
         }
         Expression::MemberCall {
-            identifier,
+            fn_name: identifier,
             lhs,
             arguments,
             ..
-        } => typecheck_membercall(context, module, ir, lhs, identifier, arguments),
+        } => typecheck_membercall(ctx, ir, lhs, identifier, arguments),
         Expression::Assignment {
             left_side,
             right_side,
@@ -1235,13 +1213,8 @@ fn typecheck_expression<'arena>(
                     right_side,
                     ..
                 } => {
-                    let (ty, lhs) = typecheck_expression(
-                        context,
-                        module,
-                        ir,
-                        right_side,
-                        TypeSuggestion::Unknown,
-                    )?;
+                    let (ty, lhs) =
+                        typecheck_expression(ctx, ir, right_side, TypeSuggestion::Unknown)?;
                     let ty = ty.deref().ok_or_else(|| {
                         TypecheckingError::CannotDeref(right_side.span(), ty).to_error()
                     })?;
@@ -1250,8 +1223,7 @@ fn typecheck_expression<'arena>(
                 }
                 _ => {
                     let (ty, lhs) = typecheck_expression(
-                        context,
-                        module,
+                        ctx,
                         ir,
                         &Expression::Unary {
                             operator: UnaryOp::Reference,
@@ -1266,13 +1238,8 @@ fn typecheck_expression<'arena>(
                     )
                 }
             };
-            let (typ_rhs, rhs) = typecheck_expression(
-                context,
-                module,
-                ir,
-                right_side,
-                TypeSuggestion::from_type(typ_lhs),
-            )?;
+            let (typ_rhs, rhs) =
+                typecheck_expression(ctx, ir, right_side, TypeSuggestion::from_type(typ_lhs))?;
 
             if typ_lhs != typ_rhs {
                 return Err(TypecheckingError::MismatchingType {
@@ -1290,14 +1257,9 @@ fn typecheck_expression<'arena>(
             right_side,
             ..
         } => {
-            let (ty, _) = typecheck_expression(context, module, ir, left_side, type_suggestion)?;
-            let (typ_rhs, _) = typecheck_expression(
-                context,
-                module,
-                ir,
-                right_side,
-                TypeSuggestion::from_type(ty),
-            )?;
+            let (ty, _) = typecheck_expression(ctx, ir, left_side, type_suggestion)?;
+            let (typ_rhs, _) =
+                typecheck_expression(ctx, ir, right_side, TypeSuggestion::from_type(ty))?;
             if ty != typ_rhs {
                 return Err(TypecheckingError::MismatchingType {
                     expected: ty,
@@ -1314,25 +1276,109 @@ fn typecheck_expression<'arena>(
             new_ty,
             span,
         } => {
-            let (ty, lhs) = typecheck_expression(context, module, ir, left_side, type_suggestion)?;
-            let new_ty = context.resolve_type(module, new_ty, &[])?;
-            typecheck_cast(ir, ty, new_ty, lhs, *span, context)
+            let (ty, lhs) = typecheck_expression(ctx, ir, left_side, type_suggestion)?;
+            let new_ty = ctx.resolve_type(ctx.contract.module_id, new_ty)?;
+            typecheck_cast(ir, ty, new_ty, lhs, *span, ctx)
+        }
+        Expression::TraitFunctionCall {
+            ty,
+            trait_path,
+            fn_name,
+            arguments,
+            span,
+        } => {
+            let ty = ctx.resolve_type(ctx.contract.module_id, ty)?;
+            let import = ctx.typed_resolve_import(
+                ctx.contract.module_id,
+                trait_path.as_slice(),
+                trait_path.span,
+                &mut HashSet::new(),
+            )?;
+            let ModuleScopeValue::Trait(trait_id) = import else {
+                return Err(
+                    TypecheckingError::CannotFindValue(*span, trait_path.to_normal_path())
+                        .to_error(),
+                );
+            };
+            let trait_id = trait_id.cast::<TypedTrait<'ctx>>();
+            let trait_value = &ctx.traits.read()[trait_id];
+
+            if !ty.implements(&[trait_id], &ctx) {
+                return Err(TypecheckingError::MismatchingTraits(
+                    *span,
+                    ty,
+                    vec![trait_value.name.symbol()],
+                )
+                .to_error());
+            }
+
+            let func = trait_value
+                .functions
+                .iter()
+                .position(|(id, ..)| id == fn_name);
+            let Some(func_id) = func else {
+                return Err(TypecheckingError::CannotFindFunctionOnTrait {
+                    span: fn_name.span(),
+                    func_name: fn_name.symbol(),
+                    trait_name: trait_value.name.symbol(),
+                }
+                .to_error());
+            };
+            let &(_, ref args, ret_ty, _, fn_span, _) = &trait_value.functions[func_id];
+
+            let mut typed_args = Vec::with_capacity(arguments.len());
+
+            if arguments.len() < args.len() {
+                return Err(TypecheckingError::MissingArguments { span: fn_span }.to_error());
+            }
+            if arguments.len() > args.len() {
+                let span = if arguments.is_empty() {
+                    *span
+                } else {
+                    arguments[arguments.len() - 1].span()
+                };
+                return Err(TypecheckingError::TooManyArguments { span }.to_error());
+            }
+
+            for (i, arg) in arguments.iter().enumerate() {
+                let (ty, expr) =
+                    typecheck_expression(ctx, ir, arg, TypeSuggestion::from_type(args[i].1))?;
+                if ty != args[i].1 {
+                    return Err(TypecheckingError::MismatchingType {
+                        span: arg.span(),
+                        expected: args[i].1,
+                        found: ty,
+                    }
+                    .to_error());
+                }
+                typed_args.push(expr);
+            }
+
+            let value_id = ir.add_value(ret_ty);
+            ir.append(TypedExpression::TraitCall {
+                span: *span,
+                ty,
+                trait_id,
+                func: func_id,
+                args: typed_args.into_boxed_slice(),
+                dst: value_id,
+            });
+            Ok((ret_ty, TypedLiteral::Dynamic(value_id)))
         }
     }
 }
 
-fn typecheck_cast<'arena>(
-    ir: &mut ScopedIR<'arena>,
-    ty: Ty<'arena>,
-    new_ty: Ty<'arena>,
-    lhs: TypedLiteral<'arena>,
-    span: Span<'arena>,
-    context: &TypeckCtx<'arena>,
-) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
+fn typecheck_cast<'ctx>(
+    ir: &mut ScopedIR<'ctx>,
+    ty: Ty<'ctx>,
+    new_ty: Ty<'ctx>,
+    lhs: TypedLiteral<'ctx>,
+    span: Span<'ctx>,
+    ctx: FnContext<'ctx, '_>,
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     if ty == new_ty {
         return Ok((new_ty, lhs));
     }
-    let ctx = context.ctx;
 
     let (ref_self, refless_ty) = ty.remove_refs();
     let (ref_other, refless_new_ty) = new_ty.remove_refs();
@@ -1360,7 +1406,7 @@ fn typecheck_cast<'arena>(
             },
         ) if ref_other > 0
             && ref_self >= ref_other
-            && *ty_other == ty.with_num_refs(ref_self - ref_other, ctx) =>
+            && *ty_other == ty.with_num_refs(ref_self - ref_other, **ctx) =>
         {
             let id = ir.add_value(new_ty);
             ir.append(TypedExpression::Alias(span, id, lhs));
@@ -1370,8 +1416,8 @@ fn typecheck_cast<'arena>(
         (_, TyKind::DynType(trait_refs)) if ref_self > 0 && ref_other == 1 && ty.is_thin_ptr() => {
             let traits = trait_refs.iter().map(|v| v.0).collect::<Vec<_>>();
             let ty = ty.deref().expect("v should have a refcount of > 0");
-            if !ty.implements(&traits, context) {
-                let trait_reader = context.traits.read();
+            if !ty.implements(&traits, &ctx) {
+                let trait_reader = ctx.traits.read();
                 return Err(TypecheckingError::MismatchingTraits(
                     span,
                     ty,
@@ -1383,7 +1429,12 @@ fn typecheck_cast<'arena>(
                 .to_error());
             }
             let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::AttachVtable(span, id, lhs, (ty, traits)));
+            ir.append(TypedExpression::AttachVtable(
+                span,
+                id,
+                lhs,
+                (ty, traits.into_boxed_slice()),
+            ));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &[T; N] -> &[T]
@@ -1486,19 +1537,17 @@ fn typecheck_cast<'arena>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn typecheck_dyn_membercall<'arena>(
-    context: &TypeckCtx<'arena>,
-    ir: &mut ScopedIR<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    ident: &Ident<'arena>,
-    args: &[Expression<'arena>],
-    lhs: TypedLiteral<'arena>,
-    lhs_span: Span<'arena>,
-    trait_refs: ArenaList<'arena, (StoreKey<TypedTrait<'arena>>, Ident<'arena>)>,
+fn typecheck_dyn_membercall<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    ident: &Ident<'ctx>,
+    args: &[Expression<'ctx>],
+    lhs: TypedLiteral<'ctx>,
+    lhs_span: Span<'ctx>,
+    trait_refs: ArenaList<'ctx, (StoreKey<TypedTrait<'ctx>>, Ident<'ctx>)>,
     num_references: u8,
-) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
-    let ctx = context.ctx;
-    let trait_reader = context.traits.read();
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
+    let trait_reader = ctx.traits.read();
     let mut offset = 0;
     let (mut arg_typs, return_ty, trait_name) = 'out: {
         for trait_id in trait_refs.iter().map(|v| v.0) {
@@ -1542,7 +1591,7 @@ fn typecheck_dyn_membercall<'arena>(
     }
 
     let ty = ctx.intern_ty(TyKind::DynType(trait_refs));
-    let mut ty = with_refcount(ctx, ty, num_references);
+    let mut ty = with_refcount(**ctx, ty, num_references);
     let mut lhs = lhs;
     while ty.has_double_refs() {
         ty = ty.deref().expect("dereferencing &_ should never fail");
@@ -1566,8 +1615,7 @@ fn typecheck_dyn_membercall<'arena>(
 
     for i in 0..args.len() {
         let (ty, lit) = typecheck_expression(
-            context,
-            module,
+            ctx,
             ir,
             &args[i],
             TypeSuggestion::from_type(arg_typs[i + 1].1),
@@ -1585,30 +1633,33 @@ fn typecheck_dyn_membercall<'arena>(
 
     let is_void = return_ty == default_types::void || return_ty == default_types::never;
     let id = ir.add_value(return_ty);
-    ir.append(TypedExpression::DynCall(lhs_span, id, typed_args, offset));
+    ir.append(TypedExpression::DynCall(
+        lhs_span,
+        id,
+        typed_args.into_boxed_slice(),
+        offset,
+    ));
     if is_void {
         return Ok((return_ty, TypedLiteral::Void));
     }
     Ok((return_ty, TypedLiteral::Dynamic(id)))
 }
 
-fn typecheck_membercall<'arena>(
-    context: &TypeckCtx<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    ir: &mut ScopedIR<'arena>,
-    lhs: &Expression<'arena>,
-    ident: &Ident<'arena>,
-    args: &[Expression<'arena>],
-) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
+fn typecheck_membercall<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    lhs: &Expression<'ctx>,
+    ident: &Ident<'ctx>,
+    args: &[Expression<'ctx>],
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     let (mut typ_lhs, mut typed_literal_lhs) =
-        typecheck_take_ref(context, module, ir, lhs, TypeSuggestion::Unknown)?;
+        typecheck_take_ref(ctx, ir, lhs, TypeSuggestion::Unknown)?;
     let lhs_refcount = typ_lhs.refcount();
     match **typ_lhs.without_ref() {
         TyKind::DynType(trait_refs) if lhs_refcount > 0 => {
             return typecheck_dyn_membercall(
-                context,
+                ctx,
                 ir,
-                module,
                 ident,
                 args,
                 typed_literal_lhs,
@@ -1620,9 +1671,9 @@ fn typecheck_membercall<'arena>(
         _ => (),
     }
 
-    let function_reader = context.functions.read();
-    let langitem_reader = context.lang_items.read();
-    let struct_reader = context.structs.read();
+    let function_reader = ctx.functions.read();
+    let langitem_reader = ctx.lang_items.read();
+    let struct_reader = ctx.structs.read();
 
     let struct_id = match **typ_lhs.without_ref() {
         TyKind::Ref(_) | TyKind::Generic { .. } | TyKind::PrimitiveSelf => unreachable!(),
@@ -1701,9 +1752,8 @@ fn typecheck_membercall<'arena>(
             ));
             typed_literal_lhs = TypedLiteral::Dynamic(new_id);
         } else {
-            typed_literal_lhs =
-                make_reference(ir, typ_lhs, typed_literal_lhs, lhs.span(), context.ctx);
-            typ_lhs = typ_lhs.take_ref(context.ctx);
+            typed_literal_lhs = make_reference(ir, typ_lhs, typed_literal_lhs, lhs.span(), ctx.ctx);
+            typ_lhs = typ_lhs.take_ref(ctx.ctx);
         }
     }
 
@@ -1720,8 +1770,7 @@ fn typecheck_membercall<'arena>(
     }
     for (i, (_, arg)) in function.0.arguments.iter().skip(1).enumerate() {
         let (ty, expr) = typecheck_expression(
-            context,
-            module,
+            ctx,
             ir,
             &args[i + 1], // skip one argument for the `self` argument
             TypeSuggestion::from_type(*arg),
@@ -1742,20 +1791,19 @@ fn typecheck_membercall<'arena>(
         lhs.span(),
         call_id,
         function_id,
-        typed_arguments,
+        typed_arguments.into_boxed_slice(),
         EMPTY_TYLIST,
     ));
 
     Ok((function.0.return_type, TypedLiteral::Dynamic(call_id)))
 }
 
-fn typecheck_take_ref<'arena>(
-    context: &TypeckCtx<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    ir: &mut ScopedIR<'arena>,
-    expression: &Expression<'arena>,
-    type_suggestion: TypeSuggestion<'arena>,
-) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
+fn typecheck_take_ref<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    expression: &Expression<'ctx>,
+    type_suggestion: TypeSuggestion<'ctx>,
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     match expression {
         //&*_1 => _1
         Expression::Unary {
@@ -1763,12 +1811,11 @@ fn typecheck_take_ref<'arena>(
             right_side,
             ..
         } if *operator == UnaryOp::Dereference => {
-            typecheck_expression(context, module, ir, right_side, type_suggestion)
+            typecheck_expression(ctx, ir, right_side, type_suggestion)
         }
         _ => {
-            let (ty, expr) =
-                ref_resolve_indexing(context, module, ir, expression, type_suggestion, true)?;
-            Ok((ty.take_ref(context.ctx), expr))
+            let (ty, expr) = ref_resolve_indexing(ctx, ir, expression, type_suggestion, true)?;
+            Ok((ty.take_ref(ctx.ctx), expr))
         }
     }
 }
@@ -1776,28 +1823,21 @@ fn typecheck_take_ref<'arena>(
 // NOTE: the actual type of the value is a reference on top of the returned type, but we don't do
 // that as that would require additional computations. The reference is as such implicit but has to
 // be added when pushing the type onto the scope (e.g. during auto deref)
-fn ref_resolve_indexing<'arena>(
-    context: &TypeckCtx<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    ir: &mut ScopedIR<'arena>,
-    expression: &Expression<'arena>,
-    type_suggestion: TypeSuggestion<'arena>,
+fn ref_resolve_indexing<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    expression: &Expression<'ctx>,
+    type_suggestion: TypeSuggestion<'ctx>,
     increase_ref: bool,
-) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     match expression {
         Expression::MemberAccess {
             left_side,
             index,
             span,
         } => {
-            let (mut typ_lhs, mut typed_literal_lhs) = ref_resolve_indexing(
-                context,
-                module,
-                ir,
-                left_side,
-                TypeSuggestion::Unknown,
-                false,
-            )?;
+            let (mut typ_lhs, mut typed_literal_lhs) =
+                ref_resolve_indexing(ctx, ir, left_side, TypeSuggestion::Unknown, false)?;
             for element_name in index {
                 while typ_lhs.has_refs() {
                     let old_typ_lhs = typ_lhs;
@@ -1815,7 +1855,7 @@ fn ref_resolve_indexing<'arena>(
                 assert!(!typ_lhs.has_refs(), "non-zero refcount after auto-deref");
                 match **typ_lhs {
                     TyKind::Struct { struct_id, .. } => {
-                        let structure = &context.structs.read()[struct_id];
+                        let structure = &ctx.structs.read()[struct_id];
                         match structure
                             .elements
                             .iter()
@@ -1825,7 +1865,7 @@ fn ref_resolve_indexing<'arena>(
                         {
                             Some((idx, ty)) => {
                                 typ_lhs = *ty;
-                                let new_val = ir.add_value(typ_lhs.take_ref(context.ctx));
+                                let new_val = ir.add_value(typ_lhs.take_ref(ctx.ctx));
                                 ir.append(TypedExpression::Offset(
                                     *span,
                                     new_val,
@@ -1859,8 +1899,7 @@ fn ref_resolve_indexing<'arena>(
             ..
         } => {
             let (mut typ_lhs, mut typed_literal_lhs) = ref_resolve_indexing(
-                context,
-                module,
+                ctx,
                 ir,
                 left_side,
                 TypeSuggestion::Array(Box::new(type_suggestion)),
@@ -1879,7 +1918,7 @@ fn ref_resolve_indexing<'arena>(
                 typed_literal_lhs = TypedLiteral::Dynamic(id);
             }
             assert!(!typ_lhs.has_refs(), "non-zero refcount after auto-deref");
-            let offset = indexing_resolve_rhs(context, module, ir, right_side)?;
+            let offset = indexing_resolve_rhs(ctx, ir, right_side)?;
             let ty = match &**typ_lhs {
                 TyKind::SizedArray { ty, .. } | TyKind::UnsizedArray(ty) => *ty,
                 TyKind::Tuple(elements) => match offset {
@@ -1905,7 +1944,7 @@ fn ref_resolve_indexing<'arena>(
                 }
             };
 
-            let id = ir.add_value(ty.take_ref(context.ctx));
+            let id = ir.add_value(ty.take_ref(ctx.ctx));
             ir.append(TypedExpression::Offset(
                 expression.span(),
                 id,
@@ -1916,7 +1955,7 @@ fn ref_resolve_indexing<'arena>(
         }
         _ => {
             let (ty, typed_literal) =
-                typecheck_expression(context, module, ir, expression, type_suggestion.clone())?;
+                typecheck_expression(ctx, ir, expression, type_suggestion.clone())?;
 
             if let TypeSuggestion::UnsizedArray(_) = type_suggestion
                 && let TyKind::Ref(ty) = **ty
@@ -1925,8 +1964,8 @@ fn ref_resolve_indexing<'arena>(
                     ty,
                 } = **ty
             {
-                let ty = context.ctx.intern_ty(TyKind::UnsizedArray(ty));
-                let id = ir.add_value(ty.take_ref(context.ctx));
+                let ty = ctx.ctx.intern_ty(TyKind::UnsizedArray(ty));
+                let id = ir.add_value(ty.take_ref(ctx.ctx));
                 ir.append(TypedExpression::MakeUnsizedSlice(
                     expression.span(),
                     id,
@@ -1953,16 +1992,16 @@ fn ref_resolve_indexing<'arena>(
                 ) => {
                     let typed_literal_sized_array_ref = make_reference(
                         ir,
-                        context.ctx.intern_ty(TyKind::SizedArray {
+                        ctx.ctx.intern_ty(TyKind::SizedArray {
                             ty,
                             number_elements,
                         }),
                         typed_literal,
                         expression.span(),
-                        context.ctx,
+                        ctx.ctx,
                     );
-                    let ty = context.ctx.intern_ty(TyKind::UnsizedArray(ty));
-                    let id = ir.add_value(ty.take_ref(context.ctx));
+                    let ty = ctx.ctx.intern_ty(TyKind::UnsizedArray(ty));
+                    let id = ir.add_value(ty.take_ref(ctx.ctx));
                     ir.append(TypedExpression::MakeUnsizedSlice(
                         expression.span(),
                         id,
@@ -1973,22 +2012,20 @@ fn ref_resolve_indexing<'arena>(
                 }
                 _ => Ok((
                     ty,
-                    make_reference(ir, ty, typed_literal, expression.span(), context.ctx),
+                    make_reference(ir, ty, typed_literal, expression.span(), ctx.ctx),
                 )),
             }
         }
     }
 }
 
-fn indexing_resolve_rhs<'arena>(
-    context: &TypeckCtx<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    ir: &mut ScopedIR<'arena>,
-    expression: &Expression<'arena>,
-) -> Result<OffsetValue, Diagnostic<'arena>> {
+fn indexing_resolve_rhs<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    expression: &Expression<'ctx>,
+) -> Result<OffsetValue, Diagnostic<'ctx>> {
     let (ty, rhs) = typecheck_expression(
-        context,
-        module,
+        ctx,
         ir,
         expression,
         TypeSuggestion::Number(NumberType::Usize),
@@ -2033,24 +2070,21 @@ fn make_reference<'arena>(
     TypedLiteral::Dynamic(new_id)
 }
 
-fn copy_resolve_indexing<'arena>(
-    context: &TypeckCtx<'arena>,
-    module: StoreKey<TypedModule<'arena>>,
-    ir: &mut ScopedIR<'arena>,
-    expression: &Expression<'arena>,
-    type_suggestion: TypeSuggestion<'arena>,
-) -> Result<(Ty<'arena>, TypedLiteral<'arena>), Diagnostic<'arena>> {
-    let ctx = context.ctx;
+fn copy_resolve_indexing<'ctx>(
+    ctx: FnContext<'ctx, '_>,
+    ir: &mut ScopedIR<'ctx>,
+    expression: &Expression<'ctx>,
+    type_suggestion: TypeSuggestion<'ctx>,
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     match expression {
         Expression::Indexing {
             left_side,
             right_side,
             ..
         } => {
-            let offset = indexing_resolve_rhs(context, module, ir, right_side)?;
+            let offset = indexing_resolve_rhs(ctx, ir, right_side)?;
             let (ty, lhs) = copy_resolve_indexing(
-                context,
-                module,
+                ctx,
                 ir,
                 left_side,
                 TypeSuggestion::Array(Box::new(type_suggestion)),
@@ -2098,8 +2132,8 @@ fn copy_resolve_indexing<'arena>(
                         if let TypedLiteral::Dynamic(lhs) = lhs {
                             ir.make_stack_allocated(lhs);
                         }
-                        let typed_lit_ref = make_reference(ir, ty, lhs, expression.span(), ctx);
-                        let offset_id = ir.add_value(new_ty.take_ref(ctx));
+                        let typed_lit_ref = make_reference(ir, ty, lhs, expression.span(), **ctx);
+                        let offset_id = ir.add_value(new_ty.take_ref(**ctx));
                         let new_id = ir.add_value(new_ty);
                         ir.append(TypedExpression::Offset(
                             expression.span(),
@@ -2129,7 +2163,7 @@ fn copy_resolve_indexing<'arena>(
                     TyKind::UnsizedArray(ty) | TyKind::SizedArray { ty, .. } => ty,
                     _ => unreachable!(),
                 };
-                let offset_id = ir.add_value(ty.take_ref(ctx));
+                let offset_id = ir.add_value(ty.take_ref(**ctx));
                 let value_id = ir.add_value(ty);
                 ir.append(TypedExpression::Offset(
                     expression.span(),
@@ -2151,7 +2185,7 @@ fn copy_resolve_indexing<'arena>(
             span,
         } => {
             let (mut typ_lhs, mut typed_literal_lhs) =
-                copy_resolve_indexing(context, module, ir, left_side, TypeSuggestion::Unknown)?;
+                copy_resolve_indexing(ctx, ir, left_side, TypeSuggestion::Unknown)?;
             for element_name in index {
                 let needs_deref = typ_lhs.has_refs();
                 while typ_lhs.has_double_refs() {
@@ -2166,7 +2200,7 @@ fn copy_resolve_indexing<'arena>(
                 }
                 let offset = match **typ_lhs {
                     TyKind::Struct { struct_id, .. } => {
-                        let structure = &context.structs.read()[struct_id];
+                        let structure = &ctx.structs.read()[struct_id];
                         match structure
                             .elements
                             .iter()
@@ -2207,7 +2241,7 @@ fn copy_resolve_indexing<'arena>(
                     ));
                     typed_literal_lhs = TypedLiteral::Dynamic(new_id);
                 } else {
-                    let offset_id = ir.add_value(typ_lhs.take_ref(ctx));
+                    let offset_id = ir.add_value(typ_lhs.take_ref(**ctx));
                     let deref_id = ir.add_value(typ_lhs);
                     ir.append(TypedExpression::Offset(
                         *span,
@@ -2225,6 +2259,6 @@ fn copy_resolve_indexing<'arena>(
             }
             Ok((typ_lhs, typed_literal_lhs))
         }
-        _ => typecheck_expression(context, module, ir, expression, type_suggestion),
+        _ => typecheck_expression(ctx, ir, expression, type_suggestion),
     }
 }

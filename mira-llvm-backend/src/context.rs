@@ -1,12 +1,12 @@
-use core::panic;
 use std::{
     collections::{HashMap, HashSet},
     io::Write,
+    ops::Deref,
     path::Path,
     sync::Arc,
 };
 
-use crate::to_basic_value;
+use crate::{VTableKey, to_basic_value};
 
 use super::{
     TyKindExt,
@@ -44,7 +44,7 @@ use mira_parser::std_annotations::{
 use mira_spans::interner::Symbol;
 use mira_target::{NATIVE_TARGET, Target};
 use mira_typeck::{
-    Ty, TyKind, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
+    Ty, TyKind, TyList, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
     TypedTrait, default_types,
     ir::{IR, TypedExpression, TypedLiteral, Visitor},
 };
@@ -81,13 +81,13 @@ impl CodegenContextBuilder {
         Self(Context::create())
     }
 
-    pub fn build<'ctx, 'arena>(
+    pub fn build<'ctx, 'arena, 'a>(
         &'ctx self,
-        ctx: Arc<TypeckCtx<'arena>>,
+        ctx: &'a TypeckCtx<'arena>,
         module: &str,
         path: Arc<Path>,
         config: CodegenConfig<'ctx>,
-    ) -> Result<CodegenContext<'ctx, 'arena>, CodegenError<'arena>> {
+    ) -> Result<CodegenContext<'ctx, 'arena, 'a>, CodegenError<'arena>> {
         CodegenContext::new(&self.0, ctx, module, path, config)
     }
 }
@@ -98,8 +98,8 @@ impl Default for CodegenContextBuilder {
     }
 }
 
-pub struct CodegenContext<'ctx, 'arena> {
-    pub(super) tc_ctx: Arc<TypeckCtx<'arena>>,
+pub struct CodegenContext<'ctx, 'arena, 'a> {
+    pub(super) tc_ctx: &'a TypeckCtx<'arena>,
     pub(super) builder: Builder<'ctx>,
     pub(super) context: &'ctx Context,
     pub(super) default_types: DefaultTypes<'ctx>,
@@ -113,8 +113,16 @@ pub struct CodegenContext<'ctx, 'arena> {
     pub(super) string_map: HashMap<Symbol<'arena>, GlobalValue<'ctx>>,
     pub(super) debug_ctx: DebugContext<'ctx, 'arena>,
     pub(super) intrinsics: Intrinsics<'ctx, 'arena>,
-    pub(super) vtables: HashMap<(Ty<'arena>, Vec<StoreKey<TypedTrait<'arena>>>), GlobalValue<'ctx>>,
+    pub(super) vtables: HashMap<VTableKey<'arena>, GlobalValue<'ctx>>,
     pub(super) config: CodegenConfig<'ctx>,
+}
+
+impl<'ctx> Deref for CodegenContext<'ctx, '_, '_> {
+    type Target = Context;
+
+    fn deref(&self) -> &'ctx Self::Target {
+        self.context
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +207,7 @@ impl<'a> CodegenConfig<'a> {
     setter!(cpu_features: &'a str, reloc_mode: RelocMode, runtime_safety: bool, optimizations: Optimizations, target: Target);
 }
 
-impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
+impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
     pub fn finish(&self) -> Result<(), LLVMString> {
         self.finalize_debug_info();
         self.check()?;
@@ -277,7 +285,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 
     fn new(
         context: &'ctx Context,
-        ctx: Arc<TypeckCtx<'arena>>,
+        ctx: &'a TypeckCtx<'arena>,
         module: &str,
         path: Arc<Path>,
         config: CodegenConfig<'ctx>,
@@ -322,7 +330,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             context,
             &module,
             default_types,
-            &ctx,
+            ctx,
             &path,
             config.optimizations != Optimizations::None,
             shared_ctx,
@@ -332,7 +340,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         let StringVtableCollector {
             mut strings,
             mut vtables,
-        } = collect_data(&ctx);
+        } = collect_data(ctx);
 
         let mut string_map = HashMap::new();
         for strn in strings.drain() {
@@ -354,7 +362,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         let struct_reader = ctx.structs.read();
         let mut structs = AssociatedStore::new();
         for k in struct_reader.indices() {
-            structs.insert(k, context.opaque_struct_type(&mangle_struct(&ctx, k)));
+            structs.insert(k, context.opaque_struct_type(&mangle_struct(ctx, k)));
         }
         for (key, structure) in struct_reader.index_value_iter() {
             let fields = structure
@@ -413,7 +421,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                     .to_llvm_basic_type(&default_types, &structs, context)
                     .fn_type(&param_types, false)
             };
-            let name = mangle_function(&ctx, key);
+            let name = mangle_function(ctx, key);
             let func = module.add_function(name.as_str(), fn_typ, Some(Linkage::Internal));
             if let Some(callconv) = contract
                 .annotations
@@ -536,7 +544,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                     .ty
                     .to_llvm_basic_type(&default_types, &structs, context),
                 None,
-                &mangle_static(&ctx, key),
+                &mangle_static(ctx, key),
             );
             global.set_linkage(Linkage::Internal);
             global.set_initializer(&to_basic_value(
@@ -671,8 +679,16 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                 return Ok(());
             }
         }
-        drop(ext_fn_reader);
-        drop(fn_reader);
+
+        let (contract, ir) = if is_external {
+            let (contract, Some(ir)) = &ext_fn_reader[fn_id.cast()] else {
+                unreachable!()
+            };
+            (contract, ir)
+        } else {
+            let (contract, ir) = &fn_reader[fn_id];
+            (contract, ir)
+        };
 
         let func = if is_external {
             self.external_functions[fn_id.cast()]
@@ -692,29 +708,19 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
             self.debug_ctx.funcs[fn_id].as_debug_info_scope()
         };
 
-        let mut function_ctx = self.make_function_codegen_context(func, body_basic_block);
+        let mut function_ctx = self.make_function_codegen_context(
+            func,
+            TyList::EMPTY,
+            contract.module_id,
+            ir,
+            body_basic_block,
+        );
         function_ctx.goto(body_basic_block);
-        let function_reader = function_ctx.tc_ctx.functions.read();
-        let ext_function_reader = function_ctx.tc_ctx.external_functions.read();
-        let structs_reader = function_ctx.tc_ctx.structs.read();
-        let contract = if is_external {
-            &ext_function_reader[fn_id.cast()].0
-        } else {
-            &function_reader[fn_id].0
-        };
-        let ir = if is_external {
-            let Some(v) = &ext_function_reader[fn_id.cast()].1 else {
-                unreachable!()
-            };
-            v
-        } else {
-            &function_reader[fn_id].1
-        };
-        function_ctx.set_ir(ir);
+
+        let structs_reader = function_ctx.ctx.tc_ctx.structs.read();
 
         function_ctx
-            .builder
-            .set_current_debug_location(function_ctx.debug_ctx.location(scope, contract.span));
+            .set_current_debug_location(function_ctx.ctx.debug_ctx.location(scope, contract.span));
 
         let mut param_idx = 0;
         for (idx, param) in ir.params().iter().enumerate() {
@@ -726,7 +732,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
                 param_idx += 1;
             }
             let ptr = function_ctx.get_value_ptr(param.value);
-            function_ctx.debug_ctx.declare_param(
+            function_ctx.ctx.debug_ctx.declare_param(
                 ptr,
                 scope,
                 contract.span,
@@ -742,18 +748,20 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
         drop(structs_reader);
 
         let exprs = ir.get_entry_block_exprs();
-        let tracker = function_ctx.tc_ctx.ctx.track_errors();
+        let tracker = function_ctx.ctx.tc_ctx.ctx.track_errors();
         for expr in exprs {
-            _ = function_ctx
-                .codegen(expr, scope, contract.module_id)
-                .map_err(|e| {
-                    function_ctx
-                        .tc_ctx
-                        .ctx
-                        .emit_diag(CodegenError::Builder(e, expr.span()).to_error())
-                });
+            _ = function_ctx.build_expr(expr, scope).map_err(|e| {
+                function_ctx
+                    .ctx
+                    .tc_ctx
+                    .emit_diag(CodegenError::Builder(e, expr.span()).to_error())
+            });
         }
-        function_ctx.tc_ctx.ctx.errors_happened_res(tracker)
+        let v = function_ctx.ctx.tc_ctx.errors_happened_res(tracker);
+        drop(function_ctx);
+        drop(fn_reader);
+        drop(ext_fn_reader);
+        v
     }
 
     pub fn write_object_file(&self, path: impl AsRef<Path>) -> Result<(), LLVMString> {
@@ -765,7 +773,7 @@ impl<'ctx, 'arena> CodegenContext<'ctx, 'arena> {
 #[derive(Default)]
 struct StringVtableCollector<'ctx> {
     strings: HashSet<Symbol<'ctx>>,
-    vtables: HashSet<(Ty<'ctx>, Vec<StoreKey<TypedTrait<'ctx>>>)>,
+    vtables: HashSet<(Ty<'ctx>, Box<[StoreKey<TypedTrait<'ctx>>]>)>,
 }
 
 impl<'ctx> StringVtableCollector<'ctx> {
@@ -806,7 +814,6 @@ impl<'ctx> Visitor<'ctx> for StringVtableCollector<'ctx> {
     }
 }
 
-#[allow(clippy::type_complexity)]
 fn collect_data<'ctx>(ctx: &TypeckCtx<'ctx>) -> StringVtableCollector<'ctx> {
     let mut collector = StringVtableCollector::default();
 

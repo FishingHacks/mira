@@ -119,12 +119,13 @@ pub fn walk_expr<'ctx, W: Visitor<'ctx> + ?Sized>(
             visitor.visit_lit_super(rhs, ir, tcx);
         }
 
-        TypedExpression::DynCall(_, _, lits, _)
-        | TypedExpression::DirectCall(_, _, _, lits, _)
-        | TypedExpression::DirectExternCall(_, _, _, lits)
-        | TypedExpression::IntrinsicCall(_, _, _, lits, _)
-        | TypedExpression::LLVMIntrinsicCall(_, _, _, lits) => {
-            for lit in lits {
+        TypedExpression::DynCall(_, _, args, _)
+        | TypedExpression::TraitCall { args, .. }
+        | TypedExpression::DirectCall(_, _, _, args, _)
+        | TypedExpression::DirectExternCall(_, _, _, args)
+        | TypedExpression::IntrinsicCall(_, _, _, args, _)
+        | TypedExpression::LLVMIntrinsicCall(_, _, _, args) => {
+            for lit in args {
                 visitor.visit_lit_super(lit, ir, tcx);
             }
         }
@@ -332,12 +333,13 @@ pub fn walk_mut_expr_block<'ctx, W: MutVisitor<'ctx> + ?Sized>(
             visitor.visit_lit_super(rhs, scope, tcx);
         }
 
-        TypedExpression::DynCall(_, _, lits, _)
-        | TypedExpression::DirectCall(_, _, _, lits, _)
-        | TypedExpression::DirectExternCall(_, _, _, lits)
-        | TypedExpression::IntrinsicCall(_, _, _, lits, _)
-        | TypedExpression::LLVMIntrinsicCall(_, _, _, lits) => {
-            for lit in lits {
+        TypedExpression::DynCall(_, _, args, _)
+        | TypedExpression::TraitCall { args, .. }
+        | TypedExpression::DirectCall(_, _, _, args, _)
+        | TypedExpression::DirectExternCall(_, _, _, args)
+        | TypedExpression::IntrinsicCall(_, _, _, args, _)
+        | TypedExpression::LLVMIntrinsicCall(_, _, _, args) => {
+            for lit in args {
                 visitor.visit_lit_super(lit, scope, tcx);
             }
         }

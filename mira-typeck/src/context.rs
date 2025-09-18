@@ -105,6 +105,14 @@ impl<'arena> TypeCtx<'arena> {
         &self.0.span_interner
     }
 
+    pub fn combine_spans(&self, spans: impl IntoIterator<Item = Span<'arena>>) -> Span<'arena> {
+        let mut spans = spans.into_iter();
+        let Some(first) = spans.next() else {
+            return Span::DUMMY;
+        };
+        first.combine_with(spans, self.span_interner())
+    }
+
     pub fn source_map(&self) -> &SourceMap {
         &self.0.source_map
     }
@@ -139,10 +147,6 @@ impl<'arena> TypeCtx<'arena> {
         } else {
             Ok(())
         }
-    }
-
-    pub fn errors_happened_result(&self, tracker: ErrorTracker) -> bool {
-        self.0.diag_ctx.lock().errors_happened(tracker)
     }
 
     pub fn add_doc_comment(&mut self, comment: impl Into<Box<str>>) -> DocComment {

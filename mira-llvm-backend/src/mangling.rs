@@ -4,10 +4,13 @@ use mira_parser::std_annotations::alias::ExternAliasAnnotation;
 use mira_spans::TypeArena;
 use mira_typeck::queries::Providers;
 use mira_typeck::{
-    TypeckCtx, TypedExternalFunction, TypedFunction, TypedModule, TypedStatic, TypedStruct,
+    Ty, TyKind, TypeckCtx, TypedExternalFunction, TypedFunction, TypedModule, TypedStatic,
+    TypedStruct, default_types,
 };
 use std::fmt::Write;
 use std::hash::{DefaultHasher, Hash, Hasher};
+
+use crate::FnInstance;
 
 pub const ANON_FN_NAME: &str = "{{anonymous}}";
 pub const MANGLED_ANON_FN_NAME: &str = "25$CL$$CL$anonymous$CR$$CR$";
@@ -22,8 +25,14 @@ fn mangle_char(c: char, string: &mut String) {
         ')' => string.push_str("$PR$"),
         '{' => string.push_str("$CL$"),
         '}' => string.push_str("$CR$"),
+        '[' => string.push_str("$BL$"),
+        ']' => string.push_str("$BR$"),
+        '&' => string.push_str("$RF$"),
+        '!' => string.push_str("$EX$"),
         '$' => string.push_str("$D$"),
         '#' => string.push_str("$H$"),
+        ';' => string.push_str("$S$"),
+        '+' => string.push_str("$P$"),
         _ => string.push('_'),
     }
 }
@@ -31,8 +40,8 @@ fn mangle_char(c: char, string: &mut String) {
 fn path_len(p: &str) -> usize {
     p.chars()
         .map(|v| match v {
-            '<' | '>' | '(' | ')' | '{' | '}' => 4,
-            ',' | '$' | '#' => 3,
+            '<' | '>' | '(' | ')' | '{' | '}' | '[' | ']' | '&' | '!' => 4,
+            ',' | '$' | '#' | ';' | '+' => 3,
             _ => 1,
         })
         .sum()
@@ -123,6 +132,132 @@ pub fn mangle_name<'arena>(ctx: &TypeckCtx<'arena>, item: ModuleScopeValue<'aren
             unreachable!("does not have to be mangled")
         }
     }
+}
+
+pub fn mangle_function_instance<'ctx>(ctx: &TypeckCtx<'ctx>, instance: FnInstance<'ctx>) -> String {
+    let fn_reader = ctx.functions.read();
+    let mut mangled_name = "_ZN".to_string();
+    mangled_name.push_str(ctx.mangle_module(fn_reader[instance.parent_fn].0.module_id));
+
+    match fn_reader[instance.parent_fn].0.name {
+        None => mangled_name.push_str(MANGLED_ANON_FN_NAME),
+        Some(ref v) => {
+            mangle_generic_segment(v.symbol().to_str(), &instance.generics, &mut mangled_name)
+        }
+    }
+    mangled_name.push_str("17h"); // hash
+    let mut hasher = DefaultHasher::new();
+    fn_reader[instance.parent_fn].0.hash(&mut hasher);
+    instance.generics.hash(&mut hasher);
+    write!(mangled_name, "{:x}", hasher.finish()).expect("writing to a string should never fail");
+
+    mangled_name.push('E');
+    mangled_name
+}
+
+pub fn mangle_ty(ty: &TyKind<'_>, path: &mut String) {
+    match ty {
+        TyKind::DynType(traits) => {
+            path.push_str("dyn ");
+            for (i, (_, name)) in traits.iter().enumerate() {
+                if i != 0 {
+                    mangle_char('+', path);
+                }
+                name.chars().for_each(|c| mangle_char(c, path));
+            }
+        }
+        TyKind::Struct { name, .. } => name.chars().for_each(|c| mangle_char(c, path)),
+        TyKind::UnsizedArray(ty) => {
+            mangle_char('[', path);
+            mangle_ty(ty, path);
+            mangle_char(']', path);
+        }
+        TyKind::SizedArray {
+            ty,
+            number_elements,
+        } => {
+            mangle_char('[', path);
+            mangle_ty(ty, path);
+            mangle_char(';', path);
+            write!(path, " {number_elements}").unwrap();
+            mangle_char(']', path);
+        }
+        TyKind::Tuple(ty_list) => {
+            mangle_char('(', path);
+            for (i, ty) in ty_list.iter().enumerate() {
+                if i != 0 {
+                    mangle_char(',', path);
+                }
+                mangle_ty(ty, path);
+            }
+            mangle_char(')', path);
+        }
+        TyKind::Function(function_type) => {
+            path.push_str("fn");
+            mangle_char('(', path);
+            for (i, ty) in function_type.arguments.iter().enumerate() {
+                if i != 0 {
+                    mangle_char(',', path);
+                }
+                mangle_ty(ty, path);
+            }
+            mangle_char(')', path);
+            if function_type.return_type != default_types::void {
+                path.push(' ');
+                mangle_char('-', path);
+                mangle_char('>', path);
+                path.push(' ');
+                mangle_ty(&function_type.return_type, path);
+            }
+        }
+        TyKind::PrimitiveVoid => path.push_str("void"),
+        TyKind::PrimitiveNever => mangle_char('!', path),
+        TyKind::PrimitiveI8 => path.push_str("i8"),
+        TyKind::PrimitiveI16 => path.push_str("i16"),
+        TyKind::PrimitiveI32 => path.push_str("i32"),
+        TyKind::PrimitiveI64 => path.push_str("i64"),
+        TyKind::PrimitiveISize => path.push_str("isize"),
+        TyKind::PrimitiveU8 => path.push_str("u8"),
+        TyKind::PrimitiveU16 => path.push_str("u16"),
+        TyKind::PrimitiveU32 => path.push_str("u32"),
+        TyKind::PrimitiveU64 => path.push_str("u64"),
+        TyKind::PrimitiveUSize => path.push_str("usize"),
+        TyKind::PrimitiveF32 => path.push_str("f32"),
+        TyKind::PrimitiveF64 => path.push_str("f64"),
+        TyKind::PrimitiveStr => path.push_str("str"),
+        TyKind::PrimitiveBool => path.push_str("bool"),
+        TyKind::Ref(ty) => {
+            mangle_char('&', path);
+            mangle_ty(ty, path);
+        }
+        TyKind::PrimitiveSelf | TyKind::Generic { .. } => {
+            unreachable!("generics and self should be resolved by now.")
+        }
+    }
+}
+
+fn mangle_generic_segment(segment: &str, tys: &[Ty<'_>], path: &mut String) {
+    if tys.is_empty() {
+        return mangle_path_segment(segment, path);
+    }
+
+    let path_needs_semicolon = matches!(segment.chars().next(), None | Some('0'..='9'));
+    let mut mangled_segment = String::new();
+    if path_needs_semicolon {
+        mangled_segment.push('_');
+    }
+    segment
+        .chars()
+        .for_each(|c| mangle_char(c, &mut mangled_segment));
+    mangle_char('<', &mut mangled_segment);
+    for (i, ty) in tys.iter().enumerate() {
+        if i != 0 {
+            mangle_char(',', &mut mangled_segment);
+        }
+        mangle_ty(ty, &mut mangled_segment);
+    }
+    mangle_char('>', &mut mangled_segment);
+    write!(path, "{}{mangled_segment}", mangled_segment.len()).unwrap();
 }
 
 fn mangle_path_segment(segment: &str, path: &mut String) {

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    TypeckCtx, TypedFunction, TypedStatic,
+    TyKind, TypeckCtx, TypedFunction, TypedStatic,
     ir::{BlockId, IR, TypedExpression, TypedLiteral},
 };
 use mira_common::store::StoreKey;
@@ -119,12 +119,26 @@ fn run_block<'ctx>(block: BlockId, ir: &IR<'ctx>, ctx: &mut DceContext<'_, 'ctx>
             | TypedExpression::IntToPtr(_, _, lit)
             | TypedExpression::StripMetadata(_, _, lit)
             | TypedExpression::MakeUnsizedSlice(_, _, lit, _)
-            | TypedExpression::AttachVtable(_, _, lit, _)
             | TypedExpression::Return(_, lit)
             | TypedExpression::Pos(_, _, lit)
             | TypedExpression::Neg(_, _, lit)
             | TypedExpression::LNot(_, _, lit)
             | TypedExpression::BNot(_, _, lit) => run_literal(lit, ctx),
+            TypedExpression::AttachVtable(_, _, lit, (ty, traits)) => {
+                run_literal(lit, ctx);
+                // mark all the functions used in the vtable as used.
+                match ***ty {
+                    TyKind::Struct { struct_id, .. } => {
+                        let structure = &ctx.tc_ctx.structs.read()[struct_id];
+                        for trait_id in traits {
+                            for func in &structure.trait_impl[trait_id] {
+                                ctx.used_functions.insert(*func);
+                            }
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
             TypedExpression::Range {
                 lhs: lit1,
                 rhs: lit2,
@@ -165,6 +179,8 @@ fn run_block<'ctx>(block: BlockId, ir: &IR<'ctx>, ctx: &mut DceContext<'_, 'ctx>
                     run_literal(lit, ctx);
                 }
             }
+            // traitcalls should have been resolved by now.
+            TypedExpression::TraitCall { .. } => unreachable!(),
             TypedExpression::DropIf(..)
             | TypedExpression::Drop(..)
             | TypedExpression::Asm { .. }

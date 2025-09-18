@@ -3,6 +3,7 @@ use std::fmt::{Debug, Display, Write};
 use std::hash::Hash;
 
 use crate::context::TypeCtx;
+use crate::monomorphisation::{Substitute, SubstitutionCtx};
 use mira_common::store::{Store, StoreKey};
 use mira_lexer::NumberType;
 use mira_parser::TypeRef;
@@ -62,6 +63,13 @@ interner!(
     &[&EMPTY_TYLIST]
 );
 extra_traits!(for TyList impl debug);
+impl<'ctx> TyList<'ctx> {
+    pub const EMPTY: Self = EMPTY_TYLIST;
+
+    pub fn subst<T: Substitute<'ctx>>(self, tc_ctx: &TypeckCtx<'ctx>, v: T) -> T {
+        v.substitute(&SubstitutionCtx::new(tc_ctx, &self))
+    }
+}
 interner!(
     TypeInterner,
     Ty,
@@ -187,7 +195,7 @@ pub(crate) fn resolve_primitive_type<'arena>(
 }
 
 fn align(value: u64, alignment: u32) -> u64 {
-    if value % alignment as u64 == 0 {
+    if value.is_multiple_of(alignment as u64) {
         value
     } else {
         alignment as u64 - (value % alignment as u64) + value

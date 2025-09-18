@@ -354,7 +354,7 @@ impl<'ctx> Context<'ctx> {
             .collect::<Vec<_>>();
         let static_keys = typeck_ctx.statics.read().indices().collect::<Vec<_>>();
 
-        let mut errs = Diagnostics::new();
+        let tracker = typeck_ctx.track_errors();
 
         for key in function_keys {
             use mira_typeck::typechecking::typecheck_function;
@@ -362,11 +362,12 @@ impl<'ctx> Context<'ctx> {
             let item = self
                 .add_progress_item_child(typechecking_item, format!("Typechecking function {key}"));
 
-            _ = typecheck_function(typeck_ctx, module_ctx, key, &mut errs);
-            mira_typeck::ir::passes::run_passes(
-                &mut typeck_ctx.functions.write()[key.cast()].1,
-                self.ctx,
-            );
+            if typecheck_function(typeck_ctx, module_ctx, key).is_ok() {
+                mira_typeck::ir::passes::run_passes(
+                    &mut typeck_ctx.functions.write()[key.cast()].1,
+                    self.ctx,
+                );
+            }
 
             self.remove_progress_item(item);
         }
@@ -379,8 +380,9 @@ impl<'ctx> Context<'ctx> {
                 format!("Typechecking external function {key}"),
             );
 
-            _ = typecheck_external_function(typeck_ctx, module_ctx, key, &mut errs);
-            if let Some(body) = typeck_ctx.external_functions.write()[key].1.as_mut() {
+            if typecheck_external_function(typeck_ctx, module_ctx, key).is_ok()
+                && let Some(body) = typeck_ctx.external_functions.write()[key].1.as_mut()
+            {
                 mira_typeck::ir::passes::run_passes(body, self.ctx);
             }
 
@@ -393,17 +395,12 @@ impl<'ctx> Context<'ctx> {
             let item = self
                 .add_progress_item_child(typechecking_item, format!("Typechecking static {key}"));
 
-            typecheck_static(typeck_ctx, module_ctx, key, &mut errs);
+            _ = typecheck_static(typeck_ctx, module_ctx, key);
 
             self.remove_progress_item(item);
         }
 
-        if !errs.is_empty() {
-            self.ctx.emit_diags(errs);
-            return Err(ErrorEmitted);
-        }
-
-        Ok(())
+        typeck_ctx.errors_happened_res(tracker)
     }
 
     #[cfg(feature = "typeck")]
@@ -456,14 +453,14 @@ impl<'ctx> Context<'ctx> {
     }
 
     #[cfg(feature = "codegen")]
-    pub fn codegen<'cg_ctx>(
+    pub fn codegen<'cg_ctx, 'tcx>(
         &mut self,
-        typeck_ctx: &Arc<TypeckCtx<'ctx>>,
+        typeck_ctx: &'tcx TypeckCtx<'ctx>,
         main_module: StoreKey<Module<'ctx>>,
         codegen_opts: CodegenConfig<'ctx>,
         builder: &'cg_ctx CodegenContextBuilder,
         codegen_item: ProgressItemRef,
-    ) -> (CodegenContext<'cg_ctx, 'ctx>, EmitResult<()>)
+    ) -> (CodegenContext<'cg_ctx, 'ctx, 'tcx>, EmitResult<()>)
     where
         'ctx: 'cg_ctx,
     {
@@ -474,7 +471,7 @@ impl<'ctx> Context<'ctx> {
             .to_string_lossy();
 
         let mut codegen_context = builder
-            .build(typeck_ctx.clone(), &filename, file.clone(), codegen_opts)
+            .build(typeck_ctx, &filename, file.clone(), codegen_opts)
             .expect("failed to create the llvm context");
         let tracker = self.ctx.track_errors();
 
@@ -513,7 +510,7 @@ impl<'ctx> Context<'ctx> {
     #[cfg(feature = "codegen")]
     pub fn optimize(
         &mut self,
-        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        codegen_ctx: &CodegenContext<'_, 'ctx, '_>,
         codegen_item: ProgressItemRef,
     ) -> EmitResult<()> {
         self.add_progress_item_child(codegen_item, "Optimizing");
@@ -531,7 +528,7 @@ impl<'ctx> Context<'ctx> {
     #[cfg(feature = "codegen")]
     pub fn emit_llvm_ir(
         &self,
-        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        codegen_ctx: &CodegenContext<'_, 'ctx, '_>,
         mut method: EmitMethod,
     ) -> EmitResult<()> {
         let ir = codegen_ctx.gen_ir();
@@ -547,7 +544,7 @@ impl<'ctx> Context<'ctx> {
     #[cfg(feature = "codegen")]
     pub fn emit_llvm_bc(
         &self,
-        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        codegen_ctx: &CodegenContext<'_, 'ctx, '_>,
         mut method: EmitMethod,
     ) -> EmitResult<()> {
         let bitcode = codegen_ctx.gen_bitcode();
@@ -563,7 +560,7 @@ impl<'ctx> Context<'ctx> {
     #[cfg(feature = "codegen")]
     pub fn emit_asm(
         &self,
-        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        codegen_ctx: &CodegenContext<'_, 'ctx, '_>,
         mut method: EmitMethod,
     ) -> EmitResult<()> {
         let asm = codegen_ctx
@@ -581,7 +578,7 @@ impl<'ctx> Context<'ctx> {
     #[cfg(feature = "codegen")]
     pub fn emit_object(
         &self,
-        codegen_ctx: &CodegenContext<'_, 'ctx>,
+        codegen_ctx: &CodegenContext<'_, 'ctx, '_>,
         path: &Path,
     ) -> EmitResult<()> {
         let mut obj_file = File::options()

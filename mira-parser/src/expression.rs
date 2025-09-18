@@ -130,6 +130,17 @@ pub struct PathWithoutGenerics<'ctx> {
 }
 
 impl<'ctx> PathWithoutGenerics<'ctx> {
+    pub fn to_normal_path(&self) -> Path<'ctx> {
+        Path {
+            entries: self
+                .entries
+                .iter()
+                .map(|&ident| (ident, Vec::new()))
+                .collect(),
+            span: self.span,
+        }
+    }
+
     pub fn push(&mut self, name: Ident<'ctx>) {
         self.entries.push(name);
     }
@@ -378,12 +389,20 @@ pub enum Expression<'ctx> {
         left_side: Box<Expression<'ctx>>,
     },
     FunctionCall {
-        identifier: Box<Expression<'ctx>>,
+        func: Box<Expression<'ctx>>,
+        arguments: Vec<Expression<'ctx>>,
+        span: Span<'ctx>,
+    },
+    // <$typ as $trait>::$fn_name(..$arguments),
+    TraitFunctionCall {
+        ty: TypeRef<'ctx>,
+        trait_path: PathWithoutGenerics<'ctx>,
+        fn_name: Ident<'ctx>,
         arguments: Vec<Expression<'ctx>>,
         span: Span<'ctx>,
     },
     MemberCall {
-        identifier: Ident<'ctx>,
+        fn_name: Ident<'ctx>,
         lhs: Box<Expression<'ctx>>,
         generics: Vec<TypeRef<'ctx>>,
         arguments: Vec<Expression<'ctx>>,
@@ -455,12 +474,32 @@ impl Display for Expression<'_> {
                 f.write_char(')')
             }
             Expression::FunctionCall {
-                identifier,
+                func,
                 arguments,
-                ..
+                span: _,
             } => {
                 f.write_str("(call ")?;
-                Display::fmt(identifier, f)?;
+                Display::fmt(func, f)?;
+                for v in arguments.iter() {
+                    f.write_char(' ')?;
+                    Display::fmt(v, f)?;
+                }
+                f.write_char(')')
+            }
+            Self::TraitFunctionCall {
+                ty,
+                trait_path,
+                fn_name,
+                arguments,
+                span: _,
+            } => {
+                f.write_str("(generic-call ")?;
+                Display::fmt(trait_path, f)?;
+                f.write_char(' ')?;
+                Display::fmt(fn_name, f)?;
+                f.write_char(' ')?;
+                Display::fmt(ty, f)?;
+
                 for v in arguments.iter() {
                     f.write_char(' ')?;
                     Display::fmt(v, f)?;
@@ -470,7 +509,7 @@ impl Display for Expression<'_> {
             Expression::Indexing {
                 left_side,
                 right_side,
-                ..
+                span: _,
             } => {
                 f.write_str("(index ")?;
                 Display::fmt(left_side, f)?;
@@ -479,7 +518,9 @@ impl Display for Expression<'_> {
                 f.write_char(')')
             }
             Expression::MemberAccess {
-                left_side, index, ..
+                left_side,
+                index,
+                span: _,
             } => {
                 f.write_str("(member ")?;
                 Display::fmt(left_side, f)?;
@@ -493,7 +534,7 @@ impl Display for Expression<'_> {
             Expression::Assignment {
                 left_side,
                 right_side,
-                ..
+                span: _,
             } => {
                 f.write_str("(assignment ")?;
                 Display::fmt(left_side, f)?;
@@ -528,15 +569,26 @@ impl Display for Expression<'_> {
                 f.write_char(')')
             }
             Expression::MemberCall {
-                identifier,
+                fn_name: identifier,
                 lhs,
                 arguments,
-                ..
+                generics,
+                span: _,
             } => {
                 f.write_str("(member-call ")?;
                 Display::fmt(lhs, f)?;
                 f.write_char(' ')?;
                 Display::fmt(identifier, f)?;
+                if !generics.is_empty() {
+                    f.write_str("::<")?;
+                    for (i, g) in generics.iter().enumerate() {
+                        if i != 0 {
+                            f.write_char(' ')?;
+                        }
+                        Display::fmt(g, f)?;
+                    }
+                    f.write_char('>')?;
+                }
                 for arg in arguments {
                     f.write_char(' ')?;
                     Display::fmt(arg, f)?;
@@ -549,7 +601,7 @@ impl Display for Expression<'_> {
                 output,
                 registers,
                 inputs,
-                ..
+                span: _,
             } => {
                 f.write_str("asm ")?;
                 if *volatile {
@@ -611,6 +663,7 @@ impl<'ctx> Expression<'ctx> {
     pub fn span(&self) -> Span<'ctx> {
         match self {
             Self::FunctionCall { span, .. }
+            | Self::TraitFunctionCall { span, .. }
             | Self::MemberAccess { span, .. }
             | Self::MemberCall { span, .. }
             | Self::Indexing { span, .. }
@@ -677,12 +730,13 @@ impl<'ctx> Expression<'ctx> {
                 left_side.bake_functions(module, module_key, context);
                 right_side.bake_functions(module, module_key, context);
             }
+            Self::TraitFunctionCall { arguments, .. } => arguments
+                .iter_mut()
+                .for_each(|el| el.bake_functions(module, module_key, context)),
             Self::FunctionCall {
-                identifier,
-                arguments,
-                ..
+                func, arguments, ..
             } => {
-                identifier.bake_functions(module, module_key, context);
+                func.bake_functions(module, module_key, context);
                 arguments
                     .iter_mut()
                     .for_each(|el| el.bake_functions(module, module_key, context));
@@ -932,14 +986,14 @@ impl<'ctx> Parser<'_, 'ctx> {
             let call = self.indexed()?;
             match call {
                 Expression::FunctionCall {
-                    identifier,
+                    func,
                     mut arguments,
                     span,
                 } => {
                     let expr_span = expr.span();
                     arguments.insert(0, expr);
                     expr = Expression::FunctionCall {
-                        identifier,
+                        func,
                         arguments,
                         span: span.combine_with([expr_span], self.ctx.span_interner),
                     };
@@ -1172,7 +1226,7 @@ impl<'ctx> Parser<'_, 'ctx> {
                             .current()
                             .span
                             .combine_with([expr.span()], self.ctx.span_interner),
-                        identifier: Box::new(expr),
+                        func: Box::new(expr),
                         arguments,
                     };
                 } else if let Expression::MemberAccess { .. } = expr {
@@ -1183,7 +1237,7 @@ impl<'ctx> Parser<'_, 'ctx> {
                             .current()
                             .span
                             .combine_with([expr.span()], self.ctx.span_interner),
-                        identifier: Box::new(expr),
+                        func: Box::new(expr),
                         arguments,
                     };
                 }
@@ -1270,7 +1324,7 @@ impl<'ctx> Parser<'_, 'ctx> {
         }
 
         Ok(Expression::MemberCall {
-            identifier,
+            fn_name: identifier,
             lhs: Box::new(left_side),
             generics,
             arguments,

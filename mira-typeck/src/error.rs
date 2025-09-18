@@ -115,6 +115,13 @@ pub enum TypecheckingError<'arena> {
         Symbol<'arena>,
         Ty<'arena>,
     ),
+    #[error("Cannot find function {} on trait `{}`", IdentDisplay(*func_name), IdentDisplay(*trait_name))]
+    CannotFindFunctionOnTrait {
+        #[primary_label("No function named {} is associated with trait `{}`", IdentDisplay(*func_name), IdentDisplay(*trait_name))]
+        span: Span<'arena>,
+        func_name: Symbol<'arena>,
+        trait_name: Symbol<'arena>,
+    },
     #[error("Cannot find value `{_1}` in this scope")]
     CannotFindValue(
         #[primary_label("not found in this scope")] Span<'arena>,

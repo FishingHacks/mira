@@ -161,7 +161,6 @@ pub(crate) fn compile(
         &codegen_ctx_builder,
         codegen_item,
     );
-    drop(tc_ctx);
     let res = ctx.optimize(&codegen_ctx, codegen_item);
     if let Some(llvm_ir_writer) = llvm_ir_writer {
         ctx.emit_llvm_ir(&codegen_ctx, llvm_ir_writer)?;
@@ -182,6 +181,7 @@ pub(crate) fn compile(
 
     ctx.emit_object(&codegen_ctx, &obj_file)?;
     drop(codegen_ctx);
+    drop(tc_ctx);
 
     let Some(exec_file) = exec_file else {
         return Ok(());

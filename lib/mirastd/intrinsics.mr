@@ -51,3 +51,41 @@ pub fn call_main() = void;
 @intrinsic("type_name")
 /// Returns the typename of the type `T`
 pub fn type_name<unsized T>() -> &str = "";
+
+@intrinsic("volatile_read")
+/// Dereferences ptr in a volatile way. This causes the compiler to not reorder or remove reads.
+pub fn volatile_read<T>(ptr: &T) -> T = *ptr;
+
+@intrinsic("volatile_write")
+/// Stores v in ptr in a volatile way. This causes the compiler to not reorder or remove writes.
+pub fn volatile_write<T>(ptr: &T, v: T) = *ptr = v;
+
+@intrinsic("read")
+/// Dereferences a pointer to a non-copyable value. Dropping the returned value may cause double frees.
+///
+/// NOTE: Dropck is not yet implemented, this does the same as *ptr.
+pub fn read<T>(ptr: &T) -> T = *ptr;
+
+@intrinsic("write")
+/// Writes to `ptr` without dropping it, if it needs to be dropped.
+///
+/// NOTE: Dropck is not yet implemented, this does the same as *ptr = v.
+pub fn write<T>(ptr: &T, v: T) = *ptr = v;
+
+@intrinsic("forget")
+/// "forgets" the value. This causes it to not run the drop implementation.
+///
+/// NOTE: Dropck is not yet implemented, this is a no-op.
+pub fn forget<T>(v: T) = void;
+
+@intrinsic("drop")
+/// drops the value. Equivalent to the value going out of scope.
+///
+/// NOTE: Dropck is not yet implemented, this is a no-op.
+pub fn drop<T>(v: T) = void;
+
+@intrinsic("drop_in_place")
+/// drops the value at ptr.
+///
+/// NOTE: Dropck is not yet implemented, this is a no-op.
+pub fn drop_in_place<unsized T>(ptr: &T) = void;

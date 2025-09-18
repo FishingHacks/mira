@@ -5,14 +5,16 @@ use mira_parser::std_annotations::intrinsic::Intrinsic;
 use mira_spans::Symbol;
 
 use crate::{
-    Ty, TyKind, TyList, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic, TypedStruct,
-    default_types,
+    Substitute, Ty, TyKind, TyList, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic,
+    TypedStruct, default_types,
     ir::{Scope, ValueId},
+    monomorphisation::SubstitutionCtx,
     types::FunctionType,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum TypedLiteral<'arena> {
+    #[default]
     Void,
     Dynamic(ValueId),
     Function(StoreKey<TypedFunction<'arena>>, TyList<'arena>),
@@ -45,13 +47,18 @@ impl<'ctx> TypedLiteral<'ctx> {
         match self {
             TypedLiteral::Void => default_types::void,
             TypedLiteral::Dynamic(id) => scope[*id].ty,
-            TypedLiteral::Function(id, _) => {
+            TypedLiteral::Function(id, generics) => {
                 let contract = &ctx.functions.read()[*id].0;
+                let subst_ctx = SubstitutionCtx::new(ctx, generics);
                 let fn_type = FunctionType {
-                    return_type: contract.return_type,
-                    arguments: ctx
-                        .ctx
-                        .intern_tylist(&contract.arguments.iter().map(|v| v.1).collect::<Vec<_>>()),
+                    return_type: contract.return_type.substitute(&subst_ctx),
+                    arguments: ctx.ctx.intern_tylist(
+                        &contract
+                            .arguments
+                            .iter()
+                            .map(|v| v.1.substitute(&subst_ctx))
+                            .collect::<Vec<_>>(),
+                    ),
                 };
                 ctx.ctx.intern_ty(TyKind::Function(fn_type))
             }

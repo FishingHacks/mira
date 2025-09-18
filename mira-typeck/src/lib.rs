@@ -5,6 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
     hash::{Hash, Hasher},
+    ops::Deref,
     sync::{Arc, OnceLock},
 };
 use type_resolution::ResolvingState;
@@ -28,6 +29,8 @@ use mira_spans::{
 
 mod context;
 mod lang_items;
+mod monomorphisation;
+pub use monomorphisation::{Substitute, SubstitutionCtx};
 pub mod optimizations;
 pub use context::{GlobalContext, TypeCtx};
 mod error;
@@ -177,11 +180,19 @@ pub struct TypedModule<'arena> {
     pub comment: DocComment,
 }
 
-impl<'arena> TypeckCtx<'arena> {
+impl<'ctx> TypeckCtx<'ctx> {
+    pub fn substitute<T: Deref<Target = [Ty<'ctx>]>, V: Substitute<'ctx>>(
+        &self,
+        tys: &T,
+        v: V,
+    ) -> V {
+        v.substitute(&SubstitutionCtx::new(self, tys))
+    }
+
     pub fn validate_main_function(
         &self,
-        main_pkg: StoreKey<Module<'arena>>,
-    ) -> Result<StoreKey<TypedFunction<'arena>>, TypecheckingError<'arena>> {
+        main_pkg: StoreKey<Module<'ctx>>,
+    ) -> Result<StoreKey<TypedFunction<'ctx>>, TypecheckingError<'ctx>> {
         let module = &self.modules.read()[main_pkg];
         let Some(ModuleScopeValue::Function(main_fn)) =
             module.scope.get(&symbols::DefaultIdents::main)
@@ -202,7 +213,7 @@ impl<'arena> TypeckCtx<'arena> {
         Ok(main_fn.cast())
     }
 
-    pub fn new(ctx: TypeCtx<'arena>, module_context: Arc<ModuleContext<'arena>>) -> Arc<Self> {
+    pub fn new(ctx: TypeCtx<'ctx>, module_context: Arc<ModuleContext<'ctx>>) -> Arc<Self> {
         let traits_reader = module_context.traits.read();
         let structs_reader = module_context.structs.read();
         let statics_reader = module_context.statics.read();
@@ -351,7 +362,7 @@ impl<'arena> TypeckCtx<'arena> {
         me
     }
 
-    pub fn resolve_imports(&self, context: Arc<ModuleContext<'arena>>) {
+    pub fn resolve_imports(&self, context: Arc<ModuleContext<'ctx>>) {
         let mut typechecked_module_writer = self.modules.write();
         let module_reader = context.modules.read();
         for key in module_reader.indices() {
@@ -370,10 +381,10 @@ impl<'arena> TypeckCtx<'arena> {
 
     pub fn resolve_type(
         &self,
-        module_id: StoreKey<TypedModule<'arena>>,
-        ty: &TypeRef<'arena>,
-        generics: &[TypedGeneric<'arena>],
-    ) -> Result<Ty<'arena>, Diagnostic<'arena>> {
+        module_id: StoreKey<TypedModule<'ctx>>,
+        ty: &TypeRef<'ctx>,
+        generics: &[TypedGeneric<'ctx>],
+    ) -> Result<Ty<'ctx>, Diagnostic<'ctx>> {
         if let Some(primitive) = resolve_primitive_type(self.ctx, ty) {
             return Ok(primitive);
         }
@@ -523,10 +534,10 @@ impl<'arena> TypeckCtx<'arena> {
     /// returns if a recursive field was detected
     fn resolve_struct(
         &self,
-        context: Arc<ModuleContext<'arena>>,
-        id: StoreKey<BakedStruct<'arena>>,
-        module_id: StoreKey<Module<'arena>>,
-        left: &mut HashMap<StoreKey<BakedStruct<'arena>>, ResolvingState>,
+        context: Arc<ModuleContext<'ctx>>,
+        id: StoreKey<BakedStruct<'ctx>>,
+        module_id: StoreKey<Module<'ctx>>,
+        left: &mut HashMap<StoreKey<BakedStruct<'ctx>>, ResolvingState>,
     ) -> bool {
         if !left.contains_key(&id) {
             return false;
@@ -612,12 +623,12 @@ impl<'arena> TypeckCtx<'arena> {
 
     fn type_resolution_resolve_type(
         &self,
-        ty: &TypeRef<'arena>,
-        generics: &[TypedGeneric<'arena>],
-        module: StoreKey<TypedModule<'arena>>,
-        context: Arc<ModuleContext<'arena>>,
-        left: &mut HashMap<StoreKey<BakedStruct<'arena>>, ResolvingState>,
-    ) -> Option<Ty<'arena>> {
+        ty: &TypeRef<'ctx>,
+        generics: &[TypedGeneric<'ctx>],
+        module: StoreKey<TypedModule<'ctx>>,
+        context: Arc<ModuleContext<'ctx>>,
+        left: &mut HashMap<StoreKey<BakedStruct<'ctx>>, ResolvingState>,
+    ) -> Option<Ty<'ctx>> {
         if let Some(ty) = resolve_primitive_type(self.ctx, ty) {
             return Some(ty);
         }
@@ -795,11 +806,11 @@ impl<'arena> TypeckCtx<'arena> {
 
     pub fn typed_resolve_import(
         &self,
-        module: StoreKey<TypedModule<'arena>>,
-        import: &[Ident<'arena>],
-        span: Span<'arena>,
-        already_included: &mut HashSet<(StoreKey<TypedModule<'arena>>, Symbol<'arena>)>,
-    ) -> Result<ModuleScopeValue<'arena>, Diagnostic<'arena>> {
+        module: StoreKey<TypedModule<'ctx>>,
+        import: &[Ident<'ctx>],
+        span: Span<'ctx>,
+        already_included: &mut HashSet<(StoreKey<TypedModule<'ctx>>, Symbol<'ctx>)>,
+    ) -> Result<ModuleScopeValue<'ctx>, Diagnostic<'ctx>> {
         assert!(!import.is_empty());
         if !already_included.insert((module, import[0].symbol())) {
             return Err(TypecheckingError::CyclicDependency(span).to_error());
@@ -839,6 +850,14 @@ impl<'arena> TypeckCtx<'arena> {
             }
             .to_error()),
         }
+    }
+}
+
+impl<'ctx> Deref for TypeckCtx<'ctx> {
+    type Target = TypeCtx<'ctx>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ctx
     }
 }
 

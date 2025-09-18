@@ -137,11 +137,11 @@ impl ExpressionDisplay<'_> {
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)
             }
-            TypedExpression::Call(_, lhs, rhs, vec) => {
+            TypedExpression::Call(_, lhs, rhs, args) => {
                 f.write_value(lhs)?;
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)?;
-                for (idx, arg) in vec.iter().enumerate() {
+                for (idx, arg) in args.iter().enumerate() {
                     if idx != 0 {
                         f.write_str(", ")?;
                     }
@@ -149,12 +149,12 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypedExpression::DirectCall(_, dst, func, vec, _) => {
+            TypedExpression::DirectCall(_, dst, func, args, _) => {
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(&TypedLiteral::Function(*func, EMPTY_TYLIST)).fmt(f)?;
                 f.write_char('(')?;
-                for (idx, arg) in vec.iter().enumerate() {
+                for (idx, arg) in args.iter().enumerate() {
                     if idx != 0 {
                         f.write_str(", ")?;
                     }
@@ -162,12 +162,12 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypedExpression::DirectExternCall(_, dst, func, vec) => {
+            TypedExpression::DirectExternCall(_, dst, func, args) => {
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(&TypedLiteral::ExternalFunction(*func)).fmt(f)?;
                 f.write_char('(')?;
-                for (idx, arg) in vec.iter().enumerate() {
+                for (idx, arg) in args.iter().enumerate() {
                     if idx != 0 {
                         f.write_str(", ")?;
                     }
@@ -175,12 +175,12 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypedExpression::LLVMIntrinsicCall(_, dst, intrinsic, vec) => {
+            TypedExpression::LLVMIntrinsicCall(_, dst, intrinsic, args) => {
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(&TypedLiteral::LLVMIntrinsic(*intrinsic)).fmt(f)?;
                 f.write_char('(')?;
-                for (idx, arg) in vec.iter().enumerate() {
+                for (idx, arg) in args.iter().enumerate() {
                     if idx != 0 {
                         f.write_str(", ")?;
                     }
@@ -188,12 +188,12 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypedExpression::IntrinsicCall(_, dst, intrinsic, vec, _) => {
+            TypedExpression::IntrinsicCall(_, dst, intrinsic, args, _) => {
                 f.write_value(dst)?;
                 f.write_str(" = ")?;
                 Tld(&TypedLiteral::Intrinsic(*intrinsic, EMPTY_TYLIST)).fmt(f)?;
                 f.write_char('(')?;
-                for (idx, arg) in vec.iter().enumerate() {
+                for (idx, arg) in args.iter().enumerate() {
                     if idx != 0 {
                         f.write_str(", ")?;
                     }
@@ -292,7 +292,6 @@ impl ExpressionDisplay<'_> {
                 f.write_value(&*ir.get_ty(*lhs))
             }
             TypedExpression::Literal(_, lhs, rhs) => {
-                f.write_str("_")?;
                 f.write_value(lhs)?;
                 f.write_str(" = ")?;
                 Tld(rhs).fmt(f)
@@ -323,6 +322,30 @@ impl ExpressionDisplay<'_> {
                 f.write_value(cond)?;
                 f.write_str(" drop(_")?;
                 f.write_value(value)?;
+                f.write_char(')')
+            }
+            TypedExpression::TraitCall {
+                ty,
+                trait_id,
+                func,
+                args,
+                dst,
+                span: _,
+            } => {
+                f.write_value(dst)?;
+                f.write_str(" = trait_call trait_")?;
+                f.write_value(trait_id)?;
+                f.write_str("::func_")?;
+                f.write_value(func)?;
+                f.write_str(" on ")?;
+                f.write_value(ty)?;
+                f.write_char('(')?;
+                for (idx, arg) in args.iter().enumerate() {
+                    if idx != 0 {
+                        f.write_str(", ")?;
+                    }
+                    Tld(arg).fmt(f)?;
+                }
                 f.write_char(')')
             }
             TypedExpression::Empty(_) => f.write_str("<removed>"),
