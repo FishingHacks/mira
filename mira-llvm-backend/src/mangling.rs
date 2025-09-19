@@ -137,17 +137,17 @@ pub fn mangle_name<'arena>(ctx: &TypeckCtx<'arena>, item: ModuleScopeValue<'aren
 pub fn mangle_function_instance<'ctx>(ctx: &TypeckCtx<'ctx>, instance: FnInstance<'ctx>) -> String {
     let fn_reader = ctx.functions.read();
     let mut mangled_name = "_ZN".to_string();
-    mangled_name.push_str(ctx.mangle_module(fn_reader[instance.parent_fn].0.module_id));
+    mangled_name.push_str(ctx.mangle_module(fn_reader[instance.fn_id].0.module_id));
 
-    match fn_reader[instance.parent_fn].0.name {
-        None => mangled_name.push_str(MANGLED_ANON_FN_NAME),
+    match fn_reader[instance.fn_id].0.name {
+        None => mangle_generic_segment(ANON_FN_NAME, &instance.generics, &mut mangled_name),
         Some(ref v) => {
             mangle_generic_segment(v.symbol().to_str(), &instance.generics, &mut mangled_name)
         }
     }
     mangled_name.push_str("17h"); // hash
     let mut hasher = DefaultHasher::new();
-    fn_reader[instance.parent_fn].0.hash(&mut hasher);
+    fn_reader[instance.fn_id].0.hash(&mut hasher);
     instance.generics.hash(&mut hasher);
     write!(mangled_name, "{:x}", hasher.finish()).expect("writing to a string should never fail");
 

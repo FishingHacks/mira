@@ -16,10 +16,11 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_, '_, '_, '_> {
             self.scope.insert(id, value);
             return;
         }
+        let ty = self.substitute(self.ir.get_ty(id));
         let allocated_value = self
-            .build_alloca(self.basic_type(&self.ir.get_ty(id)), "")
+            .build_alloca(self.basic_type(&ty), "")
             .expect("failed to build alloca for a stack allocated value");
-        self.build_ptr_store(allocated_value, value, self.ir.get_ty(id), false)
+        self.build_ptr_store(allocated_value, value, ty, false)
             .expect("failed to build store to store a basic value into a stack allocated value");
         self.scope.insert(id, allocated_value.into());
     }
@@ -31,7 +32,8 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_, '_, '_, '_> {
         }
         if self.ir.is_stack_allocated(id) {
             let ptr = self.scope[id].into_pointer_value();
-            self.build_deref(ptr, self.ir.get_ty(id), false)
+            let ty = self.substitute(self.ir.get_ty(id));
+            self.build_deref(ptr, ty, false)
                 .expect("failed to build a dereference for a stack allocated value")
         } else {
             self.scope[id]

@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     hash::{DefaultHasher, Hash, Hasher},
     path::Path,
@@ -17,17 +18,13 @@ use inkwell::{
     values::PointerValue,
 };
 use mira_common::store::{AssociatedStore, Store, StoreKey};
-use mira_parser::std_annotations::intrinsic::IntrinsicAnnotation;
 use mira_spans::{Span, interner::Symbol};
 use mira_typeck::{
-    Ty, TyKind, TypeCtx, TypeckCtx, TypedExternalFunction, TypedFunction, TypedModule, TypedStruct,
-    default_types,
+    Ty, TyKind, TypeCtx, TypeckCtx, TypedExternalFunction, TypedModule, TypedStruct, default_types,
 };
 
-use super::{
-    context::DefaultTypes,
-    mangling::{ANON_FN_NAME, mangle_external_function, mangle_function},
-};
+use crate::DefaultTypes;
+use crate::mangling::{ANON_FN_NAME, mangle_external_function};
 
 #[allow(non_upper_case_globals)]
 #[allow(non_snake_case)]
@@ -45,10 +42,10 @@ pub(crate) struct DebugContext<'ctx, 'arena> {
     root_file: DIFile<'ctx>,
     pub(super) modules: AssociatedStore<(DINamespace<'ctx>, DIFile<'ctx>), TypedModule<'arena>>,
     default_types: DefaultTypes<'ctx>,
-    type_store: HashMap<Ty<'arena>, DIType<'ctx>>,
+    type_store: RefCell<HashMap<Ty<'arena>, DIType<'ctx>>>,
     context: &'ctx Context,
-    pub(super) funcs: AssociatedStore<DISubprogram<'ctx>, TypedFunction<'arena>>,
     pub(super) ext_funcs: AssociatedStore<DISubprogram<'ctx>, TypedExternalFunction<'arena>>,
+    optimizations: bool,
 }
 
 impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
@@ -174,7 +171,6 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
 
         let module_reader = tc_ctx.modules.read();
         let struct_reader = tc_ctx.structs.read();
-        let func_reader = tc_ctx.functions.read();
         let ext_func_reader = tc_ctx.external_functions.read();
         let root_file = builder.create_file(&root_filename, &root_directory);
         let mut me = Self {
@@ -182,12 +178,12 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             modules: AssociatedStore::with_capacity(module_reader.len()),
             default_types,
             global_scope: compile_unit.as_debug_info_scope(),
-            type_store: HashMap::new(),
+            type_store: RefCell::new(HashMap::new()),
             context,
             root_file,
-            funcs: AssociatedStore::with_capacity(func_reader.len()),
             ext_funcs: AssociatedStore::with_capacity(ext_func_reader.len()),
             ctx,
+            optimizations,
         };
         for (key, module) in module_reader.index_value_iter() {
             let file = if *module.file.path == *root_path {
@@ -207,78 +203,8 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             );
             me.modules.insert(key, (namespace, file));
         }
-        for (key, func) in func_reader.index_value_iter() {
-            // intrinsics also aren't generated
-            if func.0.annotations.has_annotation::<IntrinsicAnnotation>() {
-                continue;
-            }
-            assert!(
-                func.0.generics.is_empty(),
-                "function should've been monomorphised by now"
-            );
-            let return_ty = (func.0.return_type != default_types::void
-                && func.0.return_type != default_types::never)
-                .then(|| me.get_type(func.0.return_type, &struct_reader));
-            let args = func
-                .0
-                .arguments
-                .iter()
-                .map(|(_, ty)| me.get_type(*ty, &struct_reader))
-                .collect::<Vec<_>>();
-            let module = &me.modules[func.0.module_id];
-            let flags = if func.0.return_type == default_types::never {
-                DIFlags::NO_RETURN
-            } else {
-                Default::default()
-            };
-            let fn_ty = me
-                .builder
-                .create_subroutine_type(module.1, return_ty, &args, flags);
 
-            let mangled_name = mangle_function(tc_ctx, key);
-            let name = func.0.name.as_deref().unwrap_or(ANON_FN_NAME);
-
-            let line = func
-                .0
-                .span
-                .with_source_file(me.ctx.source_map())
-                .lookup_pos()
-                .0;
-            let subprogram = me.builder.create_function(
-                module.0.as_debug_info_scope(),
-                name,
-                Some(&mangled_name),
-                module.1,
-                line,
-                fn_ty,
-                true,
-                true,
-                line,
-                flags,
-                optimizations,
-            );
-            me.funcs.insert(key, subprogram);
-        }
         for (key, func) in ext_func_reader.index_value_iter() {
-            let return_ty = (func.0.return_type != default_types::void
-                && func.0.return_type != default_types::never)
-                .then(|| me.get_type(func.0.return_type, &struct_reader));
-            let args = func
-                .0
-                .arguments
-                .iter()
-                .map(|(_, ty)| me.get_type(*ty, &struct_reader))
-                .collect::<Vec<_>>();
-            let module = &me.modules[func.0.module_id];
-            let flags = if func.0.return_type == default_types::never {
-                DIFlags::NO_RETURN
-            } else {
-                Default::default()
-            };
-            let fn_ty = me
-                .builder
-                .create_subroutine_type(module.1, return_ty, &args, flags);
-
             let mangled_name = mangle_external_function(tc_ctx, key);
             let name = func.0.name.as_deref().unwrap_or(ANON_FN_NAME);
             let line = func
@@ -287,30 +213,72 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 .with_source_file(me.ctx.source_map())
                 .lookup_pos()
                 .0;
-            let subprogram = me.builder.create_function(
-                module.0.as_debug_info_scope(),
+            let subprogram = me.make_subprogram(
+                func.0.module_id,
+                func.0.return_type,
+                func.0.arguments.iter().map(|&(_, ty)| ty),
+                &struct_reader,
                 name,
-                Some(&mangled_name),
-                module.1,
+                &mangled_name,
                 line,
-                fn_ty,
-                false,
                 func.1.is_some(),
-                line,
-                flags,
-                optimizations,
             );
             me.ext_funcs.insert(key, subprogram);
         }
         me
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn make_subprogram(
+        &self,
+        module: StoreKey<TypedModule<'arena>>,
+        return_ty: Ty<'arena>,
+        args: impl Iterator<Item = Ty<'arena>>,
+        structs: &Store<TypedStruct<'arena>>,
+        name: &str,
+        mangled_name: &str,
+        line: u32,
+        is_def: bool,
+    ) -> DISubprogram<'ctx> {
+        let (namespace, file) = self.modules[module];
+        let scope = namespace.as_debug_info_scope();
+
+        let flags = if return_ty == default_types::never {
+            DIFlags::NO_RETURN
+        } else {
+            DIFlags::ZERO
+        };
+        let return_ty = if return_ty.is_voidlike() {
+            None
+        } else {
+            Some(self.get_type(return_ty, structs))
+        };
+        let param_tys = args.map(|v| self.get_type(v, structs)).collect::<Vec<_>>();
+
+        let subroutine_ty = self
+            .builder
+            .create_subroutine_type(file, return_ty, &param_tys, flags);
+        self.builder.create_function(
+            scope,
+            name,
+            Some(mangled_name),
+            file,
+            line,
+            subroutine_ty,
+            false,
+            is_def,
+            line,
+            flags,
+            self.optimizations,
+        )
+    }
+
     pub(crate) fn get_type(
-        &mut self,
+        &self,
         ty: Ty<'arena>,
         structs: &Store<TypedStruct<'arena>>,
     ) -> DIType<'ctx> {
-        if let Some(v) = self.type_store.get(&ty) {
+        if let Some(v) = self.type_store.borrow().get(&ty) {
             return *v;
         }
 
@@ -589,7 +557,12 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 _ => unreachable!(),
             }
         };
-        *self.type_store.entry(ty).insert_entry(di_typ).get()
+        *self
+            .type_store
+            .borrow_mut()
+            .entry(ty)
+            .insert_entry(di_typ)
+            .get()
     }
 
     pub(crate) fn get_file(&self, file: &Path) -> DIFile<'ctx> {

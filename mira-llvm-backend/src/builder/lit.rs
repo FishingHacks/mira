@@ -4,6 +4,8 @@ use inkwell::{
 };
 use mira_typeck::ir::TypedLiteral;
 
+use crate::FnInstance;
+
 use super::FunctionCodegenContext;
 
 fn global_value_ty(global: GlobalValue<'_>) -> BasicTypeEnum<'_> {
@@ -27,13 +29,9 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
         match lit {
             TypedLiteral::Void => defty.empty_struct.const_zero().into(),
             &TypedLiteral::Dynamic(id) => self.get_value(id),
-            TypedLiteral::Function(id, generics) => {
-                // TODO: Monomorphisation
-                assert!(generics.is_empty());
-                self.ctx.functions[*id]
-                    .as_global_value()
-                    .as_pointer_value()
-                    .into()
+            &TypedLiteral::Function(id, generics) => {
+                let func = self.ctx.get_fn_instance(FnInstance::new_poly(id, generics));
+                func.as_global_value().as_pointer_value().into()
             }
             TypedLiteral::ExternalFunction(id) => self.ctx.external_functions[*id]
                 .as_global_value()

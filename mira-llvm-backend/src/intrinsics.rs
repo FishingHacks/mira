@@ -4,7 +4,7 @@ use inkwell::{context::Context, module::Module, types::BasicType, values::Functi
 use mira_spans::Symbol;
 use mira_typeck::{Ty, default_types};
 
-use crate::{DefaultTypes, TyKindExt, context::StructsStore};
+use crate::{DefaultTypes, StructsStore, llvm_basic_ty};
 
 pub(super) struct Intrinsics<'ctx, 'arena> {
     values: HashMap<Symbol<'arena>, FunctionValue<'ctx>>,
@@ -32,17 +32,12 @@ impl<'ctx, 'tctx> Intrinsics<'ctx, 'tctx> {
             return *v;
         }
         let params = types
-            .map(|v| {
-                v.to_llvm_basic_type(default_types, structs, self.ctx)
-                    .into()
-            })
+            .map(|v| llvm_basic_ty(&v, default_types, structs, self.ctx).into())
             .collect::<Vec<_>>();
         let ty = if ret_ty == default_types::void || ret_ty == default_types::never {
             self.ctx.void_type().fn_type(&params, false)
         } else {
-            ret_ty
-                .to_llvm_basic_type(default_types, structs, self.ctx)
-                .fn_type(&params, false)
+            llvm_basic_ty(&ret_ty, default_types, structs, self.ctx).fn_type(&params, false)
         };
         let v = module.add_function(sym.to_str(), ty, None);
         self.values.insert(sym, v);

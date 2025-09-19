@@ -464,6 +464,10 @@ impl<'ctx> Context<'ctx> {
     where
         'ctx: 'cg_ctx,
     {
+        use std::fmt::Display;
+
+        use mira_lexer::token::{IdentDisplay, StrIdentDisplay};
+
         let file = typeck_ctx.modules.read()[main_module].file.path.clone();
         let filename = file
             .file_name()
@@ -473,38 +477,111 @@ impl<'ctx> Context<'ctx> {
         let mut codegen_context = builder
             .build(typeck_ctx, &filename, file.clone(), codegen_opts)
             .expect("failed to create the llvm context");
-        let tracker = self.ctx.track_errors();
 
-        for (fn_id, (contract, _)) in typeck_ctx.functions.read().index_value_iter() {
-            use mira_parser::std_annotations::{
-                intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation,
-            };
+        struct DisplaySlice<'a, T: Display>(&'a [T]);
 
-            if contract.annotations.has_annotation::<IntrinsicAnnotation>()
-                || contract
-                    .annotations
-                    .has_annotation::<LLVMIntrinsicAnnotation>()
-            {
-                continue;
+        impl<T: Display> Display for DisplaySlice<'_, T> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("[")?;
+                for (i, v) in self.0.iter().enumerate() {
+                    if i != 0 {
+                        f.write_str(", ")?;
+                    }
+                    v.fmt(f)?;
+                }
+                f.write_str("]")
             }
-            let item =
-                self.add_progress_item_child(codegen_item, format!("Codegening function #{fn_id}"));
-
-            _ = codegen_context.compile_fn(fn_id);
-            self.remove_progress_item(item);
         }
 
-        for fn_id in typeck_ctx.external_functions.read().indices() {
-            let item = self.add_progress_item_child(
-                codegen_item,
-                format!("Codegening external function #{fn_id}"),
-            );
+        struct ProgressBarUpdater(ProgressItemRef, ProgressBarThread);
 
-            _ = codegen_context.compile_external_fn(fn_id);
-            self.remove_progress_item(item);
+        impl
+            mira_llvm_backend::CompileStatusUpdate<
+                '_,
+                '_,
+                '_,
+                (),
+                ProgressItemRef,
+                (),
+                ProgressItemRef,
+            > for ProgressBarUpdater
+        {
+            fn start_compiling_extern(&mut self, _: &CodegenContext<'_, '_, '_>, _: u64) {}
+            fn start_compiling_normal(&mut self, _: &CodegenContext<'_, '_, '_>) {}
+
+            fn start_compiling_extern_fn(
+                &mut self,
+                ctx: &CodegenContext<'_, '_, '_>,
+                id: StoreKey<mira_typeck::TypedExternalFunction<'_>>,
+            ) -> ProgressItemRef {
+                let (contract, _) = &ctx.tc_ctx.external_functions.read()[id];
+                self.1.add_child(
+                    self.0,
+                    format!(
+                        "External function {id} {}",
+                        StrIdentDisplay(
+                            contract
+                                .name
+                                .map(|v| v.symbol().to_str())
+                                .unwrap_or_default()
+                        )
+                    )
+                    .into_boxed_str(),
+                )
+            }
+
+            fn start_compiling_normal_fn(
+                &mut self,
+                ctx: &CodegenContext<'_, '_, '_>,
+                id: mira_llvm_backend::FnInstance<'_>,
+            ) -> ProgressItemRef {
+                let (contract, _) = &ctx.tc_ctx.functions.read()[id.fn_id];
+                if let Some(name) = contract.name {
+                    self.1.add_child(
+                        self.0,
+                        format!(
+                            "Function {} {} instantiated with {}",
+                            id.fn_id,
+                            IdentDisplay(name.symbol()),
+                            DisplaySlice(&id.generics),
+                        )
+                        .into_boxed_str(),
+                    )
+                } else {
+                    self.1.add_child(
+                        self.0,
+                        format!(
+                            "Function {} instantiated with {}",
+                            id.fn_id,
+                            DisplaySlice(&id.generics),
+                        )
+                        .into_boxed_str(),
+                    )
+                }
+            }
+
+            fn finish_compiling_extern_fn(
+                &mut self,
+                _: &CodegenContext<'_, '_, '_>,
+                key: ProgressItemRef,
+            ) {
+                self.1.remove(key);
+            }
+            fn finish_compiling_normal_fn(
+                &mut self,
+                _: &CodegenContext<'_, '_, '_>,
+                key: ProgressItemRef,
+            ) {
+                self.1.remove(key);
+            }
         }
 
-        (codegen_context, self.ctx.errors_happened_res(tracker))
+        let res = codegen_context.compile_all_fns(ProgressBarUpdater(
+            codegen_item,
+            self.data.progress_bar.clone(),
+        ));
+
+        (codegen_context, res)
     }
 
     #[cfg(feature = "codegen")]

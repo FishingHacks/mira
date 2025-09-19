@@ -33,6 +33,7 @@ pub struct SpanWithFile {
 }
 
 impl SpanWithFile {
+    /// Looks up the starting position of this span and returns it as a tuple of the line and column.
     pub fn lookup_pos(&self) -> (u32, u32) {
         self.file.lookup_file_pos(self.pos)
     }
@@ -351,6 +352,7 @@ impl SourceFile {
     }
 
     /// Looks up the file's 1-based line and 0-based character position based on the byte position.
+    /// Returns a tuple consisting of the line and then column.
     pub fn lookup_file_pos(&self, pos: BytePos) -> (u32, u32) {
         let line = match self.lookup_line(pos) {
             Some(n) => n + 1,

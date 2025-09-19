@@ -4,7 +4,7 @@ use inkwell::{
     basic_block::BasicBlock,
     builder::{Builder, BuilderError},
     types::{BasicType, BasicTypeEnum, FunctionType},
-    values::{BasicValueEnum, FunctionValue},
+    values::BasicValueEnum,
 };
 use mira_common::{index::IndexMap, store::StoreKey};
 use mira_typeck::{
@@ -32,7 +32,6 @@ pub(crate) struct FunctionCodegenContext<'ctx, 'arena, 'cg, 'a, 'ir> {
     scope: IndexMap<ValueId, BasicValueEnum<'ctx>>,
     generics: TyList<'arena>,
     pub(crate) current_block: BasicBlock<'ctx>,
-    current_fn: FunctionValue<'ctx>,
     pointer_size: u64,
     module: StoreKey<TypedModule<'arena>>,
 
@@ -50,7 +49,6 @@ impl<'ctx> Deref for FunctionCodegenContext<'ctx, '_, '_, '_, '_> {
 impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
     pub(crate) fn make_function_codegen_context<'me, 'ir>(
         &'me mut self,
-        current_fn: FunctionValue<'ctx>,
         generics: TyList<'arena>,
         module: StoreKey<TypedModule<'arena>>,
         ir: &'ir IR<'arena>,
@@ -61,7 +59,6 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             scope: IndexMap::new(),
             generics,
             current_block: current_bock,
-            current_fn,
             pointer_size: self.default_types.isize.get_bit_width() as u64 / 8,
             module,
             ctx: self,
@@ -174,6 +171,19 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             func()?;
         }
         Ok(())
+    }
+
+    pub(crate) fn make_bb<const N: usize>(&self, names: [&str; N]) -> [BasicBlock<'ctx>; N] {
+        let mut bbs = [self.current_block; N];
+        for i in 0..N {
+            let prev = if i == 0 {
+                self.current_block
+            } else {
+                bbs[i - 1]
+            };
+            bbs[i] = self.ctx.context.insert_basic_block_after(prev, names[i]);
+        }
+        bbs
     }
 }
 

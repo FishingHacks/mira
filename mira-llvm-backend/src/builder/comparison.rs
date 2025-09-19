@@ -182,28 +182,22 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
         rhs_block: BlockId,
         scope: DIScope<'ctx>,
     ) -> Result {
-        let rhs = self
-            .ctx
-            .context
-            .append_basic_block(self.current_fn, "land_right");
-        let end = self
-            .ctx
-            .context
-            .append_basic_block(self.current_fn, "land_end");
+        let [rhs_bb, end_bb] = self.make_bb(["log_and_right", "log_and_end"]);
+
         let left_value = self.basic_value(left);
-        self.build_conditional_branch(left_value.into_int_value(), rhs, end)?;
+        self.build_conditional_branch(left_value.into_int_value(), rhs_bb, end_bb)?;
         let cur_blk = self.current_block;
-        self.goto(rhs);
+        self.goto(rhs_bb);
 
         self.build_block(rhs_block, scope, false)?;
         let rhs_value = self.basic_value(right);
-        self.build_unconditional_branch(end)?;
+        self.build_unconditional_branch(end_bb)?;
 
-        self.goto(end);
+        self.goto(end_bb);
         let res = self.build_phi(self.ctx.default_types.bool, "")?;
         res.add_incoming(&[
             (&self.ctx.default_types.bool.const_zero(), cur_blk),
-            (&rhs_value, rhs),
+            (&rhs_value, rhs_bb),
         ]);
         self.push_value(dst, res.as_basic_value());
         Ok(())
@@ -217,28 +211,22 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
         rhs_block: BlockId,
         scope: DIScope<'ctx>,
     ) -> Result {
-        let rhs = self
-            .ctx
-            .context
-            .append_basic_block(self.current_fn, "lor_right");
-        let end = self
-            .ctx
-            .context
-            .append_basic_block(self.current_fn, "lor_end");
+        let [rhs_bb, end_bb] = self.make_bb(["log_or_right", "log_or_end"]);
+
         let left_value = self.basic_value(left);
-        self.build_conditional_branch(left_value.into_int_value(), end, rhs)?;
+        self.build_conditional_branch(left_value.into_int_value(), end_bb, rhs_bb)?;
         let cur_blk = self.current_block;
-        self.goto(rhs);
+        self.goto(rhs_bb);
 
         self.build_block(rhs_block, scope, false)?;
         let rhs_value = self.basic_value(right);
-        self.build_unconditional_branch(end)?;
+        self.build_unconditional_branch(end_bb)?;
 
-        self.goto(end);
+        self.goto(end_bb);
         let res = self.build_phi(self.ctx.default_types.bool, "")?;
         res.add_incoming(&[
             (&self.ctx.default_types.bool.const_int(1, false), cur_blk),
-            (&rhs_value, rhs),
+            (&rhs_value, rhs_bb),
         ]);
         self.push_value(dst, res.as_basic_value());
         Ok(())

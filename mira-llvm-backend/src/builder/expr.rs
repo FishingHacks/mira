@@ -5,6 +5,8 @@ use inkwell::{
 };
 use mira_typeck::ir::{TypedExpression, TypedLiteral};
 
+use crate::FnInstance;
+
 use super::FunctionCodegenContext;
 
 impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
@@ -63,10 +65,11 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
 
             // Call
             TypedExpression::Call(_, dst, func, args) => self.build_call(*dst, func, args),
-            TypedExpression::DirectCall(_, dst, func, args, generics) => {
-                // TODO: monomorphisation
-                assert!(generics.is_empty());
-                self.build_directcall(self.ctx.functions[*func], *dst, args)
+            TypedExpression::DirectCall(_, dst, fn_id, args, generics) => {
+                let func = self
+                    .ctx
+                    .get_fn_instance(FnInstance::new_poly(*fn_id, *generics));
+                self.build_directcall(func, *dst, args)
             }
             TypedExpression::DirectExternCall(_, dst, func, args) => {
                 self.build_directcall(self.ctx.external_functions[*func], *dst, args)

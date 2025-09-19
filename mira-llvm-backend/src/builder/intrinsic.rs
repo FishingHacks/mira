@@ -5,6 +5,8 @@ use mira_typeck::{
     ir::{TypedLiteral, ValueId},
 };
 
+use crate::FnInstance;
+
 use super::FunctionCodegenContext;
 
 impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
@@ -23,7 +25,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
                     .main_function
                     .get()
                     .expect("main function has to be set to use intrinsic `call_main`.");
-                let func = self.ctx.functions[main_fn];
+                let func = self.ctx.get_fn_instance(FnInstance::new_mono(*main_fn));
                 self.build_direct_call(func, &[], "")?;
                 self.push_value(dst, self.ctx.default_types.empty_struct.const_zero().into());
             }
