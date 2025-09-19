@@ -161,11 +161,10 @@ pub enum ProgressMessage {
 
 /// if no style is specified, no bar will be displayed.
 pub fn start_thread(style: Option<ProgressBarStyle>) -> ProgressBarThread {
-    ProgressBarThread::NoThread
-    // match style {
-    //     Some(style) => start_thread_with(ProgressBar::new(style)),
-    //     None => ProgressBarThread::NoThread,
-    // }
+    match style {
+        Some(style) => start_thread_with(ProgressBar::new(style)),
+        None => ProgressBarThread::NoThread,
+    }
 }
 
 fn handle_msg(msg: ProgressMessage, bar: &mut ProgressBar) -> bool {

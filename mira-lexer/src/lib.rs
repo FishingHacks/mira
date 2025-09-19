@@ -517,6 +517,7 @@ impl<'arena> Lexer<'arena> {
                 'a'..='f' => value = (value << 4) | (self.advance() as u64 - 'a' as u64 + 0xa),
                 'A'..='F' => value = (value << 4) | (self.advance() as u64 - 'A' as u64 + 0xa),
                 c if Self::is_valid_identifier_char(c) => {
+                    self.advance();
                     return self.parse_numtype(start_bytepos, c, value, is_negative, false);
                 }
                 _ if is_negative => {
@@ -554,6 +555,7 @@ impl<'arena> Lexer<'arena> {
                     ));
                 }
                 c if Self::is_valid_identifier_char(c) => {
+                    self.advance();
                     return self.parse_numtype(start_bytepos, c, value, is_negative, false);
                 }
                 _ if is_negative => {
@@ -591,6 +593,7 @@ impl<'arena> Lexer<'arena> {
                     ));
                 }
                 c if Self::is_valid_identifier_char(c) => {
+                    self.advance();
                     return self.parse_numtype(start_bytepos, c, value, is_negative, false);
                 }
                 _ if is_negative => {
