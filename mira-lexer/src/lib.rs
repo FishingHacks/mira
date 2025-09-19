@@ -516,6 +516,7 @@ impl<'arena> Lexer<'arena> {
                 '0'..='9' => value = (value << 4) | (self.advance() as u64 - '0' as u64),
                 'a'..='f' => value = (value << 4) | (self.advance() as u64 - 'a' as u64 + 0xa),
                 'A'..='F' => value = (value << 4) | (self.advance() as u64 - 'A' as u64 + 0xa),
+                '_' => _ = self.advance(),
                 c if Self::is_valid_identifier_char(c) => {
                     self.advance();
                     return self.parse_numtype(start_bytepos, c, value, is_negative, false);
@@ -554,6 +555,7 @@ impl<'arena> Lexer<'arena> {
                         self.span_from(start_bytepos),
                     ));
                 }
+                '_' => _ = self.advance(),
                 c if Self::is_valid_identifier_char(c) => {
                     self.advance();
                     return self.parse_numtype(start_bytepos, c, value, is_negative, false);
@@ -592,6 +594,7 @@ impl<'arena> Lexer<'arena> {
                         self.span_from(start_bytepos),
                     ));
                 }
+                '_' => _ = self.advance(),
                 c if Self::is_valid_identifier_char(c) => {
                     self.advance();
                     return self.parse_numtype(start_bytepos, c, value, is_negative, false);
@@ -682,26 +685,19 @@ impl<'arena> Lexer<'arena> {
                 break;
             }
 
-            if self.peek().is_ascii_digit() {
-                str.push(self.advance())
-            } else if self.peek() == '.'
-                && self
-                    .source
-                    .get(self.current + 1)
-                    .copied()
-                    .unwrap_or('\0')
-                    .is_ascii_digit()
-            {
-                if is_float {
-                    self.skip_to_after_number();
-                    return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
+            match self.peek() {
+                '0'..='9' => str.push(self.advance()),
+                '_' => _ = self.advance(),
+                '.' if self.peek2().is_ascii_digit() => {
+                    if is_float {
+                        self.skip_to_after_number();
+                        return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
+                    }
+                    is_float = true;
+                    str.push(self.advance());
                 }
-                is_float = true;
-                str.push(self.advance());
-            } else if Self::is_valid_identifier_char(self.peek()) {
-                ty.push(self.advance());
-            } else {
-                break;
+                c if Self::is_valid_identifier_char(c) => ty.push(self.advance()),
+                _ => break,
             }
         }
         let number_type = match NumberType::from_str(&ty) {
