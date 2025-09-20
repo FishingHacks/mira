@@ -1,12 +1,12 @@
 mod cache;
 mod key;
-use std::{cell::Cell, marker::PhantomData};
+use std::{cell::Cell, marker::PhantomData, sync::Arc, thread::ThreadId};
 
 pub use cache::{DefaultCache, QueryCache, SingleCache};
 pub use key::QueryKey;
 use mira_common::store::StoreKey;
 use mira_errors::{Diagnostic, ErrorData, FatalError, Severity};
-use parking_lot::lock_api::RwLock;
+use parking_lot::{Condvar, Mutex, lock_api::RwLock};
 
 use crate::{TypeCtx, TypeckCtx};
 
@@ -118,11 +118,33 @@ macro_rules! define_modules {
                     }
                 });
 
-                if let Some(job) = system.states.$name.read().get(&key) {
-                    system.cycle_error(ctx.ctx, *job);
+                let mut states_writer = system.states.$name.write();
+                let res = states_writer.get(&key).copied();
+                if let Some(job_id) = res {
+                    let reader = system.jobs.read();
+                    let res = reader.get(&job_id);
+                    if let Some(res) = res {
+                        let job = &reader[job_id];
+                        if job.thread == std::thread::current().id() {
+                            drop(reader);
+                            drop(states_writer);
+                            system.cycle_error(ctx.ctx, job_id);
+                        }
+                        let waiter = job.finish_waiter();
+                        drop(reader);
+                        drop(states_writer);
+                        waiter.wait();
+
+                        $crate::macro_if!(ifn ($($uncached)?) {
+                            return QueryCache::get(&system.caches.$name, &key).expect("waited for a job to finish, but no cache exists");
+                        });
+                        states_writer = system.states.$name.write();
+                    }
                 }
+
                 let job = system.enter_job(description(ctx, key));
-                system.states.$name.write().insert(key, job);
+                states_writer.insert(key, job);
+                drop(states_writer);
 
                 let res = $crate::macro_if!(if ($($manually_allocated)?)
                     { (system.providers.$name)(ctx, key, &system.arenas.$name) }
@@ -163,8 +185,6 @@ macro_rules! define_system {
 
         #[allow(unused, dead_code)]
         #[derive(Default)]
-        // TODO: This should be thread local and involve some locking so no double computations
-        // happen
         pub struct QueryStates<'arena> {
             $(pub(crate) $name: parking_lot::RwLock<std::collections::HashMap<queries::$name::Key<'arena>, $crate::queries::plumbing::JobId<'arena>>>,)+
             _marker: std::marker::PhantomData<&'arena ()>,
@@ -208,9 +228,27 @@ impl<'arena> TypeckCtx<'arena> {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct FinishWaiter(Arc<(Mutex<bool>, Condvar)>);
+
+impl FinishWaiter {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new((Mutex::new(false), Condvar::new())))
+    }
+
+    pub(crate) fn wait(&self) {
+        let mut finished = self.0.0.lock();
+        if !*finished {
+            self.0.1.wait(&mut finished);
+        }
+    }
+}
+
 pub(crate) struct QueryJob<'arena> {
     desc: Box<str>,
     parent: StoreKey<QueryJob<'arena>>,
+    pub(crate) thread: ThreadId,
+    result: FinishWaiter,
     _marker: PhantomData<&'arena ()>,
 }
 
@@ -220,7 +258,19 @@ impl<'arena> QueryJob<'arena> {
             desc,
             parent,
             _marker: PhantomData,
+            thread: std::thread::current().id(),
+            result: FinishWaiter::new(),
         }
+    }
+
+    pub(crate) fn finish(&self) {
+        *self.result.0.0.lock() = true;
+        self.result.0.1.notify_all();
+    }
+
+    pub(crate) fn finish_waiter(&self) -> FinishWaiter {
+        assert_ne!(self.thread, std::thread::current().id());
+        self.result.clone()
     }
 }
 
@@ -243,6 +293,7 @@ impl<'arena> QuerySystem<'arena> {
         let Some(job) = self.jobs.write().remove(&id) else {
             panic!("Error: Exited non-existing job {id}")
         };
+        job.finish();
         CURRENT_JOB.set(job.parent.cast());
     }
 
@@ -299,7 +350,7 @@ impl ErrorData for CyclicQuery {
             ))
         } else {
             cb(format_args!(
-                "...which the again requires {}, completing the cycle.",
+                "...which then again requires {}, completing the cycle.",
                 self.main_query_desc
             ))
         }

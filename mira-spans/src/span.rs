@@ -97,7 +97,6 @@ impl<'arena> Span<'arena> {
     fn get_pointer(self) -> &'arena SpanData {
         assert_eq!(self.inner & 1, 0);
         // SAFETY: This pointer was previously allocated with 'arena
-        // TODO: figure out if this should use std::ptr::with_exposed_provenance.
         unsafe { &*std::ptr::without_provenance(self.inner as usize) }
     }
 
