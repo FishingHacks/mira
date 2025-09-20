@@ -16,7 +16,12 @@
 // /// and back to a single line doc comment
 // extern fn get_bool() -> bool;
 
+trait Meow {}
+
+pub fn read<T: Meow>(v: &T) -> T = *v;
+
 pub fn main() {
-    // "Hello, World!".println::<()>();
-    get_metadata<str>("a");
+    let a = 12u32;
+    let b = read(&a);
+    b.println();
 }
