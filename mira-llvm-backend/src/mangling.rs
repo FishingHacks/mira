@@ -1,12 +1,10 @@
-use mira_common::store::StoreKey;
-use mira_parser::module::ModuleScopeValue;
+use mira_parser::module::{
+    ExternalFunctionId, FunctionId, ModuleId, ModuleScopeValue, StaticId, StructId,
+};
 use mira_parser::std_annotations::alias::ExternAliasAnnotation;
 use mira_spans::TypeArena;
 use mira_typeck::queries::Providers;
-use mira_typeck::{
-    Ty, TyKind, TypeckCtx, TypedExternalFunction, TypedFunction, TypedModule, TypedStatic,
-    TypedStruct, default_types,
-};
+use mira_typeck::{Ty, TyKind, TypeckCtx, default_types};
 use std::fmt::Write;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -47,10 +45,7 @@ fn path_len(p: &str) -> usize {
         .sum()
 }
 
-pub fn mangle_function<'arena>(
-    ctx: &TypeckCtx<'arena>,
-    id: StoreKey<TypedFunction<'arena>>,
-) -> String {
+pub fn mangle_function(ctx: &TypeckCtx<'_>, id: FunctionId) -> String {
     let fn_reader = ctx.functions.read();
     let mut mangled_name = "_ZN".to_string();
     mangled_name.push_str(ctx.mangle_module(fn_reader[id].0.module_id));
@@ -68,10 +63,7 @@ pub fn mangle_function<'arena>(
     mangled_name
 }
 
-pub fn mangle_external_function<'arena>(
-    ctx: &TypeckCtx<'arena>,
-    id: StoreKey<TypedExternalFunction<'arena>>,
-) -> String {
+pub fn mangle_external_function(ctx: &TypeckCtx<'_>, id: ExternalFunctionId) -> String {
     let reader = &ctx.external_functions.read()[id].0;
     if let Some(v) = reader
         .annotations
@@ -86,7 +78,7 @@ pub fn mangle_external_function<'arena>(
         .to_string()
 }
 
-pub fn mangle_struct<'arena>(ctx: &TypeckCtx<'arena>, id: StoreKey<TypedStruct<'arena>>) -> String {
+pub fn mangle_struct(ctx: &TypeckCtx<'_>, id: StructId) -> String {
     let struct_reader = ctx.structs.read();
     let structure = &struct_reader[id];
     let mut name = String::new();
@@ -100,7 +92,7 @@ pub fn mangle_struct<'arena>(ctx: &TypeckCtx<'arena>, id: StoreKey<TypedStruct<'
     name
 }
 
-pub fn mangle_static<'arena>(ctx: &TypeckCtx<'arena>, id: StoreKey<TypedStatic<'arena>>) -> String {
+pub fn mangle_static(ctx: &TypeckCtx<'_>, id: StaticId) -> String {
     let static_reader = ctx.statics.read();
     let static_ = &static_reader[id];
     let mut mangled = "_ZN".to_string();
@@ -114,12 +106,12 @@ pub fn mangle_static<'arena>(ctx: &TypeckCtx<'arena>, id: StoreKey<TypedStatic<'
     mangled
 }
 
-pub fn mangle_name<'arena>(ctx: &TypeckCtx<'arena>, item: ModuleScopeValue<'arena>) -> String {
+pub fn mangle_name(ctx: &TypeckCtx<'_>, item: ModuleScopeValue) -> String {
     match item {
-        ModuleScopeValue::Function(id) => mangle_function(ctx, id.cast()),
-        ModuleScopeValue::ExternalFunction(id) => mangle_external_function(ctx, id.cast()),
-        ModuleScopeValue::Struct(id) => mangle_struct(ctx, id.cast()),
-        ModuleScopeValue::Static(id) => mangle_static(ctx, id.cast()),
+        ModuleScopeValue::Function(id) => mangle_function(ctx, id),
+        ModuleScopeValue::ExternalFunction(id) => mangle_external_function(ctx, id),
+        ModuleScopeValue::Struct(id) => mangle_struct(ctx, id),
+        ModuleScopeValue::Static(id) => mangle_static(ctx, id),
         ModuleScopeValue::Module(_) | ModuleScopeValue::Trait(_) => {
             unreachable!("does not have to be mangled")
         }
@@ -273,19 +265,17 @@ fn mangle_path_segment(segment: &str, path: &mut String) {
 
 pub fn get_module_path<'ctx>(
     ctx: &TypeckCtx<'ctx>,
-    module: StoreKey<TypedModule<'ctx>>,
+    mut cur_mod: ModuleId,
     arena: &'ctx TypeArena<u8>,
 ) -> &'ctx str {
-    let mut cur_mod = module.cast();
     let mut paths = Vec::new();
     let reader = ctx.modules.read();
     loop {
         paths.push(reader[cur_mod].name);
-        if reader[cur_mod].parent.cast() == cur_mod || reader[cur_mod].root_module.cast() == cur_mod
-        {
+        let Some(parent) = reader[cur_mod].parent else {
             break;
-        }
-        cur_mod = reader[cur_mod].parent.cast();
+        };
+        cur_mod = parent;
     }
     let mut path = String::with_capacity(paths.len() * 8);
     for path_sym in paths.into_iter().rev() {
@@ -299,19 +289,17 @@ pub fn get_module_path<'ctx>(
 
 pub fn mangle_module<'ctx>(
     ctx: &TypeckCtx<'ctx>,
-    module: StoreKey<TypedModule<'ctx>>,
+    mut cur_mod: ModuleId,
     arena: &'ctx TypeArena<u8>,
 ) -> &'ctx str {
-    let mut cur_mod = module.cast();
     let mut paths = Vec::new();
     let reader = ctx.modules.read();
     loop {
         paths.push(reader[cur_mod].name);
-        if reader[cur_mod].parent.cast() == cur_mod || reader[cur_mod].root_module.cast() == cur_mod
-        {
+        let Some(parent) = reader[cur_mod].parent else {
             break;
-        }
-        cur_mod = reader[cur_mod].parent.cast();
+        };
+        cur_mod = parent;
     }
     let mut path = String::with_capacity(paths.len() * 8);
     for path_sym in paths.into_iter().rev() {

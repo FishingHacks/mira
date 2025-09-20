@@ -1,6 +1,6 @@
-use mira_common::store::StoreKey;
+use mira_parser::module::ModuleId;
 
-use crate::{Ty, TypedModule};
+use crate::Ty;
 
 use super::cache::{DefaultCache, QueryCache, SingleCache};
 
@@ -16,6 +16,6 @@ impl QueryKey for Ty<'_> {
     type Cache<V: Copy> = DefaultCache<Self, V>;
 }
 
-impl QueryKey for StoreKey<TypedModule<'_>> {
+impl QueryKey for ModuleId {
     type Cache<V: Copy> = DefaultCache<Self, V>;
 }

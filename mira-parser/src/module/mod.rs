@@ -9,20 +9,20 @@ use crate::{
     Expression, FunctionContract, Generic, LiteralValue, PathWithoutGenerics, Statement, Trait,
     TypeRef, annotations::Annotations, error::ProgramFormingError,
 };
-use mira_common::store::{AssociatedStore, Store, StoreKey};
+use mira_common::index::{IndexMap, IndexStore, IndexVec};
 use mira_context::{DocComment, SharedCtx};
 use mira_spans::{FileId, Ident, SourceFile, Span, Symbol};
 
 mod module_resolution;
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-pub enum ModuleScopeValue<'arena> {
-    Function(StoreKey<Function<'arena>>),
-    ExternalFunction(StoreKey<ExternalFunction<'arena>>),
-    Struct(StoreKey<BakedStruct<'arena>>),
-    Static(StoreKey<Static<'arena>>),
-    Module(StoreKey<Module<'arena>>),
-    Trait(StoreKey<Trait<'arena>>),
+pub enum ModuleScopeValue {
+    Function(FunctionId),
+    ExternalFunction(ExternalFunctionId),
+    Struct(StructId),
+    Static(StaticId),
+    Module(ModuleId),
+    Trait(TraitId),
 }
 
 #[derive(Debug)]
@@ -30,57 +30,69 @@ pub struct BakedStruct<'arena> {
     pub name: Ident<'arena>,
     pub elements: Vec<(Ident<'arena>, TypeRef<'arena>, DocComment)>,
     pub span: Span<'arena>,
-    pub global_impl: HashMap<Ident<'arena>, StoreKey<Function<'arena>>>,
+    pub global_impl: HashMap<Ident<'arena>, FunctionId>,
     pub impls: Vec<(
         Ident<'arena>,
-        HashMap<Ident<'arena>, StoreKey<Function<'arena>>>,
+        HashMap<Ident<'arena>, FunctionId>,
         Span<'arena>,
     )>,
     pub annotations: Annotations<'arena>,
-    pub module_id: StoreKey<Module<'arena>>,
+    pub module_id: ModuleId,
     pub generics: Vec<Generic<'arena>>,
     pub comment: DocComment,
 }
 
-pub type Function<'arena> = (
-    FunctionContract<'arena>,
-    Statement<'arena>,
-    StoreKey<Module<'arena>>,
-);
+pub type Function<'arena> = (FunctionContract<'arena>, Statement<'arena>, ModuleId);
 pub type ExternalFunction<'arena> = (
     FunctionContract<'arena>,
     Option<Statement<'arena>>,
-    StoreKey<Module<'arena>>,
+    ModuleId,
 );
 #[derive(Debug)]
 pub struct Static<'arena> {
     pub ty: TypeRef<'arena>,
     pub value: LiteralValue<'arena>,
-    pub module: StoreKey<Module<'arena>>,
+    pub module: ModuleId,
     pub span: Span<'arena>,
     pub annotations: Annotations<'arena>,
     pub name: Ident<'arena>,
     pub comment: DocComment,
 }
 
-pub type DependencyMap<'arena> = HashMap<Arc<str>, StoreKey<Module<'arena>>>;
+pub type DependencyMap = HashMap<Arc<str>, ModuleId>;
 
 pub struct ModuleContext<'arena> {
     pub ctx: SharedCtx<'arena>,
-    pub dependencies: AssociatedStore<DependencyMap<'arena>, Module<'arena>>,
-    pub modules: RwLock<Store<Module<'arena>>>,
-    pub functions: RwLock<Store<Function<'arena>>>,
-    pub external_functions: RwLock<Store<ExternalFunction<'arena>>>,
-    pub statics: RwLock<Store<Static<'arena>>>, // TODO: const-eval for statics
-    pub structs: RwLock<Store<BakedStruct<'arena>>>,
-    pub traits: RwLock<Store<Trait<'arena>>>,
+    // pub dependencies: AssociatedStore<DependencyMap<'arena>, Module<'arena>>,
+    // pub modules: RwLock<Store<Module<'arena>>>,
+    // pub functions: RwLock<Store<Function<'arena>>>,
+    // pub external_functions: RwLock<Store<ExternalFunction<'arena>>>,
+    // pub statics: RwLock<Store<Static<'arena>>>, // TODO: const-eval for statics
+    // pub structs: RwLock<Store<BakedStruct<'arena>>>,
+    // pub traits: RwLock<Store<Trait<'arena>>>,
+    pub dependencies: IndexMap<ModuleId, DependencyMap>,
+    pub modules: RwLock<IndexStore<ModuleId, Module<'arena>>>,
+    pub functions: RwLock<IndexVec<FunctionId, Function<'arena>>>,
+    pub external_functions: RwLock<IndexVec<ExternalFunctionId, ExternalFunction<'arena>>>,
+    pub statics: RwLock<IndexVec<StaticId, Static<'arena>>>, // TODO: const-eval for statics
+    pub structs: RwLock<IndexVec<StructId, BakedStruct<'arena>>>,
+    pub traits: RwLock<IndexVec<TraitId, Trait<'arena>>>,
+}
+
+mira_common::newty! {
+    pub struct ModuleId {}
+    pub struct FunctionId {}
+    pub struct ExternalFunctionId {}
+    pub struct StaticId {}
+    pub struct StructId {}
+    pub struct TraitId {}
 }
 
 impl<'arena> ModuleContext<'arena> {
     pub fn new(
-        modules: Store<Module<'arena>>,
+        modules: IndexStore<ModuleId, Module<'arena>>,
         ctx: SharedCtx<'arena>,
-        dependencies: AssociatedStore<DependencyMap<'arena>, Module<'arena>>,
+        dependencies: IndexMap<ModuleId, DependencyMap>,
     ) -> Self {
         Self {
             ctx,
@@ -114,14 +126,14 @@ pub type Import<'arena> = PathWithoutGenerics<'arena>;
 // }
 
 pub struct Module<'arena> {
-    pub scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
+    pub scope: HashMap<Ident<'arena>, ModuleScopeValue>,
     pub imports: HashMap<Ident<'arena>, (Span<'arena>, Import<'arena>)>,
     pub exports: HashSet<Ident<'arena>>,
     pub file: Arc<SourceFile>,
-    pub package_root: StoreKey<Module<'arena>>,
+    pub package_root: ModuleId,
     pub name: Symbol<'arena>,
     /// if this parent is undefined, that means it's the root package.
-    pub parent: StoreKey<Module<'arena>>,
+    pub parent: Option<ModuleId>,
     pub assembly: Vec<(Span<'arena>, String)>,
     pub comment: DocComment,
 }
@@ -142,18 +154,18 @@ pub struct ParserQueueEntry<'arena> {
     pub file_root: Arc<std::path::Path>,
     pub loaded_file: Option<FileId>,
     pub name: Symbol<'arena>,
-    pub package_root: StoreKey<Module<'arena>>,
+    pub package_root: ModuleId,
     /// if this parent is the same as the package_root, it means this module is the package root.
-    pub parent: StoreKey<Module<'arena>>,
-    pub module_key: StoreKey<Module<'arena>>,
+    pub parent: Option<ModuleId>,
+    pub module_id: ModuleId,
     pub comment: Option<DocComment>,
 }
 
 impl<'arena> Module<'arena> {
     pub fn new(
         file: Arc<SourceFile>,
-        package_root: StoreKey<Self>,
-        parent: StoreKey<Self>,
+        package_root: ModuleId,
+        parent: Option<ModuleId>,
         name: Symbol<'arena>,
         comment: DocComment,
     ) -> Self {
@@ -174,15 +186,15 @@ impl<'arena> Module<'arena> {
         &mut self,
         contract: FunctionContract<'arena>,
         mut body: Statement<'arena>,
-        module: StoreKey<Module<'arena>>,
+        module: ModuleId,
         context: &ModuleContext<'arena>,
-    ) -> StoreKey<Function<'arena>> {
-        let key = context.functions.write().reserve_key();
-        body.bake_functions(self, module, context);
-        context
+    ) -> FunctionId {
+        let key = context
             .functions
             .write()
-            .insert_reserved(key, (contract, body, module));
+            .add((contract, Statement::None, module));
+        body.bake_functions(self, module, context);
+        context.functions.write()[key].1 = body;
 
         key
     }
@@ -190,10 +202,10 @@ impl<'arena> Module<'arena> {
     pub fn push_all(
         &mut self,
         statements: Vec<Statement<'arena>>,
-        module_id: StoreKey<Module<'arena>>,
+        module_id: ModuleId,
         context: &ModuleContext<'arena>,
         parser_queue: &RwLock<Vec<ParserQueueEntry<'arena>>>,
-        modules: &RwLock<Store<Module<'arena>>>,
+        modules: &RwLock<IndexStore<ModuleId, Module<'arena>>>,
     ) -> Result<(), Vec<ProgramFormingError<'arena>>> {
         let errors = statements
             .into_iter()
@@ -223,10 +235,10 @@ impl<'arena> Module<'arena> {
     pub fn push_statement(
         &mut self,
         statement: Statement<'arena>,
-        module_id: StoreKey<Module<'arena>>,
+        module_id: ModuleId,
         context: &ModuleContext<'arena>,
         parser_queue: &RwLock<Vec<ParserQueueEntry<'arena>>>,
-        modules: &RwLock<Store<Module<'arena>>>,
+        modules: &RwLock<IndexStore<ModuleId, Module<'arena>>>,
     ) -> Result<(), ProgramFormingError<'arena>> {
         match statement {
             Statement::Function {
@@ -264,7 +276,7 @@ impl<'arena> Module<'arena> {
 
                 let mut writer = context.traits.write();
                 let name = r#trait.name;
-                let key = writer.insert(r#trait);
+                let key = writer.add(r#trait);
                 self.scope.insert(name, ModuleScopeValue::Trait(key));
                 self.maybe_add_export(public, name);
             }
@@ -315,7 +327,7 @@ impl<'arena> Module<'arena> {
                 };
 
                 let mut writer = context.structs.write();
-                let key = writer.insert(baked_struct);
+                let key = writer.add(baked_struct);
                 self.scope.insert(name, ModuleScopeValue::Struct(key));
                 self.maybe_add_export(public, name);
             }
@@ -335,7 +347,7 @@ impl<'arena> Module<'arena> {
                     return Err(ProgramFormingError::GlobalValueNoLiteral(var.value.span()));
                 };
                 let mut writer = context.statics.write();
-                let key = writer.insert(Static {
+                let key = writer.add(Static {
                     ty: var.ty.expect("static needs to have a type"),
                     value,
                     module: module_id,
@@ -370,7 +382,7 @@ impl<'arena> Module<'arena> {
                     body.bake_functions(self, module_id, context);
                 }
                 let mut writer = context.external_functions.write();
-                let key = writer.insert((contract, body.map(|v| *v), module_id));
+                let key = writer.add((contract, body.map(|v| *v), module_id));
                 self.scope
                     .insert(name, ModuleScopeValue::ExternalFunction(key));
                 self.maybe_add_export(public, name);
@@ -406,14 +418,14 @@ impl<'arena> Module<'arena> {
                     span,
                     span.last(context.ctx.span_interner),
                 )?;
-                let module_key = modules.write().reserve_key();
+                let module_key = modules.write().reserve_id();
                 parser_queue.write().push(ParserQueueEntry {
                     file,
                     file_root: self.file.package_root.clone(),
-                    module_key,
+                    module_id: module_key,
                     name: name.symbol(),
                     loaded_file: None,
-                    parent: module_id,
+                    parent: Some(module_id),
                     package_root: self.package_root,
                     comment,
                 });

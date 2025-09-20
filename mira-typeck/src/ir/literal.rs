@@ -1,12 +1,13 @@
 use std::ops::BitAnd;
 
-use mira_common::store::StoreKey;
-use mira_parser::std_annotations::intrinsic::Intrinsic;
+use mira_parser::{
+    module::{ExternalFunctionId, FunctionId, StaticId, StructId},
+    std_annotations::intrinsic::Intrinsic,
+};
 use mira_spans::Symbol;
 
 use crate::{
-    Substitute, Ty, TyKind, TyList, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic,
-    TypedStruct, default_types,
+    Substitute, Ty, TyKind, TyList, TypeckCtx, default_types,
     ir::{Scope, ValueId},
     monomorphisation::SubstitutionCtx,
     types::FunctionType,
@@ -17,13 +18,13 @@ pub enum TypedLiteral<'arena> {
     #[default]
     Void,
     Dynamic(ValueId),
-    Function(StoreKey<TypedFunction<'arena>>, TyList<'arena>),
-    ExternalFunction(StoreKey<TypedExternalFunction<'arena>>),
-    Static(StoreKey<TypedStatic<'arena>>),
+    Function(FunctionId, TyList<'arena>),
+    ExternalFunction(ExternalFunctionId),
+    Static(StaticId),
     String(Symbol<'arena>),
     Array(Ty<'arena>, Box<[TypedLiteral<'arena>]>),
     ArrayInit(Ty<'arena>, Box<TypedLiteral<'arena>>, usize),
-    Struct(StoreKey<TypedStruct<'arena>>, Box<[TypedLiteral<'arena>]>),
+    Struct(StructId, Box<[TypedLiteral<'arena>]>),
     Tuple(Box<[TypedLiteral<'arena>]>),
     F64(f64),
     F32(f32),

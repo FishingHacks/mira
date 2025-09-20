@@ -10,7 +10,7 @@ impl TraitDisplay<'_> {
     pub(super) fn fmt(&self, f: &mut Formatter<'_, '_, '_>) -> std::fmt::Result {
         f.write_value(&self.0.annotations)?;
         f.write_str("trait trait_")?;
-        f.write_value(&self.0.id)?;
+        f.write_value(&self.0.id.to_usize())?;
         f.write_char(' ')?;
         f.write_value(&IdentDisplay(self.0.name.symbol()))?;
         f.write_str(" {")?;

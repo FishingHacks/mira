@@ -1,6 +1,6 @@
-use mira_common::store::StoreKey;
+use mira_parser::module::TraitId;
 use mira_typeck::{
-    Ty, TyKind, TypedTrait, default_types,
+    Ty, TyKind, default_types,
     ir::{TypedLiteral, ValueId},
 };
 
@@ -185,7 +185,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         &mut self,
         dst: ValueId,
         value: &TypedLiteral<'arena>,
-        vtable: &(Ty<'arena>, Box<[StoreKey<TypedTrait<'arena>>]>),
+        vtable: &(Ty<'arena>, Box<[TraitId]>),
     ) -> Result {
         let vtable_ptr = self.ctx.get_vtable(vtable).as_pointer_value();
         let metadata = self

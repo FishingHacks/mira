@@ -334,7 +334,7 @@ impl ExpressionDisplay<'_> {
             } => {
                 f.write_value(dst)?;
                 f.write_str(" = trait_call trait_")?;
-                f.write_value(trait_id)?;
+                f.write_value(&trait_id.to_usize())?;
                 f.write_str("::func_")?;
                 f.write_value(func)?;
                 f.write_str(" on ")?;

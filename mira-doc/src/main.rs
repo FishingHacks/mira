@@ -1,11 +1,11 @@
 use std::{path::PathBuf, process::ExitCode, rc::Rc};
 
 use html::err_fs;
-use mira_common::store::StoreKey;
+use mira_common::index::Idx;
 use mira_context::ErrorEmitted;
 use mira_driver::{ContextData, DiagEmitter, EmitResult, LibraryTree, find_library};
 use mira_errors::IoWriteError;
-use mira_parser::module::ModuleScopeValue;
+use mira_parser::module::{ModuleId, ModuleScopeValue};
 use mira_spans::Arena;
 
 mod default_ty_links;
@@ -88,13 +88,13 @@ fn _main() -> EmitResult<()> {
             }
         };
     }
-    let stdlib_module = StoreKey::from_usize(std_id.to_usize());
+    let stdlib_module = ModuleId::from_usize(std_id.to_usize());
     let index_file = output.join("index.html");
     let mut context = tri!(html::HTMLGenerateContext::new(
         output,
         typeck_ctx.clone(),
         if main_lib.is_some() {
-            vec![main_module.cast(), stdlib_module]
+            vec![main_module, stdlib_module]
         } else {
             vec![stdlib_module]
         }
@@ -105,7 +105,7 @@ fn _main() -> EmitResult<()> {
         context.generated.borrow_mut().insert(k, Rc::clone(&v));
         match k {
             ModuleScopeValue::Function(key) => {
-                let s = context.generate_function(&v, key.cast());
+                let s = context.generate_function(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
                     std::fs::write(&v.0, s)
@@ -113,7 +113,7 @@ fn _main() -> EmitResult<()> {
                 );
             }
             ModuleScopeValue::ExternalFunction(key) => {
-                let s = context.generate_external_function(&v, key.cast());
+                let s = context.generate_external_function(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
                     std::fs::write(&v.0, s)
@@ -121,7 +121,7 @@ fn _main() -> EmitResult<()> {
                 );
             }
             ModuleScopeValue::Static(key) => {
-                let s = context.generate_static(&v, key.cast());
+                let s = context.generate_static(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
                     std::fs::write(&v.0, s)
@@ -129,7 +129,7 @@ fn _main() -> EmitResult<()> {
                 );
             }
             ModuleScopeValue::Trait(key) => {
-                let s = context.generate_trait(&v, key.cast());
+                let s = context.generate_trait(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
                     std::fs::write(&v.0, s)
@@ -137,7 +137,7 @@ fn _main() -> EmitResult<()> {
                 );
             }
             ModuleScopeValue::Struct(key) => {
-                let s = context.generate_struct(&v, key.cast());
+                let s = context.generate_struct(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
                     std::fs::write(&v.0, s)
@@ -145,7 +145,7 @@ fn _main() -> EmitResult<()> {
                 );
             }
             ModuleScopeValue::Module(key) => {
-                let s = context.generate_module(&v, key.cast());
+                let s = context.generate_module(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
                     std::fs::write(&v.0, s)
@@ -163,14 +163,14 @@ fn _main() -> EmitResult<()> {
 
     // generate the module file of the main lib in the root directory under index.html
 
-    let key = main_module;
-    let qualified_paths = Rc::clone(&context.generated.borrow()[&ModuleScopeValue::Module(key)]);
+    let qualified_paths =
+        Rc::clone(&context.generated.borrow()[&ModuleScopeValue::Module(main_module)]);
     let qualified_paths = (
         index_file,
         qualified_paths.1.clone(),
         qualified_paths.2.clone(),
     );
-    let s = context.generate_module(&qualified_paths, key.cast());
+    let s = context.generate_module(&qualified_paths, main_module);
     tri!(
         std::fs::write(&qualified_paths.0, s)
             .map_err(|e| IoWriteError(qualified_paths.0, e).to_error())

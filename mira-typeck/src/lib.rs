@@ -15,12 +15,15 @@ use types::{resolve_primitive_type, with_refcount};
 
 use crate::{error::TypecheckingErrorEmitterExt, ir::IR};
 pub use lang_items::LangItems;
-use mira_common::store::{AssociatedStore, Store, StoreKey};
+use mira_common::index::IndexMap;
 use mira_context::DocComment;
 use mira_parser::{
     TypeRef,
     annotations::Annotations,
-    module::{BakedStruct, Module, ModuleContext, ModuleScopeValue},
+    module::{
+        ExternalFunctionId, FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StaticId,
+        StructId, TraitId,
+    },
 };
 use mira_spans::{
     ArenaList, Ident, SourceFile, Span,
@@ -30,9 +33,8 @@ use mira_spans::{
 mod context;
 mod lang_items;
 mod monomorphisation;
-pub use monomorphisation::{Substitute, SubstitutionCtx};
-pub mod optimizations;
 pub use context::{GlobalContext, TypeCtx};
+pub use monomorphisation::{Substitute, SubstitutionCtx};
 mod error;
 pub mod intrinsics;
 pub mod ir;
@@ -44,11 +46,23 @@ mod types;
 pub use error::{FunctionList, TypecheckingError, TypecheckingErrorDiagnosticsExt};
 pub use types::{FunctionType, Ty, TyKind, TyList, TypeInterner, TypeListInterner, default_types};
 
+#[derive(Clone, Copy)]
+pub enum CommonFunction {
+    Normal(FunctionId),
+    External(ExternalFunctionId),
+}
+
+impl CommonFunction {
+    pub fn is_external(&self) -> bool {
+        matches!(self, Self::External(_))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedGeneric<'arena> {
     pub name: Ident<'arena>,
     pub sized: bool,
-    pub bounds: ArenaList<'arena, StoreKey<TypedTrait<'arena>>>,
+    pub bounds: ArenaList<'arena, TraitId>,
 }
 
 #[derive(Debug)]
@@ -58,7 +72,7 @@ pub struct TypedFunctionContract<'arena> {
     pub return_type: Ty<'arena>,
     pub annotations: Annotations<'arena>,
     pub span: Span<'arena>,
-    pub module_id: StoreKey<TypedModule<'arena>>,
+    pub module_id: ModuleId,
     pub generics: Vec<TypedGeneric<'arena>>,
     pub comment: DocComment,
 }
@@ -88,8 +102,8 @@ pub struct TypedTrait<'arena> {
         DocComment,
     )>,
     pub span: Span<'arena>,
-    pub module_id: StoreKey<TypedModule<'arena>>,
-    pub id: StoreKey<TypedTrait<'arena>>,
+    pub module_id: ModuleId,
+    pub id: TraitId,
     pub annotations: Annotations<'arena>,
     pub comment: DocComment,
 }
@@ -99,11 +113,11 @@ pub struct TypedStruct<'arena> {
     pub name: Ident<'arena>,
     pub elements: Vec<(Ident<'arena>, Ty<'arena>, DocComment)>,
     pub span: Span<'arena>,
-    pub global_impl: HashMap<Ident<'arena>, StoreKey<TypedFunction<'arena>>>,
-    pub trait_impl: HashMap<StoreKey<TypedTrait<'arena>>, Vec<StoreKey<TypedFunction<'arena>>>>,
+    pub global_impl: HashMap<Ident<'arena>, FunctionId>,
+    pub trait_impl: IndexMap<TraitId, Vec<FunctionId>>,
     pub annotations: Annotations<'arena>,
-    pub module_id: StoreKey<TypedModule<'arena>>,
-    pub id: StoreKey<TypedStruct<'arena>>,
+    pub module_id: ModuleId,
+    pub id: StructId,
     pub generics: Vec<TypedGeneric<'arena>>,
     pub comment: DocComment,
 }
@@ -121,7 +135,7 @@ pub struct TypedStatic<'arena> {
     pub ty: Ty<'arena>,
     /// guaranteed to not be `Dynamic`, `Intrinsic` or `Static`
     pub value: TypedLiteral<'arena>,
-    pub module_id: StoreKey<TypedModule<'arena>>,
+    pub module_id: ModuleId,
     pub span: Span<'arena>,
     pub annotations: Annotations<'arena>,
     pub name: Ident<'arena>,
@@ -132,7 +146,7 @@ impl<'arena> TypedStatic<'arena> {
     pub fn new(
         ty: Ty<'arena>,
         literal: TypedLiteral<'arena>,
-        module: StoreKey<TypedModule<'arena>>,
+        module: ModuleId,
         span: Span<'arena>,
         annotations: Annotations<'arena>,
         name: Ident<'arena>,
@@ -155,25 +169,25 @@ pub type TypedExternalFunction<'arena> = (TypedFunctionContract<'arena>, Option<
 
 #[allow(clippy::type_complexity)]
 pub struct TypeckCtx<'arena> {
-    pub modules: RwLock<AssociatedStore<TypedModule<'arena>, Module<'arena>>>,
-    pub functions: RwLock<Store<TypedFunction<'arena>>>,
-    pub external_functions: RwLock<Store<TypedExternalFunction<'arena>>>,
-    pub statics: RwLock<Store<TypedStatic<'arena>>>,
-    pub structs: RwLock<Store<TypedStruct<'arena>>>,
-    pub traits: RwLock<Store<TypedTrait<'arena>>>,
+    pub modules: RwLock<IndexMap<ModuleId, TypedModule<'arena>>>,
+    pub functions: RwLock<IndexMap<FunctionId, TypedFunction<'arena>>>,
+    pub external_functions: RwLock<IndexMap<ExternalFunctionId, TypedExternalFunction<'arena>>>,
+    pub statics: RwLock<IndexMap<StaticId, TypedStatic<'arena>>>,
+    pub structs: RwLock<IndexMap<StructId, TypedStruct<'arena>>>,
+    pub traits: RwLock<IndexMap<TraitId, TypedTrait<'arena>>>,
     pub lang_items: RwLock<LangItems<'arena>>,
-    pub main_function: OnceLock<StoreKey<TypedFunction<'arena>>>,
+    pub main_function: OnceLock<FunctionId>,
     pub ctx: TypeCtx<'arena>,
-    pub dependencies:
-        AssociatedStore<HashMap<Arc<str>, StoreKey<TypedModule<'arena>>>, TypedModule<'arena>>,
+    pub dependencies: IndexMap<ModuleId, HashMap<Arc<str>, ModuleId>>,
 }
 
 #[derive(Debug)]
 pub struct TypedModule<'arena> {
-    pub scope: HashMap<Ident<'arena>, ModuleScopeValue<'arena>>,
+    pub scope: HashMap<Ident<'arena>, ModuleScopeValue>,
     pub exports: HashSet<Ident<'arena>>,
-    pub parent: StoreKey<TypedModule<'arena>>,
-    pub root_module: StoreKey<TypedModule<'arena>>,
+    pub parent: Option<ModuleId>,
+    pub root_module: ModuleId,
+    pub module_id: ModuleId,
     pub name: Symbol<'arena>,
     pub file: Arc<SourceFile>,
     pub assembly: Vec<(Span<'arena>, String)>,
@@ -191,26 +205,26 @@ impl<'ctx> TypeckCtx<'ctx> {
 
     pub fn validate_main_function(
         &self,
-        main_pkg: StoreKey<Module<'ctx>>,
-    ) -> Result<StoreKey<TypedFunction<'ctx>>, TypecheckingError<'ctx>> {
+        main_pkg: ModuleId,
+    ) -> Result<FunctionId, TypecheckingError<'ctx>> {
         let module = &self.modules.read()[main_pkg];
-        let Some(ModuleScopeValue::Function(main_fn)) =
+        let Some(&ModuleScopeValue::Function(main_fn)) =
             module.scope.get(&symbols::DefaultIdents::main)
         else {
             return Err(TypecheckingError::MainFuncNotFound(
                 module.file.path.clone(),
             ));
         };
-        let func = &self.functions.read()[main_fn.cast()].0;
+        let func = &self.functions.read()[main_fn].0;
         if !func.arguments.is_empty() || func.return_type != default_types::void {
             return Err(TypecheckingError::MainFuncWrongType {
                 func_span: func.span,
             });
         }
         self.main_function
-            .set(main_fn.cast())
+            .set(main_fn)
             .expect("validate_main_function called multiple times");
-        Ok(main_fn.cast())
+        Ok(main_fn)
     }
 
     pub fn new(ctx: TypeCtx<'ctx>, module_context: Arc<ModuleContext<'ctx>>) -> Arc<Self> {
@@ -220,39 +234,38 @@ impl<'ctx> TypeckCtx<'ctx> {
         let functions_reader = module_context.functions.read();
         let external_functions_reader = module_context.external_functions.read();
 
-        let mut traits = AssociatedStore::with_capacity(traits_reader.len());
-        let mut structs = AssociatedStore::with_capacity(structs_reader.len());
-        let mut statics = AssociatedStore::with_capacity(statics_reader.len());
-        let mut functions = AssociatedStore::with_capacity(functions_reader.len());
-        let mut external_functions =
-            AssociatedStore::with_capacity(external_functions_reader.len());
+        let mut traits = IndexMap::with_capacity(traits_reader.len());
+        let mut structs = IndexMap::with_capacity(structs_reader.len());
+        let mut statics = IndexMap::with_capacity(statics_reader.len());
+        let mut functions = IndexMap::with_capacity(functions_reader.len());
+        let mut external_functions = IndexMap::with_capacity(external_functions_reader.len());
 
-        for key in structs_reader.indices() {
+        for (id, baked_struct) in structs_reader.entries() {
             structs.insert(
-                key,
+                id,
                 TypedStruct {
                     name: Ident::EMPTY,
                     elements: Vec::new(),
-                    span: structs_reader[key].span,
+                    span: structs_reader[id].span,
                     global_impl: HashMap::new(),
-                    trait_impl: HashMap::new(),
+                    trait_impl: IndexMap::new(),
                     annotations: Annotations::default(),
-                    module_id: StoreKey::undefined(),
+                    module_id: baked_struct.module_id,
                     generics: Vec::new(),
-                    id: key.cast(),
+                    id,
                     comment: DocComment::EMPTY,
                 },
             );
         }
 
-        for key in statics_reader.indices() {
+        for (id, static_value) in statics_reader.entries() {
             statics.insert(
-                key,
+                id,
                 TypedStatic::new(
                     default_types::never,
                     TypedLiteral::Void,
-                    StoreKey::undefined(),
-                    statics_reader[key].span,
+                    static_value.module,
+                    static_value.span,
                     Annotations::default(),
                     Ident::EMPTY,
                     DocComment::EMPTY,
@@ -260,36 +273,36 @@ impl<'ctx> TypeckCtx<'ctx> {
             );
         }
 
-        for key in functions_reader.indices() {
+        for (id, &(ref contract, _, module_id)) in functions_reader.entries() {
             functions.insert(
-                key,
+                id,
                 (
                     TypedFunctionContract {
                         annotations: Annotations::default(),
                         name: None,
                         arguments: Vec::new(),
                         return_type: default_types::never,
-                        span: functions_reader[key].0.span,
-                        module_id: StoreKey::undefined(),
+                        span: contract.span,
+                        module_id,
                         generics: Vec::new(),
                         comment: DocComment::EMPTY,
                     },
-                    IR::new(std::iter::empty(), functions_reader[key].0.span),
+                    IR::new(std::iter::empty(), contract.span),
                 ),
             );
         }
 
-        for key in external_functions_reader.indices() {
+        for (id, &(_, _, module_id)) in external_functions_reader.entries() {
             external_functions.insert(
-                key,
+                id,
                 (
                     TypedFunctionContract {
                         annotations: Annotations::default(),
                         name: None,
                         arguments: Vec::new(),
                         return_type: default_types::never,
-                        span: external_functions_reader[key].0.span,
-                        module_id: StoreKey::undefined(),
+                        span: external_functions_reader[id].0.span,
+                        module_id,
                         generics: Vec::new(),
                         comment: DocComment::EMPTY,
                     },
@@ -298,38 +311,29 @@ impl<'ctx> TypeckCtx<'ctx> {
             );
         }
 
-        for key in traits_reader.indices() {
+        for (id, trait_value) in traits_reader.entries() {
             traits.insert(
-                key,
+                id,
                 TypedTrait {
                     name: Ident::EMPTY,
                     functions: Vec::new(),
-                    span: traits_reader[key].span,
-                    module_id: StoreKey::undefined(),
-                    id: key.cast(),
+                    span: trait_value.span,
+                    module_id: trait_value.module,
+                    id,
                     annotations: Annotations::default(),
                     comment: DocComment::EMPTY,
                 },
             );
         }
 
-        let mut dependencies = AssociatedStore::with_capacity(module_context.dependencies.len());
-        for (k, v) in module_context.dependencies.index_value_iter() {
-            let mut map = HashMap::with_capacity(v.len());
-            for (k, v) in v.iter() {
-                map.insert(k.clone(), v.cast());
-            }
-            dependencies.insert(k.cast(), map);
-        }
-
         let me = Arc::new(Self {
             ctx,
-            dependencies,
-            structs: RwLock::new(structs.into()),
-            statics: RwLock::new(statics.into()),
-            functions: RwLock::new(functions.into()),
-            traits: RwLock::new(traits.into()),
-            external_functions: RwLock::new(external_functions.into()),
+            dependencies: module_context.dependencies.clone(),
+            structs: RwLock::new(structs),
+            statics: RwLock::new(statics),
+            functions: RwLock::new(functions),
+            traits: RwLock::new(traits),
+            external_functions: RwLock::new(external_functions),
             modules: Default::default(),
             lang_items: RwLock::new(LangItems::new(ctx)),
             main_function: OnceLock::new(),
@@ -338,15 +342,16 @@ impl<'ctx> TypeckCtx<'ctx> {
         let mut typechecked_module_writer = me.modules.write();
         let module_reader = module_context.modules.read();
 
-        for (key, module) in module_reader.index_value_iter() {
+        for (key, module) in module_reader.entries() {
             let scope = module.scope.clone();
 
             typechecked_module_writer.insert(
                 key,
                 TypedModule {
                     scope,
-                    parent: module.parent.cast(),
-                    root_module: module.package_root.cast(),
+                    parent: module.parent,
+                    root_module: module.package_root,
+                    module_id: key,
                     name: module.name,
                     exports: module.exports.clone(),
                     file: module.file.clone(),
@@ -365,14 +370,14 @@ impl<'ctx> TypeckCtx<'ctx> {
     pub fn resolve_imports(&self, context: Arc<ModuleContext<'ctx>>) {
         let mut typechecked_module_writer = self.modules.write();
         let module_reader = context.modules.read();
-        for key in module_reader.indices() {
+        for key in module_reader.keys() {
             for (name, (span, import)) in module_reader[key].imports.iter() {
                 let res =
                     resolve_import(&context, key, &import.entries, *span, &mut HashSet::new());
                 match res {
                     Err(diag) => _ = self.ctx.emit_diag(diag),
                     Ok(k) => {
-                        typechecked_module_writer[key.cast()].scope.insert(*name, k);
+                        typechecked_module_writer[key].scope.insert(*name, k);
                     }
                 }
             }
@@ -381,7 +386,7 @@ impl<'ctx> TypeckCtx<'ctx> {
 
     pub fn resolve_type(
         &self,
-        module_id: StoreKey<TypedModule<'ctx>>,
+        module_id: ModuleId,
         ty: &TypeRef<'ctx>,
         generics: &[TypedGeneric<'ctx>],
     ) -> Result<Ty<'ctx>, Diagnostic<'ctx>> {
@@ -409,7 +414,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                                 .to_error(),
                         );
                     };
-                    trait_refs.push((id.cast(), *trait_name.as_slice().last().unwrap()));
+                    trait_refs.push((id, *trait_name.as_slice().last().unwrap()));
                 }
                 let trait_refs = ArenaList::new(self.ctx.arena(), &trait_refs);
                 Ok(with_refcount(
@@ -473,11 +478,11 @@ impl<'ctx> TypeckCtx<'ctx> {
                 }
 
                 match self.typed_resolve_import(module_id, &path, *span, &mut HashSet::new())? {
-                    ModuleScopeValue::Struct(id) => Ok(with_refcount(
+                    ModuleScopeValue::Struct(struct_id) => Ok(with_refcount(
                         self.ctx,
                         self.ctx.intern_ty(TyKind::Struct {
-                            struct_id: id.cast(),
-                            name: self.structs.read()[id.cast()].name,
+                            struct_id,
+                            name: self.structs.read()[struct_id].name,
                         }),
                         *num_references,
                     )),
@@ -535,14 +540,14 @@ impl<'ctx> TypeckCtx<'ctx> {
     fn resolve_struct(
         &self,
         context: Arc<ModuleContext<'ctx>>,
-        id: StoreKey<BakedStruct<'ctx>>,
-        module_id: StoreKey<Module<'ctx>>,
-        left: &mut HashMap<StoreKey<BakedStruct<'ctx>>, ResolvingState>,
+        id: StructId,
+        module_id: ModuleId,
+        left: &mut IndexMap<StructId, ResolvingState>,
     ) -> bool {
-        if !left.contains_key(&id) {
+        if !left.contains(id) {
             return false;
         }
-        match left.get_mut(&id) {
+        match left.get_mut(id) {
             None => return false,
             Some(ResolvingState::Working) => return true,
             Some(v @ ResolvingState::Pending) => *v = ResolvingState::Working,
@@ -550,12 +555,7 @@ impl<'ctx> TypeckCtx<'ctx> {
 
         let mut writer = context.structs.write();
 
-        fn migrate_hashmap<K, A, B>(value: HashMap<K, StoreKey<A>>) -> HashMap<K, StoreKey<B>> {
-            // SAFETY: This is safe [[i think]] because the generics are part of a phantomdata.
-            unsafe { std::mem::transmute(value) }
-        }
-
-        let global_impl = migrate_hashmap(std::mem::take(&mut writer[id].global_impl));
+        let global_impl = std::mem::take(&mut writer[id].global_impl);
         let annotations = std::mem::take(&mut writer[id].annotations);
         let elements = std::mem::take(&mut writer[id].elements);
         let mut generics = Vec::new();
@@ -572,7 +572,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                     &mut HashSet::new(),
                 ) {
                     Err(e) => _ = self.ctx.emit_diag(e),
-                    Ok(ModuleScopeValue::Trait(trait_id)) => bounds.push(trait_id.cast()),
+                    Ok(ModuleScopeValue::Trait(trait_id)) => bounds.push(trait_id),
                     Ok(_) => {
                         self.ctx.emit_unbound_ident(
                             *span,
@@ -596,10 +596,10 @@ impl<'ctx> TypeckCtx<'ctx> {
             elements: Vec::new(),
             global_impl,
             annotations,
-            module_id: module_id.cast(),
-            id: id.cast(),
+            module_id,
+            id,
             generics,
-            trait_impl: HashMap::new(),
+            trait_impl: IndexMap::new(),
             comment: writer[id].comment,
         };
         drop(writer);
@@ -608,16 +608,16 @@ impl<'ctx> TypeckCtx<'ctx> {
             if let Some(ty) = self.type_resolution_resolve_type(
                 &element.1,
                 &typed_struct.generics,
-                module_id.cast(),
+                module_id,
                 context.clone(),
                 left,
             ) {
                 typed_struct.elements.push((element.0, ty, element.2));
             }
         }
-        self.structs.write()[id.cast()] = typed_struct;
+        self.structs.write()[id] = typed_struct;
 
-        left.remove(&id);
+        left.remove(id);
         false
     }
 
@@ -625,9 +625,9 @@ impl<'ctx> TypeckCtx<'ctx> {
         &self,
         ty: &TypeRef<'ctx>,
         generics: &[TypedGeneric<'ctx>],
-        module: StoreKey<TypedModule<'ctx>>,
+        module: ModuleId,
         context: Arc<ModuleContext<'ctx>>,
-        left: &mut HashMap<StoreKey<BakedStruct<'ctx>>, ResolvingState>,
+        left: &mut IndexMap<StructId, ResolvingState>,
     ) -> Option<Ty<'ctx>> {
         if let Some(ty) = resolve_primitive_type(self.ctx, ty) {
             return Some(ty);
@@ -649,7 +649,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                     let Ok(ModuleScopeValue::Trait(id)) = v else {
                         return None;
                     };
-                    trait_refs.push((id.cast(), *trait_name.as_slice().last().unwrap()));
+                    trait_refs.push((id, *trait_name.as_slice().last().unwrap()));
                 }
                 let trait_refs = ArenaList::new(self.ctx.arena(), &trait_refs);
                 Some(with_refcount(
@@ -717,8 +717,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                     }
                 }
 
-                let Ok(value) =
-                    resolve_import(&context, module.cast(), &path, *span, &mut HashSet::new())
+                let Ok(value) = resolve_import(&context, module, &path, *span, &mut HashSet::new())
                 else {
                     self.ctx
                         .emit_unbound_ident(*span, path[path.len() - 1].symbol());
@@ -732,8 +731,8 @@ impl<'ctx> TypeckCtx<'ctx> {
                 };
 
                 {
-                    if !left.contains_key(&id) {
-                        let typechecked_struct = &self.structs.read()[id.cast()];
+                    if !left.contains(id) {
+                        let typechecked_struct = &self.structs.read()[id];
                         let ty = self.ctx.intern_ty(TyKind::Struct {
                             struct_id: typechecked_struct.id,
                             name: typechecked_struct.name,
@@ -747,7 +746,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                     self.ctx.emit_recursive_type_detected(*span);
                     return None;
                 }
-                let typechecked_struct = &self.structs.read()[id.cast()];
+                let typechecked_struct = &self.structs.read()[id];
                 let ty = self.ctx.intern_ty(TyKind::Struct {
                     struct_id: typechecked_struct.id,
                     name: typechecked_struct.name,
@@ -806,28 +805,35 @@ impl<'ctx> TypeckCtx<'ctx> {
 
     pub fn typed_resolve_import(
         &self,
-        module: StoreKey<TypedModule<'ctx>>,
+        module: ModuleId,
         import: &[Ident<'ctx>],
         span: Span<'ctx>,
-        already_included: &mut HashSet<(StoreKey<TypedModule<'ctx>>, Symbol<'ctx>)>,
-    ) -> Result<ModuleScopeValue<'ctx>, Diagnostic<'ctx>> {
+        already_included: &mut HashSet<(ModuleId, Symbol<'ctx>)>,
+    ) -> Result<ModuleScopeValue, Diagnostic<'ctx>> {
         assert!(!import.is_empty());
         if !already_included.insert((module, import[0].symbol())) {
             return Err(TypecheckingError::CyclicDependency(span).to_error());
         }
 
         let module_reader = self.modules.read();
-        let cur_mod = &module_reader[module.cast()];
+        let cur_mod = &module_reader[module];
         let thing;
 
         if &*import[0] == "pkg" {
-            thing = ModuleScopeValue::Module(cur_mod.root_module.cast());
+            thing = ModuleScopeValue::Module(cur_mod.root_module);
         } else if &*import[0] == "super" {
-            thing = ModuleScopeValue::Module(cur_mod.parent.cast());
+            let Some(parent) = cur_mod.parent else {
+                return Err(TypecheckingError::ItemNotFound {
+                    span: import[0].span(),
+                    name: import[0].symbol(),
+                }
+                .to_error());
+            };
+            thing = ModuleScopeValue::Module(parent);
         } else if let Some(value) = cur_mod.scope.get(&import[0].symbol()) {
             thing = *value;
         } else if let Some(package) = self.dependencies[cur_mod.root_module].get(&*import[0]) {
-            thing = ModuleScopeValue::Module(package.cast());
+            thing = ModuleScopeValue::Module(*package);
         } else {
             return Err(TypecheckingError::ItemNotFound {
                 span,
@@ -841,7 +847,7 @@ impl<'ctx> TypeckCtx<'ctx> {
         }
         match thing {
             ModuleScopeValue::Module(module) => {
-                self.typed_resolve_import(module.cast(), &import[1..], span, already_included)
+                self.typed_resolve_import(module, &import[1..], span, already_included)
             }
 
             _ => Err(TypecheckingError::ItemNotFound {
@@ -863,11 +869,11 @@ impl<'ctx> Deref for TypeckCtx<'ctx> {
 
 fn resolve_import<'arena>(
     context: &ModuleContext<'arena>,
-    current_module: StoreKey<Module<'arena>>,
+    current_module: ModuleId,
     import: &[Ident<'arena>],
     span: Span<'arena>,
-    already_included: &mut HashSet<(StoreKey<Module<'arena>>, Symbol<'arena>)>,
-) -> Result<ModuleScopeValue<'arena>, Diagnostic<'arena>> {
+    already_included: &mut HashSet<(ModuleId, Symbol<'arena>)>,
+) -> Result<ModuleScopeValue, Diagnostic<'arena>> {
     assert!(!import.is_empty());
     if !already_included.insert((current_module, import[0].symbol())) {
         return Err(TypecheckingError::CyclicDependency(span).to_error());
@@ -879,7 +885,14 @@ fn resolve_import<'arena>(
     if &*import[0] == "pkg" {
         thing = ModuleScopeValue::Module(cur_mod.package_root);
     } else if &*import[0] == "super" {
-        thing = ModuleScopeValue::Module(cur_mod.parent);
+        let Some(parent) = cur_mod.parent else {
+            return Err(TypecheckingError::ItemNotFound {
+                span: import[0].span(),
+                name: import[0].symbol(),
+            }
+            .to_error());
+        };
+        thing = ModuleScopeValue::Module(parent);
     } else if let Some(value) = cur_mod.scope.get(&import[0].symbol()) {
         thing = *value;
     } else if let Some((span, import)) = cur_mod.imports.get(&import[0].symbol()) {
@@ -916,8 +929,8 @@ fn resolve_import<'arena>(
     }
 }
 
-impl From<ModuleScopeValue<'_>> for ScopeKind {
-    fn from(value: ModuleScopeValue<'_>) -> Self {
+impl From<ModuleScopeValue> for ScopeKind {
+    fn from(value: ModuleScopeValue) -> Self {
         match value {
             ModuleScopeValue::Trait(_) => Self::Trait,
             ModuleScopeValue::Struct(_) => Self::Type,

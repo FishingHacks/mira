@@ -6,9 +6,8 @@ use std::{
 use crate::{
     annotations::AnnotationReceiver,
     error::ParsingError,
-    module::{Function, Module, ModuleContext},
+    module::{FunctionId, Module, ModuleContext, ModuleId},
 };
-use mira_common::store::StoreKey;
 use mira_lexer::{Literal, NumberType, Token, TokenType};
 use mira_spans::{
     Ident, Span,
@@ -214,7 +213,7 @@ pub enum LiteralValue<'ctx> {
     Bool(bool),
     Dynamic(Path<'ctx>),
     AnonymousFunction(FunctionContract<'ctx>, Box<Statement<'ctx>>),
-    BakedAnonymousFunction(StoreKey<Function<'ctx>>),
+    BakedAnonymousFunction(FunctionId),
     Void,
 }
 
@@ -222,7 +221,7 @@ impl Display for LiteralValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LiteralValue::BakedAnonymousFunction(id) => {
-                f.write_fmt(format_args!("(module-fn {id})"))
+                f.write_fmt(format_args!("(module-fn {})", id.to_usize()))
             }
             LiteralValue::Bool(b) => f.write_str(if *b { "true" } else { "false" }),
             LiteralValue::Dynamic(d) => Display::fmt(d, f),
@@ -680,7 +679,7 @@ impl<'ctx> Expression<'ctx> {
     pub fn bake_functions(
         &mut self,
         module: &mut Module<'ctx>,
-        module_key: StoreKey<Module<'ctx>>,
+        module_key: ModuleId,
         context: &ModuleContext<'ctx>,
     ) {
         match self {
@@ -697,10 +696,7 @@ impl<'ctx> Expression<'ctx> {
                             generics: std::mem::take(&mut contract.generics),
                             comment: contract.comment,
                         },
-                        std::mem::replace(
-                            &mut **statements,
-                            Statement::BakedTrait(StoreKey::undefined(), contract.span),
-                        ),
+                        std::mem::replace(&mut **statements, Statement::None),
                         module_key,
                         context,
                     );

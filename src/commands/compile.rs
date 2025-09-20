@@ -146,7 +146,6 @@ pub(crate) fn compile(
     ctx.typecheck_items(&module_ctx, &tc_ctx, typechecking_item)?;
     drop(module_ctx);
     ctx.validate_main_fn(&tc_ctx, main_module)?;
-    ctx.run_dead_code_elimination(&tc_ctx);
     if let Some(ir_writer) = ir_writer {
         ctx.emit_ir(&tc_ctx, ir_writer)?;
     }

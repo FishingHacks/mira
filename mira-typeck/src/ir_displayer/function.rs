@@ -1,5 +1,4 @@
-use crate::{TypedFunction, TypedFunctionContract, default_types, ir::IR};
-use mira_common::store::StoreKey;
+use crate::{TypedFunctionContract, default_types, ir::IR};
 use mira_lexer::token::IdentDisplay;
 
 use super::{expressions::write_implicit_block, formatter::Formatter};
@@ -11,7 +10,7 @@ impl FuncDisplay<'_> {
         &self,
         f: &mut Formatter<'_, '_, '_>,
         is_external: bool,
-        id: StoreKey<TypedFunction<'_>>,
+        id: usize,
     ) -> std::fmt::Result {
         for annotation in self.0.annotations.iter() {
             f.write_value(&annotation)?;

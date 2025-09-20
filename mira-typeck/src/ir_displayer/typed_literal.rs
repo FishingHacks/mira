@@ -20,7 +20,7 @@ impl Tld<'_> {
                     f.write_str(") ")?;
                 }
                 f.write_str("fn_")?;
-                f.write_value(id)
+                f.write_value(&id.to_usize())
             }
             TypedLiteral::ExternalFunction(id) => {
                 if let Some(name) = &f.ctx.external_functions[*id].0.name {
@@ -29,9 +29,9 @@ impl Tld<'_> {
                     f.write_str(") ")?;
                 }
                 f.write_str("ext_fn_")?;
-                f.write_value(id)
+                f.write_value(&id.to_usize())
             }
-            TypedLiteral::Static(id) => f.write_fmt(format_args!("static_{id}")),
+            TypedLiteral::Static(id) => f.write_fmt(format_args!("static_{}", id.to_usize())),
             TypedLiteral::String(sym) => f.write_debug(sym),
             TypedLiteral::Array(_, elements) => {
                 f.write_char('[')?;
@@ -54,12 +54,12 @@ impl Tld<'_> {
                 f.write_str("@name(")?;
                 f.write_value(&IdentDisplay(f.ctx.structs[*id].name.symbol()))?;
                 f.write_str(") struct_")?;
-                f.write_value(id)?;
+                f.write_value(&id.to_usize())?;
                 f.write_str(" {")?;
                 f.push_indent();
                 for (idx, val) in children.iter().enumerate() {
                     f.write_char('\n')?;
-                    if let Some(field_name) = f.ctx.structs.get(id).map(|v| &v.elements[idx].0) {
+                    if let Some(field_name) = f.ctx.structs.get(*id).map(|v| &v.elements[idx].0) {
                         f.write_value(field_name)?;
                         f.write_str(": ")?;
                     }

@@ -4,18 +4,18 @@ use crate::{
     TypedExternalFunction, TypedFunction, TypedModule, TypedStatic, TypedStruct, TypedTrait,
     lang_items::LangItems,
 };
-use mira_common::store::{AssociatedStore, Store};
-use mira_parser::module::Module;
+use mira_common::index::IndexMap;
+use mira_parser::module::{ExternalFunctionId, FunctionId, ModuleId, StaticId, StructId, TraitId};
 
 pub const INDENT_STR: &str = "    ";
 
 pub struct ReadOnlyTypecheckingContext<'a, 'arena> {
-    pub modules: &'a AssociatedStore<TypedModule<'arena>, Module<'arena>>,
-    pub functions: &'a Store<TypedFunction<'arena>>,
-    pub external_functions: &'a Store<TypedExternalFunction<'arena>>,
-    pub statics: &'a Store<TypedStatic<'arena>>,
-    pub structs: &'a Store<TypedStruct<'arena>>,
-    pub traits: &'a Store<TypedTrait<'arena>>,
+    pub modules: &'a IndexMap<ModuleId, TypedModule<'arena>>,
+    pub functions: &'a IndexMap<FunctionId, TypedFunction<'arena>>,
+    pub external_functions: &'a IndexMap<ExternalFunctionId, TypedExternalFunction<'arena>>,
+    pub statics: &'a IndexMap<StaticId, TypedStatic<'arena>>,
+    pub structs: &'a IndexMap<StructId, TypedStruct<'arena>>,
+    pub traits: &'a IndexMap<TraitId, TypedTrait<'arena>>,
     pub lang_items: &'a LangItems<'arena>,
 }
 

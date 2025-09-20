@@ -1,19 +1,21 @@
 use std::{collections::HashSet, ops::Deref};
 
 use crate::{
-    TypedFunctionContract, TypedModule,
+    CommonFunction, TypedFunctionContract,
     context::TypeCtx,
     ir::{BlockId, ScopedIR},
     types::EMPTY_TYLIST,
 };
-use mira_common::store::StoreKey;
 use mira_context::ErrorEmitted;
 use mira_errors::Diagnostic;
 use mira_lexer::NumberType;
 use mira_parser::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, TypeRef, UnaryOp,
     annotations::Annotations,
-    module::{ModuleContext, ModuleScopeValue},
+    module::{
+        ExternalFunctionId, FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StaticId,
+        TraitId,
+    },
     std_annotations::{
         ext_vararg::ExternVarArg, intrinsic::IntrinsicAnnotation,
         llvm_intrinsic::LLVMIntrinsicAnnotation,
@@ -22,8 +24,7 @@ use mira_parser::{
 use mira_spans::{ArenaList, Ident, Span};
 
 use super::{
-    TypecheckingError, TypeckCtx, TypedExternalFunction, TypedFunction, TypedStatic, TypedTrait,
-    default_types,
+    TypecheckingError, TypeckCtx, default_types,
     error::TypecheckingErrorEmitterExt,
     ir::{OffsetValue, TypedExpression, TypedLiteral},
     types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
@@ -32,14 +33,14 @@ use super::{
 pub fn typecheck_static<'arena>(
     ctx: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
-    static_id: StoreKey<TypedStatic<'arena>>,
+    static_id: StaticId,
 ) -> Result<(), ErrorEmitted> {
     let tc_module_reader = ctx.statics.read();
     let ty = tc_module_reader[static_id].ty;
     let span = tc_module_reader[static_id].span;
     let expr = {
         std::mem::replace(
-            &mut module_context.statics.write()[static_id.cast()].value,
+            &mut module_context.statics.write()[static_id].value,
             LiteralValue::Void,
         )
     };
@@ -88,9 +89,9 @@ pub fn typecheck_static<'arena>(
 pub fn typecheck_external_function<'arena>(
     ctx: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
-    function_id: StoreKey<TypedExternalFunction<'arena>>,
+    function_id: ExternalFunctionId,
 ) -> Result<(), ErrorEmitted> {
-    inner_typecheck_function(ctx, module_context, function_id.cast(), true)
+    inner_typecheck_function(ctx, module_context, CommonFunction::External(function_id))
 }
 
 #[derive(Clone, Copy)]
@@ -102,7 +103,7 @@ struct FnContext<'ctx, 'tcx> {
 impl<'ctx> FnContext<'ctx, '_> {
     fn resolve_type(
         &self,
-        module_id: StoreKey<TypedModule<'ctx>>,
+        module_id: ModuleId,
         ty: &TypeRef<'ctx>,
     ) -> Result<Ty<'ctx>, Diagnostic<'ctx>> {
         self.tcx
@@ -122,9 +123,9 @@ impl<'ctx, 'tcx> Deref for FnContext<'ctx, 'tcx> {
 pub fn typecheck_function<'arena>(
     ctx: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
-    function_id: StoreKey<TypedFunction<'arena>>,
+    function_id: FunctionId,
 ) -> Result<(), ErrorEmitted> {
-    inner_typecheck_function(ctx, module_context, function_id, false)
+    inner_typecheck_function(ctx, module_context, CommonFunction::Normal(function_id))
 }
 
 fn is_invalid_extern_return_ty(ty: &TyKind<'_>) -> bool {
@@ -144,12 +145,10 @@ fn is_invalid_extern_return_ty(ty: &TyKind<'_>) -> bool {
     true
 }
 
-// NOTE: function_id has to be StoreKey<TypedExternalFunction> if is_external is set to true.
 fn inner_typecheck_function<'arena>(
     tc_ctx: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
-    function_id: StoreKey<TypedFunction<'arena>>,
-    is_external: bool,
+    function: CommonFunction,
 ) -> Result<(), ErrorEmitted> {
     let ext_fn_reader = module_context.external_functions.read();
     let fn_reader = module_context.functions.read();
@@ -157,33 +156,34 @@ fn inner_typecheck_function<'arena>(
     let typ_ext_fn_reader = tc_ctx.external_functions.read();
     let typ_fn_reader = tc_ctx.functions.read();
 
-    let statement = if is_external {
-        let Some(statement) = &ext_fn_reader[function_id.cast()].1 else {
-            return Ok(());
-        };
-        statement
-    } else {
-        &fn_reader[function_id.cast()].1
-    };
-
-    let contract = if is_external {
-        &typ_ext_fn_reader[function_id.cast()].0
-    } else {
-        let contract = &typ_fn_reader[function_id].0;
-        if contract.annotations.has_annotation::<IntrinsicAnnotation>()
-            || contract
-                .annotations
-                .has_annotation::<LLVMIntrinsicAnnotation>()
-        {
-            let span = contract.span;
-            drop(typ_fn_reader);
-            drop(typ_ext_fn_reader);
-            tc_ctx.functions.write()[function_id]
-                .1
-                .append(TypedExpression::Unreachable(span));
-            return Ok(());
+    let statement = match function {
+        CommonFunction::Normal(id) => &fn_reader[id].1,
+        CommonFunction::External(id) => {
+            let Some(statement) = &ext_fn_reader[id].1 else {
+                return Ok(());
+            };
+            statement
         }
-        contract
+    };
+    let contract = match function {
+        CommonFunction::External(id) => &typ_ext_fn_reader[id].0,
+        CommonFunction::Normal(id) => {
+            let contract = &typ_fn_reader[id].0;
+            if contract.annotations.has_annotation::<IntrinsicAnnotation>()
+                || contract
+                    .annotations
+                    .has_annotation::<LLVMIntrinsicAnnotation>()
+            {
+                let span = contract.span;
+                drop(typ_fn_reader);
+                drop(typ_ext_fn_reader);
+                tc_ctx.functions.write()[id]
+                    .1
+                    .append(TypedExpression::Unreachable(span));
+                return Ok(());
+            }
+            contract
+        }
     };
 
     let ctx = FnContext {
@@ -196,7 +196,7 @@ fn inner_typecheck_function<'arena>(
         ctx.ctx
             .emit_unsized_return_type(contract.span, contract.return_type);
     }
-    if is_external && is_invalid_extern_return_ty(&contract.return_type) {
+    if function.is_external() && is_invalid_extern_return_ty(&contract.return_type) {
         ctx.emit_invalid_extern_return_type(contract.span);
     }
     for (_, arg) in contract.arguments.iter().filter(|v| !v.1.is_sized()) {
@@ -227,18 +227,19 @@ fn inner_typecheck_function<'arena>(
     drop(typ_fn_reader);
     drop(typ_ext_fn_reader);
 
-    if is_external {
-        let mut ir = Some(ir.to_ir());
-        std::mem::swap(
-            &mut ir,
-            &mut tc_ctx.external_functions.write()[function_id.cast()].1,
-        );
-        assert!(ir.is_none())
-    } else {
-        let mut ir = ir.to_ir();
-        std::mem::swap(&mut ir, &mut tc_ctx.functions.write()[function_id].1);
-        assert!(ir.is_empty());
+    match function {
+        CommonFunction::External(id) => {
+            let mut ir = Some(ir.to_ir());
+            std::mem::swap(&mut ir, &mut tc_ctx.external_functions.write()[id].1);
+            assert!(ir.is_none())
+        }
+        CommonFunction::Normal(id) => {
+            let mut ir = ir.to_ir();
+            std::mem::swap(&mut ir, &mut tc_ctx.functions.write()[id].1);
+            assert!(ir.is_empty());
+        }
     }
+
     Ok(())
 }
 
@@ -458,6 +459,7 @@ fn typecheck_statement<'ctx>(
         | Statement::BakedExternalFunction(..) => {
             unreachable!()
         }
+        Statement::None => unreachable!("none statement"),
     }
 }
 
@@ -480,7 +482,7 @@ macro_rules! tc_res {
 fn signed_number_to_literal<'arena>(
     v: i64,
     number_type: NumberType,
-    expected: TypeSuggestion<'arena>,
+    expected: TypeSuggestion,
 ) -> (Ty<'arena>, TypedLiteral<'arena>) {
     match number_type {
         NumberType::I8 => (default_types::i8, TypedLiteral::I8(v as i8)),
@@ -507,7 +509,7 @@ fn signed_number_to_literal<'arena>(
 fn unsigned_number_to_literal<'arena>(
     v: u64,
     number_type: NumberType,
-    expected: TypeSuggestion<'arena>,
+    expected: TypeSuggestion,
 ) -> (Ty<'arena>, TypedLiteral<'arena>) {
     match number_type {
         NumberType::U8 => (default_types::u8, TypedLiteral::U8(v as u8)),
@@ -537,7 +539,7 @@ fn unsigned_number_to_literal<'arena>(
 fn float_number_to_literal<'arena>(
     v: f64,
     number_type: NumberType,
-    expected: TypeSuggestion<'arena>,
+    expected: TypeSuggestion,
 ) -> (Ty<'arena>, TypedLiteral<'arena>) {
     match number_type {
         NumberType::F32 => (default_types::f32, TypedLiteral::F32(v as f32)),
@@ -556,7 +558,7 @@ fn typecheck_expression<'ctx>(
     ctx: FnContext<'ctx, '_>,
     ir: &mut ScopedIR<'ctx>,
     expression: &Expression<'ctx>,
-    type_suggestion: TypeSuggestion<'ctx>,
+    type_suggestion: TypeSuggestion,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     match expression {
         &Expression::Literal(ref literal_value, span) => match literal_value {
@@ -701,7 +703,7 @@ fn typecheck_expression<'ctx>(
                 let ModuleScopeValue::Struct(struct_id) = value else {
                     return Err(TypecheckingError::CannotFindValue(span, path.clone()).to_error());
                 };
-                let structure = &ctx.structs.read()[struct_id.cast()];
+                let structure = &ctx.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
@@ -736,10 +738,10 @@ fn typecheck_expression<'ctx>(
                 }
                 Ok((
                     ctx.intern_ty(TyKind::Struct {
-                        struct_id: struct_id.cast(),
+                        struct_id,
                         name: structure.name,
                     }),
-                    TypedLiteral::Struct(struct_id.cast(), elements.into_boxed_slice()),
+                    TypedLiteral::Struct(struct_id, elements.into_boxed_slice()),
                 ))
             }
             LiteralValue::Float(v, number_type) => {
@@ -779,7 +781,7 @@ fn typecheck_expression<'ctx>(
                     })?;
                 match value {
                     ModuleScopeValue::Function(id) => {
-                        let reader = &ctx.functions.read()[id.cast()];
+                        let reader = &ctx.functions.read()[id];
                         let return_type = reader.0.return_type;
                         let arguments = reader.0.arguments.iter().map(|v| v.1).collect::<Vec<_>>();
                         if reader.0.generics.len() != generics.len() {
@@ -825,12 +827,12 @@ fn typecheck_expression<'ctx>(
                             let sym = ctx.intern_str(llvm_intrinsic);
                             TypedLiteral::LLVMIntrinsic(sym)
                         } else {
-                            TypedLiteral::Function(id.cast(), ctx.intern_tylist(&generic_types))
+                            TypedLiteral::Function(id, ctx.intern_tylist(&generic_types))
                         };
                         Ok((ctx.intern_ty(TyKind::Function(function_ty)), literal))
                     }
                     ModuleScopeValue::ExternalFunction(id) => {
-                        let reader = &ctx.external_functions.read()[id.cast()];
+                        let reader = &ctx.external_functions.read()[id];
                         let function_typ = FunctionType {
                             return_type: reader.0.return_type,
                             arguments: ctx.intern_tylist(
@@ -839,23 +841,20 @@ fn typecheck_expression<'ctx>(
                         };
                         Ok((
                             ctx.intern_ty(TyKind::Function(function_typ)),
-                            TypedLiteral::ExternalFunction(id.cast()),
+                            TypedLiteral::ExternalFunction(id),
                         ))
                     }
                     ModuleScopeValue::Static(id) => {
                         if !generics.is_empty() {
                             return Err(TypecheckingError::UnexpectedGenerics { span }.to_error());
                         }
-                        Ok((
-                            ctx.statics.read()[id.cast()].ty,
-                            TypedLiteral::Static(id.cast()),
-                        ))
+                        Ok((ctx.statics.read()[id].ty, TypedLiteral::Static(id)))
                     }
                     _ => Err(TypecheckingError::CannotFindValue(span, path.clone()).to_error()),
                 }
             }
-            LiteralValue::BakedAnonymousFunction(fn_id) => {
-                let func = &ctx.functions.read()[fn_id.cast()].0;
+            &LiteralValue::BakedAnonymousFunction(fn_id) => {
+                let func = &ctx.functions.read()[fn_id].0;
                 let fn_typ = FunctionType {
                     return_type: func.return_type,
                     arguments: ctx
@@ -863,7 +862,7 @@ fn typecheck_expression<'ctx>(
                 };
                 Ok((
                     ctx.intern_ty(TyKind::Function(fn_typ)),
-                    TypedLiteral::Function(fn_id.cast(), EMPTY_TYLIST),
+                    TypedLiteral::Function(fn_id, EMPTY_TYLIST),
                 ))
             }
             LiteralValue::AnonymousFunction(..) => unreachable!("unbaked function"),
@@ -1300,7 +1299,6 @@ fn typecheck_expression<'ctx>(
                         .to_error(),
                 );
             };
-            let trait_id = trait_id.cast::<TypedTrait<'ctx>>();
             let trait_value = &ctx.traits.read()[trait_id];
 
             if !ty.implements(&[trait_id], &ctx) {
@@ -1544,7 +1542,7 @@ fn typecheck_dyn_membercall<'ctx>(
     args: &[Expression<'ctx>],
     lhs: TypedLiteral<'ctx>,
     lhs_span: Span<'ctx>,
-    trait_refs: ArenaList<'ctx, (StoreKey<TypedTrait<'ctx>>, Ident<'ctx>)>,
+    trait_refs: ArenaList<'ctx, (TraitId, Ident<'ctx>)>,
     num_references: u8,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     let trait_reader = ctx.traits.read();
@@ -1701,7 +1699,7 @@ fn typecheck_membercall<'ctx>(
         TyKind::PrimitiveBool => langitem_reader.bool,
     };
     drop(langitem_reader);
-    let structure = struct_id.map(|v| &struct_reader[v.cast()]);
+    let structure = struct_id.map(|v| &struct_reader[v]);
     let function_id = structure
         .and_then(|v| v.global_impl.get(ident))
         .copied()
@@ -1710,7 +1708,7 @@ fn typecheck_membercall<'ctx>(
                 .trait_impl
                 .iter()
                 .filter_map(|v| {
-                    v.1.iter().find(|v| {
+                    v.iter().find(|v| {
                         if let Some(name) = &function_reader[**v].0.name {
                             name == ident
                         } else {
@@ -1802,7 +1800,7 @@ fn typecheck_take_ref<'ctx>(
     ctx: FnContext<'ctx, '_>,
     ir: &mut ScopedIR<'ctx>,
     expression: &Expression<'ctx>,
-    type_suggestion: TypeSuggestion<'ctx>,
+    type_suggestion: TypeSuggestion,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     match expression {
         //&*_1 => _1
@@ -1827,7 +1825,7 @@ fn ref_resolve_indexing<'ctx>(
     ctx: FnContext<'ctx, '_>,
     ir: &mut ScopedIR<'ctx>,
     expression: &Expression<'ctx>,
-    type_suggestion: TypeSuggestion<'ctx>,
+    type_suggestion: TypeSuggestion,
     increase_ref: bool,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     match expression {
@@ -2074,7 +2072,7 @@ fn copy_resolve_indexing<'ctx>(
     ctx: FnContext<'ctx, '_>,
     ir: &mut ScopedIR<'ctx>,
     expression: &Expression<'ctx>,
-    type_suggestion: TypeSuggestion<'ctx>,
+    type_suggestion: TypeSuggestion,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     match expression {
         Expression::Indexing {

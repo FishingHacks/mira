@@ -1,5 +1,5 @@
 use crate::TypedStatic;
-use mira_common::store::StoreKey;
+use mira_parser::module::StaticId;
 
 use super::Formatter;
 use super::typed_literal::Tld;
@@ -7,14 +7,10 @@ use super::typed_literal::Tld;
 pub(super) struct StaticDisplay<'a>(pub &'a TypedStatic<'a>);
 
 impl StaticDisplay<'_> {
-    pub(super) fn fmt(
-        &self,
-        f: &mut Formatter<'_, '_, '_>,
-        id: StoreKey<TypedStatic<'_>>,
-    ) -> std::fmt::Result {
+    pub(super) fn fmt(&self, f: &mut Formatter<'_, '_, '_>, id: StaticId) -> std::fmt::Result {
         f.write_value(&self.0.annotations)?;
         f.write_str("static static_")?;
-        f.write_value(&id)?;
+        f.write_value(&id.to_usize())?;
         f.write_str(": ")?;
         f.write_value(&self.0.ty)?;
         f.write_str(" = ")?;

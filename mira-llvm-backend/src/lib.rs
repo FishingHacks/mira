@@ -27,19 +27,21 @@ use inkwell::{
     values::{BasicValueEnum, FunctionValue, GlobalValue},
 };
 
-use mira_common::store::{AssociatedStore, StoreKey};
+use mira_common::index::IndexMap;
 use mira_context::ErrorEmitted;
 use mira_errors::FatalError;
-use mira_parser::std_annotations::{
-    alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
-    intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation, noinline::Noinline,
-    section::SectionAnnotation,
+use mira_parser::{
+    module::{ExternalFunctionId, FunctionId, StaticId, StructId, TraitId},
+    std_annotations::{
+        alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
+        intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation,
+        noinline::Noinline, section::SectionAnnotation,
+    },
 };
 use mira_spans::interner::Symbol;
 use mira_target::{NATIVE_TARGET, Target};
 use mira_typeck::{
-    Substitute, SubstitutionCtx, Ty, TyKind, TyList, TypeckCtx, TypedExternalFunction,
-    TypedFunction, TypedStatic, TypedStruct, TypedTrait, default_types, ir::TypedLiteral,
+    Substitute, SubstitutionCtx, Ty, TyKind, TyList, TypeckCtx, default_types, ir::TypedLiteral,
     queries::Providers,
 };
 
@@ -55,7 +57,7 @@ pub mod mangling;
 fn llvm_basic_ty<'ctx>(
     ty: &TyKind<'_>,
     default_types: &DefaultTypes<'ctx>,
-    structs: &StructsStore<'ctx, '_>,
+    structs: &StructsStore<'ctx>,
     ctx: &'ctx Context,
 ) -> BasicTypeEnum<'ctx> {
     match ty {
@@ -339,11 +341,9 @@ struct DefaultTypes<'ctx> {
     pub empty_struct: StructType<'ctx>,
 }
 
-pub(crate) type ExternalFunctionsStore<'ctx, 'arena> =
-    AssociatedStore<FunctionValue<'ctx>, TypedExternalFunction<'arena>>;
-pub(crate) type StructsStore<'ctx, 'arena> = AssociatedStore<StructType<'ctx>, TypedStruct<'arena>>;
-pub(crate) type StaticsStore<'ctx, 'arena> =
-    AssociatedStore<GlobalValue<'ctx>, TypedStatic<'arena>>;
+pub(crate) type ExternalFunctionsStore<'ctx> = IndexMap<ExternalFunctionId, FunctionValue<'ctx>>;
+pub(crate) type StructsStore<'ctx> = IndexMap<StructId, StructType<'ctx>>;
+pub(crate) type StaticsStore<'ctx> = IndexMap<StaticId, GlobalValue<'ctx>>;
 
 pub struct CodegenContextBuilder(Context);
 
@@ -369,23 +369,23 @@ impl Default for CodegenContextBuilder {
     }
 }
 
-type VTableKey<'arena> = (Ty<'arena>, Box<[StoreKey<TypedTrait<'arena>>]>);
+type VTableKey<'arena> = (Ty<'arena>, Box<[TraitId]>);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FnInstance<'ctx> {
-    pub fn_id: StoreKey<TypedFunction<'ctx>>,
+    pub fn_id: FunctionId,
     pub generics: TyList<'ctx>,
 }
 
 impl<'ctx> FnInstance<'ctx> {
-    pub fn new_mono(fn_id: StoreKey<TypedFunction<'ctx>>) -> Self {
+    pub fn new_mono(fn_id: FunctionId) -> Self {
         Self {
             fn_id,
             generics: TyList::EMPTY,
         }
     }
 
-    pub fn new_poly(fn_id: StoreKey<TypedFunction<'ctx>>, generics: TyList<'ctx>) -> Self {
+    pub fn new_poly(fn_id: FunctionId, generics: TyList<'ctx>) -> Self {
         Self { fn_id, generics }
     }
 }
@@ -404,9 +404,9 @@ pub struct CodegenContext<'ctx, 'arena, 'a> {
     pub module: Module<'ctx>,
     pub machine: TargetMachine,
     pub triple: TargetTriple,
-    external_functions: ExternalFunctionsStore<'ctx, 'arena>,
-    structs: StructsStore<'ctx, 'arena>,
-    statics: StaticsStore<'ctx, 'arena>,
+    external_functions: ExternalFunctionsStore<'ctx>,
+    structs: StructsStore<'ctx>,
+    statics: StaticsStore<'ctx>,
     debug_ctx: DebugContext<'ctx, 'arena>,
     config: CodegenConfig<'ctx>,
 
@@ -574,9 +574,9 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             module,
             builder,
             default_types,
-            external_functions: AssociatedStore::new(),
-            structs: AssociatedStore::new(),
-            statics: AssociatedStore::new(),
+            external_functions: IndexMap::new(),
+            structs: IndexMap::new(),
+            statics: IndexMap::new(),
             string_map: RefCell::new(HashMap::new()),
             machine,
             triple,
@@ -589,11 +589,11 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         };
 
         let struct_reader = ctx.structs.read();
-        for k in struct_reader.indices() {
+        for k in struct_reader.keys() {
             me.structs
                 .insert(k, context.opaque_struct_type(&mangle_struct(ctx, k)));
         }
-        for (key, structure) in struct_reader.index_value_iter() {
+        for (key, structure) in struct_reader.entries() {
             let fields = structure
                 .elements
                 .iter()
@@ -620,7 +620,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
 
         // external functions
         let ext_function_reader = ctx.external_functions.read();
-        for (key, (contract, body)) in ext_function_reader.index_value_iter() {
+        for (key, (contract, body)) in ext_function_reader.entries() {
             let param_types = contract
                 .arguments
                 .iter()
@@ -701,8 +701,8 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         drop(struct_reader);
 
         let static_reader = ctx.statics.read();
-        let mut statics = AssociatedStore::new();
-        for (key, static_element) in static_reader.index_value_iter() {
+        let mut statics = IndexMap::new();
+        for (key, static_element) in static_reader.entries() {
             let global = me.module.add_global(
                 llvm_basic_ty(&static_element.ty, &default_types, &me.structs, context),
                 None,
@@ -875,9 +875,9 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         let ty_size = vtable.0.size_and_alignment(ptr_width, &struct_reader).0;
         let mut field_values = vec![self.default_types.isize.const_int(ty_size, false).into()];
 
-        for trait_id in vtable.1.iter() {
+        for &trait_id in vtable.1.iter() {
             match *vtable.0 {
-                TyKind::Struct { struct_id, .. } => {
+                &TyKind::Struct { struct_id, .. } => {
                     for fn_id in struct_reader[struct_id].trait_impl[trait_id]
                         .iter()
                         .copied()
@@ -1007,12 +1007,12 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         mut updater: U,
     ) -> Result<(), ErrorEmitted> {
         let mut emitted = Ok(());
-        let extern_funcs = self.external_functions.indices().collect::<Vec<_>>();
+        let extern_funcs = self.external_functions.keys().collect::<Vec<_>>();
         let key = updater.start_compiling_extern(self, extern_funcs.len() as u64);
         for fn_id in extern_funcs {
-            let key = updater.start_compiling_extern_fn(self, fn_id.cast());
+            let key = updater.start_compiling_extern_fn(self, fn_id);
 
-            let res = self.internal_compile_extern(fn_id.cast());
+            let res = self.internal_compile_extern(fn_id);
             if res.is_err() {
                 emitted = res;
             }
@@ -1131,13 +1131,10 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         function_ctx.ctx.tc_ctx.errors_happened_res(tracker)
     }
 
-    fn internal_compile_extern(
-        &mut self,
-        fn_id: StoreKey<TypedExternalFunction<'arena>>,
-    ) -> Result<(), ErrorEmitted> {
+    fn internal_compile_extern(&mut self, fn_id: ExternalFunctionId) -> Result<(), ErrorEmitted> {
         let ext_fn_reader = self.tc_ctx.external_functions.read();
         // if there's no body to an external function, don't try to generate one.
-        if ext_fn_reader[fn_id.cast()].1.is_none() {
+        if ext_fn_reader[fn_id].1.is_none() {
             return Ok(());
         }
 
@@ -1146,9 +1143,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         };
         let func = self.external_functions[fn_id];
 
-        let body_basic_block = self
-            .context
-            .append_basic_block(func, &format!("entry_{fn_id}"));
+        let body_basic_block = self.context.append_basic_block(func, "entry");
         let void_arg = self.default_types.empty_struct.const_zero().into();
 
         self.builder.position_at_end(body_basic_block);
@@ -1241,7 +1236,7 @@ pub trait CompileStatusUpdate<'ctx, 'arena, 'tc_ctx, KeyExtern, KeyExternFn, Key
     fn start_compiling_extern_fn(
         &mut self,
         ctx: &CodegenContext<'ctx, 'arena, 'tc_ctx>,
-        id: StoreKey<TypedExternalFunction<'arena>>,
+        id: ExternalFunctionId,
     ) -> KeyExternFn;
     fn finish_compiling_extern_fn(
         &mut self,
@@ -1266,11 +1261,7 @@ pub trait CompileStatusUpdate<'ctx, 'arena, 'tc_ctx, KeyExtern, KeyExternFn, Key
 impl CompileStatusUpdate<'_, '_, '_, (), (), (), ()> for () {
     fn start_compiling_extern(&mut self, _: &CodegenContext<'_, '_, '_>, _: u64) {}
     fn start_compiling_normal(&mut self, _: &CodegenContext<'_, '_, '_>) {}
-    fn start_compiling_extern_fn(
-        &mut self,
-        _: &CodegenContext<'_, '_, '_>,
-        _: StoreKey<TypedExternalFunction<'_>>,
-    ) {
+    fn start_compiling_extern_fn(&mut self, _: &CodegenContext<'_, '_, '_>, _: ExternalFunctionId) {
     }
     fn start_compiling_normal_fn(&mut self, _: &CodegenContext<'_, '_, '_>, _: FnInstance<'_>) {}
 }

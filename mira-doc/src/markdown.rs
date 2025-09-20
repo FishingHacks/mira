@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use mira_common::store::StoreKey;
 use mira_context::DocComment;
 use mira_errors::Diagnostic;
+use mira_parser::module::ModuleId;
 use mira_spans::{Ident, Span};
-use mira_typeck::TypedModule;
 use pulldown_cmark::{BrokenLink, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 
 use crate::html::{HTMLEscapeExt, HTMLGenerateContext, StringExt};
@@ -17,11 +16,11 @@ const OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_SMART_PUNCTUATION)
     .union(Options::ENABLE_GFM);
 
-impl<'ctx> HTMLGenerateContext<'ctx> {
+impl HTMLGenerateContext<'_> {
     fn resolve_ref(
         &self,
         mut item: &str,
-        module: StoreKey<TypedModule<'ctx>>,
+        module: ModuleId,
         current_path: &Path,
     ) -> Option<CowStr<'static>> {
         if let Some(v) = crate::default_ty_links::primitive_link_from_str(item) {
@@ -58,7 +57,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
 
     fn resolve_broken_link<'a>(
         &self,
-        module: StoreKey<TypedModule<'ctx>>,
+        module: ModuleId,
         link: BrokenLink<'a>,
         current_path: &Path,
     ) -> Option<(CowStr<'a>, CowStr<'a>)> {
@@ -70,7 +69,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         &self,
         markdown: &str,
         output: &mut String,
-        module: StoreKey<TypedModule<'ctx>>,
+        module: ModuleId,
         current_path: &Path,
     ) {
         if markdown.is_empty() {
@@ -89,7 +88,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         &self,
         comment: DocComment,
         output: &mut String,
-        module: StoreKey<TypedModule<'ctx>>,
+        module: ModuleId,
         current_path: &Path,
     ) {
         self.tc_ctx.ctx.with_doc_comment(comment, |v| {
@@ -106,7 +105,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         &self,
         comment: DocComment,
         output: &mut String,
-        module: StoreKey<TypedModule<'ctx>>,
+        module: ModuleId,
         current_path: &Path,
     ) {
         self.tc_ctx.ctx.with_doc_comment(comment, |v| {

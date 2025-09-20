@@ -1,13 +1,13 @@
 use mira_errors::Diagnostic;
 use mira_lexer::token::IdentDisplay;
+use mira_parser::module::{ExternalFunctionId, FunctionId, StaticId, StructId, TraitId};
 use std::fmt::{Debug, Display};
 
 use crate::context::TypeCtx;
 use crate::{
-    FunctionList, Ty, TyKind, TypeckCtx, TypedExternalFunction, TypedFunction,
-    TypedFunctionContract, TypedStatic, TypedStruct, TypedTrait, default_types,
+    FunctionList, Ty, TyKind, TypeckCtx, TypedFunctionContract, TypedStruct, TypedTrait,
+    default_types,
 };
-use mira_common::store::StoreKey;
 use mira_macros::ErrorData;
 use mira_spans::{Span, interner::Symbol};
 
@@ -17,8 +17,8 @@ struct LangItemTrait<'arena> {
 struct LangItemStruct<'arena> {
     funcs: Vec<(Symbol<'arena>, LangItemFunction<'arena>)>,
     fields: Vec<(Symbol<'arena>, Ty<'arena>)>,
-    traits: Vec<StoreKey<TypedTrait<'arena>>>,
-    generics: Vec<(bool, Vec<StoreKey<TypedTrait<'arena>>>)>,
+    traits: Vec<TraitId>,
+    generics: Vec<(bool, Vec<TraitId>)>,
 }
 
 struct LangItemFunction<'arena> {
@@ -53,7 +53,7 @@ macro_rules! lang_item_def {
             /// Pushes a struct as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_struct(&mut self, id: StoreKey<TypedStruct<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            pub fn push_struct(&mut self, id: StructId, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(span, stringify!($ty)).to_error()),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_struct $ty, self, $lang_item, id, span),)*
@@ -65,7 +65,7 @@ macro_rules! lang_item_def {
             /// Pushes a trait as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_trait(&mut self, id: StoreKey<TypedTrait<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            pub fn push_trait(&mut self, id: TraitId, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(span, stringify!($ty)).to_error()),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_trait $ty, self, $lang_item, id, span),)*
@@ -77,7 +77,7 @@ macro_rules! lang_item_def {
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
             #[allow(unreachable_code)]
-            pub fn push_static(&mut self, id: StoreKey<TypedStatic<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            pub fn push_static(&mut self, id: StaticId, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(span, stringify!($ty)).to_error()),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_static $ty, self, $lang_item, id, span),)*
@@ -87,7 +87,7 @@ macro_rules! lang_item_def {
             }
 
             #[allow(unreachable_code)]
-            fn internal_push_fn(&mut self, _: FunctionLangItem<'arena>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            fn internal_push_fn(&mut self, _: FunctionLangItem, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 match lang_item {
                     $(stringify!($lang_item) if self.$lang_item.is_some() => return Err(LangItemAssignmentError::Redefinition(span, stringify!($ty)).to_error()),)*
                     $(stringify!($lang_item) => lang_item_def!(expect_function $ty, self, $lang_item, id, span),)*
@@ -98,23 +98,23 @@ macro_rules! lang_item_def {
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_external_function(&mut self, id: StoreKey<TypedExternalFunction<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            pub fn push_external_function(&mut self, id: ExternalFunctionId, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 self.internal_push_fn(FunctionLangItem::External(id), lang_item, span)
             }
 
             /// Pushes a static as a lang item. returns false if it was not a compiler-internal lang_item
             /// and returns an error if it expected the lang_item to be of a different type.
-            pub fn push_function(&mut self, id: StoreKey<TypedFunction<'arena>>, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
+            pub fn push_function(&mut self, id: FunctionId, lang_item: &str, span: Span<'arena>) -> Result<bool, Diagnostic<'arena>> {
                 self.internal_push_fn(FunctionLangItem::Internal(id), lang_item, span)
             }
 
         }
     };
 
-    (underlying_typ Trait) => { StoreKey<TypedTrait<'arena>> };
-    (underlying_typ Struct) => { StoreKey<TypedStruct<'arena>> };
+    (underlying_typ Trait) => { TraitId };
+    (underlying_typ Struct) => { StructId };
     (underlying_typ Function) => { FunctionLangItem<'arena> };
-    (underlying_typ Static) => { StoreKey<TypedStatic<'arena>> };
+    (underlying_typ Static) => { StaticId };
 
     (expect_struct Struct, $self: ident, $key: ident, $id: ident, $span: ident) => { $self.$key = Some($id) };
     (expect_struct $expected_ty: ident, $self: ident, $key: ident, $id: ident, $span: ident) => { return Err(LangItemAssignmentError::InvalidLangItemError { lang_item: stringify!($key), span: $span, got: LangItemType::Struct, expected: LangItemType::$expected_ty }.to_error()) };
@@ -132,9 +132,9 @@ macro_rules! lang_item_def {
 #[derive(Debug, Clone, Copy)]
 // TODO: remove after adding a function langitem
 #[allow(dead_code)]
-enum FunctionLangItem<'arena> {
-    External(StoreKey<TypedExternalFunction<'arena>>),
-    Internal(StoreKey<TypedFunction<'arena>>),
+enum FunctionLangItem {
+    External(ExternalFunctionId),
+    Internal(FunctionId),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -509,7 +509,7 @@ impl<'arena> LangItems<'arena> {
         }
     }
 
-    fn allocator<R, F: FnMut(&[StoreKey<TypedTrait<'arena>>]) -> R>(&self, mut func: F) -> R {
+    fn allocator<R, F: FnMut(&[TraitId]) -> R>(&self, mut func: F) -> R {
         // let allocator: dyn Allocator;
         // even if there's no allocator trait, throw an error if lang item does not exist.
         if let Some(trait_id) = self.allocator_trait {
@@ -695,7 +695,7 @@ fn does_struct_match<'arena>(
     }
 
     for trait_id in structure_a.traits.iter().copied() {
-        if !structure_b.trait_impl.contains_key(&trait_id) {
+        if !structure_b.trait_impl.contains(trait_id) {
             context
                 .ctx
                 .emit_struct_missing_trait(lang_item, trait_reader[trait_id].name.symbol());
@@ -747,7 +747,7 @@ fn does_struct_match<'arena>(
 }
 
 fn does_static_match<'arena>(
-    traits: &[StoreKey<TypedTrait<'arena>>],
+    traits: &[TraitId],
     ty: Ty<'arena>,
     lang_item: &'static str,
     context: &TypeckCtx<'arena>,
@@ -769,10 +769,10 @@ fn does_static_match<'arena>(
         TyKind::Struct { struct_id, .. } => {
             let struct_traits = &context.structs.read()[*struct_id].trait_impl;
             let tracker = context.ctx.track_errors();
-            for trait_id in traits {
-                if !struct_traits.contains_key(trait_id) {
+            for &trait_id in traits {
+                if !struct_traits.contains(trait_id) {
                     context.ctx.emit_static_is_missing_trait(
-                        trait_reader[*trait_id].name.symbol(),
+                        trait_reader[trait_id].name.symbol(),
                         lang_item,
                     );
                 }

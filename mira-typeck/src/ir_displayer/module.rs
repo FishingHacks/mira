@@ -1,7 +1,6 @@
 use crate::TypedModule;
-use mira_common::store::StoreKey;
 use mira_lexer::token::IdentDisplay;
-use mira_parser::module::ModuleScopeValue;
+use mira_parser::module::{ModuleId, ModuleScopeValue};
 
 use super::formatter::Formatter;
 
@@ -9,15 +8,11 @@ use super::formatter::Formatter;
 pub(super) struct ModuleDisplay<'a>(pub &'a TypedModule<'a>);
 
 impl ModuleDisplay<'_> {
-    pub(super) fn fmt(
-        &self,
-        f: &mut Formatter<'_, '_, '_>,
-        id: StoreKey<TypedModule<'_>>,
-    ) -> std::fmt::Result {
+    pub(super) fn fmt(&self, f: &mut Formatter<'_, '_, '_>, id: ModuleId) -> std::fmt::Result {
         f.write_str("@root_path(")?;
         f.write_debug(&self.0.file.package_root)?;
         f.write_str(")\nmodule mod_")?;
-        f.write_value(&id)?;
+        f.write_value(&id.to_usize())?;
         f.write_char(' ')?;
         f.write_value(&self.0.file.path.display())?;
         f.write_str(" {")?;
@@ -66,33 +61,33 @@ impl ModuleDisplay<'_> {
 }
 
 fn fmt_module_scope_value(
-    value: &ModuleScopeValue<'_>,
+    value: &ModuleScopeValue,
     f: &mut Formatter<'_, '_, '_>,
 ) -> std::fmt::Result {
     match value {
         ModuleScopeValue::Function(id) => {
             f.write_str("fn_")?;
-            f.write_value(id)
+            f.write_value(&id.to_usize())
         }
         ModuleScopeValue::ExternalFunction(id) => {
             f.write_str("external fn_")?;
-            f.write_value(id)
+            f.write_value(&id.to_usize())
         }
         ModuleScopeValue::Struct(id) => {
             f.write_str("struct_")?;
-            f.write_value(id)
+            f.write_value(&id.to_usize())
         }
         ModuleScopeValue::Static(id) => {
             f.write_str("static_")?;
-            f.write_value(id)
+            f.write_value(&id.to_usize())
         }
         ModuleScopeValue::Module(id) => {
             f.write_str("module_")?;
-            f.write_value(id)
+            f.write_value(&id.to_usize())
         }
         ModuleScopeValue::Trait(id) => {
             f.write_str("trait_")?;
-            f.write_value(id)
+            f.write_value(&id.to_usize())
         }
     }
 }

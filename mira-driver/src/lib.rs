@@ -1,10 +1,13 @@
 use std::{fmt::Arguments, fs::File, io::Write, path::Path, sync::Arc};
 
-use mira_common::store::StoreKey;
 use mira_context::DiagEmitter as DiagEmitMethod;
 use mira_context::ErrorEmitted;
 use mira_context::SharedCtx;
 use mira_errors::{Diagnostic, Diagnostics, FileOpenError, IoWriteError, StdoutWriteError};
+#[cfg(feature = "typeck")]
+use mira_parser::module::FunctionId;
+#[cfg(feature = "typeck")]
+use mira_parser::module::ModuleId;
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 
 pub use libfinder::find_library;
@@ -21,15 +24,13 @@ use mira_context::GlobalCtx;
 #[cfg(feature = "typeck")]
 use mira_spans::Arena;
 #[cfg(feature = "typeck")]
-use mira_typeck::GlobalContext;
-#[cfg(feature = "typeck")]
-use mira_typeck::{TypeCtx, TypeckCtx, TypedFunction, ir_displayer::Formatter};
+use mira_typeck::{GlobalContext, TypeCtx, TypeckCtx, ir_displayer::Formatter};
 
 #[cfg(feature = "macros")]
 use mira_lexer::Token;
 
 #[cfg(feature = "parsing")]
-use mira_parser::module::{Module, ModuleContext};
+use mira_parser::module::ModuleContext;
 
 #[cfg(feature = "codegen")]
 use mira_llvm_backend::{CodegenConfig, CodegenContext, CodegenContextBuilder, CodegenError};
@@ -276,7 +277,7 @@ impl<'ctx> Context<'ctx> {
     pub fn parse_all_files(
         &mut self,
         libtree: &LibraryTree,
-    ) -> EmitResult<(Arc<ModuleContext<'ctx>>, StoreKey<Module<'ctx>>)> {
+    ) -> EmitResult<(Arc<ModuleContext<'ctx>>, ModuleId)> {
         use crate::parsing::parse_all;
 
         let parser_item = self.data.progress_bar.add_item("Parsing".into());
@@ -346,25 +347,27 @@ impl<'ctx> Context<'ctx> {
         typeck_ctx: &Arc<TypeckCtx<'ctx>>,
         typechecking_item: ProgressItemRef,
     ) -> EmitResult<()> {
-        let function_keys = typeck_ctx.functions.read().indices().collect::<Vec<_>>();
+        let function_keys = typeck_ctx.functions.read().keys().collect::<Vec<_>>();
         let ext_function_keys = typeck_ctx
             .external_functions
             .read()
-            .indices()
+            .keys()
             .collect::<Vec<_>>();
-        let static_keys = typeck_ctx.statics.read().indices().collect::<Vec<_>>();
+        let static_keys = typeck_ctx.statics.read().keys().collect::<Vec<_>>();
 
         let tracker = typeck_ctx.track_errors();
 
         for key in function_keys {
             use mira_typeck::typechecking::typecheck_function;
 
-            let item = self
-                .add_progress_item_child(typechecking_item, format!("Typechecking function {key}"));
+            let item = self.add_progress_item_child(
+                typechecking_item,
+                format!("Typechecking function {}", key.to_usize()),
+            );
 
             if typecheck_function(typeck_ctx, module_ctx, key).is_ok() {
                 mira_typeck::ir::passes::run_passes(
-                    &mut typeck_ctx.functions.write()[key.cast()].1,
+                    &mut typeck_ctx.functions.write()[key].1,
                     self.ctx,
                 );
             }
@@ -377,7 +380,7 @@ impl<'ctx> Context<'ctx> {
 
             let item = self.add_progress_item_child(
                 typechecking_item,
-                format!("Typechecking external function {key}"),
+                format!("Typechecking external function {}", key.to_usize()),
             );
 
             if typecheck_external_function(typeck_ctx, module_ctx, key).is_ok()
@@ -392,8 +395,10 @@ impl<'ctx> Context<'ctx> {
         for key in static_keys {
             use mira_typeck::typechecking::typecheck_static;
 
-            let item = self
-                .add_progress_item_child(typechecking_item, format!("Typechecking static {key}"));
+            let item = self.add_progress_item_child(
+                typechecking_item,
+                format!("Typechecking static {}", key.to_usize()),
+            );
 
             _ = typecheck_static(typeck_ctx, module_ctx, key);
 
@@ -409,22 +414,11 @@ impl<'ctx> Context<'ctx> {
     pub fn validate_main_fn(
         &mut self,
         typeck_ctx: &Arc<TypeckCtx<'ctx>>,
-        main_module: StoreKey<Module<'ctx>>,
-    ) -> EmitResult<StoreKey<TypedFunction<'ctx>>> {
+        main_module: ModuleId,
+    ) -> EmitResult<FunctionId> {
         typeck_ctx
             .validate_main_function(main_module)
             .map_err(|v| self.ctx.emit_diag(v.to_error()))
-    }
-
-    #[cfg(feature = "typeck")]
-    pub fn run_dead_code_elimination(&mut self, typeck_ctx: &Arc<TypeckCtx<'ctx>>) {
-        use mira_typeck::optimizations;
-
-        let item = self.add_progress_item("Dead code elimination");
-
-        optimizations::dead_code_elimination::run_dce(typeck_ctx, &[], &[]);
-
-        self.remove_progress_item(item);
     }
 
     #[cfg(feature = "typeck")]
@@ -456,7 +450,7 @@ impl<'ctx> Context<'ctx> {
     pub fn codegen<'cg_ctx, 'tcx>(
         &mut self,
         typeck_ctx: &'tcx TypeckCtx<'ctx>,
-        main_module: StoreKey<Module<'ctx>>,
+        main_module: ModuleId,
         codegen_opts: CodegenConfig<'ctx>,
         builder: &'cg_ctx CodegenContextBuilder,
         codegen_item: ProgressItemRef,
@@ -467,6 +461,7 @@ impl<'ctx> Context<'ctx> {
         use std::fmt::Display;
 
         use mira_lexer::token::{IdentDisplay, StrIdentDisplay};
+        use mira_parser::module::ExternalFunctionId;
 
         let file = typeck_ctx.modules.read()[main_module].file.path.clone();
         let filename = file
@@ -512,13 +507,14 @@ impl<'ctx> Context<'ctx> {
             fn start_compiling_extern_fn(
                 &mut self,
                 ctx: &CodegenContext<'_, '_, '_>,
-                id: StoreKey<mira_typeck::TypedExternalFunction<'_>>,
+                id: ExternalFunctionId,
             ) -> ProgressItemRef {
                 let (contract, _) = &ctx.tc_ctx.external_functions.read()[id];
                 self.1.add_child(
                     self.0,
                     format!(
-                        "External function {id} {}",
+                        "External function {} {}",
+                        id.to_usize(),
                         StrIdentDisplay(
                             contract
                                 .name
@@ -541,7 +537,7 @@ impl<'ctx> Context<'ctx> {
                         self.0,
                         format!(
                             "Function {} {} instantiated with {}",
-                            id.fn_id,
+                            id.fn_id.to_usize(),
                             IdentDisplay(name.symbol()),
                             DisplaySlice(&id.generics),
                         )
@@ -552,7 +548,7 @@ impl<'ctx> Context<'ctx> {
                         self.0,
                         format!(
                             "Function {} instantiated with {}",
-                            id.fn_id,
+                            id.fn_id.to_usize(),
                             DisplaySlice(&id.generics),
                         )
                         .into_boxed_str(),

@@ -1,16 +1,15 @@
 mod plumbing;
-use crate::TypedModule;
 use crate::define_system;
-use mira_common::store::StoreKey;
 use mira_macros::queries;
+use mira_parser::module::ModuleId;
 pub use plumbing::{DefaultCache, QueryCache, QueryKey, SingleCache};
 
 queries! {
     #[manually_allocated(u8)]
-    mangle_module(StoreKey<TypedModule<'arena>>) -> &'arena str;
+    mangle_module(ModuleId) -> &'arena str;
 
     #[manually_allocated(u8)]
-    get_module_path(StoreKey<TypedModule<'arena>>) -> &'arena str;
+    get_module_path(ModuleId) -> &'arena str;
 
     a(()) -> u8;
     b(()) -> u8;
@@ -32,7 +31,7 @@ mod test {
 
     use crate::{GlobalContext, TypeckCtx};
 
-    use mira_common::store::{AssociatedStore, Store};
+    use mira_common::index::{IndexMap, IndexStore};
     use mira_context::DiagEmitter;
     use mira_errors::{AsciiPrinter, Styles};
     use mira_parser::module::ModuleContext;
@@ -56,9 +55,9 @@ error: Cycle detected when a
         );
         let tcx = gcx.ty_ctx();
         let mod_ctx = Arc::new(ModuleContext::new(
-            Store::new(),
+            IndexStore::new(),
             gcx.ctx(),
-            AssociatedStore::new(),
+            IndexMap::new(),
         ));
         let tc_ctx = TypeckCtx::new(tcx, mod_ctx);
         tc_ctx.a(());
@@ -85,9 +84,9 @@ error: Cycle detected when a
         );
         let tcx = gcx.ty_ctx();
         let mod_ctx = Arc::new(ModuleContext::new(
-            Store::new(),
+            IndexStore::new(),
             gcx.ctx(),
-            AssociatedStore::new(),
+            IndexMap::new(),
         ));
         let tc_ctx = TypeckCtx::new(tcx, mod_ctx);
         tc_ctx.a(());
@@ -112,9 +111,9 @@ error: Cycle detected when b
         );
         let tcx = gcx.ty_ctx();
         let mod_ctx = Arc::new(ModuleContext::new(
-            Store::new(),
+            IndexStore::new(),
             gcx.ctx(),
-            AssociatedStore::new(),
+            IndexMap::new(),
         ));
         let tc_ctx = TypeckCtx::new(tcx, mod_ctx);
         tc_ctx.a(());
@@ -139,9 +138,9 @@ error: Cycle detected when b
         );
         let tcx = gcx.ty_ctx();
         let mod_ctx = Arc::new(ModuleContext::new(
-            Store::new(),
+            IndexStore::new(),
             gcx.ctx(),
-            AssociatedStore::new(),
+            IndexMap::new(),
         ));
         let tc_ctx = TypeckCtx::new(tcx, mod_ctx);
 

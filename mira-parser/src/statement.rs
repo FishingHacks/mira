@@ -6,9 +6,11 @@ use std::{
 use crate::{
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
-    module::{BakedStruct, ExternalFunction, Function, Module, ModuleContext, Static},
+    module::{
+        ExternalFunctionId, FunctionId, Module, ModuleContext, ModuleId, StaticId, StructId,
+        TraitId,
+    },
 };
-use mira_common::store::StoreKey;
 use mira_context::DocComment;
 use mira_lexer::{Token, TokenType};
 use mira_spans::interner::symbols;
@@ -22,7 +24,7 @@ use mira_spans::{Ident, Span, SpanData};
 #[derive(Clone, Debug)]
 pub enum BakableFunction<'arena> {
     Function(Box<(FunctionContract<'arena>, Statement<'arena>)>),
-    BakedFunction(StoreKey<Function<'arena>>),
+    BakedFunction(FunctionId),
 }
 
 #[derive(Clone, Debug)]
@@ -41,7 +43,7 @@ pub struct Trait<'arena> {
     pub functions: Vec<TraitFunction<'arena>>,
     pub span: Span<'arena>,
     pub annotations: Annotations<'arena>,
-    pub module: StoreKey<Module<'arena>>,
+    pub module: ModuleId,
     pub public: bool,
     pub comment: DocComment,
 }
@@ -160,12 +162,13 @@ pub enum Statement<'arena> {
         public: bool,
         comment: Option<DocComment>,
     },
+    None,
 
-    BakedFunction(StoreKey<Function<'arena>>, Span<'arena>),
-    BakedExternalFunction(StoreKey<ExternalFunction<'arena>>, Span<'arena>),
-    BakedStruct(StoreKey<BakedStruct<'arena>>, Span<'arena>),
-    BakedStatic(StoreKey<Static<'arena>>, Span<'arena>),
-    BakedTrait(StoreKey<Trait<'arena>>, Span<'arena>),
+    BakedFunction(FunctionId, Span<'arena>),
+    BakedExternalFunction(ExternalFunctionId, Span<'arena>),
+    BakedStruct(StructId, Span<'arena>),
+    BakedStatic(StaticId, Span<'arena>),
+    BakedTrait(TraitId, Span<'arena>),
 }
 
 impl<'arena> Statement<'arena> {
@@ -191,13 +194,14 @@ impl<'arena> Statement<'arena> {
             | Self::Use { span, .. }
             | Self::Mod { span, .. }
             | Self::While { span, .. } => *span,
+            Self::None => unreachable!(),
         }
     }
 
     pub fn bake_functions(
         &mut self,
         module: &mut Module<'arena>,
-        module_key: StoreKey<Module<'arena>>,
+        module_key: ModuleId,
         context: &ModuleContext<'arena>,
     ) {
         match self {
@@ -208,6 +212,7 @@ impl<'arena> Statement<'arena> {
             | Self::BakedStruct(..)
             | Self::Return(None, ..)
             | Self::ModuleAsm(..)
+            | Self::None
             | Self::Trait { .. } => (),
             Self::ExternalFunction { .. } => {
                 unreachable!("external function in a non-top-level scope")
@@ -254,13 +259,22 @@ impl<'arena> Statement<'arena> {
 impl Display for Statement<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BakedFunction(id, _) => f.write_fmt(format_args!("(module-fn {id})")),
-            Self::BakedExternalFunction(id, _) => {
-                f.write_fmt(format_args!("(module-external-fn {id})"))
+            Self::None => unreachable!(),
+            Self::BakedFunction(id, _) => {
+                f.write_fmt(format_args!("(module-fn {})", id.to_usize()))
             }
-            Self::BakedStruct(id, _) => f.write_fmt(format_args!("(module-struct {id})")),
-            Self::BakedStatic(id, _) => f.write_fmt(format_args!("(module-static {id})")),
-            Self::BakedTrait(id, _) => f.write_fmt(format_args!("(module-trait {id})")),
+            Self::BakedExternalFunction(id, _) => {
+                f.write_fmt(format_args!("(module-external-fn {})", id.to_usize()))
+            }
+            Self::BakedStruct(id, _) => {
+                f.write_fmt(format_args!("(module-struct {})", id.to_usize()))
+            }
+            Self::BakedStatic(id, _) => {
+                f.write_fmt(format_args!("(module-static {})", id.to_usize()))
+            }
+            Self::BakedTrait(id, _) => {
+                f.write_fmt(format_args!("(module-trait {})", id.to_usize()))
+            }
 
             Self::Trait(r#trait) => Display::fmt(&r#trait, f),
             Self::Var(Variable {

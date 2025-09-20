@@ -6,9 +6,10 @@ use inkwell::{
     types::{BasicType, BasicTypeEnum, FunctionType},
     values::BasicValueEnum,
 };
-use mira_common::{index::IndexMap, store::StoreKey};
+use mira_common::index::IndexMap;
+use mira_parser::module::ModuleId;
 use mira_typeck::{
-    Substitute, TyKind, TyList, TypedModule,
+    Substitute, TyKind, TyList,
     ir::{IR, ValueId},
 };
 
@@ -33,7 +34,7 @@ pub(crate) struct FunctionCodegenContext<'ctx, 'arena, 'cg, 'a, 'ir> {
     generics: TyList<'arena>,
     pub(crate) current_block: BasicBlock<'ctx>,
     pointer_size: u64,
-    module: StoreKey<TypedModule<'arena>>,
+    module: ModuleId,
 
     pub(crate) ctx: &'cg mut CodegenContext<'ctx, 'arena, 'a>,
 }
@@ -50,7 +51,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
     pub(crate) fn make_function_codegen_context<'me, 'ir>(
         &'me mut self,
         generics: TyList<'arena>,
-        module: StoreKey<TypedModule<'arena>>,
+        module: ModuleId,
         ir: &'ir IR<'arena>,
         current_bock: BasicBlock<'ctx>,
     ) -> FunctionCodegenContext<'ctx, 'arena, 'me, 'a, 'ir> {
@@ -124,7 +125,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             TyKind::PrimitiveStr => panic!("llvm types must be sized, `str` is not"),
             TyKind::PrimitiveSelf => unreachable!("Self must be resolved at this point"),
             TyKind::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
-            TyKind::Struct { struct_id, .. } => self.ctx.structs[*struct_id].into(),
+            &TyKind::Struct { struct_id, .. } => self.ctx.structs[struct_id].into(),
             TyKind::Tuple(elements) => self
                 .ctx
                 .context

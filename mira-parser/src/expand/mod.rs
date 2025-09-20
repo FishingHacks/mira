@@ -16,8 +16,7 @@ mod pat_parser;
 
 pub use macro_expander::expand_tokens;
 
-use crate::{error::ParsingError, tokenstream::BorrowedTokenStream};
-use mira_common::store::StoreKey;
+use crate::{error::ParsingError, module::ModuleId, tokenstream::BorrowedTokenStream};
 
 use super::Parser;
 
@@ -257,7 +256,11 @@ impl<'arena> MacroParser<'arena> {
         matcher: &[MatcherLoc<'arena>],
         ctx: &ExpandContext<'arena>,
     ) -> ParseResult<'arena> {
-        let mut parser = Parser::new(ctx.ctx, tokens, ctx.file.clone(), StoreKey::undefined());
+        // this module id shouldn't actually influence anything, as all the parsed things and the
+        // parser is discarded, because macros only care about tokens. So it's fine to put a bogus
+        // module id here. Should something somehow escape however, the bogus ModuleId is very high
+        // so it is immediately obvious something is horribly wrong.
+        let mut parser = Parser::new(ctx.ctx, tokens, ctx.file.clone(), ModuleId::MAX);
 
         self.cur_pos.clear();
         self.cur_pos.push(MatcherPos {

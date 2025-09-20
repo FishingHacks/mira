@@ -1,12 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crossbeam_channel::{Sender, bounded};
+use mira_common::index::{IndexMap, IndexStore};
 use mira_context::{DocComment, SharedCtx};
 use mira_errors::Diagnostics;
+use mira_parser::module::ModuleId;
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
 
-use mira_common::store::{AssociatedStore, Store, StoreKey};
 use mira_common::threadpool::ThreadPool;
 use mira_errors::IoReadError;
 use mira_lexer::{Lexer, LexingError, Literal, TokenType};
@@ -95,7 +96,7 @@ fn parse_single<'arena>(
         module_context.ctx,
         &tokens,
         file.clone(),
-        cur_entry.module_key,
+        cur_entry.module_id,
     );
 
     let (statements, parsing_errors) = current_parser.parse_all();
@@ -126,7 +127,7 @@ fn parse_single<'arena>(
     let _ = current_parser;
     if let Err(errs) = module.push_all(
         statements,
-        cur_entry.module_key,
+        cur_entry.module_id,
         &module_context,
         &parsing_queue,
         &module_context.modules,
@@ -138,7 +139,7 @@ fn parse_single<'arena>(
     module_context
         .modules
         .write()
-        .insert_reserved(cur_entry.module_key, module);
+        .insert_reserved(module, cur_entry.module_id);
     progress_bar.remove(item);
 
     _ = finish_sender.send(())
@@ -156,11 +157,11 @@ pub(crate) fn parse_all<'arena>(
     progress_bar: ProgressBarThread,
     parsing_item: ProgressItemRef,
     libtree: &LibraryTree,
-) -> Result<(Arc<ModuleContext<'arena>>, StoreKey<Module<'arena>>), Diagnostics<'arena>> {
+) -> Result<(Arc<ModuleContext<'arena>>, ModuleId), Diagnostics<'arena>> {
     let errors = Arc::new(RwLock::new(Diagnostics::new()));
-    let mut module_store = Store::new();
+    let mut module_store = IndexStore::new();
     let mut parsing_queue = Vec::with_capacity(libtree.libraries.len());
-    let mut dependencies = AssociatedStore::new();
+    let mut dependencies = IndexMap::new();
     let mut lib_id_to_module = HashMap::new();
     for (lib_id, lib) in libtree
         .libraries
@@ -168,7 +169,8 @@ pub(crate) fn parse_all<'arena>(
         .enumerate()
         .map(|(k, v)| (LibraryId(k), v))
     {
-        let modid = module_store.reserve_key();
+        let modid: ModuleId = module_store.reserve_id();
+        assert_eq!(lib_id.to_usize(), modid.to_usize());
         lib_id_to_module.insert(lib_id, modid);
         dependencies.insert(modid, HashMap::with_capacity(lib.dependencies.len()));
         let deps = &mut dependencies[modid];
@@ -190,8 +192,8 @@ pub(crate) fn parse_all<'arena>(
             file_root: lib.root.clone(),
             loaded_file,
             package_root: modid,
-            parent: StoreKey::undefined(),
-            module_key: modid,
+            parent: None,
+            module_id: modid,
             comment: None,
         });
     }

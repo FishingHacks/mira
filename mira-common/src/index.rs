@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::{Bound, Index, IndexMut, RangeBounds, RangeInclusive};
 
-pub trait Idx: Copy + Hash + PartialEq + Eq + Debug {
+pub trait Idx: Copy + Hash + PartialEq + Eq + PartialOrd + Debug {
     const ZERO: Self;
 
     fn next(self) -> Self;
@@ -13,8 +13,8 @@ pub trait Idx: Copy + Hash + PartialEq + Eq + Debug {
 
 #[macro_export]
 macro_rules! newty {
-    (@inner $(#[$($meta:tt)*])* $vis:vis, $name:ident $($const_name:ident $val:literal)*) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    (@inner $vis:vis, $name:ident $($const_name:ident $val:literal)*) => {
+        #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]
         $vis struct $name {
             __priv: std::num::NonZeroUsize,
         }
@@ -49,6 +49,9 @@ macro_rules! newty {
         }
     };
 
+    (@rem_disp #[display($($t:tt)+)]) => {};
+    (@rem_disp $($t:tt)*) => { $($t:tt)* };
+
     (@disp $name:ident display($($disp:tt)+)) => {
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -60,7 +63,7 @@ macro_rules! newty {
 
     ($( $(#[$($meta:tt)*])* $vis:vis struct $name:ident { $(const $const_name:ident = $val:literal;)* } )+) => {
         $(
-            $crate::newty!(@inner $(#[$($meta)*])* $vis, $name $($const_name $val)* );
+            $crate::newty!(@inner $vis, $name $($const_name $val)* );
             $($crate::newty!(@disp $name $($meta)*);)*
         )+
     }
@@ -180,22 +183,36 @@ impl<I: Idx, V> Default for IndexVec<I, V> {
     }
 }
 
-pub struct IndexMap<I: Idx, V> {
+#[derive(Debug)]
+pub struct IndexStore<I: Idx, V> {
     values: HashMap<I, V>,
+    last_id: I,
 }
 
-impl<I: Idx, V> IndexMap<I, V> {
+impl<I: Idx, V> IndexStore<I, V> {
     pub fn new() -> Self {
         Self {
             values: HashMap::new(),
+            last_id: I::ZERO,
         }
     }
 
-    pub fn insert(&mut self, i: I, v: V) {
-        if self.values.contains_key(&i) {
-            panic!("Tried to insert key {i:?} multiple times");
-        }
-        self.values.insert(i, v);
+    pub fn reserve_id(&mut self) -> I {
+        let id = self.last_id;
+        self.last_id = self.last_id.next();
+        id
+    }
+
+    pub fn insert_reserved(&mut self, v: V, id: I) {
+        assert!(id < self.last_id);
+        assert!(!self.values.contains_key(&id));
+        self.values.insert(id, v);
+    }
+
+    pub fn add(&mut self, v: V) -> I {
+        let id = self.reserve_id();
+        self.insert_reserved(v, id);
+        id
     }
 
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &V> {
@@ -207,13 +224,101 @@ impl<I: Idx, V> IndexMap<I, V> {
     }
 
     pub fn entries(&self) -> impl ExactSizeIterator<Item = (I, &V)> {
-        self.iter().enumerate().map(|(i, v)| (I::from_usize(i), v))
+        self.values.iter().map(|(i, v)| (*i, v))
     }
 
     pub fn entries_mut(&mut self) -> impl ExactSizeIterator<Item = (I, &mut V)> {
-        self.iter_mut()
-            .enumerate()
-            .map(|(i, v)| (I::from_usize(i), v))
+        self.values.iter_mut().map(|(i, v)| (*i, v))
+    }
+
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = I> {
+        self.values.keys().copied()
+    }
+
+    pub fn get(&self, key: I) -> Option<&V> {
+        self.values.get(&key)
+    }
+
+    pub fn get_mut(&mut self, key: I) -> Option<&mut V> {
+        self.values.get_mut(&key)
+    }
+}
+
+impl<I: Idx, V> Index<I> for IndexStore<I, V> {
+    type Output = V;
+
+    fn index(&self, index: I) -> &Self::Output {
+        &self.values[&index]
+    }
+}
+
+impl<I: Idx, V> IndexMut<I> for IndexStore<I, V> {
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        self.values.get_mut(&index).expect("no entry found for key")
+    }
+}
+
+impl<I: Idx, V> Default for IndexStore<I, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexMap<I: Idx, V> {
+    values: HashMap<I, V>,
+}
+
+impl<I: Idx, V> IndexMap<I, V> {
+    pub fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            values: HashMap::with_capacity(capacity),
+        }
+    }
+
+    pub fn remove(&mut self, key: I) -> Option<V> {
+        self.values.remove(&key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn insert(&mut self, i: I, v: V) {
+        if self.contains(i) {
+            panic!("Tried to insert key {i:?} multiple times");
+        }
+        self.values.insert(i, v);
+    }
+
+    pub fn contains(&self, i: I) -> bool {
+        self.values.contains_key(&i)
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &V> {
+        self.values.values()
+    }
+
+    pub fn iter_mut(&mut self) -> impl ExactSizeIterator<Item = &mut V> {
+        self.values.values_mut()
+    }
+
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = (I, &V)> {
+        self.values.iter().map(|(i, v)| (*i, v))
+    }
+
+    pub fn entries_mut(&mut self) -> impl ExactSizeIterator<Item = (I, &mut V)> {
+        self.values.iter_mut().map(|(i, v)| (*i, v))
     }
 
     pub fn keys(&self) -> impl ExactSizeIterator<Item = I> {

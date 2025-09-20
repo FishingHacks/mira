@@ -1,11 +1,14 @@
 use std::fmt::{Display, Write as _};
 
-use mira_common::store::StoreKey;
-use mira_parser::{annotations::Annotations, std_annotations::intrinsic::Intrinsic};
+use mira_parser::{
+    annotations::Annotations,
+    module::{ExternalFunctionId, FunctionId, TraitId},
+    std_annotations::intrinsic::Intrinsic,
+};
 use mira_spans::{Span, Symbol};
 
 use crate::{
-    Ty, TyList, TypedExternalFunction, TypedFunction, TypedTrait,
+    Ty, TyList,
     ir::{BlockId, ValueId},
 };
 
@@ -61,7 +64,7 @@ pub enum TypedExpression<'arena> {
     DirectCall(
         Span<'arena>,
         ValueId,
-        StoreKey<TypedFunction<'arena>>,
+        FunctionId,
         Box<[TypedLiteral<'arena>]>,
         TyList<'arena>,
     ),
@@ -69,7 +72,7 @@ pub enum TypedExpression<'arena> {
     DirectExternCall(
         Span<'arena>,
         ValueId,
-        StoreKey<TypedExternalFunction<'arena>>,
+        ExternalFunctionId,
         Box<[TypedLiteral<'arena>]>,
     ),
     // _1 = intrinsic(_3.1, _3.2, ...)
@@ -274,7 +277,7 @@ pub enum TypedExpression<'arena> {
         Span<'arena>,
         ValueId,
         TypedLiteral<'arena>,
-        (Ty<'arena>, Box<[StoreKey<TypedTrait<'arena>>]>),
+        (Ty<'arena>, Box<[TraitId]>),
     ),
     // if (_2) drop_in_place(&_1);
     DropIf(Span<'arena>, ValueId, ValueId),
@@ -284,7 +287,7 @@ pub enum TypedExpression<'arena> {
     TraitCall {
         span: Span<'arena>,
         ty: Ty<'arena>,
-        trait_id: StoreKey<TypedTrait<'arena>>,
+        trait_id: TraitId,
         func: usize,
         args: Box<[TypedLiteral<'arena>]>,
         dst: ValueId,

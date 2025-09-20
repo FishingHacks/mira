@@ -1,15 +1,16 @@
+use mira_common::index::IndexMap;
+use mira_parser::module::{StructId, TraitId};
 use mira_spans::{Arena, ArenaList, extra_traits, interner, owned_intern};
 use std::fmt::{Debug, Display, Write};
 use std::hash::Hash;
 
 use crate::context::TypeCtx;
 use crate::monomorphisation::{Substitute, SubstitutionCtx};
-use mira_common::store::{Store, StoreKey};
 use mira_lexer::NumberType;
 use mira_parser::TypeRef;
 use mira_spans::Ident;
 
-use super::{TypeckCtx, TypedStruct, TypedTrait};
+use super::{TypeckCtx, TypedStruct};
 
 pub mod default_types {
     #![allow(non_upper_case_globals)]
@@ -95,9 +96,9 @@ impl<'a> AsRef<TyKind<'a>> for &TyKind<'a> {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TyKind<'arena> {
-    DynType(ArenaList<'arena, (StoreKey<TypedTrait<'arena>>, Ident<'arena>)>),
+    DynType(ArenaList<'arena, (TraitId, Ident<'arena>)>),
     Struct {
-        struct_id: StoreKey<TypedStruct<'arena>>,
+        struct_id: StructId,
         name: Ident<'arena>,
     },
     UnsizedArray(Ty<'arena>),
@@ -135,7 +136,7 @@ pub enum TyKind<'arena> {
     Generic {
         name: Ident<'arena>,
         generic_id: u8,
-        bounds: ArenaList<'arena, StoreKey<TypedTrait<'arena>>>,
+        bounds: ArenaList<'arena, TraitId>,
         sized: bool,
     },
 }
@@ -202,10 +203,7 @@ fn align(value: u64, alignment: u32) -> u64 {
     }
 }
 
-fn values_match<'arena>(
-    left: &[StoreKey<TypedTrait<'arena>>],
-    right: &[StoreKey<TypedTrait<'arena>>],
-) -> bool {
+fn values_match(left: &[TraitId], right: &[TraitId]) -> bool {
     for v in right {
         if !left.contains(v) {
             return false;
@@ -280,7 +278,7 @@ impl<'arena> TyKind<'arena> {
             // we don't know if this type has to be dropped or not, so always invoke the drop impl.
             TyKind::DynType(_) => true,
             TyKind::UnsizedArray(ty) | TyKind::SizedArray { ty, .. } => ty.needs_drop(tcx),
-            TyKind::Struct { struct_id, .. } => {
+            &TyKind::Struct { struct_id, .. } => {
                 let drop_trait = tcx.lang_items.read().drop_trait;
                 if let Some(drop_trait) = drop_trait
                     && self.implements(&[drop_trait], tcx)
@@ -322,7 +320,7 @@ impl<'arena> TyKind<'arena> {
         }
     }
 
-    pub fn implements(&self, traits: &[StoreKey<TypedTrait<'_>>], tc_ctx: &TypeckCtx<'_>) -> bool {
+    pub fn implements(&self, traits: &[TraitId], tc_ctx: &TypeckCtx<'_>) -> bool {
         match self {
             TyKind::Ref(v) => {
                 if let TyKind::DynType(trait_refs) = &***v {
@@ -335,7 +333,6 @@ impl<'arena> TyKind<'arena> {
                 &tc_ctx.structs.read()[*struct_id]
                     .trait_impl
                     .keys()
-                    .copied()
                     .collect::<Vec<_>>(),
                 traits,
             ),
@@ -347,7 +344,7 @@ impl<'arena> TyKind<'arena> {
     pub fn struct_offset(
         &self,
         ptr_size: u64,
-        structs: &Store<TypedStruct<'arena>>,
+        structs: &IndexMap<StructId, TypedStruct<'arena>>,
         element: usize,
     ) -> u64 {
         let struct_id = match self {
@@ -368,7 +365,11 @@ impl<'arena> TyKind<'arena> {
         offset
     }
 
-    pub fn alignment(&self, ptr_size: u64, structs: &Store<TypedStruct<'arena>>) -> u32 {
+    pub fn alignment(
+        &self,
+        ptr_size: u64,
+        structs: &IndexMap<StructId, TypedStruct<'arena>>,
+    ) -> u32 {
         match self {
             TyKind::Ref(_) => ptr_size as u32,
             TyKind::Generic { .. }
@@ -378,7 +379,7 @@ impl<'arena> TyKind<'arena> {
             | TyKind::UnsizedArray { .. } => {
                 unreachable!("generics, self and unsized types don't have an alignment")
             }
-            TyKind::Struct { struct_id, .. } => structs[struct_id]
+            &TyKind::Struct { struct_id, .. } => structs[struct_id]
                 .elements
                 .iter()
                 .map(|v| v.1.alignment(ptr_size, structs))
@@ -407,7 +408,7 @@ impl<'arena> TyKind<'arena> {
     pub fn size_and_alignment(
         &self,
         ptr_size: u64,
-        structs: &Store<TypedStruct<'arena>>,
+        structs: &IndexMap<StructId, TypedStruct<'arena>>,
     ) -> (u64, u32) {
         match self {
             TyKind::Generic { .. }
@@ -424,7 +425,7 @@ impl<'arena> TyKind<'arena> {
                     (ptr_size * 2, ptr_size as u32)
                 }
             }
-            TyKind::Struct { struct_id, .. } => {
+            &TyKind::Struct { struct_id, .. } => {
                 let mut size = 0;
                 let mut alignment = 1;
                 for (_, element, _) in structs[struct_id].elements.iter() {
@@ -729,7 +730,7 @@ impl Display for TyKind<'_> {
                         if i != 0 {
                             f.write_str(" + ")?;
                         }
-                        Display::fmt(trait_ref, f)?;
+                        Display::fmt(&trait_ref.to_usize(), f)?;
                     }
                 }
                 f.write_str(" (#")?;
@@ -745,21 +746,21 @@ impl Display for TyKind<'_> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) enum TypeSuggestion<'arena> {
-    Struct(StoreKey<TypedStruct<'arena>>),
-    Array(Box<TypeSuggestion<'arena>>),
-    UnsizedArray(Box<TypeSuggestion<'arena>>),
+pub(crate) enum TypeSuggestion {
+    Struct(StructId),
+    Array(Box<TypeSuggestion>),
+    UnsizedArray(Box<TypeSuggestion>),
     Number(NumberType),
-    Tuple(Vec<TypeSuggestion<'arena>>),
+    Tuple(Vec<TypeSuggestion>),
     Bool,
     #[default]
     Unknown,
 }
 
-impl Display for TypeSuggestion<'_> {
+impl Display for TypeSuggestion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TypeSuggestion::Struct(id) => f.write_fmt(format_args!("<struct {id}>")),
+            TypeSuggestion::Struct(id) => f.write_fmt(format_args!("<struct {}>", id.to_usize())),
             TypeSuggestion::Array(v) | TypeSuggestion::UnsizedArray(v) => {
                 f.write_fmt(format_args!("[{v}]"))
             }
@@ -780,8 +781,8 @@ impl Display for TypeSuggestion<'_> {
     }
 }
 
-impl<'arena> TypeSuggestion<'arena> {
-    pub(crate) fn to_type(&self, ctx: &TypeckCtx<'arena>) -> Option<Ty<'arena>> {
+impl TypeSuggestion {
+    pub(crate) fn to_type<'ctx>(&self, ctx: &TypeckCtx<'ctx>) -> Option<Ty<'ctx>> {
         match self {
             TypeSuggestion::Struct(id) => Some(ctx.ctx.intern_ty(TyKind::Struct {
                 struct_id: *id,
@@ -822,7 +823,7 @@ impl<'arena> TypeSuggestion<'arena> {
         }
     }
 
-    pub(crate) fn from_type(ty: Ty<'arena>) -> Self {
+    pub(crate) fn from_type(ty: Ty<'_>) -> Self {
         match &**ty {
             TyKind::PrimitiveStr
             | TyKind::PrimitiveSelf

@@ -9,15 +9,15 @@ pub use expand::expand_tokens;
 pub use expression::{
     ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, PathWithoutGenerics, UnaryOp,
 };
-use mira_common::store::StoreKey;
 use mira_context::{DocComment, SharedCtx};
 use mira_lexer::{Token, TokenType};
 use mira_spans::{BytePos, SourceFile, SpanData};
-use module::Module;
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use statement::{TraitFunction, Variable};
 use tokenstream::{BorrowedTokenStream, TokenStream};
 pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, TypeRef};
+
+use crate::module::ModuleId;
 
 pub mod annotations;
 mod error;
@@ -36,7 +36,7 @@ pub struct Parser<'a, 'arena> {
     stream: BorrowedTokenStream<'arena, 'a>,
     current_annotations: Annotations<'arena>,
     current_doc_comment: Option<DocComment>,
-    pub key: StoreKey<Module<'arena>>,
+    pub key: ModuleId,
 }
 
 impl std::fmt::Debug for Parser<'_, '_> {
@@ -54,7 +54,7 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         ctx: SharedCtx<'arena>,
         tokens: &'a [Token<'arena>],
         file: Arc<SourceFile>,
-        key: StoreKey<Module<'arena>>,
+        key: ModuleId,
     ) -> Self {
         let eof_span = ctx.intern_span(SpanData::new(BytePos::from_u32(file.len()), 1, file.id));
         let file = file.clone();
@@ -65,7 +65,7 @@ impl<'a, 'arena> Parser<'a, 'arena> {
         ctx: SharedCtx<'arena>,
         stream: BorrowedTokenStream<'arena, 'a>,
         file: Arc<SourceFile>,
-        key: StoreKey<Module<'arena>>,
+        key: ModuleId,
     ) -> Self {
         Self {
             ctx,

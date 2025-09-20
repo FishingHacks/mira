@@ -4,6 +4,8 @@ use std::{
     sync::Arc,
 };
 
+use mira_parser::module::ModuleId;
+
 #[derive(Clone, Debug)]
 pub enum LibraryInput {
     Path,
@@ -17,6 +19,10 @@ impl LibraryId {
     #[inline(always)]
     pub const fn to_usize(self) -> usize {
         self.0
+    }
+
+    pub const fn to_module(self) -> ModuleId {
+        ModuleId::new(self.0)
     }
 }
 

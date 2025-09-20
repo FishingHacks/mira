@@ -17,11 +17,10 @@ use inkwell::{
     module::{FlagBehavior, Module},
     values::PointerValue,
 };
-use mira_common::store::{AssociatedStore, Store, StoreKey};
+use mira_common::index::IndexMap;
+use mira_parser::module::{ExternalFunctionId, ModuleId, StructId};
 use mira_spans::{Span, interner::Symbol};
-use mira_typeck::{
-    Ty, TyKind, TypeCtx, TypeckCtx, TypedExternalFunction, TypedModule, TypedStruct, default_types,
-};
+use mira_typeck::{Ty, TyKind, TypeCtx, TypeckCtx, TypedStruct, default_types};
 
 use crate::mangling::{ANON_FN_NAME, mangle_external_function};
 use crate::{DefaultTypes, get_mira_version};
@@ -40,11 +39,11 @@ pub(crate) struct DebugContext<'ctx, 'arena> {
     pub(super) builder: DebugInfoBuilder<'ctx>,
     global_scope: DIScope<'ctx>,
     root_file: DIFile<'ctx>,
-    pub(super) modules: AssociatedStore<(DINamespace<'ctx>, DIFile<'ctx>), TypedModule<'arena>>,
+    pub(super) modules: IndexMap<ModuleId, (DINamespace<'ctx>, DIFile<'ctx>)>,
     default_types: DefaultTypes<'ctx>,
     type_store: RefCell<HashMap<Ty<'arena>, DIType<'ctx>>>,
     context: &'ctx Context,
-    pub(super) ext_funcs: AssociatedStore<DISubprogram<'ctx>, TypedExternalFunction<'arena>>,
+    pub(super) ext_funcs: IndexMap<ExternalFunctionId, DISubprogram<'ctx>>,
     optimizations: bool,
 }
 
@@ -64,8 +63,8 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         ty: Ty<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
-        module: StoreKey<TypedModule<'arena>>,
-        structs: &Store<TypedStruct<'arena>>,
+        module: ModuleId,
+        structs: &IndexMap<StructId, TypedStruct<'arena>>,
         arg: u32,
     ) {
         let ty = self.get_type(ty, structs);
@@ -92,8 +91,8 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         ty: Ty<'arena>,
         name: Symbol<'arena>,
         bb: BasicBlock<'ctx>,
-        module: StoreKey<TypedModule<'arena>>,
-        structs: &Store<TypedStruct<'arena>>,
+        module: ModuleId,
+        structs: &IndexMap<StructId, TypedStruct<'arena>>,
     ) {
         let alignment = ty.alignment(
             (self.default_types.isize.get_bit_width() / 8) as u64,
@@ -118,7 +117,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         &self,
         parent_scope: DIScope<'ctx>,
         span: Span<'arena>,
-        module: StoreKey<TypedModule<'arena>>,
+        module: ModuleId,
     ) -> DILexicalBlock<'ctx> {
         let (line, column) = span.with_source_file(self.ctx.source_map()).lookup_pos();
         self.builder
@@ -175,17 +174,17 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         let root_file = builder.create_file(&root_filename, &root_directory);
         let mut me = Self {
             builder,
-            modules: AssociatedStore::with_capacity(module_reader.len()),
+            modules: IndexMap::with_capacity(module_reader.len()),
             default_types,
             global_scope: compile_unit.as_debug_info_scope(),
             type_store: RefCell::new(HashMap::new()),
             context,
             root_file,
-            ext_funcs: AssociatedStore::with_capacity(ext_func_reader.len()),
+            ext_funcs: IndexMap::with_capacity(ext_func_reader.len()),
             ctx,
             optimizations,
         };
-        for (key, module) in module_reader.index_value_iter() {
+        for (key, module) in module_reader.entries() {
             let file = if *module.file.path == *root_path {
                 root_file
             } else {
@@ -204,7 +203,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             me.modules.insert(key, (namespace, file));
         }
 
-        for (key, func) in ext_func_reader.index_value_iter() {
+        for (key, func) in ext_func_reader.entries() {
             let mangled_name = mangle_external_function(tc_ctx, key);
             let name = func.0.name.as_deref().unwrap_or(ANON_FN_NAME);
             let line = func
@@ -231,10 +230,10 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn make_subprogram(
         &self,
-        module: StoreKey<TypedModule<'arena>>,
+        module: ModuleId,
         return_ty: Ty<'arena>,
         args: impl Iterator<Item = Ty<'arena>>,
-        structs: &Store<TypedStruct<'arena>>,
+        structs: &IndexMap<StructId, TypedStruct<'arena>>,
         name: &str,
         mangled_name: &str,
         line: u32,
@@ -276,7 +275,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
     pub(crate) fn get_type(
         &self,
         ty: Ty<'arena>,
-        structs: &Store<TypedStruct<'arena>>,
+        structs: &IndexMap<StructId, TypedStruct<'arena>>,
     ) -> DIType<'ctx> {
         if let Some(v) = self.type_store.borrow().get(&ty) {
             return *v;

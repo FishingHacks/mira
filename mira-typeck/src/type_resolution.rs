@@ -1,14 +1,14 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 
+use mira_common::index::IndexMap;
 use mira_spans::ArenaList;
 
-use mira_common::store::StoreKey;
 use mira_parser::{
-    Trait, TypeRef,
-    module::{BakedStruct, ExternalFunction, Function, ModuleContext, ModuleScopeValue, Static},
+    TypeRef,
+    module::{
+        ExternalFunctionId, FunctionId, ModuleContext, ModuleScopeValue, StaticId, StructId,
+        TraitId,
+    },
     std_annotations::lang_item::LangItemAnnotation,
 };
 
@@ -38,17 +38,22 @@ impl<'arena> TypeckCtx<'arena> {
         let mut lang_items_writer = self.lang_items.write();
         let lang_items_writer = &mut *lang_items_writer;
 
-        let mut structs_left = context
+        let mut structs_left = IndexMap::new();
+        context
             .structs
             .read()
-            .indices()
+            .keys()
             .zip(std::iter::repeat(ResolvingState::Pending))
-            .collect::<HashMap<_, _>>();
+            .for_each(|(k, v)| structs_left.insert(k, v));
 
         // ┌─────────┐
         // │ Structs │
         // └─────────┘
-        while let Some(key) = structs_left.keys().next().copied() {
+        loop {
+            let Some(key) = structs_left.keys().next() else {
+                break;
+            };
+
             let struct_reader = context.structs.read();
             let module_id = struct_reader[key].module_id;
             drop(struct_reader);
@@ -61,14 +66,14 @@ impl<'arena> TypeckCtx<'arena> {
                 continue;
             }
             let struct_reader = self.structs.read();
-            for annotation in struct_reader[key.cast()]
+            for annotation in struct_reader[key]
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_struct(
-                    key.cast(),
+                    key,
                     annotation.get_langitem(),
-                    struct_reader[key.cast()].span,
+                    struct_reader[key].span,
                 ) {
                     self.ctx.emit_diag(e);
                 }
@@ -78,7 +83,7 @@ impl<'arena> TypeckCtx<'arena> {
         // ┌───────────┐
         // │ Functions │
         // └───────────┘
-        let function_keys = context.functions.read().indices().collect::<Vec<_>>();
+        let function_keys = context.functions.read().keys().collect::<Vec<_>>();
         for function_key in function_keys {
             let tracker = self.ctx.track_errors();
             self.resolve_function(function_key, &context);
@@ -86,15 +91,15 @@ impl<'arena> TypeckCtx<'arena> {
                 continue;
             }
             let function_reader = self.functions.read();
-            for annotation in function_reader[function_key.cast()]
+            for annotation in function_reader[function_key]
                 .0
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_function(
-                    function_key.cast(),
+                    function_key,
                     annotation.get_langitem(),
-                    function_reader[function_key.cast()].0.span,
+                    function_reader[function_key].0.span,
                 ) {
                     self.ctx.emit_diag(e);
                 }
@@ -104,11 +109,7 @@ impl<'arena> TypeckCtx<'arena> {
         // ┌────────────────────┐
         // │ External Functions │
         // └────────────────────┘
-        let ext_function_keys = context
-            .external_functions
-            .read()
-            .indices()
-            .collect::<Vec<_>>();
+        let ext_function_keys = context.external_functions.read().keys().collect::<Vec<_>>();
         for ext_function_key in ext_function_keys {
             let tracker = self.ctx.track_errors();
             self.resolve_ext_function(ext_function_key, &context);
@@ -116,15 +117,15 @@ impl<'arena> TypeckCtx<'arena> {
                 continue;
             }
             let ext_function_reader = self.external_functions.read();
-            for annotation in ext_function_reader[ext_function_key.cast()]
+            for annotation in ext_function_reader[ext_function_key]
                 .0
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_external_function(
-                    ext_function_key.cast(),
+                    ext_function_key,
                     annotation.get_langitem(),
-                    ext_function_reader[ext_function_key.cast()].0.span,
+                    ext_function_reader[ext_function_key].0.span,
                 ) {
                     self.ctx.emit_diag(e);
                 }
@@ -134,7 +135,7 @@ impl<'arena> TypeckCtx<'arena> {
         // ┌─────────┐
         // │ Statics │
         // └─────────┘
-        let statics_keys = context.statics.read().indices().collect::<Vec<_>>();
+        let statics_keys = context.statics.read().keys().collect::<Vec<_>>();
         for static_key in statics_keys {
             let tracker = self.ctx.track_errors();
             self.resolve_static(static_key, &context);
@@ -142,14 +143,14 @@ impl<'arena> TypeckCtx<'arena> {
                 continue;
             }
             let static_reader = self.statics.read();
-            for annotation in static_reader[static_key.cast()]
+            for annotation in static_reader[static_key]
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_static(
-                    static_key.cast(),
+                    static_key,
                     annotation.get_langitem(),
-                    static_reader[static_key.cast()].span,
+                    static_reader[static_key].span,
                 ) {
                     self.ctx.emit_diag(e);
                 }
@@ -159,7 +160,7 @@ impl<'arena> TypeckCtx<'arena> {
         // ┌────────┐
         // │ Traits │
         // └────────┘
-        let trait_keys = context.traits.read().indices().collect::<Vec<_>>();
+        let trait_keys = context.traits.read().keys().collect::<Vec<_>>();
         for trait_key in trait_keys {
             let tracker = self.ctx.track_errors();
             self.resolve_trait(trait_key, &context);
@@ -167,21 +168,21 @@ impl<'arena> TypeckCtx<'arena> {
                 continue;
             }
             let trait_reader = self.traits.read();
-            for annotation in trait_reader[trait_key.cast()]
+            for annotation in trait_reader[trait_key]
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
                 if let Err(e) = lang_items_writer.push_trait(
-                    trait_key.cast(),
+                    trait_key,
                     annotation.get_langitem(),
-                    trait_reader[trait_key.cast()].span,
+                    trait_reader[trait_key].span,
                 ) {
                     self.ctx.emit_diag(e);
                 }
             }
         }
 
-        let struct_keys = context.structs.read().indices().collect::<Vec<_>>();
+        let struct_keys = context.structs.read().keys().collect::<Vec<_>>();
         for struct_id in struct_keys {
             self.resolve_struct_impls(struct_id, &context);
         }
@@ -189,11 +190,7 @@ impl<'arena> TypeckCtx<'arena> {
         lang_items_writer.check(self);
     }
 
-    fn resolve_struct_impls(
-        &self,
-        struct_key: StoreKey<BakedStruct<'arena>>,
-        context: &ModuleContext<'arena>,
-    ) {
+    fn resolve_struct_impls(&self, struct_key: StructId, context: &ModuleContext<'arena>) {
         let mut writer = context.structs.write();
         let trait_impl = std::mem::take(&mut writer[struct_key].impls);
         drop(writer);
@@ -203,28 +200,28 @@ impl<'arena> TypeckCtx<'arena> {
         let mut struct_writer = self.structs.write();
         let trait_reader = self.traits.read();
         let function_reader = self.functions.read();
-        let module = struct_writer[struct_key.cast()].module_id;
+        let module = struct_writer[struct_key].module_id;
 
         for (name, implementation, span) in trait_impl {
-            let trait_id =
-                match resolve_import(context, module.cast(), &[name], span, &mut HashSet::new()) {
-                    Err(e) => {
-                        self.ctx.emit_diag(e);
-                        continue;
-                    }
-                    Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
-                    Ok(_) => {
-                        self.ctx.emit_unbound_ident(span, name.symbol());
-                        continue;
-                    }
-                };
+            let trait_id = match resolve_import(context, module, &[name], span, &mut HashSet::new())
+            {
+                Err(e) => {
+                    self.ctx.emit_diag(e);
+                    continue;
+                }
+                Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
+                Ok(_) => {
+                    self.ctx.emit_unbound_ident(span, name.symbol());
+                    continue;
+                }
+            };
 
-            let typed_trait = &trait_reader[trait_id.cast()];
+            let typed_trait = &trait_reader[trait_id];
             if typed_trait.functions.len() != implementation.len() {
-                for (name, func_id) in &implementation {
+                for (name, &func_id) in &implementation {
                     if !typed_trait.functions.iter().any(|(v, ..)| v == name) {
                         self.ctx.emit_is_not_trait_member(
-                            function_reader[func_id.cast()].0.span,
+                            function_reader[func_id].0.span,
                             name.symbol(),
                         );
                     }
@@ -240,7 +237,7 @@ impl<'arena> TypeckCtx<'arena> {
 
                 let mut with_errs = false;
 
-                let function_contract = &function_reader[func_id.cast()].0;
+                let function_contract = &function_reader[func_id].0;
                 if !function_contract
                     .arguments
                     .iter()
@@ -267,15 +264,15 @@ impl<'arena> TypeckCtx<'arena> {
                     with_errs = true
                 }
                 if !with_errs {
-                    trait_impl.push(func_id.cast());
+                    trait_impl.push(func_id);
                 }
             }
             if trait_impl.len() != typed_trait.functions.len() {
                 continue;
             }
-            struct_writer[struct_key.cast()]
+            struct_writer[struct_key]
                 .trait_impl
-                .insert(trait_id.cast(), trait_impl);
+                .insert(trait_id, trait_impl);
         }
         drop(struct_writer);
         drop(function_reader);
@@ -283,21 +280,21 @@ impl<'arena> TypeckCtx<'arena> {
         let struct_reader = self.structs.read();
         let mut function_writer = self.functions.write();
 
-        for fn_id in struct_reader[struct_key.cast()]
+        for fn_id in struct_reader[struct_key]
             .global_impl
             .values()
             .copied()
             .chain(
-                struct_reader[struct_key.cast()]
+                struct_reader[struct_key]
                     .trait_impl
-                    .values()
+                    .iter()
                     .flat_map(|v| v.iter())
                     .copied(),
             )
         {
             let self_ty = self.ctx.intern_ty(TyKind::Struct {
-                struct_id: struct_key.cast(),
-                name: struct_reader[struct_key.cast()].name,
+                struct_id: struct_key,
+                name: struct_reader[struct_key].name,
             });
 
             let contract = &mut function_writer[fn_id].0;
@@ -314,11 +311,7 @@ impl<'arena> TypeckCtx<'arena> {
         }
     }
 
-    fn resolve_function(
-        &self,
-        function_id: StoreKey<Function<'arena>>,
-        context: &ModuleContext<'arena>,
-    ) {
+    fn resolve_function(&self, function_id: FunctionId, context: &ModuleContext<'arena>) {
         let mut writer = context.functions.write();
         let module_id = writer[function_id].2;
         let arguments = std::mem::take(&mut writer[function_id].0.arguments);
@@ -339,7 +332,7 @@ impl<'arena> TypeckCtx<'arena> {
                     bound.1,
                     &mut HashSet::new(),
                 ) {
-                    Ok(ModuleScopeValue::Trait(v)) => bounds.push(v.cast()),
+                    Ok(ModuleScopeValue::Trait(v)) => bounds.push(v),
                     Ok(_) => {
                         self.ctx.emit_unbound_ident(
                             bound.1,
@@ -360,7 +353,7 @@ impl<'arena> TypeckCtx<'arena> {
             });
         }
         let mut resolved_function_contract = TypedFunctionContract {
-            module_id: module_id.cast(),
+            module_id,
             name: writer[function_id].0.name,
             span: writer[function_id].0.span,
             annotations: std::mem::take(&mut writer[function_id].0.annotations),
@@ -373,7 +366,7 @@ impl<'arena> TypeckCtx<'arena> {
 
         let error_tracker = self.ctx.track_errors();
         match self.resolve_type(
-            module_id.cast(),
+            module_id,
             &return_type,
             &resolved_function_contract.generics,
         ) {
@@ -382,24 +375,20 @@ impl<'arena> TypeckCtx<'arena> {
         }
 
         for arg in arguments {
-            match self.resolve_type(
-                module_id.cast(),
-                &arg.ty,
-                &resolved_function_contract.generics,
-            ) {
+            match self.resolve_type(module_id, &arg.ty, &resolved_function_contract.generics) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
                 Err(e) => _ = self.ctx.emit_diag(e),
             }
         }
 
         if !self.ctx.errors_happened(error_tracker) {
-            self.functions.write()[function_id.cast()].0 = resolved_function_contract;
+            self.functions.write()[function_id].0 = resolved_function_contract;
         }
     }
 
     fn resolve_ext_function(
         &self,
-        ext_function_id: StoreKey<ExternalFunction<'arena>>,
+        ext_function_id: ExternalFunctionId,
         context: &ModuleContext<'arena>,
     ) {
         let mut writer = context.external_functions.write();
@@ -412,7 +401,7 @@ impl<'arena> TypeckCtx<'arena> {
             TypeRef::Void(span, 0),
         );
         let mut resolved_function_contract = TypedFunctionContract {
-            module_id: module_id.cast(),
+            module_id,
             name: writer[ext_function_id].0.name,
             span: writer[ext_function_id].0.span,
             annotations: std::mem::take(&mut writer[ext_function_id].0.annotations),
@@ -424,25 +413,24 @@ impl<'arena> TypeckCtx<'arena> {
         drop(writer);
 
         let tracker = self.ctx.track_errors();
-        match self.resolve_type(module_id.cast(), &return_type, &[]) {
+        match self.resolve_type(module_id, &return_type, &[]) {
             Ok(v) => resolved_function_contract.return_type = v,
             Err(e) => _ = self.ctx.emit_diag(e),
         }
 
         for arg in arguments {
-            match self.resolve_type(module_id.cast(), &arg.ty, &[]) {
+            match self.resolve_type(module_id, &arg.ty, &[]) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
                 Err(e) => _ = self.ctx.emit_diag(e),
             }
         }
 
         if !self.ctx.errors_happened(tracker) {
-            self.external_functions.write()[ext_function_id.cast()] =
-                (resolved_function_contract, None);
+            self.external_functions.write()[ext_function_id] = (resolved_function_contract, None);
         }
     }
 
-    fn resolve_static(&self, static_id: StoreKey<Static<'arena>>, context: &ModuleContext<'arena>) {
+    fn resolve_static(&self, static_id: StaticId, context: &ModuleContext<'arena>) {
         let mut writer = context.statics.write();
         let span = writer[static_id].span;
         let name = writer[static_id].name;
@@ -452,12 +440,12 @@ impl<'arena> TypeckCtx<'arena> {
         let module_id = writer[static_id].module;
         let comment = writer[static_id].comment;
         drop(writer);
-        match self.resolve_type(module_id.cast(), &ty, &[]) {
+        match self.resolve_type(module_id, &ty, &[]) {
             Ok(v) => {
-                self.statics.write()[static_id.cast()] = TypedStatic::new(
+                self.statics.write()[static_id] = TypedStatic::new(
                     v,
                     TypedLiteral::Void,
-                    module_id.cast(),
+                    module_id,
                     span,
                     annotations,
                     name,
@@ -468,7 +456,7 @@ impl<'arena> TypeckCtx<'arena> {
         }
     }
 
-    fn resolve_trait(&self, trait_id: StoreKey<Trait<'arena>>, context: &ModuleContext<'arena>) {
+    fn resolve_trait(&self, trait_id: TraitId, context: &ModuleContext<'arena>) {
         let mut writer = context.traits.write();
         let span = writer[trait_id].span;
         let name = writer[trait_id].name;
@@ -482,8 +470,7 @@ impl<'arena> TypeckCtx<'arena> {
         let tracker = self.ctx.track_errors();
 
         for func in functions {
-            let typed_return_type = match self.resolve_type(module_id.cast(), &func.return_ty, &[])
-            {
+            let typed_return_type = match self.resolve_type(module_id, &func.return_ty, &[]) {
                 Ok(v) => v,
                 Err(e) => {
                     self.ctx.emit_diag(e);
@@ -494,7 +481,7 @@ impl<'arena> TypeckCtx<'arena> {
             let mut typed_arguments = Vec::new();
 
             for arg in &func.args {
-                match self.resolve_type(module_id.cast(), &arg.ty, &[]) {
+                match self.resolve_type(module_id, &arg.ty, &[]) {
                     Ok(v) => typed_arguments.push((arg.name, v)),
                     Err(e) => _ = self.ctx.emit_diag(e),
                 }
@@ -511,11 +498,11 @@ impl<'arena> TypeckCtx<'arena> {
         }
 
         if !self.ctx.errors_happened(tracker) {
-            self.traits.write()[trait_id.cast()] = TypedTrait {
+            self.traits.write()[trait_id] = TypedTrait {
                 name,
                 span,
-                id: trait_id.cast(),
-                module_id: module_id.cast(),
+                id: trait_id,
+                module_id,
                 annotations,
                 functions: typed_functions,
                 comment,
