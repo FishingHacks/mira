@@ -29,6 +29,7 @@ use inkwell::{
 
 use mira_common::store::{AssociatedStore, StoreKey};
 use mira_context::ErrorEmitted;
+use mira_errors::FatalError;
 use mira_parser::std_annotations::{
     alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
     intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation, noinline::Noinline,
@@ -529,6 +530,13 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         };
         let module = context.create_module(module);
         module.set_triple(&triple);
+        let mira_version = context.metadata_string(&get_mira_version());
+        if let Err(e) =
+            module.add_global_metadata("llvm.ident", &context.metadata_node(&[mira_version.into()]))
+        {
+            ctx.emit_diag(CodegenError::LLVMNative(format!("!llvm.ident: {e}")).to_error());
+            FatalError.raise();
+        }
 
         let target_data = machine.get_target_data();
         let data_layout = target_data.get_data_layout();
@@ -1300,4 +1308,33 @@ compile_error!("only one of llvm20-1, llvm19-1 and llvm18-0 are allowed to be ac
 
 pub fn provide(providers: &mut Providers<'_>) {
     mangling::provide(providers);
+}
+
+fn get_mira_version() -> String {
+    const COMMIT_HASH: Option<&str> = option_env!("MIRAC_COMMIT_HASH_SHORT");
+    const COMMIT_DATE: Option<&str> = option_env!("MIRAC_COMMIT_DATE");
+    const VERSION: &str = const {
+        match option_env!("MIRAC_PKG_OVERRIDE") {
+            Some(v) => v,
+            None => env!("CARGO_PKG_VERSION"),
+        }
+    };
+
+    let mut s = format!("mirac version {VERSION}");
+    if COMMIT_HASH.is_some() || COMMIT_DATE.is_some() {
+        s.push_str(" (");
+    }
+    if let Some(date) = COMMIT_DATE {
+        s.push_str(date);
+    }
+    if let Some(hash) = COMMIT_HASH {
+        if COMMIT_DATE.is_some() {
+            s.push(' ');
+        }
+        s.push_str(hash);
+    }
+    if COMMIT_HASH.is_some() || COMMIT_DATE.is_some() {
+        s.push(')');
+    }
+    s
 }

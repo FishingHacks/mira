@@ -23,8 +23,8 @@ use mira_typeck::{
     Ty, TyKind, TypeCtx, TypeckCtx, TypedExternalFunction, TypedModule, TypedStruct, default_types,
 };
 
-use crate::DefaultTypes;
 use crate::mangling::{ANON_FN_NAME, mangle_external_function};
+use crate::{DefaultTypes, get_mira_version};
 
 #[allow(non_upper_case_globals)]
 #[allow(non_snake_case)]
@@ -156,7 +156,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
             DWARFSourceLanguage::C,
             &root_filename,
             &root_directory,
-            concat!("clang LLVM (mira version ", env!("CARGO_PKG_VERSION"), ")"),
+            &format!("clang LLVM ({})", get_mira_version()),
             optimizations,
             "",
             0,
