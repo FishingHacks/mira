@@ -276,7 +276,8 @@ impl DiagnosticFormatter {
                 &mut Formatter::new(ctx, writer),
                 &mut *self.printer,
                 self.styles,
-            )
+            )?;
+            writer.write_str(self.styles.reset)
         })
     }
 
