@@ -95,16 +95,13 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
         args: &[TypedLiteral<'arena>],
     ) -> Result<(), BuilderError> {
         let subst_ctx = SubstitutionCtx::new(self.ctx.tc_ctx, &self.generics);
-        let func = self.ctx.intrinsics.get_intrinsic(
+        let func = self.ctx.get_intrinsic(
             intrinsic,
             args.iter().map(|v| {
                 v.to_type(self.ir.scope(), self.ctx.tc_ctx)
                     .substitute(&subst_ctx)
             }),
             self.ir.get_ty(dst),
-            &self.ctx.default_types,
-            &self.ctx.structs,
-            &self.ctx.module,
         );
         let val = self.build_direct_call(
             func,

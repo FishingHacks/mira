@@ -114,14 +114,6 @@ pub fn mangle_static<'arena>(ctx: &TypeckCtx<'arena>, id: StoreKey<TypedStatic<'
     mangled
 }
 
-pub fn mangle_string(string: &str) -> String {
-    let mut name = String::from("str_");
-    let mut hasher = DefaultHasher::new();
-    string.hash(&mut hasher);
-    write!(name, "{:x}", hasher.finish()).expect("writing to a string should never fail");
-    name
-}
-
 pub fn mangle_name<'arena>(ctx: &TypeckCtx<'arena>, item: ModuleScopeValue<'arena>) -> String {
     match item {
         ModuleScopeValue::Function(id) => mangle_function(ctx, id.cast()),

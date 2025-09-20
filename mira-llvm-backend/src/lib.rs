@@ -38,20 +38,17 @@ use mira_spans::interner::Symbol;
 use mira_target::{NATIVE_TARGET, Target};
 use mira_typeck::{
     Substitute, SubstitutionCtx, Ty, TyKind, TyList, TypeckCtx, TypedExternalFunction,
-    TypedFunction, TypedStatic, TypedStruct, TypedTrait, default_types,
-    ir::{IR, TypedExpression, TypedLiteral, Visitor},
+    TypedFunction, TypedStatic, TypedStruct, TypedTrait, default_types, ir::TypedLiteral,
     queries::Providers,
 };
 
 use debug_builder::DebugContext;
 pub use error::CodegenError;
-use intrinsics::Intrinsics;
-use mangling::{mangle_function_instance, mangle_static, mangle_string, mangle_struct};
+use mangling::{mangle_function_instance, mangle_static, mangle_struct};
 
 mod builder;
 mod debug_builder;
 mod error;
-mod intrinsics;
 pub mod mangling;
 
 fn llvm_basic_ty<'ctx>(
@@ -136,10 +133,10 @@ fn static_to_basic_type(static_value: GlobalValue<'_>) -> BasicTypeEnum<'_> {
     match static_value.get_value_type() {
         AnyTypeEnum::ArrayType(ty) => ty.into(),
         AnyTypeEnum::FloatType(ty) => ty.into(),
-        AnyTypeEnum::FunctionType(_) => panic!("A static should never be a function"),
         AnyTypeEnum::IntType(ty) => ty.into(),
         AnyTypeEnum::PointerType(ty) => ty.into(),
         AnyTypeEnum::StructType(ty) => ty.into(),
+        AnyTypeEnum::FunctionType(_) => panic!("A static should never be a function"),
         AnyTypeEnum::VoidType(_) => panic!("A static should never be void"),
         AnyTypeEnum::VectorType(..) | AnyTypeEnum::ScalableVectorType(..) => {
             unreachable!("vector types arent supported")
@@ -174,9 +171,9 @@ fn basic_val<'ctx, 'arena>(
                 )
                 .expect("the type should always match")
         }
-        TypedLiteral::String(global_str) => {
-            let ptr = ctx.string_map[global_str].as_pointer_value().into();
-            let size = global_str.len();
+        TypedLiteral::String(sym) => {
+            let ptr = ctx.get_string(*sym).as_pointer_value().into();
+            let size = sym.len();
             let len_const = ctx.default_types.isize.const_int(size as u64, false).into();
             ctx.default_types
                 .fat_ptr
@@ -406,15 +403,16 @@ pub struct CodegenContext<'ctx, 'arena, 'a> {
     pub module: Module<'ctx>,
     pub machine: TargetMachine,
     pub triple: TargetTriple,
-    function_store: RefCell<FnStore<'ctx, 'arena>>,
     external_functions: ExternalFunctionsStore<'ctx, 'arena>,
     structs: StructsStore<'ctx, 'arena>,
     statics: StaticsStore<'ctx, 'arena>,
-    string_map: HashMap<Symbol<'arena>, GlobalValue<'ctx>>,
     debug_ctx: DebugContext<'ctx, 'arena>,
-    intrinsics: Intrinsics<'ctx, 'arena>,
-    vtables: HashMap<VTableKey<'arena>, GlobalValue<'ctx>>,
     config: CodegenConfig<'ctx>,
+
+    intrinsics: RefCell<HashMap<Symbol<'arena>, FunctionValue<'ctx>>>,
+    function_store: RefCell<FnStore<'ctx, 'arena>>,
+    string_map: RefCell<HashMap<Symbol<'arena>, GlobalValue<'ctx>>>,
+    vtables: RefCell<HashMap<VTableKey<'arena>, GlobalValue<'ctx>>>,
 }
 
 impl<'ctx> Deref for CodegenContext<'ctx, '_, '_> {
@@ -562,27 +560,6 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         );
 
         let builder = context.create_builder();
-        let StringVtableCollector {
-            mut strings,
-            mut vtables,
-        } = collect_data(ctx);
-
-        let mut string_map = HashMap::new();
-        for strn in strings.drain() {
-            let constant = context.const_string(strn.as_bytes(), false);
-            let mangled_name = mangle_string(&strn);
-            assert!(strn.len() <= u32::MAX as usize);
-
-            let global = module.add_global(
-                default_types.i8.array_type(strn.len() as u32),
-                None,
-                &mangled_name,
-            );
-            global.set_linkage(Linkage::Internal);
-            global.set_initializer(&constant);
-            string_map.insert(strn, global);
-        }
-        drop(strings);
 
         let mut me = Self {
             context,
@@ -592,13 +569,13 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             external_functions: AssociatedStore::new(),
             structs: AssociatedStore::new(),
             statics: AssociatedStore::new(),
-            string_map,
+            string_map: RefCell::new(HashMap::new()),
             machine,
             triple,
             tc_ctx: ctx,
             debug_ctx,
-            intrinsics: Intrinsics::new(context),
-            vtables: HashMap::new(),
+            intrinsics: RefCell::new(HashMap::new()),
+            vtables: RefCell::new(HashMap::new()),
             config,
             function_store: RefCell::default(),
         };
@@ -713,53 +690,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         }
         drop(ext_function_reader);
 
-        let trait_reader = ctx.traits.read();
-        for (ty, traits) in vtables.drain() {
-            let mut typs = vec![default_types.isize.into()];
-            for trait_id in traits.iter() {
-                for _ in trait_reader[*trait_id].functions.iter() {
-                    // func pointer
-                    typs.push(default_types.ptr.into());
-                }
-            }
-            let vtable_ty = context.struct_type(&typs, false);
-            let mut field_values = vec![
-                default_types
-                    .isize
-                    .const_int(
-                        ty.size_and_alignment(
-                            (default_types.isize.get_bit_width() / 8) as u64,
-                            &struct_reader,
-                        )
-                        .0,
-                        false,
-                    )
-                    .into(),
-            ];
-            for trait_id in traits.iter() {
-                match &**ty {
-                    TyKind::Struct { struct_id, .. } => {
-                        for fn_id in struct_reader[struct_id].trait_impl[trait_id]
-                            .iter()
-                            .copied()
-                        {
-                            let func = me.get_fn_instance(FnInstance::new_mono(fn_id));
-                            field_values.push(func.as_global_value().as_pointer_value().into());
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            let global = me
-                .module
-                .add_global(vtable_ty, Default::default(), "vtable");
-            global.set_linkage(Linkage::LinkOnceODR);
-            global.set_initializer(&vtable_ty.const_named_struct(&field_values));
-            me.vtables.insert((ty, traits), global);
-        }
-        drop(trait_reader);
         drop(struct_reader);
-        drop(vtables);
 
         let static_reader = ctx.statics.read();
         let mut statics = AssociatedStore::new();
@@ -899,6 +830,87 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         instance: &FnInstance<'arena>,
     ) -> Option<FunctionValue<'ctx>> {
         self.function_store.borrow().map.get(instance).copied()
+    }
+
+    pub fn get_string(&self, s: Symbol<'arena>) -> GlobalValue<'ctx> {
+        if let Some(&v) = self.string_map.borrow().get(&s) {
+            return v;
+        }
+        assert!(s.len() < u32::MAX as usize);
+        let mut string_map = self.string_map.borrow_mut();
+        let global = self.module.add_global(
+            self.default_types.i8.array_type(s.len() as u32),
+            None,
+            "str",
+        );
+        global.set_linkage(Linkage::Private);
+        global.set_initializer(&self.context.const_string(s.as_bytes(), false));
+        string_map.insert(s, global);
+        global
+    }
+
+    pub fn get_vtable(&self, vtable: &VTableKey<'arena>) -> GlobalValue<'ctx> {
+        if let Some(&v) = self.vtables.borrow().get(vtable) {
+            return v;
+        }
+        let mut vtables = self.vtables.borrow_mut();
+        let struct_reader = self.tc_ctx.structs.read();
+        let ptr_width = (self.default_types.isize.get_bit_width() / 8) as u64;
+
+        let mut typs = vec![self.default_types.isize.into()];
+        typs.extend(std::iter::repeat_n(
+            self.default_types.ptr.as_basic_type_enum(),
+            vtable.1.len(),
+        ));
+
+        let vtable_ty = self.context.struct_type(&typs, false);
+        let ty_size = vtable.0.size_and_alignment(ptr_width, &struct_reader).0;
+        let mut field_values = vec![self.default_types.isize.const_int(ty_size, false).into()];
+
+        for trait_id in vtable.1.iter() {
+            match *vtable.0 {
+                TyKind::Struct { struct_id, .. } => {
+                    for fn_id in struct_reader[struct_id].trait_impl[trait_id]
+                        .iter()
+                        .copied()
+                    {
+                        let func = self.get_fn_instance(FnInstance::new_mono(fn_id));
+                        field_values.push(func.as_global_value().as_pointer_value().into());
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        let global = self.module.add_global(vtable_ty, None, "vtable");
+        global.set_linkage(Linkage::Private);
+        global.set_initializer(&vtable_ty.const_named_struct(&field_values));
+        vtables.insert(vtable.clone(), global);
+
+        global
+    }
+
+    pub fn get_intrinsic(
+        &self,
+        sym: Symbol<'arena>,
+        types: impl Iterator<Item = Ty<'arena>>,
+        ret_ty: Ty<'arena>,
+    ) -> FunctionValue<'ctx> {
+        if let Some(&func) = self.intrinsics.borrow().get(&sym) {
+            return func;
+        }
+        let params = types
+            .map(|ty| llvm_basic_ty(*ty, &self.default_types, &self.structs, self.context).into())
+            .collect::<Vec<_>>();
+        let fn_ty = if ret_ty.is_voidlike() {
+            self.context.void_type().fn_type(&params, false)
+        } else {
+            llvm_basic_ty(*ret_ty, &self.default_types, &self.structs, self.context)
+                .fn_type(&params, false)
+        };
+        let function = self.module.add_function(sym.to_str(), fn_ty, None);
+        self.intrinsics.borrow_mut().insert(sym, function);
+
+        function
     }
 
     pub fn finish(&self) -> Result<(), LLVMString> {
@@ -1253,72 +1265,6 @@ impl CompileStatusUpdate<'_, '_, '_, (), (), (), ()> for () {
     ) {
     }
     fn start_compiling_normal_fn(&mut self, _: &CodegenContext<'_, '_, '_>, _: FnInstance<'_>) {}
-}
-
-#[derive(Default)]
-struct StringVtableCollector<'ctx> {
-    strings: HashSet<Symbol<'ctx>>,
-    vtables: HashSet<(Ty<'ctx>, Box<[StoreKey<TypedTrait<'ctx>>]>)>,
-}
-
-impl<'ctx> StringVtableCollector<'ctx> {
-    fn visit_lit_standalone(&mut self, lit: &TypedLiteral<'ctx>) {
-        match lit {
-            &TypedLiteral::String(s) => _ = self.strings.insert(s),
-
-            TypedLiteral::ArrayInit(_, lit, _) => self.visit_lit_standalone(lit),
-            TypedLiteral::Array(_, lits)
-            | TypedLiteral::Struct(_, lits)
-            | TypedLiteral::Tuple(lits) => {
-                for lit in lits {
-                    self.visit_lit_standalone(lit);
-                }
-            }
-
-            _ => {}
-        }
-    }
-}
-
-impl<'ctx> Visitor<'ctx> for StringVtableCollector<'ctx> {
-    fn visit_expr(
-        &mut self,
-        expr: &TypedExpression<'ctx>,
-        _: &IR<'ctx>,
-        _: mira_typeck::TypeCtx<'ctx>,
-    ) {
-        if let TypedExpression::AttachVtable(_, _, _, (ty, traits)) = expr {
-            self.vtables.insert((*ty, traits.clone()));
-        }
-    }
-
-    fn visit_lit(&mut self, lit: &TypedLiteral<'ctx>, _: &IR<'ctx>, _: mira_typeck::TypeCtx<'ctx>) {
-        if let &TypedLiteral::String(s) = lit {
-            self.strings.insert(s);
-        }
-    }
-}
-
-fn collect_data<'ctx>(ctx: &TypeckCtx<'ctx>) -> StringVtableCollector<'ctx> {
-    let mut collector = StringVtableCollector::default();
-
-    let function_reader = ctx.functions.read();
-    let ext_function_reader = ctx.external_functions.read();
-    let statics_reader = ctx.statics.read();
-
-    for (_, body) in function_reader.iter() {
-        body.visit(&mut collector, ctx.ctx);
-    }
-    for (_, body) in ext_function_reader.iter() {
-        if let Some(body) = body {
-            body.visit(&mut collector, ctx.ctx);
-        }
-    }
-    for static_value in statics_reader.iter() {
-        collector.visit_lit_standalone(&static_value.value);
-    }
-
-    collector
 }
 
 /// returns the llvm major and minor versions that were expected

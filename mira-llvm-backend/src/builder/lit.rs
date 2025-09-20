@@ -46,9 +46,9 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 )
                 .expect("the type should always match")
             }
-            TypedLiteral::String(global_str) => {
-                let ptr = self.ctx.string_map[global_str].as_pointer_value().into();
-                let size = global_str.len();
+            &TypedLiteral::String(sym) => {
+                let ptr = self.ctx.get_string(sym).as_pointer_value().into();
+                let size = sym.len();
                 let len_const = self
                     .ctx
                     .default_types

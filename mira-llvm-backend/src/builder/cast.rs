@@ -185,9 +185,9 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         &mut self,
         dst: ValueId,
         value: &TypedLiteral<'arena>,
-        vtable_id: &(Ty<'arena>, Box<[StoreKey<TypedTrait<'arena>>]>),
+        vtable: &(Ty<'arena>, Box<[StoreKey<TypedTrait<'arena>>]>),
     ) -> Result {
-        let vtable_ptr = self.ctx.vtables[vtable_id].as_pointer_value();
+        let vtable_ptr = self.ctx.get_vtable(vtable).as_pointer_value();
         let metadata = self
             .build_bit_cast(vtable_ptr, self.ctx.default_types.isize, "")?
             .into_int_value();
