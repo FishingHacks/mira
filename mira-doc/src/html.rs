@@ -521,6 +521,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     ) -> String {
         let curfile = &fully_qualified_path.0;
         let structure = &self.tc_ctx.structs.read()[key];
+        let trait_reader = self.tc_ctx.traits.read();
         let mut s = self.generate_file_start(curfile, structure.name.symbol().to_str());
         let module = structure.module_id;
 
@@ -534,6 +535,37 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         Self::generate_annotations(&structure.annotations, &mut s);
         s.push_str("struct ");
         s.escaped().push_str(structure.name.symbol().to_str());
+
+        if !structure.generics.is_empty() {
+            s.push_str("&lt;");
+            for (i, generic) in structure.generics.iter().enumerate() {
+                if i != 0 {
+                    s.push_str(", ");
+                }
+                if !generic.sized {
+                    s.push_str("unsized ");
+                }
+                s.escaped().push_str(&generic.name);
+                if !generic.bounds.is_empty() {
+                    s.push_str(": ");
+                }
+                for (i, bound) in generic.bounds.iter().enumerate() {
+                    if i != 0 {
+                        s.push_str(" + ");
+                    }
+
+                    s.push_str("<a class=\"trait\" href=\"");
+                    let path = self.get_item_path(ModuleScopeValue::Trait(bound.cast()), curfile);
+                    s.push_fmt(format_args!("{}", urlencode(&path)));
+                    s.push_str("\">");
+                    s.escaped()
+                        .push_str(trait_reader[bound].name.symbol().to_str());
+                    s.push_str("</a>");
+                }
+            }
+            s.push_str("&gt;");
+        }
+
         if structure.elements.is_empty() {
             s.push_str(" {}");
         } else {
