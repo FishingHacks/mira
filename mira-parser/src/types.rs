@@ -1,15 +1,8 @@
-use std::{
-    collections::HashMap,
-    fmt::{Display, Write},
-};
+use std::fmt::{Display, Write};
 
-use crate::{error::ParsingError, module::Function};
-use mira_common::store::StoreKey;
+use crate::error::ParsingError;
 use mira_lexer::TokenType;
-use mira_spans::{
-    Ident, Span,
-    interner::{Symbol, symbols},
-};
+use mira_spans::{Ident, Span, interner::symbols};
 
 use super::{Parser, Path, expression::PathWithoutGenerics};
 
@@ -418,8 +411,6 @@ impl PartialEq for TypeRef<'_> {
         }
     }
 }
-
-pub type Implementation<'arena> = HashMap<Symbol<'arena>, StoreKey<Function<'arena>>>;
 
 #[derive(Debug, Clone)]
 pub struct Generic<'arena> {

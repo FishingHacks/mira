@@ -15,7 +15,7 @@ use mira_spans::{BytePos, SourceFile, SpanData};
 pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
 pub use statement::{TraitFunction, Variable};
 use tokenstream::{BorrowedTokenStream, TokenStream};
-pub use types::{Generic, Implementation, RESERVED_TYPE_NAMES, TypeRef};
+pub use types::{Generic, RESERVED_TYPE_NAMES, TypeRef};
 
 use crate::module::ModuleId;
 
