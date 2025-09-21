@@ -4,7 +4,6 @@ use std::{cell::Cell, marker::PhantomData, sync::Arc, thread::ThreadId};
 
 pub use cache::{DefaultCache, QueryCache, SingleCache};
 pub use key::QueryKey;
-use mira_common::store::StoreKey;
 use mira_errors::{Diagnostic, ErrorData, FatalError, Severity};
 use parking_lot::{Condvar, Mutex, lock_api::RwLock};
 
@@ -122,7 +121,7 @@ macro_rules! define_modules {
                 let res = states_writer.get(&key).copied();
                 if let Some(job_id) = res {
                     let reader = system.jobs.read();
-                    let res = reader.get(&job_id);
+                    let res = reader.get(job_id);
                     if let Some(res) = res {
                         let job = &reader[job_id];
                         if job.thread == std::thread::current().id() {
@@ -186,7 +185,7 @@ macro_rules! define_system {
         #[allow(unused, dead_code)]
         #[derive(Default)]
         pub struct QueryStates<'arena> {
-            $(pub(crate) $name: parking_lot::RwLock<std::collections::HashMap<queries::$name::Key<'arena>, $crate::queries::plumbing::JobId<'arena>>>,)+
+            $(pub(crate) $name: parking_lot::RwLock<std::collections::HashMap<queries::$name::Key<'arena>, $crate::queries::plumbing::JobId>>,)+
             _marker: std::marker::PhantomData<&'arena ()>,
         }
 
@@ -208,7 +207,7 @@ macro_rules! define_system {
             pub(crate) arenas: QueryArenas<'arena>,
             pub(crate) caches: QueryCaches<'arena>,
             pub(crate) states: QueryStates<'arena>,
-            pub(crate) jobs: parking_lot::RwLock<mira_common::store::Store<$crate::queries::plumbing::QueryJob<'arena>>>,
+            pub(crate) jobs: parking_lot::RwLock<mira_common::index::IndexStore<$crate::queries::plumbing::JobId, $crate::queries::plumbing::QueryJob<'arena>>>,
         }
         impl<'arena> $crate::TypeckCtx<'arena> {
             $(pub fn $name(&self, key: queries::$name::Key<'arena>) -> queries::$name::Value<'arena> { queries::$name::run(self.query_system(), self, key) })+
@@ -216,7 +215,10 @@ macro_rules! define_system {
     };
 }
 
-pub(crate) type JobId<'arena> = StoreKey<QueryJob<'arena>>;
+mira_common::newty! {
+    #[display("{}")]
+    pub(crate) struct JobId {}
+}
 
 struct NeedsSendSync<T: Send + Sync>(PhantomData<T>);
 
@@ -246,14 +248,14 @@ impl FinishWaiter {
 
 pub(crate) struct QueryJob<'arena> {
     desc: Box<str>,
-    parent: StoreKey<QueryJob<'arena>>,
+    parent: Option<JobId>,
     pub(crate) thread: ThreadId,
     result: FinishWaiter,
     _marker: PhantomData<&'arena ()>,
 }
 
-impl<'arena> QueryJob<'arena> {
-    pub(crate) fn new(desc: Box<str>, parent: JobId<'arena>) -> Self {
+impl QueryJob<'_> {
+    pub(crate) fn new(desc: Box<str>, parent: Option<JobId>) -> Self {
         Self {
             desc,
             parent,
@@ -275,39 +277,41 @@ impl<'arena> QueryJob<'arena> {
 }
 
 thread_local! {
-    static CURRENT_JOB: Cell<JobId<'static>> = const { Cell::new(JobId::undefined()) };
+    static CURRENT_JOB: Cell<Option<JobId>> = const { Cell::new(None) };
 }
 
 impl<'arena> QuerySystem<'arena> {
-    pub(crate) fn enter_job(&self, desc: impl Into<Box<str>>) -> JobId<'arena> {
+    pub(crate) fn enter_job(&self, desc: impl Into<Box<str>>) -> JobId {
         let mut jobs = self.jobs.write();
-        let id = jobs.reserve_key();
-        jobs.insert_reserved(id, QueryJob::new(desc.into(), CURRENT_JOB.get().cast()));
-        CURRENT_JOB.set(id.cast());
+        let id = jobs.reserve_id();
+        jobs.insert_reserved(QueryJob::new(desc.into(), CURRENT_JOB.get()), id);
+        CURRENT_JOB.set(Some(id));
         id
     }
 
-    pub(crate) fn exit_job(&self, id: JobId<'arena>) {
-        debug_assert_eq!(CURRENT_JOB.get().cast(), id);
+    pub(crate) fn exit_job(&self, id: JobId) {
+        debug_assert_eq!(CURRENT_JOB.get(), Some(id));
         _ = id;
-        let Some(job) = self.jobs.write().remove(&id) else {
+        let Some(job) = self.jobs.write().remove(id) else {
             panic!("Error: Exited non-existing job {id}")
         };
         job.finish();
-        CURRENT_JOB.set(job.parent.cast());
+        CURRENT_JOB.set(job.parent);
     }
 
-    pub(crate) fn cycle_error(&self, ctx: TypeCtx<'arena>, job: JobId<'arena>) -> ! {
-        assert!(!job.is_undefined());
+    pub(crate) fn cycle_error(&self, ctx: TypeCtx<'arena>, job: JobId) -> ! {
         let jobs = self.jobs.read();
         let main_query_desc = jobs[job].desc.clone();
 
-        let mut current_job = CURRENT_JOB.get().cast();
-        assert!(!current_job.is_undefined());
+        let Some(mut current_job) = CURRENT_JOB.get() else {
+            unreachable!("cycle_error: Supposedly no job running currently");
+        };
         let mut descs = Vec::new();
         while current_job != job {
             descs.push(jobs[current_job].desc.clone());
-            current_job = jobs[current_job].parent;
+            current_job = jobs[current_job]
+                .parent
+                .expect("cycle_error: job without parent is part of the cycle");
         }
 
         descs.reverse();

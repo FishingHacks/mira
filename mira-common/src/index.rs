@@ -215,6 +215,10 @@ impl<I: Idx, V> IndexStore<I, V> {
         id
     }
 
+    pub fn remove(&mut self, idx: I) -> Option<V> {
+        self.values.remove(&idx)
+    }
+
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &V> {
         self.values.values()
     }
