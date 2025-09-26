@@ -22,6 +22,6 @@ pub fn read<T: Meow>(v: &T) -> T = *v;
 
 pub fn main() {
     let a = 12u32;
-    let b = read(&a);
+    let b = read::<u32>(&a);
     b.println();
 }

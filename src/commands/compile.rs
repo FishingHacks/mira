@@ -101,7 +101,7 @@ pub(crate) fn compile_main(mut args: CompileArgs) -> Result<(), Box<dyn Error>> 
     if let Some(v) = tmp_obj_path {
         drop(std::fs::remove_file(v));
     }
-    if res.is_err() {
+    if res.is_err() || !args.run {
         return Ok(());
     }
 
