@@ -737,6 +737,90 @@ impl<'arena> Lexer<'arena> {
         Ok(Token::new(tok, Some(lit), self.span_from(start_byte)))
     }
 
+    // \xHH
+    fn parse_xhh_escape(&mut self, string_char: char) -> Result<char, LexingError<'arena>> {
+        let part1 = match self.advance() {
+            '\0' => return Err(LexingError::UnclosedString(self.current_span())),
+            c @ '0'..='9' => c as u8 - b'0',
+            c @ 'a'..='f' => c as u8 - b'a' + 0xa,
+            c @ 'A'..='F' => c as u8 - b'A' + 0xa,
+            c if c == string_char => {
+                return Err(LexingError::UnterminatedNumericEscape(self.span(3)));
+            }
+            c => {
+                return Err(LexingError::InvalidNumericEscapeChar(
+                    self.current_span(),
+                    c,
+                ));
+            }
+        };
+        let part2 = match self.advance() {
+            '\0' => return Err(LexingError::UnclosedString(self.current_span())),
+            c @ '0'..='9' => c as u8 - b'0',
+            c @ 'a'..='f' => c as u8 - b'a' + 0xa,
+            c @ 'A'..='F' => c as u8 - b'A' + 0xa,
+            c if c == string_char => {
+                return Err(LexingError::UnterminatedNumericEscape(self.span(3)));
+            }
+            c => {
+                return Err(LexingError::InvalidNumericEscapeChar(
+                    self.current_span(),
+                    c,
+                ));
+            }
+        };
+        match char::from_u32(((part1 << 4) | part2) as u32) {
+            Some(c) if c.is_ascii() => Ok(c),
+            _ => Err(LexingError::OutOfRangeEscape(self.span(4), 0..=0x7f)),
+        }
+    }
+
+    fn parse_unicode_escape(&mut self, string_char: char) -> Result<char, LexingError<'arena>> {
+        // the start of the sequence (current character - 1) to include the '\'
+        let start = self.current - 1;
+
+        match self.advance() {
+            '\0' => return Err(LexingError::UnclosedString(self.current_span())),
+            '{' => {}
+            _ => return Err(LexingError::InvalidUnicodeEscape(self.span_from(start))),
+        }
+        // to track the amount of characters inside { ... }, which cannot be more than 10.
+        let mut char_count = 0;
+        let mut num = 0;
+        loop {
+            match self.advance() {
+                '}' => break,
+                '\0' => return Err(LexingError::UnclosedString(self.current_span())),
+                c @ '0'..='9' => num = (num << 4) | (c as u8 - b'0') as u32,
+                c @ 'a'..='f' => num = (num << 4) | (c as u8 - b'a' + 0xa) as u32,
+                c @ 'A'..='F' => num = (num << 4) | (c as u8 - b'A' + 0xa) as u32,
+                c if c == string_char => {
+                    return Err(LexingError::UnterminatedUnicodeEscape(
+                        self.span_from(start),
+                    ));
+                }
+                _ => return Err(LexingError::InvalidUnicodeEscapeChar(self.current_span())),
+            }
+            char_count += 1;
+        }
+        if char_count == 0 {
+            return Err(LexingError::EmptyUnicodeEscapeSequence(
+                self.span_from(start),
+            ));
+        }
+        if char_count > 6 {
+            return Err(LexingError::TooLongUnicodeEscapeSequence(
+                self.span_from(start),
+            ));
+        }
+        match char::from_u32(num) {
+            Some(c) => Ok(c),
+            None => Err(LexingError::OutOfRangeUnicodeEscapeSequence(
+                self.span_from(start),
+            )),
+        }
+    }
+
     fn parse_string(&mut self, string_char: char) -> Result<Token<'arena>, LexingError<'arena>> {
         let mut is_backslash = false;
         let mut s = String::new();
@@ -749,7 +833,17 @@ impl<'arena> Lexer<'arena> {
                 return Err(LexingError::UnclosedString(self.current_span()));
             } else if is_backslash {
                 is_backslash = false;
-                s.push(Self::escape_char_to_real_char(c));
+                match c {
+                    'n' => s.push('\n'),
+                    '0' => s.push('\0'),
+                    'r' => s.push('\r'),
+                    't' => s.push('\t'),
+                    'e' => s.push('\x1b'),
+                    'b' => s.push('\x08'),
+                    'x' => s.push(self.parse_xhh_escape(string_char)?),
+                    'u' => s.push(self.parse_unicode_escape(string_char)?),
+                    _ => return Err(LexingError::InvalidEscape(self.current_span(), c)),
+                }
             } else if c == '\\' {
                 is_backslash = true;
             } else if c == string_char || c == '\n' {
@@ -767,16 +861,6 @@ impl<'arena> Lexer<'arena> {
             Some(Literal::String(self.ctx.intern_str(&s))),
             self.span_from(start),
         ))
-    }
-
-    fn escape_char_to_real_char(character: char) -> char {
-        match character {
-            'n' => '\n',
-            '0' => '\0',
-            'r' => '\r',
-            't' => '\t',
-            _ => character,
-        }
     }
 
     fn parse_identifier(

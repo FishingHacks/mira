@@ -34,6 +34,10 @@ macro_rules! token_type {
     };
 }
 
+// BStr (b"...") => &[u8]
+// CStr (c"...") => &[u8], but the string ends in '\0'
+// BChar (b'...') => u8
+
 token_type! {
     Let = "let",
     EqualEqual = "==",
