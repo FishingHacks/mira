@@ -842,6 +842,14 @@ impl<'arena> Lexer<'arena> {
                     'b' => s.push('\x08'),
                     'x' => s.push(self.parse_xhh_escape(string_char)?),
                     'u' => s.push(self.parse_unicode_escape(string_char)?),
+                    '\n' => loop {
+                        match self.peek() {
+                            '\0' => return Err(LexingError::UnclosedString(self.current_span())),
+                            // skip all whitespace characters
+                            ' ' | '\n' | '\r' | '\x09' => _ = self.advance(),
+                            _ => break,
+                        }
+                    },
                     _ => return Err(LexingError::InvalidEscape(self.current_span(), c)),
                 }
             } else if c == '\\' {
@@ -877,33 +885,28 @@ impl<'arena> Lexer<'arena> {
             }
             identifier.push(self.advance());
         }
-        match identifier.as_str() {
-            "true" => {
-                return Ok(Token::new(
-                    TokenType::BooleanLiteral,
-                    Some(Literal::Bool(true)),
-                    self.span_from(start),
-                ));
-            }
-            "false" => {
-                return Ok(Token::new(
-                    TokenType::BooleanLiteral,
-                    Some(Literal::Bool(false)),
-                    self.span_from(start),
-                ));
-            }
-            "void" => return Ok(self.get_token(TokenType::VoidLiteral)),
-            _ => (),
-        }
-        Ok(Self::try_token_from_keyword(&identifier)
-            .map(|v| self.get_token(v))
-            .unwrap_or_else(|| {
-                Token::new(
-                    TokenType::IdentifierLiteral,
-                    Some(Literal::String(self.ctx.intern_str(&identifier))),
-                    self.span_from(start),
-                )
-            }))
+        Ok(match identifier.as_str() {
+            "true" => Token::new(
+                TokenType::BooleanLiteral,
+                Some(Literal::Bool(true)),
+                self.span_from(start),
+            ),
+            "false" => Token::new(
+                TokenType::BooleanLiteral,
+                Some(Literal::Bool(false)),
+                self.span_from(start),
+            ),
+            "void" => self.get_token(TokenType::VoidLiteral),
+            ident => Self::try_token_from_keyword(ident)
+                .map(|v| self.get_token(v))
+                .unwrap_or_else(|| {
+                    Token::new(
+                        TokenType::IdentifierLiteral,
+                        Some(Literal::String(self.ctx.intern_str(ident))),
+                        self.span_from(start),
+                    )
+                }),
+        })
     }
 
     fn span_from(&self, from: usize) -> Span<'arena> {
