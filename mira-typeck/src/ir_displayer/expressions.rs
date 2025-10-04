@@ -78,9 +78,10 @@ impl ExpressionDisplay<'_> {
                 f.pop_indent();
                 f.write_str("\n)")
             }
-            TypedExpression::Return(_, typed_literal) => {
+            TypedExpression::Return(_, None) => f.write_str("return"),
+            TypedExpression::Return(_, Some(id)) => {
                 f.write_str("return ")?;
-                Tld(typed_literal).fmt(f)
+                f.write_value(id)
             }
             TypedExpression::Block(_, block, annotations) => {
                 f.write_value(annotations)?;

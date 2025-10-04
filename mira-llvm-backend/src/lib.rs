@@ -49,6 +49,9 @@ use debug_builder::DebugContext;
 pub use error::CodegenError;
 use mangling::{mangle_function_instance, mangle_static, mangle_struct};
 
+use crate::abi::{ArgumentType, argument, has_special_encoding, return_ty};
+
+mod abi;
 mod builder;
 mod debug_builder;
 mod error;
@@ -341,7 +344,27 @@ struct DefaultTypes<'ctx> {
     pub empty_struct: StructType<'ctx>,
 }
 
-pub(crate) type ExternalFunctionsStore<'ctx> = IndexMap<ExternalFunctionId, FunctionValue<'ctx>>;
+pub(crate) struct CodegenFunction<'ctx> {
+    // first value is return value
+    ret_args_types: Box<[ArgumentType<'ctx>]>,
+    value: FunctionValue<'ctx>,
+}
+
+impl<'ctx> CodegenFunction<'ctx> {
+    pub(crate) fn return_ty(&self) -> ArgumentType<'ctx> {
+        self.ret_args_types[0]
+    }
+
+    pub(crate) fn args(&self) -> &[ArgumentType<'ctx>] {
+        &self.ret_args_types[1..]
+    }
+
+    pub(crate) fn as_global_value(&self) -> GlobalValue<'ctx> {
+        self.value.as_global_value()
+    }
+}
+
+pub(crate) type ExternalFunctionsStore<'ctx> = IndexMap<ExternalFunctionId, CodegenFunction<'ctx>>;
 pub(crate) type StructsStore<'ctx> = IndexMap<StructId, StructType<'ctx>>;
 pub(crate) type StaticsStore<'ctx> = IndexMap<StaticId, GlobalValue<'ctx>>;
 
@@ -371,7 +394,7 @@ impl Default for CodegenContextBuilder {
 
 type VTableKey<'arena> = (Ty<'arena>, Box<[TraitId]>);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FnInstance<'ctx> {
     pub fn_id: FunctionId,
     pub generics: TyList<'ctx>,
@@ -392,7 +415,7 @@ impl<'ctx> FnInstance<'ctx> {
 
 #[derive(Default)]
 pub struct FnStore<'ctx, 'arena> {
-    map: HashMap<FnInstance<'arena>, FunctionValue<'ctx>>,
+    map: HashMap<FnInstance<'arena>, CodegenFunction<'ctx>>,
     missing: HashSet<FnInstance<'arena>>,
 }
 
@@ -618,35 +641,38 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         let noinline =
             context.create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
 
+        let ptrsize = (default_types.isize.get_bit_width() / 8) as u8;
         // external functions
         let ext_function_reader = ctx.external_functions.read();
         for (key, (contract, body)) in ext_function_reader.entries() {
-            let param_types = contract
-                .arguments
+            let mut ret_args_types = Vec::with_capacity(contract.arguments.len() + 1);
+
+            let ret_ty = return_ty(
+                context,
+                &contract.return_type,
+                ptrsize,
+                &struct_reader,
+                |t| llvm_basic_ty(t, &default_types, &me.structs, context),
+            );
+            ret_args_types.push(ret_ty);
+
+            for (_, ty) in &contract.arguments {
+                let arg_ty = argument(context, ty, ptrsize, &struct_reader, |t| {
+                    llvm_basic_ty(t, &default_types, &me.structs, context)
+                });
+                ret_args_types.push(arg_ty);
+            }
+
+            let param_types = ret_args_types[1..]
                 .iter()
-                .filter_map(|(_, t)| {
-                    (*t != default_types::void && *t != default_types::never)
-                        .then_some(llvm_basic_ty(t, &me.default_types, &me.structs, context).into())
-                })
+                .filter_map(|v| v.as_arg_ty(&default_types).map(Into::into))
                 .collect::<Vec<_>>();
 
-            if (!contract.return_type.is_primitive() && !contract.return_type.has_refs())
-                || (contract.return_type.has_refs() && !contract.return_type.is_thin_ptr())
-                || !contract.return_type.is_sized()
-                || contract.arguments.iter().any(|(_, v)| !v.is_sized())
-            {
-                unreachable!("typechecking should've validated the return type and arguments.");
-            }
             let has_var_args = contract.annotations.has_annotation::<ExternVarArg>();
 
-            let fn_typ = if contract.return_type == default_types::never
-                || contract.return_type == default_types::void
-            {
-                context.void_type().fn_type(&param_types, has_var_args)
-            } else {
-                llvm_basic_ty(&contract.return_type, &default_types, &me.structs, context)
-                    .fn_type(&param_types, has_var_args)
-            };
+            let fn_ty =
+                ret_args_types[0].func_ty(param_types, has_var_args, &default_types, context);
+
             let name = if let Some(name) = contract
                 .annotations
                 .get_first_annotation::<ExternAliasAnnotation>()
@@ -659,7 +685,9 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                     .expect("external functions should always have a name")
             };
 
-            let func = me.module.add_function(name, fn_typ, None);
+            let func = me.module.add_function(name, fn_ty, None);
+            ArgumentType::add_ret_attribute_args(&ret_args_types, func, context);
+
             if let Some(callconv) = contract
                 .annotations
                 .get_first_annotation::<CallConvAnnotation>()
@@ -694,6 +722,10 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                 Some(_) => func.set_linkage(Linkage::DLLExport),
                 None => func.set_linkage(Linkage::DLLImport),
             }
+            let func = CodegenFunction {
+                ret_args_types: ret_args_types.into_boxed_slice(),
+                value: func,
+            };
             me.external_functions.insert(key, func);
         }
         drop(ext_function_reader);
@@ -730,7 +762,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         Ok(me)
     }
 
-    fn make_fn_instance(&self, instance: FnInstance<'arena>) -> FunctionValue<'ctx> {
+    fn make_fn_instance(&self, instance: FnInstance<'arena>) -> CodegenFunction<'ctx> {
         let (contract, _) = &self.tc_ctx.functions.read()[instance.fn_id];
         if contract.annotations.has_annotation::<IntrinsicAnnotation>() {
             unreachable!(
@@ -745,26 +777,47 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         );
         let subst_ctx = SubstitutionCtx::new(self.tc_ctx, &instance.generics);
 
-        let param_types = contract
-            .arguments
+        let mut ret_args_types = Vec::with_capacity(contract.arguments.len() + 1);
+        let ptrsize = (self.default_types.isize.get_bit_width() / 8) as u8;
+        let struct_reader = self.tc_ctx.structs.read();
+
+        let ret_ty = return_ty(
+            self.context,
+            &contract.return_type.substitute(&subst_ctx),
+            ptrsize,
+            &struct_reader,
+            |t| llvm_basic_ty(t, &self.default_types, &self.structs, self.context),
+        );
+        ret_args_types.push(ret_ty);
+
+        for (_, ty) in &contract.arguments {
+            let arg_ty = argument(
+                self.context,
+                &ty.substitute(&subst_ctx),
+                ptrsize,
+                &struct_reader,
+                |t| llvm_basic_ty(t, &self.default_types, &self.structs, self.context),
+            );
+            ret_args_types.push(arg_ty);
+        }
+        drop(struct_reader);
+
+        let param_types = ret_args_types[1..]
             .iter()
-            .map(|v| v.1.substitute(&subst_ctx))
-            .filter(|t| *t != default_types::void && *t != default_types::never)
-            .map(|t| llvm_basic_ty(&t, &self.default_types, &self.structs, self.context).into())
+            .filter_map(|v| v.as_arg_ty(&self.default_types).map(Into::into))
             .collect::<Vec<_>>();
 
-        let ret_ty = contract.return_type.substitute(&subst_ctx);
+        let has_var_args = contract.annotations.has_annotation::<ExternVarArg>();
 
-        let fn_typ = if ret_ty == default_types::never || ret_ty == default_types::void {
-            self.context.void_type().fn_type(&param_types, false)
-        } else {
-            llvm_basic_ty(&ret_ty, &self.default_types, &self.structs, self.context)
-                .fn_type(&param_types, false)
-        };
+        let fn_ty =
+            ret_args_types[0].func_ty(param_types, has_var_args, &self.default_types, self.context);
+
         let name = mangle_function_instance(self.tc_ctx, instance);
         let func = self
             .module
-            .add_function(name.as_str(), fn_typ, Some(Linkage::Internal));
+            .add_function(name.as_str(), fn_ty, Some(Linkage::Internal));
+
+        ArgumentType::add_ret_attribute_args(&ret_args_types, func, self.context);
 
         let inline = self
             .context
@@ -819,7 +872,19 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                 true,
             ),
         );
-        func
+        CodegenFunction {
+            value: func,
+            ret_args_types: ret_args_types.into_boxed_slice(),
+        }
+    }
+
+    /// Panics if instance was not yet generated.
+    pub(crate) fn with_generated_fn_instance<R>(
+        &self,
+        instance: &FnInstance<'arena>,
+        f: impl FnOnce(&CodegenFunction<'ctx>) -> R,
+    ) -> R {
+        f(&self.function_store.borrow().map[instance])
     }
 
     pub fn get_fn_instance(&self, instance: FnInstance<'arena>) -> FunctionValue<'ctx> {
@@ -828,16 +893,21 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         }
         let value = self.make_fn_instance(instance);
         let mut store = self.function_store.borrow_mut();
+        let ptr = value.value;
         store.map.insert(instance, value);
         store.missing.insert(instance);
-        value
+        ptr
     }
 
     pub fn get_fn_instance_if_generated(
         &self,
         instance: &FnInstance<'arena>,
     ) -> Option<FunctionValue<'ctx>> {
-        self.function_store.borrow().map.get(instance).copied()
+        self.function_store
+            .borrow()
+            .map
+            .get(instance)
+            .map(|v| v.value)
     }
 
     pub fn get_string(&self, s: Symbol<'arena>) -> GlobalValue<'ctx> {
@@ -906,7 +976,10 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         if let Some(&func) = self.intrinsics.borrow().get(&sym) {
             return func;
         }
+        assert!(!has_special_encoding(*ret_ty));
+
         let params = types
+            .inspect(|ty| assert!(!has_special_encoding(ty)))
             .map(|ty| llvm_basic_ty(*ty, &self.default_types, &self.structs, self.context).into())
             .collect::<Vec<_>>();
         let fn_ty = if ret_ty.is_voidlike() {
@@ -1071,7 +1144,6 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             .expect("trying to compile a fn instance that hasn't been requested yet.");
 
         let body_basic_block = self.context.append_basic_block(func, "entry");
-        let void_arg = self.default_types.empty_struct.const_zero().into();
 
         self.builder.position_at_end(body_basic_block);
         let scope = func
@@ -1079,43 +1151,77 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             .expect("functions should always have an associated subprogram")
             .as_debug_info_scope();
 
+        let mut param_idx = 0;
+        let (return_ty, return_val) = self.with_generated_fn_instance(&instance, |func| {
+            let return_ty = func.return_ty();
+            let return_val = match return_ty {
+                ArgumentType::ByVal(_) => unreachable!("byval(_) is not valid for return types."),
+                ArgumentType::SRet(_) => {
+                    param_idx += 1;
+                    func.value.get_nth_param(0).unwrap().into_pointer_value()
+                }
+                ArgumentType::Regular(_) | ArgumentType::None => {
+                    self.default_types.ptr.const_null()
+                }
+            };
+            (return_ty, return_val)
+        });
+
         let mut function_ctx = self.make_function_codegen_context(
             instance.generics,
             contract.module_id,
             ir,
             body_basic_block,
+            return_ty,
+            return_val,
         );
         function_ctx.goto(body_basic_block);
-
-        let structs_reader = function_ctx.ctx.tc_ctx.structs.read();
 
         function_ctx
             .set_current_debug_location(function_ctx.ctx.debug_ctx.location(scope, contract.span));
 
-        let mut param_idx = 0;
-        for (idx, param) in ir.params().iter().enumerate() {
-            let ty = function_ctx.substitute(ir.get_ty(param.value));
-            if ty == default_types::void || ty == default_types::never {
-                function_ctx.push_value(param.value, void_arg);
-            } else {
-                function_ctx.push_value(param.value, func.get_nth_param(param_idx).unwrap());
-                param_idx += 1;
+        let void_ty = function_ctx.ctx.default_types.empty_struct;
+        function_ctx
+            .ctx
+            .with_generated_fn_instance(&instance, |func| {
+                assert_eq!(func.args().len(), ir.params().len())
+            });
+
+        for (idx, item) in ir.params().iter().enumerate() {
+            let ptr;
+            let value = item.value;
+            let arg = function_ctx
+                .ctx
+                .with_generated_fn_instance(&instance, |func| func.args()[idx]);
+
+            match arg {
+                ArgumentType::SRet(_) => unreachable!("sret(_) is illegal for arguments"),
+                ArgumentType::Regular(_) => {
+                    let arg = func.get_nth_param(param_idx).unwrap();
+                    param_idx += 1;
+                    function_ctx.push_value(value, arg);
+                    ptr = function_ctx.get_value_ptr(value);
+                }
+                ArgumentType::ByVal(_) => {
+                    ptr = func.get_nth_param(param_idx).unwrap().into_pointer_value();
+                    param_idx += 1;
+                    function_ctx.push_value_raw(value, ptr);
+                }
+                ArgumentType::None => ptr = function_ctx.build_alloca(void_ty, "").unwrap(),
             }
-            let ptr = function_ctx.get_value_ptr(param.value);
+
             function_ctx.ctx.debug_ctx.declare_param(
                 ptr,
                 scope,
                 contract.span,
-                ty,
-                param.name.symbol(),
+                ir.get_ty(value),
+                item.name.symbol(),
                 function_ctx.current_block,
                 contract.module_id,
-                &structs_reader,
+                &function_ctx.structs_reader,
                 idx as u32,
             );
         }
-
-        drop(structs_reader);
 
         let exprs = ir.get_entry_block_exprs();
         let tracker = function_ctx.ctx.tc_ctx.ctx.track_errors();
@@ -1141,54 +1247,84 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         let (contract, Some(ir)) = &ext_fn_reader[fn_id] else {
             unreachable!()
         };
-        let func = self.external_functions[fn_id];
+        let func = &self.external_functions[fn_id];
 
-        let body_basic_block = self.context.append_basic_block(func, "entry");
-        let void_arg = self.default_types.empty_struct.const_zero().into();
+        let body_basic_block = self.context.append_basic_block(func.value, "entry");
 
         self.builder.position_at_end(body_basic_block);
         let scope = func
+            .value
             .get_subprogram()
             .expect("functions should always have an associated subprogram")
             .as_debug_info_scope();
+
+        let mut param_idx = 0;
+        let return_ty = func.return_ty();
+        let return_val = match return_ty {
+            ArgumentType::ByVal(_) => unreachable!("byval(_) is not valid for return types."),
+            ArgumentType::SRet(_) => {
+                param_idx += 1;
+                func.value.get_nth_param(0).unwrap().into_pointer_value()
+            }
+            ArgumentType::Regular(_) | ArgumentType::None => self.default_types.ptr.const_null(),
+        };
 
         let mut function_ctx = self.make_function_codegen_context(
             TyList::EMPTY,
             contract.module_id,
             ir,
             body_basic_block,
+            return_ty,
+            return_val,
         );
         function_ctx.goto(body_basic_block);
-
-        let structs_reader = function_ctx.ctx.tc_ctx.structs.read();
 
         function_ctx
             .set_current_debug_location(function_ctx.ctx.debug_ctx.location(scope, contract.span));
 
-        let mut param_idx = 0;
-        for (idx, param) in ir.params().iter().enumerate() {
-            let ty = ir.get_ty(param.value);
-            if ty == default_types::void || ty == default_types::never {
-                function_ctx.push_value(param.value, void_arg);
-            } else {
-                function_ctx.push_value(param.value, func.get_nth_param(param_idx).unwrap());
-                param_idx += 1;
+        let void_ty = function_ctx.ctx.default_types.empty_struct;
+        assert_eq!(
+            function_ctx.ctx.external_functions[fn_id].args().len(),
+            ir.params().len()
+        );
+        for (idx, item) in ir.params().iter().enumerate() {
+            let func = &function_ctx.ctx.external_functions[fn_id];
+            let arg = &func.args()[idx];
+
+            let ptr;
+            let value = item.value;
+            match arg {
+                ArgumentType::SRet(_) => unreachable!("sret(_) is illegal for arguments"),
+                ArgumentType::Regular(_) => {
+                    let arg = func.value.get_nth_param(param_idx).unwrap();
+                    param_idx += 1;
+                    function_ctx.push_value(value, arg);
+                    ptr = function_ctx.get_value_ptr(value);
+                }
+                ArgumentType::ByVal(_) => {
+                    ptr = func
+                        .value
+                        .get_nth_param(param_idx)
+                        .unwrap()
+                        .into_pointer_value();
+                    param_idx += 1;
+                    function_ctx.push_value_raw(value, ptr);
+                }
+                ArgumentType::None => ptr = function_ctx.build_alloca(void_ty, "").unwrap(),
             }
-            let ptr = function_ctx.get_value_ptr(param.value);
+
             function_ctx.ctx.debug_ctx.declare_param(
                 ptr,
                 scope,
                 contract.span,
-                ty,
-                param.name.symbol(),
+                ir.get_ty(value),
+                item.name.symbol(),
                 function_ctx.current_block,
                 contract.module_id,
-                &structs_reader,
+                &function_ctx.structs_reader,
                 idx as u32,
             );
         }
-
-        drop(structs_reader);
 
         let exprs = ir.get_entry_block_exprs();
         let tracker = function_ctx.ctx.tc_ctx.ctx.track_errors();

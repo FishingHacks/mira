@@ -4,16 +4,20 @@ use inkwell::{
     basic_block::BasicBlock,
     builder::{Builder, BuilderError},
     types::{BasicType, BasicTypeEnum, FunctionType},
-    values::BasicValueEnum,
+    values::{BasicValueEnum, PointerValue},
 };
 use mira_common::index::IndexMap;
-use mira_parser::module::ModuleId;
+use mira_parser::module::{ModuleId, StructId};
 use mira_typeck::{
-    Substitute, TyKind, TyList,
+    Substitute, Ty, TyKind, TyList, TypedStruct,
     ir::{IR, ValueId},
 };
+use parking_lot::RwLockReadGuard;
 
-use crate::CodegenContext;
+use crate::{
+    CodegenContext,
+    abi::{ArgumentType, has_special_encoding},
+};
 type Result<T = (), E = BuilderError> = std::result::Result<T, E>;
 
 mod asm;
@@ -36,6 +40,11 @@ pub(crate) struct FunctionCodegenContext<'ctx, 'arena, 'cg, 'a, 'ir> {
     pointer_size: u64,
     module: ModuleId,
 
+    return_ty: ArgumentType<'ctx>,
+    // If return_ty is not ArgumentType::SRet, this is a null pointer.
+    return_val: PointerValue<'ctx>,
+
+    pub(crate) structs_reader: RwLockReadGuard<'a, IndexMap<StructId, TypedStruct<'arena>>>,
     pub(crate) ctx: &'cg mut CodegenContext<'ctx, 'arena, 'a>,
 }
 
@@ -48,12 +57,15 @@ impl<'ctx> Deref for FunctionCodegenContext<'ctx, '_, '_, '_, '_> {
 }
 
 impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
+    /// If return_ty is not ArgumentType::SRet, return_ty should be a null pointer.
     pub(crate) fn make_function_codegen_context<'me, 'ir>(
         &'me mut self,
         generics: TyList<'arena>,
         module: ModuleId,
         ir: &'ir IR<'arena>,
         current_bock: BasicBlock<'ctx>,
+        return_ty: ArgumentType<'ctx>,
+        return_val: PointerValue<'ctx>,
     ) -> FunctionCodegenContext<'ctx, 'arena, 'me, 'a, 'ir> {
         FunctionCodegenContext {
             ir,
@@ -62,7 +74,10 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             current_block: current_bock,
             pointer_size: self.default_types.isize.get_bit_width() as u64 / 8,
             module,
+            structs_reader: self.tc_ctx.structs.read(),
             ctx: self,
+            return_val,
+            return_ty,
         }
     }
 }
@@ -70,6 +85,14 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
 impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
     pub(crate) fn substitute<T: Substitute<'arena>>(&self, v: T) -> T {
         self.ctx.tc_ctx.substitute(&*self.generics, v)
+    }
+
+    pub(crate) fn is_stack_allocated(&self, value: ValueId) -> bool {
+        self.ir.scope().get(value).stack_allocated || has_special_encoding(&self.get_ty(value))
+    }
+
+    pub(crate) fn get_ty(&self, value: ValueId) -> Ty<'arena> {
+        self.ir.get_ty(value)
     }
 
     fn is_const(val: &BasicValueEnum<'_>) -> bool {

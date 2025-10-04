@@ -1,5 +1,5 @@
 use inkwell::{
-    types::{BasicType, BasicTypeEnum},
+    types::BasicType,
     values::{BasicValue, BasicValueEnum, PointerValue},
 };
 use mira_typeck::{
@@ -15,29 +15,6 @@ fn make_volatile(v: BasicValueEnum<'_>, volatile: bool) -> BasicValueEnum<'_> {
         .set_volatile(volatile)
         .expect("setting volatile should never fail");
     v
-}
-
-fn get_alignment(ty: BasicTypeEnum<'_>) -> u32 {
-    match ty {
-        BasicTypeEnum::FloatType(ty) => ty
-            .size_of()
-            .get_zero_extended_constant()
-            .expect("float size has to be constant") as u32,
-        BasicTypeEnum::IntType(ty) => ty.get_bit_width() / 8,
-        BasicTypeEnum::PointerType(ty) => ty
-            .size_of()
-            .get_zero_extended_constant()
-            .expect("ptr size has to be constant") as u32,
-        BasicTypeEnum::ArrayType(ty) => get_alignment(ty.get_element_type()),
-        BasicTypeEnum::StructType(ty) => ty
-            .get_field_types_iter()
-            .map(|v| get_alignment(v))
-            .max()
-            .unwrap_or(1),
-        BasicTypeEnum::VectorType(..) | BasicTypeEnum::ScalableVectorType(..) => {
-            unreachable!("vector types aren't supported")
-        }
-    }
 }
 
 impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
@@ -86,7 +63,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             }
             TyKind::Struct { struct_id, .. } => {
                 let llvm_structure = self.basic_type(&ty).into_struct_type();
-                let structure = &self.ctx.tc_ctx.structs.read()[*struct_id];
+                let structure = &self.structs_reader[*struct_id];
                 let mut value = llvm_structure.get_poison();
                 for i in 0..structure.elements.len() {
                     let offset_val =
@@ -173,8 +150,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             } else {
                 let actual_ptr = self.build_extract_value(right_side.into_struct_value(), 0, "")?;
                 let metadata = self.build_extract_value(right_side.into_struct_value(), 1, "")?;
-                let actual_ptr_ptr =
-                    self.build_struct_gep(self.ctx.default_types.fat_ptr, left_side, 0, "")?;
+                let actual_ptr_ptr = left_side;
                 let metadata_ptr =
                     self.build_struct_gep(self.ctx.default_types.fat_ptr, left_side, 1, "")?;
                 self.build_store(actual_ptr_ptr, actual_ptr)?
@@ -196,7 +172,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             }
             TyKind::PrimitiveNever | TyKind::PrimitiveVoid => (),
             TyKind::Struct { struct_id, .. } => {
-                let structure = &self.ctx.tc_ctx.structs.read()[*struct_id];
+                let structure = &self.structs_reader[*struct_id];
                 let llvm_ty = self.basic_type(&ty);
                 for (idx, ty) in structure.elements.iter().map(|v| &v.1).enumerate() {
                     let val =
@@ -262,9 +238,10 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
         value: &TypedLiteral<'arena>,
     ) -> Result {
         match *value {
-            TypedLiteral::Dynamic(id) if self.ir.is_stack_allocated(id) => {
-                let llvm_ty = self.basic_type(*self.substitute(self.ir.get_ty(id)));
-                let alignment = get_alignment(llvm_ty);
+            TypedLiteral::Dynamic(id) if self.is_stack_allocated(id) => {
+                let ty = self.substitute(self.get_ty(id));
+                let llvm_ty = self.basic_type(*ty);
+                let alignment = ty.alignment(self.pointer_size, &self.structs_reader);
                 self.build_memmove(
                     self.basic_value(ptr).into_pointer_value(),
                     alignment,
@@ -277,7 +254,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             TypedLiteral::Static(id) => {
                 let ty = self.ctx.tc_ctx.statics.read()[id].ty;
                 let llvm_ty = self.basic_type(&ty);
-                let alignment = get_alignment(llvm_ty);
+                let alignment = ty.alignment(self.pointer_size, &self.structs_reader);
                 self.build_memmove(
                     self.basic_value(ptr).into_pointer_value(),
                     alignment,
@@ -304,14 +281,14 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
     pub(crate) fn build_reference(&mut self, dst: ValueId, value: &TypedLiteral<'arena>) -> Result {
         let value = match value {
             TypedLiteral::Void => self.ctx.default_types.ptr.const_zero().into(),
-            &TypedLiteral::Dynamic(id) if self.ir.get_ty(id).is_voidlike() => self
+            &TypedLiteral::Dynamic(id) if self.get_ty(id).is_voidlike() => self
                 .ctx
                 .default_types
                 .isize
                 .const_int(1, false)
                 .const_to_pointer(self.ctx.default_types.ptr)
                 .into(),
-            &TypedLiteral::Dynamic(id) if !self.ir.is_stack_allocated(id) => {
+            &TypedLiteral::Dynamic(id) if !self.is_stack_allocated(id) => {
                 panic!("_{id} is not stack allocated (even tho it should have been)")
             }
             TypedLiteral::Dynamic(id) => self.get_value_ptr(*id).into(),
@@ -329,11 +306,11 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
         dst: ValueId,
         value: &TypedLiteral<'arena>,
     ) -> Result {
-        let ty = self.substitute(self.ir.get_ty(dst));
-        if self.ir.is_stack_allocated(dst) {
+        let ty = self.substitute(self.get_ty(dst));
+        if self.is_stack_allocated(dst) {
+            let alignment = ty.alignment(self.pointer_size, &self.structs_reader);
             let ty = self.basic_type(&ty);
             let lhs_ptr = self.build_alloca(ty, "")?;
-            let alignment = get_alignment(ty);
             self.build_memmove(
                 lhs_ptr, // dest (dst = *rhs), in this case *dst =
                 // *rhs as lhs is stack-allocated, meaning an implicit store has to be

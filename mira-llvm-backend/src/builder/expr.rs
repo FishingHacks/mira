@@ -3,9 +3,9 @@ use inkwell::{
     debug_info::DIScope,
     values::{BasicValue, BasicValueEnum},
 };
-use mira_typeck::ir::{TypedExpression, TypedLiteral};
+use mira_typeck::ir::TypedExpression;
 
-use crate::FnInstance;
+use crate::{FnInstance, abi::ArgumentType, builder::call::DirectCallTarget};
 
 use super::FunctionCodegenContext;
 
@@ -18,31 +18,31 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
         self.set_current_debug_location(self.ctx.debug_ctx.location(scope, expr.span()));
         match expr {
             // Control flow
-            TypedExpression::Return(_, typed_literal) => {
-                if matches!(typed_literal, TypedLiteral::Void) {
-                    if self.current_block.get_terminator().is_some() {
-                        println!(
-                            "[WARN]: bb {} Has a return even tho a terminating instruction was already generated",
-                            self.current_block.get_name().to_string_lossy(),
-                        );
-                        return Ok(());
+            TypedExpression::Return(_, None) => self.build_return(None).map(|_| ()),
+            &TypedExpression::Return(_, Some(id)) => {
+                let ptr = self.get_value_ptr(id);
+                match self.return_ty {
+                    ArgumentType::Regular(ty) => {
+                        let value = self.build_load(ty, ptr, "")?;
+                        self.build_return(Some(&value)).map(|_| ())
                     }
-                    return self.build_return(None).map(|_| ());
+                    ArgumentType::SRet(_) => {
+                        let ptrsize = self.ctx.default_types.isize.get_bit_width() / 8;
+                        let (size, alignment) = self
+                            .ir
+                            .get_ty(id)
+                            .size_and_alignment(ptrsize as u64, &self.structs_reader);
+                        let size = self.ctx.default_types.i32.const_int(size, false);
+                        self.build_memcpy(self.return_val, alignment, ptr, alignment, size)?;
+                        self.build_return(None).map(|_| ())
+                    }
+                    ArgumentType::ByVal(_) => {
+                        unreachable!("byval(_) is illegal for return arguments")
+                    }
+                    ArgumentType::None => {
+                        unreachable!("ArgumenType::None for a non-void return type")
+                    }
                 }
-                match typed_literal {
-                    &TypedLiteral::Dynamic(id) if self.ir.get_ty(id).is_voidlike() => {
-                        self.build_return(None)?
-                    }
-                    &TypedLiteral::Static(id)
-                        if self.ctx.tc_ctx.statics.read()[id].ty.is_voidlike() =>
-                    {
-                        self.build_return(None)?
-                    }
-                    TypedLiteral::Void => self.build_return(None)?,
-                    TypedLiteral::Intrinsic(..) => unreachable!("intrinsic"),
-                    lit => self.build_return(Some(&self.basic_value(lit)))?,
-                };
-                Ok(())
             }
             &TypedExpression::Block(_, block, _) => self.build_block(block, scope, true),
             TypedExpression::If {
@@ -66,13 +66,13 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             // Call
             TypedExpression::Call(_, dst, func, args) => self.build_call(*dst, func, args),
             TypedExpression::DirectCall(_, dst, fn_id, args, generics) => {
-                let func = self
-                    .ctx
-                    .get_fn_instance(FnInstance::new_poly(*fn_id, *generics));
-                self.build_directcall(func, *dst, args)
+                let instance = FnInstance::new_poly(*fn_id, self.substitute(*generics));
+                // instantiate the function instance
+                self.ctx.get_fn_instance(instance);
+                self.build_directcall(DirectCallTarget::Normal(instance), *dst, args)
             }
             TypedExpression::DirectExternCall(_, dst, func, args) => {
-                self.build_directcall(self.ctx.external_functions[*func], *dst, args)
+                self.build_directcall(DirectCallTarget::Extern(*func), *dst, args)
             }
             TypedExpression::LLVMIntrinsicCall(_, dst, sym, args) => {
                 self.build_llvm_intrinsic_call(*dst, *sym, args)
@@ -88,7 +88,13 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             TypedExpression::Alias(_, dst, val)
             | TypedExpression::Literal(_, dst, val)
             | TypedExpression::Pos(_, dst, val) => {
-                self.push_value(*dst, self.basic_value(val));
+                if self.is_stack_allocated(*dst) {
+                    let alloca = self.build_alloca(self.basic_type(&self.get_ty(*dst)), "")?;
+                    self.basic_value_ptr(val, alloca, true)?;
+                    self.push_value_raw(*dst, alloca);
+                } else {
+                    self.push_value(*dst, self.basic_value(val));
+                }
                 Ok(())
             }
 
@@ -165,7 +171,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                     *name,
                     self.current_block,
                     self.module,
-                    &self.ctx.tc_ctx.structs.read(),
+                    &self.structs_reader,
                 );
                 Ok(())
             }

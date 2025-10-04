@@ -64,36 +64,24 @@ impl Os {
 str_enum! {
 Arch:
     X86_64 = "x86_64",
-    X86 = "x86",
 }
 
 impl Arch {
     pub fn endianess(&self) -> Endianess {
         match self {
-            Self::X86 | Self::X86_64 => Endianess::Big,
+            Self::X86_64 => Endianess::Little,
         }
-    }
-
-    pub fn generic_name(&self) -> &str {
-        match self {
-            Self::X86 | Self::X86_64 => "x86",
-        }
-    }
-
-    pub fn is_x86(&self) -> bool {
-        matches!(self, Self::X86 | Self::X86_64)
     }
 
     pub fn to_llvm_cpu(&self) -> &str {
         match self {
             Arch::X86_64 => "x86-64",
-            Arch::X86 => "x86",
         }
     }
 
     pub fn to_llvm(&self) -> &str {
         match self {
-            Arch::X86_64 | Arch::X86 => self.to_str(),
+            Arch::X86_64 => self.to_str(),
         }
     }
 
@@ -101,7 +89,7 @@ impl Arch {
         matches!(self, Arch::X86_64)
     }
     pub fn is_32_bit(&self) -> bool {
-        matches!(self, Arch::X86)
+        false
     }
 }
 
@@ -221,12 +209,8 @@ impl Target {
         &[
             target!(X86_64 - Linux),
             target!(X86_64 - Linux - Gnu),
-            target!(X86 - Linux),
-            target!(X86 - Linux - Gnu),
             target!(X86_64 - Other),
             target!(X86_64 - Freestanding),
-            target!(X86 - Other),
-            target!(X86 - Freestanding),
         ]
     }
 }

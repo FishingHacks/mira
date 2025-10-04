@@ -8,7 +8,7 @@ use super::{FunctionCodegenContext, Result};
 
 impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
     pub(super) fn build_bitcast(&mut self, dst: ValueId, value: &TypedLiteral<'arena>) -> Result {
-        let new_ty = self.substitute(self.ir.get_ty(dst));
+        let new_ty = self.substitute(self.get_ty(dst));
         let old_typ = self.substitute(value.to_type(self.ir.scope(), self.ctx.tc_ctx));
         assert!(!new_ty.has_refs() || new_ty.is_thin_ptr());
         assert!(!old_typ.has_refs() || old_typ.is_thin_ptr());
@@ -29,7 +29,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         Ok(())
     }
     pub(super) fn build_ptrtoint(&mut self, dst: ValueId, value: &TypedLiteral<'arena>) -> Result {
-        let ty = self.substitute(self.ir.get_ty(dst));
+        let ty = self.substitute(self.get_ty(dst));
         let ty = self.basic_type(&ty).into_int_type();
         let value = self.basic_value(value).into_pointer_value();
         if value.is_const() {
@@ -45,7 +45,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         let src_ty = value
             .to_primitive_type(self.ir.scope(), self.ctx.tc_ctx)
             .expect("can only cast primitive types");
-        let dst_ty = self.substitute(self.ir.get_ty(dst));
+        let dst_ty = self.substitute(self.get_ty(dst));
         let src_value = self.basic_value(value);
         // u8 -> bool
         if src_ty == default_types::u8 && dst_ty == default_types::bool {
@@ -134,7 +134,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         value: &TypedLiteral<'arena>,
     ) -> Result {
         let (value, is_ptr) = if let &TypedLiteral::Dynamic(src) = value {
-            (self.scope[src], self.ir.is_stack_allocated(src))
+            (self.scope[src], self.is_stack_allocated(src))
         } else if let &TypedLiteral::Static(id) = value {
             (self.ctx.statics[id].as_pointer_value().into(), true)
         } else {
@@ -147,7 +147,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
                 0,
                 "",
             )?;
-            self.build_deref(pointer_pointer, self.substitute(self.ir.get_ty(dst)), false)?
+            self.build_deref(pointer_pointer, self.substitute(self.get_ty(dst)), false)?
         } else {
             self.build_extract_value(value.into_struct_value(), 0, "")?
         };

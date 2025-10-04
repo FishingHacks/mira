@@ -73,6 +73,10 @@ impl<'ctx> Scope<'ctx> {
     pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ScopeEntry<'ctx>> {
+        self.0.iter_mut()
+    }
 }
 
 impl<'ctx> Index<ValueId> for Scope<'ctx> {
@@ -222,12 +226,12 @@ impl<'ctx> IR<'ctx> {
         self.scope.get(value)
     }
 
-    pub fn is_stack_allocated(&self, value: ValueId) -> bool {
-        self.scope.is_stack_allocated(value)
-    }
-
     pub fn scope(&self) -> &Scope<'ctx> {
         &self.scope
+    }
+
+    pub fn scope_mut(&mut self) -> &mut Scope<'ctx> {
+        &mut self.scope
     }
 
     pub fn visit_mut<V: MutVisitor<'ctx>>(&mut self, visitor: &mut V, tcx: TypeCtx<'ctx>) {

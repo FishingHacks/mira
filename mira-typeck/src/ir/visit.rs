@@ -71,8 +71,7 @@ pub fn walk_expr<'ctx, W: Visitor<'ctx> + ?Sized>(
             visitor.visit_lit_super(cond, ir, tcx);
             visitor.visit_block_super(*body, ir, tcx);
         }
-        TypedExpression::Return(_, lit)
-        | TypedExpression::AttachVtable(_, _, lit, _)
+        TypedExpression::AttachVtable(_, _, lit, _)
         | TypedExpression::Pos(_, _, lit)
         | TypedExpression::Neg(_, _, lit)
         | TypedExpression::LNot(_, _, lit)
@@ -137,7 +136,8 @@ pub fn walk_expr<'ctx, W: Visitor<'ctx> + ?Sized>(
             }
         }
 
-        TypedExpression::Empty(_)
+        TypedExpression::Return(_, _)
+        | TypedExpression::Empty(_)
         | TypedExpression::Unreachable(_)
         | TypedExpression::DeclareVariable(_, _, _, _)
         | TypedExpression::DropIf(_, _, _)
@@ -272,8 +272,7 @@ pub fn walk_mut_expr_block<'ctx, W: MutVisitor<'ctx> + ?Sized>(
             visitor.visit_lit_super(cond, scope, tcx);
             visitor.visit_block_super(body, ir, tcx);
         }
-        TypedExpression::Return(_, lit)
-        | TypedExpression::AttachVtable(_, _, lit, _)
+        TypedExpression::AttachVtable(_, _, lit, _)
         | TypedExpression::Pos(_, _, lit)
         | TypedExpression::Neg(_, _, lit)
         | TypedExpression::LNot(_, _, lit)
@@ -351,7 +350,8 @@ pub fn walk_mut_expr_block<'ctx, W: MutVisitor<'ctx> + ?Sized>(
             }
         }
 
-        TypedExpression::Empty(_)
+        TypedExpression::Return(_, _)
+        | TypedExpression::Empty(_)
         | TypedExpression::Unreachable(_)
         | TypedExpression::DeclareVariable(_, _, _, _)
         | TypedExpression::DropIf(_, _, _)

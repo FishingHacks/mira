@@ -128,23 +128,6 @@ pub fn typecheck_function<'arena>(
     inner_typecheck_function(ctx, module_context, CommonFunction::Normal(function_id))
 }
 
-fn is_invalid_extern_return_ty(ty: &TyKind<'_>) -> bool {
-    // unsized types are always invalid.
-    if !ty.is_sized() {
-        return true;
-    }
-    // primitive types are always valid.
-    if ty.is_primitive() {
-        return false;
-    }
-    // thin pointers are always vaoid
-    if ty.has_refs() && ty.is_thin_ptr() {
-        return false;
-    }
-    // everything else is invalid.
-    true
-}
-
 fn inner_typecheck_function<'arena>(
     tc_ctx: &TypeckCtx<'arena>,
     module_context: &ModuleContext<'arena>,
@@ -195,9 +178,6 @@ fn inner_typecheck_function<'arena>(
     if !contract.return_type.is_sized() {
         ctx.ctx
             .emit_unsized_return_type(contract.span, contract.return_type);
-    }
-    if function.is_external() && is_invalid_extern_return_ty(&contract.return_type) {
-        ctx.emit_invalid_extern_return_type(contract.span);
     }
     for (_, arg) in contract.arguments.iter().filter(|v| !v.1.is_sized()) {
         ctx.emit_unsized_argument(contract.span, *arg);
@@ -370,7 +350,7 @@ fn typecheck_statement<'ctx>(
         Statement::For { .. } => todo!("iterator (requires generics)"),
         Statement::Return(None, span) => {
             if ctx.contract.return_type == default_types::void {
-                ir.append(TypedExpression::Return(*span, TypedLiteral::Void));
+                ir.append(TypedExpression::Return(*span, None));
                 Ok(true)
             } else {
                 ctx.ctx
@@ -391,7 +371,23 @@ fn typecheck_statement<'ctx>(
                     .emit_mismatching_type(expression.span(), ctx.contract.return_type, ty);
                 return Err(ErrorEmitted);
             }
-            ir.append(TypedExpression::Return(*span, typed_expression));
+            let ret_val = match typed_expression {
+                _ if ty.is_voidlike() => None,
+                // using the id here is fine because we only return a ValueId because we want the
+                // return value to *always* be alloca'd, not because it represents a new value.
+                TypedLiteral::Dynamic(id) => {
+                    ir.make_stack_allocated(id);
+                    Some(id)
+                }
+                TypedLiteral::Void => None,
+                lit => {
+                    let id = ir.add_value(ty);
+                    ir.make_stack_allocated(id);
+                    ir.append(TypedExpression::Literal(expression.span(), id, lit));
+                    Some(id)
+                }
+            };
+            ir.append(TypedExpression::Return(*span, ret_val));
             Ok(true)
         }
         Statement::Block(_, span, annotations) => {

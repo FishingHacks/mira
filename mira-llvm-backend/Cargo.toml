@@ -16,9 +16,11 @@ mira-macros.workspace = true
 mira-spans.workspace = true
 mira-parser.workspace = true
 mira-common.workspace = true
-inkwell.workspace = true
 mira-target.workspace = true
 mira-context.workspace = true
+
+inkwell.workspace = true
+parking_lot.workspace = true
 
 [lints]
 workspace = true

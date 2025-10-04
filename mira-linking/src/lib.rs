@@ -5,7 +5,7 @@ use std::{
 
 use mira_macros::ErrorData;
 
-use mira_target::{Abi, Arch, Os, Target};
+use mira_target::{Abi, Os, Target};
 
 #[derive(Debug)]
 pub enum LinkerInput {
@@ -87,11 +87,6 @@ impl Linker for LdLikeLinker {
 
         let mut command = Command::new(opts.linker_path);
         #[allow(clippy::single_match)]
-        match opts.target.arch {
-            Arch::X86 => _ = command.arg("-m32"),
-            _ => (),
-        }
-        #[allow(clippy::single_match)]
         match opts.target.abi {
             Abi::Gnu => _ = command.arg("-lc"),
             _ => (),
@@ -149,11 +144,6 @@ impl Linker for CcLikeLinker {
     fn link(&self, opts: LinkOptions<'_>) -> Result<(), LinkerError> {
         let mut command = Command::new(opts.linker_path);
 
-        #[allow(clippy::single_match)]
-        match opts.target.arch {
-            Arch::X86 => _ = command.arg("-m32"),
-            _ => (),
-        }
         #[allow(clippy::single_match)]
         match opts.target.abi {
             Abi::Gnu => _ = command.arg("-lc"),

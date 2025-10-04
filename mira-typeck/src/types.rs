@@ -195,11 +195,11 @@ pub(crate) fn resolve_primitive_type<'arena>(
     }
 }
 
-fn align(value: u64, alignment: u32) -> u64 {
-    if value.is_multiple_of(alignment as u64) {
-        value
+fn align_up(ptr: u64, alignment: u32) -> u64 {
+    if ptr.is_multiple_of(alignment as u64) {
+        ptr
     } else {
-        alignment as u64 - (value % alignment as u64) + value
+        (ptr & !(alignment as u64 - 1)) + alignment as u64
     }
 }
 
@@ -356,9 +356,9 @@ impl<'arena> TyKind<'arena> {
         let mut offset = 0;
         for (_, ty, _) in &structure.elements[0..element] {
             let (size, alignment) = ty.size_and_alignment(ptr_size, structs);
-            offset = align(offset, alignment) + size;
+            offset = align_up(offset, alignment) + size;
         }
-        offset = align(
+        offset = align_up(
             offset,
             structure.elements[element].1.alignment(ptr_size, structs),
         );
@@ -431,9 +431,9 @@ impl<'arena> TyKind<'arena> {
                 for (_, element, _) in structs[struct_id].elements.iter() {
                     let (typ_size, typ_alignment) = element.size_and_alignment(ptr_size, structs);
                     alignment = alignment.max(typ_alignment);
-                    size = align(size, typ_alignment) + typ_size;
+                    size = align_up(size, typ_alignment) + typ_size;
                 }
-                (align(size, alignment), alignment)
+                (align_up(size, alignment), alignment)
             }
             TyKind::SizedArray {
                 ty,
@@ -448,9 +448,9 @@ impl<'arena> TyKind<'arena> {
                 for element in elements.iter() {
                     let (typ_size, typ_alignment) = element.size_and_alignment(ptr_size, structs);
                     alignment = alignment.max(typ_alignment);
-                    size = align(size, typ_alignment) + typ_size;
+                    size = align_up(size, typ_alignment) + typ_size;
                 }
-                (align(size, alignment), alignment)
+                (align_up(size, alignment), alignment)
             }
             TyKind::PrimitiveVoid | TyKind::PrimitiveNever => (0, 1),
             TyKind::PrimitiveBool | TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => (1, 1),
@@ -486,10 +486,45 @@ impl<'arena> TyKind<'arena> {
         count
     }
 
-    pub fn is_sized(&self) -> bool {
-        if self.has_refs() {
-            return true;
+    pub fn is_zst(&self, structs: &IndexMap<StructId, TypedStruct<'arena>>) -> bool {
+        match self {
+            &TyKind::Struct { struct_id, .. } => structs[struct_id]
+                .elements
+                .iter()
+                .all(|(_, ty, _)| ty.is_zst(structs)),
+            &TyKind::SizedArray {
+                ty,
+                number_elements,
+            } => number_elements == 0 || ty.is_zst(structs),
+            TyKind::Tuple(tys) => tys.iter().all(|v| v.is_zst(structs)),
+
+            TyKind::PrimitiveVoid | TyKind::PrimitiveNever => true,
+
+            TyKind::Function(_)
+            | TyKind::PrimitiveI8
+            | TyKind::PrimitiveI16
+            | TyKind::PrimitiveI32
+            | TyKind::PrimitiveI64
+            | TyKind::PrimitiveISize
+            | TyKind::PrimitiveU8
+            | TyKind::PrimitiveU16
+            | TyKind::PrimitiveU32
+            | TyKind::PrimitiveU64
+            | TyKind::PrimitiveUSize
+            | TyKind::PrimitiveF32
+            | TyKind::PrimitiveF64
+            | TyKind::PrimitiveBool
+            | TyKind::Ref(_) => false,
+
+            TyKind::UnsizedArray(_) | TyKind::PrimitiveStr | TyKind::DynType(_) => {
+                unreachable!("unsized types can't be sized")
+            }
+            TyKind::PrimitiveSelf { .. } => unreachable!("Self has to be resolved to get a size"),
+            TyKind::Generic { .. } => unreachable!("generics have to be resolved to get a size"),
         }
+    }
+
+    pub fn is_sized(&self) -> bool {
         match self {
             TyKind::Generic { sized, .. } => *sized,
             TyKind::PrimitiveSelf => unreachable!("Self should be resolved"),

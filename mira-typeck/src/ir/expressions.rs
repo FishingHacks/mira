@@ -16,7 +16,7 @@ use super::TypedLiteral;
 
 #[derive(Debug)]
 pub enum TypedExpression<'arena> {
-    Return(Span<'arena>, TypedLiteral<'arena>),
+    Return(Span<'arena>, Option<ValueId>),
     Block(Span<'arena>, BlockId, Annotations<'arena>),
     If {
         span: Span<'arena>,

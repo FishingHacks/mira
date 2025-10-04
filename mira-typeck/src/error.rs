@@ -27,18 +27,6 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("expected a sized type")] Span<'arena>,
         Ty<'arena>,
     ),
-    // NOTE: This is due to each ABI handling how to return values differently. LLVM doesn't handle
-    // this for us, but, as far as i can tell, it's fine if we return structs from non-extern
-    // functions as that should never produce incorrect behavior. IF how ever, it turns out to,
-    // then the "internal" ABI will pass all structs whose size is greather than 128 as an sret
-    // first argument (fn(_) -> v turns into fn(&v, _) if sizeof(v) > 128)
-    //
-    // For further references: Zig's implementation of if something needs to be passed as an sret:
-    // https://github.com/ziglang/zig/blob/master/src/codegen/llvm.zig#L12021
-    #[error("Extern functions can as of now only return primitive values or thin pointers")]
-    InvalidExternReturnType(
-        #[primary_label("external function returns a fat pointer or non-primitive")] Span<'arena>,
-    ),
     #[error("Unsized Type {_1} is not a return type")]
     UnsizedReturnType(
         #[primary_label("type has to be sized")] Span<'arena>,

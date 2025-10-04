@@ -1,12 +1,22 @@
 use inkwell::{
+    IntPredicate,
+    builder::BuilderError,
     types::{AnyTypeEnum, BasicType, BasicTypeEnum},
-    values::{BasicValueEnum, GlobalValue},
+    values::{BasicValueEnum, GlobalValue, PointerValue},
 };
 use mira_typeck::ir::TypedLiteral;
 
 use crate::FnInstance;
 
 use super::FunctionCodegenContext;
+
+fn align_up(ptr: u64, alignment: u32) -> u64 {
+    if ptr.is_multiple_of(alignment as u64) {
+        ptr
+    } else {
+        (ptr & !(alignment as u64 - 1)) + alignment as u64
+    }
+}
 
 fn global_value_ty(global: GlobalValue<'_>) -> BasicTypeEnum<'_> {
     match global.get_value_type() {
@@ -24,6 +34,206 @@ fn global_value_ty(global: GlobalValue<'_>) -> BasicTypeEnum<'_> {
 }
 
 impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
+    /// Stores the lit into the ptr.
+    ///
+    /// distinct: the ptr does not point to the same value as lit could. This means, that:
+    /// - if lit is TypedLiteral::Static, ptr does not point to that static
+    /// - if lit is TypedLiteral::Dynamic, and stack-allocated, ptr does not point to that alloca
+    pub(crate) fn basic_value_ptr(
+        &mut self,
+        lit: &TypedLiteral<'arena>,
+        ptr: PointerValue<'ctx>,
+        distinct: bool,
+    ) -> Result<(), BuilderError> {
+        macro_rules! lit_store {
+            ($ty:ident . $const_fn:ident($($arg:expr),* $(,)?)) => {
+                self.build_store(ptr, self.ctx.default_types.$ty.$const_fn($($arg),*))
+                    .map(|_| ())
+            };
+        }
+
+        match lit {
+            TypedLiteral::Void => Ok(()),
+            &TypedLiteral::Dynamic(value) if self.is_stack_allocated(value) => {
+                let src = self.get_value_ptr(value);
+                let ty = self.get_ty(value);
+                let (size, align) = ty.size_and_alignment(self.pointer_size, &self.structs_reader);
+                let size = self.ctx.default_types.isize.const_int(size, false);
+                if distinct {
+                    self.build_memcpy(ptr, align, src, align, size)?;
+                } else {
+                    self.build_memmove(ptr, align, src, align, size)?;
+                }
+                Ok(())
+            }
+            &TypedLiteral::Dynamic(value) => self
+                .build_ptr_store(ptr, self.get_value(value), self.get_ty(value), false)
+                .map(|_| ()),
+            &TypedLiteral::Function(fn_id, generics) => {
+                let value = self
+                    .ctx
+                    .get_fn_instance(FnInstance::new_poly(fn_id, generics))
+                    .as_global_value();
+                self.build_store(ptr, value).map(|_| ())
+            }
+            &TypedLiteral::ExternalFunction(fn_id) => {
+                let value = self.ctx.external_functions[fn_id].value.as_global_value();
+                self.build_store(ptr, value).map(|_| ())
+            }
+            &TypedLiteral::Static(static_id) => {
+                let value = self.ctx.statics[static_id].as_pointer_value();
+                let ty = self.ctx.tc_ctx.statics.read()[static_id].ty;
+                let (size, align) = ty.size_and_alignment(self.pointer_size, &self.structs_reader);
+                let size = self.ctx.default_types.isize.const_int(size, false);
+                if distinct {
+                    self.build_memcpy(ptr, align, value, align, size)?;
+                } else {
+                    self.build_memmove(ptr, align, value, align, size)?;
+                }
+                Ok(())
+            }
+            &TypedLiteral::String(symbol) => {
+                let value = self.ctx.get_string(symbol);
+                let strlen = symbol.len() as u64;
+                let strlen = self.ctx.default_types.isize.const_int(strlen, false);
+                // store the pointer part of the fat pointer
+                self.build_store(ptr, value)?;
+                // get the metadata pointer
+                let metadata_ptr =
+                    self.build_struct_gep(self.ctx.default_types.fat_ptr, ptr, 1, "")?;
+                self.build_store(metadata_ptr, strlen)?;
+                Ok(())
+            }
+            // zst's don't have to be stored cuz there's nothing to store
+            TypedLiteral::Array(ty, _) | TypedLiteral::ArrayInit(ty, _, _)
+                if ty.is_zst(&self.structs_reader) =>
+            {
+                Ok(())
+            }
+            TypedLiteral::Array(_, lits) if lits.is_empty() => Ok(()),
+            TypedLiteral::Array(ty, lits) => {
+                let basic_ty = self.basic_type(ty);
+                for (idx, lit) in lits.iter().enumerate() {
+                    let idx_int = self.ctx.default_types.isize.const_int(idx as u64, false);
+                    let ptr = unsafe { self.build_in_bounds_gep(basic_ty, ptr, &[idx_int], "") }?;
+                    self.basic_value_ptr(lit, ptr, distinct)?;
+                }
+                Ok(())
+            }
+            // [_; 0] is a zst, nothing has to be stored.
+            TypedLiteral::ArrayInit(_, _, 0) => Ok(()),
+            // [lit; 1] is essentially the same as just lit.
+            TypedLiteral::ArrayInit(_, lit, 1) => self.basic_value_ptr(lit, ptr, distinct),
+            TypedLiteral::ArrayInit(ty, lit, amount) => {
+                /*
+                <start>:
+                    br %repeat_loop_header
+
+                repeat_loop_header:
+                    %0 = phi isize [0, %<start>], [%3, %repeat_loop_body]
+                    %1 = icmp ult i64 %0, $amount ; <- this comes from the compiler.
+                    br i1 %1, label %repeat_loop_body, label %repeat_loop_end
+                repeat_loop_body:
+                    %2 = getelementptr inbounds $ty, ptr $ptr, i64 %0
+                    $self.basic_value_ptr($lit, %ptr, $distinct)
+                    %3 = add nuw i64 %0, 1
+                    br label %repeat_loop_body
+                repeat_loop_end:
+                */
+
+                let [header, body, end] =
+                    self.make_bb(["repeat_loop_header", "repeat_loop_body", "repeat_loop_end"]);
+                let start = self.current_block;
+                self.build_unconditional_branch(header)?;
+                self.goto(header);
+                // build `phi isize` and add `[0, %<start>]`
+                let idx = self.build_phi(self.ctx.default_types.isize, "")?;
+                let idx_int = idx.as_basic_value().into_int_value();
+
+                let const_zero = self.ctx.default_types.isize.const_zero();
+                idx.add_incoming(&[(&const_zero, start)]);
+
+                let const_len = self
+                    .ctx
+                    .default_types
+                    .isize
+                    .const_int(*amount as u64, false);
+                let is_in_loop =
+                    self.build_int_compare(IntPredicate::ULT, idx_int, const_len, "")?;
+                self.build_conditional_branch(is_in_loop, body, end)?;
+
+                self.goto(body);
+                let ty = self.basic_type(ty);
+                let ptr = unsafe { self.build_in_bounds_gep(ty, ptr, &[idx_int], "") }?;
+
+                self.basic_value_ptr(lit, ptr, distinct)?;
+                let const_one = self.ctx.default_types.isize.const_int(1, false);
+                let new_idx = self.build_int_add(idx_int, const_one, "")?;
+                idx.add_incoming(&[(&new_idx, body)]);
+                self.build_unconditional_branch(header)?;
+
+                self.goto(end);
+                Ok(())
+            }
+            TypedLiteral::Tuple(lits) => {
+                if !lits.is_empty() {
+                    let mut offset = 0;
+                    let ptrsize = self.pointer_size;
+
+                    for lit in lits {
+                        let (size, align) = lit
+                            .to_type(self.ir.scope(), self.ctx.tc_ctx)
+                            .size_and_alignment(ptrsize, &self.structs_reader);
+                        offset = align_up(offset, align);
+                        let idx_int = self.ctx.default_types.isize.const_int(offset, false);
+                        offset += size;
+                        let ptr = unsafe {
+                            self.build_in_bounds_gep(self.ctx.default_types.i8, ptr, &[idx_int], "")
+                        }?;
+                        self.basic_value_ptr(lit, ptr, distinct)?;
+                    }
+                }
+                Ok(())
+            }
+            TypedLiteral::Struct(_, lits) => {
+                if !lits.is_empty() {
+                    let mut offset = 0;
+                    let ptrsize = self.pointer_size;
+
+                    for lit in lits {
+                        let (size, align) = lit
+                            .to_type(self.ir.scope(), self.ctx.tc_ctx)
+                            .size_and_alignment(ptrsize, &self.structs_reader);
+                        offset = align_up(offset, align);
+                        let idx_int = self.ctx.default_types.isize.const_int(offset, false);
+                        offset += size;
+                        let ptr = unsafe {
+                            self.build_in_bounds_gep(self.ctx.default_types.i8, ptr, &[idx_int], "")
+                        }?;
+                        self.basic_value_ptr(lit, ptr, distinct)?;
+                    }
+                }
+                Ok(())
+            }
+            &TypedLiteral::F64(v) => lit_store!(f32.const_float(v)),
+            &TypedLiteral::F32(v) => lit_store!(f32.const_float(v as f64)),
+            &TypedLiteral::U8(v) => lit_store!(i8.const_int(v as u64, true)),
+            &TypedLiteral::U16(v) => lit_store!(i16.const_int(v as u64, true)),
+            &TypedLiteral::U32(v) => lit_store!(i32.const_int(v as u64, true)),
+            &TypedLiteral::U64(v) => lit_store!(i64.const_int(v, true)),
+            &TypedLiteral::USize(v) => lit_store!(isize.const_int(v as i64 as u64, true)),
+            &TypedLiteral::I8(v) => lit_store!(i8.const_int(v as i64 as u64, true)),
+            &TypedLiteral::I16(v) => lit_store!(i16.const_int(v as i64 as u64, true)),
+            &TypedLiteral::I32(v) => lit_store!(i32.const_int(v as i64 as u64, true)),
+            &TypedLiteral::I64(v) => lit_store!(i64.const_int(v as u64, true)),
+            &TypedLiteral::ISize(v) => lit_store!(isize.const_int(v as i64 as u64, true)),
+            &TypedLiteral::Bool(v) => lit_store!(bool.const_int(v as u64, false)),
+            TypedLiteral::Intrinsic(..) | TypedLiteral::LLVMIntrinsic(..) => {
+                unreachable!("intrinsics and llvm intrinsics cannot be stored as a literal")
+            }
+        }
+    }
+
     pub(crate) fn basic_value(&self, lit: &TypedLiteral<'arena>) -> BasicValueEnum<'ctx> {
         let defty = &self.ctx.default_types;
         match lit {
