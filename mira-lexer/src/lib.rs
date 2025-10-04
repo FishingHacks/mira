@@ -840,6 +840,10 @@ impl<'arena> Lexer<'arena> {
                     't' => s.push('\t'),
                     'e' => s.push('\x1b'),
                     'b' => s.push('\x08'),
+                    '\\' => s.push('\\'),
+                    '\'' => s.push('\''),
+                    '"' => s.push('"'),
+                    c if string_char == c => s.push(c),
                     'x' => s.push(self.parse_xhh_escape(string_char)?),
                     'u' => s.push(self.parse_unicode_escape(string_char)?),
                     '\n' => loop {
@@ -1091,7 +1095,7 @@ mod test {
             r#"
 "a b c";
 "a\n\n\\t";
-"a\t\3";
+"a\t3";
             "#,
             &[
                 tok!(ctx, StringLiteral, String("a b c")),

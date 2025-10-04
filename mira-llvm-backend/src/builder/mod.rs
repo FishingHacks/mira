@@ -3,7 +3,7 @@ use std::ops::Deref;
 use inkwell::{
     basic_block::BasicBlock,
     builder::{Builder, BuilderError},
-    types::{BasicType, BasicTypeEnum, FunctionType},
+    types::{BasicType, BasicTypeEnum},
     values::{BasicValueEnum, PointerValue},
 };
 use mira_common::index::IndexMap;
@@ -119,19 +119,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 unreachable!("vector types arent supported")
             }
         }
-    }
-
-    fn fn_type(&self, ty: &TyKind<'_>) -> FunctionType<'ctx> {
-        let TyKind::Function(v) = ty else {
-            unreachable!("`ty` is not a function")
-        };
-        let return_ty = self.basic_type(&v.return_type);
-        let args = v
-            .arguments
-            .iter()
-            .map(|v| self.basic_type(v).into())
-            .collect::<Vec<_>>();
-        return_ty.fn_type(&args, false)
     }
 
     fn basic_type(&self, ty: &TyKind<'_>) -> BasicTypeEnum<'ctx> {
