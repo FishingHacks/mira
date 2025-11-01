@@ -36,6 +36,7 @@ pub(crate) struct FunctionCodegenContext<'ctx, 'arena, 'cg, 'a, 'ir> {
     ir: &'ir IR<'arena>,
     scope: IndexMap<ValueId, BasicValueEnum<'ctx>>,
     generics: TyList<'arena>,
+
     pub(crate) current_block: BasicBlock<'ctx>,
     pointer_size: u64,
     module: ModuleId,
@@ -63,7 +64,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         generics: TyList<'arena>,
         module: ModuleId,
         ir: &'ir IR<'arena>,
-        current_bock: BasicBlock<'ctx>,
+        current_block: BasicBlock<'ctx>,
         return_ty: ArgumentType<'ctx>,
         return_val: PointerValue<'ctx>,
     ) -> FunctionCodegenContext<'ctx, 'arena, 'me, 'a, 'ir> {
@@ -71,7 +72,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             ir,
             scope: IndexMap::new(),
             generics,
-            current_block: current_bock,
+            current_block,
             pointer_size: self.default_types.isize.get_bit_width() as u64 / 8,
             module,
             structs_reader: self.tc_ctx.structs.read(),

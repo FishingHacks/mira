@@ -12,7 +12,9 @@ pub use expression::{
 use mira_context::{DocComment, SharedCtx};
 use mira_lexer::{Token, TokenType};
 use mira_spans::{BytePos, SourceFile, SpanData};
-pub use statement::{Argument, BakableFunction, FunctionContract, Statement, Trait};
+pub use statement::{
+    Argument, BakableFunction, For, FunctionContract, If, Statement, Trait, While,
+};
 pub use statement::{TraitFunction, Variable};
 use tokenstream::{BorrowedTokenStream, TokenStream};
 pub use types::{Generic, RESERVED_TYPE_NAMES, TypeRef};

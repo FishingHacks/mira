@@ -942,6 +942,7 @@ impl<'arena> Lexer<'arena> {
             "return" => Some(TokenType::Return),
             "if" => Some(TokenType::If),
             "else" => Some(TokenType::Else),
+            "defer" => Some(TokenType::Defer),
             "asm" => Some(TokenType::Asm),
             "volatile" => Some(TokenType::Volatile),
             "while" => Some(TokenType::While),

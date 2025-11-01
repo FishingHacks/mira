@@ -80,108 +80,122 @@ impl Display for Trait<'_> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Variable<'arena> {
-    pub name: Ident<'arena>,
-    pub value: Expression<'arena>,
-    pub ty: Option<TypeRef<'arena>>,
-    pub span: Span<'arena>,
-    pub annotations: Annotations<'arena>,
+pub struct Variable<'ctx> {
+    pub name: Ident<'ctx>,
+    pub value: Expression<'ctx>,
+    pub ty: Option<TypeRef<'ctx>>,
+    pub span: Span<'ctx>,
+    pub annotations: Annotations<'ctx>,
 }
 
 #[derive(Clone, Debug)]
-pub enum Statement<'arena> {
-    If {
-        condition: Expression<'arena>,
-        if_stmt: Box<Statement<'arena>>,
-        else_stmt: Option<Box<Statement<'arena>>>,
-        span: Span<'arena>,
-        annotations: Annotations<'arena>,
-    },
-    While {
-        condition: Expression<'arena>,
-        child: Box<Statement<'arena>>,
-        span: Span<'arena>,
-        annotations: Annotations<'arena>,
-    },
-    For {
-        iterator: Expression<'arena>,
-        var_name: Ident<'arena>,
-        child: Box<Statement<'arena>>,
-        span: Span<'arena>,
-        annotations: Annotations<'arena>,
-    },
-    Return(Option<Expression<'arena>>, Span<'arena>),
-    Block(Box<[Statement<'arena>]>, Span<'arena>, Annotations<'arena>),
-    Var(Variable<'arena>),
-    Expression(Expression<'arena>),
+pub struct If<'ctx> {
+    pub condition: Expression<'ctx>,
+    pub if_stmt: Box<Statement<'ctx>>,
+    pub else_stmt: Option<Box<Statement<'ctx>>>,
+    pub span: Span<'ctx>,
+    pub annotations: Annotations<'ctx>,
+}
+
+#[derive(Clone, Debug)]
+pub struct While<'ctx> {
+    pub condition: Expression<'ctx>,
+    pub child: Box<Statement<'ctx>>,
+    pub span: Span<'ctx>,
+    pub annotations: Annotations<'ctx>,
+}
+
+#[derive(Clone, Debug)]
+pub struct For<'ctx> {
+    pub iterator: Expression<'ctx>,
+    pub var_name: Ident<'ctx>,
+    pub child: Box<Statement<'ctx>>,
+    pub span: Span<'ctx>,
+    pub annotations: Annotations<'ctx>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Statement<'ctx> {
+    If(If<'ctx>),
+    While(While<'ctx>),
+    For(For<'ctx>),
+    Return(Option<Expression<'ctx>>, Span<'ctx>),
+    Block(Box<[Statement<'ctx>]>, Span<'ctx>, Annotations<'ctx>),
+    Var(Variable<'ctx>),
+    Expr(Expression<'ctx>),
     Function {
-        contract: FunctionContract<'arena>,
-        body: Box<Statement<'arena>>,
-        span: Span<'arena>,
+        contract: FunctionContract<'ctx>,
+        body: Box<Statement<'ctx>>,
+        span: Span<'ctx>,
         public: bool,
     },
     ExternalFunction {
-        contract: FunctionContract<'arena>,
-        body: Option<Box<Statement<'arena>>>,
-        span: Span<'arena>,
+        contract: FunctionContract<'ctx>,
+        body: Option<Box<Statement<'ctx>>>,
+        span: Span<'ctx>,
         public: bool,
     },
     Struct {
-        name: Ident<'arena>,
-        elements: Vec<(Ident<'arena>, TypeRef<'arena>, DocComment)>,
-        span: Span<'arena>,
-        global_impl: HashMap<Ident<'arena>, (FunctionContract<'arena>, Statement<'arena>)>,
+        name: Ident<'ctx>,
+        elements: Vec<(Ident<'ctx>, TypeRef<'ctx>, DocComment)>,
+        span: Span<'ctx>,
+        global_impl: HashMap<Ident<'ctx>, (FunctionContract<'ctx>, Statement<'ctx>)>,
         #[allow(clippy::type_complexity)]
         impls: Vec<(
-            Ident<'arena>,
-            HashMap<Ident<'arena>, (FunctionContract<'arena>, Statement<'arena>)>,
-            Span<'arena>,
+            Ident<'ctx>,
+            HashMap<Ident<'ctx>, (FunctionContract<'ctx>, Statement<'ctx>)>,
+            Span<'ctx>,
         )>,
-        generics: Vec<Generic<'arena>>,
-        annotations: Annotations<'arena>,
+        generics: Vec<Generic<'ctx>>,
+        annotations: Annotations<'ctx>,
         public: bool,
         comment: DocComment,
     },
-    Trait(Trait<'arena>),
-    ModuleAsm(Span<'arena>, String),
+    Trait(Trait<'ctx>),
+    ModuleAsm(Span<'ctx>, String),
     Static {
-        var: Variable<'arena>,
+        var: Variable<'ctx>,
         public: bool,
         comment: DocComment,
     },
 
+    DeferredExpr(Expression<'ctx>),
+    DeferredBlock(Box<[Statement<'ctx>]>, Span<'ctx>, Annotations<'ctx>),
+    DeferredWhile(While<'ctx>),
+    DeferredFor(For<'ctx>),
+    DeferredIf(If<'ctx>),
+
     Use {
-        span: Span<'arena>,
-        path: PathWithoutGenerics<'arena>,
-        alias: Option<Ident<'arena>>,
+        span: Span<'ctx>,
+        path: PathWithoutGenerics<'ctx>,
+        alias: Option<Ident<'ctx>>,
         public: bool,
     },
     Mod {
-        span: Span<'arena>,
-        name: Ident<'arena>,
+        span: Span<'ctx>,
+        name: Ident<'ctx>,
         public: bool,
         comment: Option<DocComment>,
     },
     None,
 
-    BakedFunction(FunctionId, Span<'arena>),
-    BakedExternalFunction(ExternalFunctionId, Span<'arena>),
-    BakedStruct(StructId, Span<'arena>),
-    BakedStatic(StaticId, Span<'arena>),
-    BakedTrait(TraitId, Span<'arena>),
+    BakedFunction(FunctionId, Span<'ctx>),
+    BakedExternalFunction(ExternalFunctionId, Span<'ctx>),
+    BakedStruct(StructId, Span<'ctx>),
+    BakedStatic(StaticId, Span<'ctx>),
+    BakedTrait(TraitId, Span<'ctx>),
 }
 
 impl<'arena> Statement<'arena> {
     pub fn span(&self) -> Span<'arena> {
         match self {
-            Self::Expression(expr) => expr.span(),
+            Self::DeferredExpr(expr) | Self::Expr(expr) => expr.span(),
             Self::Static { var, .. } => var.span,
             Self::ExternalFunction { span, .. }
             | Self::Function { span, .. }
+            | Self::DeferredBlock(_, span, _)
             | Self::Block(_, span, _)
             | Self::ModuleAsm(span, _)
-            | Self::For { span, .. }
-            | Self::If { span, .. }
             | Self::Return(_, span)
             | Self::Struct { span, .. }
             | Self::Var(Variable { span, .. })
@@ -192,8 +206,10 @@ impl<'arena> Statement<'arena> {
             | Self::BakedTrait(_, span)
             | Self::Trait(Trait { span, .. })
             | Self::Use { span, .. }
-            | Self::Mod { span, .. }
-            | Self::While { span, .. } => *span,
+            | Self::Mod { span, .. } => *span,
+            Self::For(v) | Self::DeferredFor(v) => v.span,
+            Self::If(v) | Self::DeferredIf(v) => v.span,
+            Self::While(v) | Self::DeferredWhile(v) => v.span,
             Self::None => unreachable!(),
         }
     }
@@ -221,33 +237,26 @@ impl<'arena> Statement<'arena> {
             Self::Mod { .. } => unreachable!("mod in a non-top-level scope"),
             Self::Struct { .. } => unreachable!("struct in a non-top-level scope"),
             Self::Function { .. } => unreachable!("function in a non-top-level scope"),
-            Self::Block(statements, ..) => statements
+            Self::Block(statements, ..) | Self::DeferredBlock(statements, ..) => statements
                 .iter_mut()
                 .for_each(|stmt| stmt.bake_functions(module, module_key, context)),
             Self::Var(Variable { value, .. }) => value.bake_functions(module, module_key, context),
             Self::Static { var, .. } => var.value.bake_functions(module, module_key, context),
-            Self::Expression(expr) => expr.bake_functions(module, module_key, context),
-            Self::For {
-                iterator, child, ..
-            } => {
-                iterator.bake_functions(module, module_key, context);
-                child.bake_functions(module, module_key, context);
+            Self::Expr(expr) | Self::DeferredExpr(expr) => {
+                expr.bake_functions(module, module_key, context)
             }
-            Self::While {
-                condition, child, ..
-            } => {
-                condition.bake_functions(module, module_key, context);
-                child.bake_functions(module, module_key, context);
+            Self::For(v) | Self::DeferredFor(v) => {
+                v.iterator.bake_functions(module, module_key, context);
+                v.child.bake_functions(module, module_key, context);
             }
-            Self::If {
-                condition,
-                if_stmt,
-                else_stmt,
-                ..
-            } => {
-                condition.bake_functions(module, module_key, context);
-                if_stmt.bake_functions(module, module_key, context);
-                if let Some(stmt) = else_stmt {
+            Self::While(v) | Self::DeferredWhile(v) => {
+                v.condition.bake_functions(module, module_key, context);
+                v.child.bake_functions(module, module_key, context);
+            }
+            Self::If(v) | Self::DeferredIf(v) => {
+                v.condition.bake_functions(module, module_key, context);
+                v.if_stmt.bake_functions(module, module_key, context);
+                if let Some(stmt) = &mut v.else_stmt {
                     stmt.bake_functions(module, module_key, context);
                 }
             }
@@ -319,40 +328,94 @@ impl Display for Statement<'_> {
                 }
                 f.write_char('}')
             }
-            Self::Expression(v) => Display::fmt(v, f),
+            Self::DeferredBlock(stmts, _, annotations) => {
+                Display::fmt(annotations, f)?;
+
+                f.write_str("defer {")?;
+                for stmt in &**stmts {
+                    f.write_char('\n')?;
+                    Display::fmt(stmt, f)?;
+                }
+                if !stmts.is_empty() {
+                    // {} for empty block, for filled block:
+                    // {
+                    // statement1
+                    // statement2
+                    // }
+                    f.write_char('\n')?;
+                }
+                f.write_char('}')
+            }
+            Self::Expr(v) => Display::fmt(v, f),
+            Self::DeferredExpr(v) => f.write_fmt(format_args!("(defer {v})")),
             Self::Return(Some(v), _) => f.write_fmt(format_args!("(return {v})")),
             Self::Return(None, _) => f.write_str("(return null)"),
-            Self::If {
+            Self::If(If {
                 condition,
                 if_stmt,
                 else_stmt: Some(else_stmt),
                 span: _,
                 annotations,
-            } => f.write_fmt(format_args!(
+            }) => f.write_fmt(format_args!(
                 "{annotations}(if {condition} {if_stmt} {else_stmt})"
             )),
-            Self::If {
+            Self::If(If {
                 condition,
                 if_stmt,
                 else_stmt: None,
                 span: _,
                 annotations,
-            } => f.write_fmt(format_args!("{annotations}(if {condition} {if_stmt})")),
-            Self::For {
+            }) => f.write_fmt(format_args!("{annotations}(if {condition} {if_stmt})")),
+            Self::DeferredIf(If {
+                condition,
+                if_stmt,
+                else_stmt: Some(else_stmt),
+                span: _,
+                annotations,
+            }) => f.write_fmt(format_args!(
+                "{annotations}(deferred_if {condition} {if_stmt} {else_stmt})"
+            )),
+            Self::DeferredIf(If {
+                condition,
+                if_stmt,
+                else_stmt: None,
+                span: _,
+                annotations,
+            }) => f.write_fmt(format_args!(
+                "{annotations}(deferred_if {condition} {if_stmt})"
+            )),
+            Self::For(For {
                 iterator,
                 var_name,
                 child,
                 span: _,
                 annotations,
-            } => f.write_fmt(format_args!(
+            }) => f.write_fmt(format_args!(
                 "{annotations}(for {var_name} {iterator} {child})"
             )),
-            Self::While {
+            Self::DeferredFor(For {
+                iterator,
+                var_name,
+                child,
+                span: _,
+                annotations,
+            }) => f.write_fmt(format_args!(
+                "{annotations}(deferred_for {var_name} {iterator} {child})"
+            )),
+            Self::While(While {
                 condition,
                 child,
                 span: _,
                 annotations,
-            } => f.write_fmt(format_args!("{annotations}(while {condition} {child})")),
+            }) => f.write_fmt(format_args!("{annotations}(while {condition} {child})")),
+            Self::DeferredWhile(While {
+                condition,
+                child,
+                span: _,
+                annotations,
+            }) => f.write_fmt(format_args!(
+                "{annotations}(deferred_while {condition} {child})"
+            )),
             Self::Struct {
                 name,
                 elements: arguments,
@@ -517,14 +580,14 @@ pub(crate) fn display_contract(
     Ok(())
 }
 
-impl<'arena> Parser<'_, 'arena> {
-    fn consume_semicolon(&mut self) -> Result<(), ParsingError<'arena>> {
+impl<'ctx> Parser<'_, 'ctx> {
+    fn consume_semicolon(&mut self) -> Result<(), ParsingError<'ctx>> {
         self.expect(TokenType::Semicolon)?;
         while self.match_tok(TokenType::Semicolon) {}
         Ok(())
     }
 
-    pub fn parse_all(&mut self) -> (Vec<Statement<'arena>>, Vec<ParsingError<'arena>>) {
+    pub fn parse_all(&mut self) -> (Vec<Statement<'ctx>>, Vec<ParsingError<'ctx>>) {
         let mut statements = vec![];
         let mut errors = vec![];
 
@@ -549,7 +612,7 @@ impl<'arena> Parser<'_, 'arena> {
     pub fn parse_statement(
         &mut self,
         is_global: bool,
-    ) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    ) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         while !self.is_at_end() {
             if let Some(statement) = self.parse_statement_part(is_global)? {
                 return Ok(statement);
@@ -561,7 +624,7 @@ impl<'arena> Parser<'_, 'arena> {
     pub fn parse_statement_part(
         &mut self,
         is_global: bool,
-    ) -> Result<Option<Statement<'arena>>, ParsingError<'arena>> {
+    ) -> Result<Option<Statement<'ctx>>, ParsingError<'ctx>> {
         macro_rules! invalid_kw {
             ($kw: literal) => {
                 return Err(ParsingError::InvalidKeyword {
@@ -616,15 +679,17 @@ impl<'arena> Parser<'_, 'arena> {
             TokenType::If if is_global => invalid_kw!("if statement"),
             TokenType::While if is_global => invalid_kw!("while loop"),
             TokenType::For if is_global => invalid_kw!("for loop"),
+            TokenType::Defer if is_global => invalid_kw!("defer"),
 
             TokenType::Asm if is_global => self.parse_global_asm().map(Some),
             TokenType::Trait => self.parse_trait(false).map(Some),
-            TokenType::Let => self.parse_let_stmt(is_global, false).map(Some),
-            TokenType::CurlyLeft => self.parse_block_stmt().map(Some),
-            TokenType::Return => self.parse_return_stmt().map(Some),
-            TokenType::If => self.parse_if_stmt().map(Some),
-            TokenType::While => self.parse_while_stmt().map(Some),
-            TokenType::For => self.parse_for_stmt().map(Some),
+            TokenType::Let => self.parse_let(is_global, false).map(Some),
+            TokenType::CurlyLeft => self.parse_block().map(Some),
+            TokenType::Return => self.parse_return().map(Some),
+            TokenType::Defer => self.parse_defer().map(Some),
+            TokenType::If => self.parse_if().map(Statement::If).map(Some),
+            TokenType::While => self.parse_while().map(Statement::While).map(Some),
+            TokenType::For => self.parse_for().map(Statement::For).map(Some),
             TokenType::Struct => self.parse_struct(false).map(Some),
             TokenType::Fn => self
                 .parse_callable(false, false)
@@ -674,7 +739,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(maybe_statement)
     }
 
-    fn parse_pub(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_pub(&mut self) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         self.dismiss();
         match self.peek().ty {
             TokenType::Fn => self
@@ -692,7 +757,7 @@ impl<'arena> Parser<'_, 'arena> {
                         public: true,
                     })
                 }),
-            TokenType::Let => self.parse_let_stmt(true, true),
+            TokenType::Let => self.parse_let(true, true),
             TokenType::Struct => self.parse_struct(true),
             TokenType::Extern => self.parse_external(true),
             TokenType::Trait => self.parse_trait(true),
@@ -705,15 +770,15 @@ impl<'arena> Parser<'_, 'arena> {
         }
     }
 
-    pub fn join_spans(&self, left: Span<'arena>, right: Span<'arena>) -> Span<'arena> {
+    pub fn join_spans(&self, left: Span<'ctx>, right: Span<'ctx>) -> Span<'ctx> {
         left.combine_with([right], self.ctx.span_interner)
     }
 
-    pub fn span_from(&self, previous: Span<'arena>) -> Span<'arena> {
+    pub fn span_from(&self, previous: Span<'ctx>) -> Span<'ctx> {
         self.join_spans(self.current().span, previous)
     }
 
-    fn parse_global_asm(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_global_asm(&mut self) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         let span = self.eat().span;
         self.expect(TokenType::ParenLeft)?;
         let mut strn = String::new();
@@ -733,7 +798,7 @@ impl<'arena> Parser<'_, 'arena> {
         Ok(Statement::ModuleAsm(self.span_from(span), strn))
     }
 
-    fn parse_mod(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_mod(&mut self, public: bool) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         let comment = self.current_doc_comment.take();
         let span = self.eat().span;
         let name = self.expect_identifier()?;
@@ -748,7 +813,7 @@ impl<'arena> Parser<'_, 'arena> {
         })
     }
 
-    fn parse_use(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_use(&mut self, public: bool) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         let span = self.eat().span;
         let path = PathWithoutGenerics::parse(self)?;
         if self.match_tok(TokenType::Semicolon) {
@@ -780,7 +845,7 @@ impl<'arena> Parser<'_, 'arena> {
     fn parse_trait_fn(
         &mut self,
         comment: DocComment,
-    ) -> Result<TraitFunction<'arena>, ParsingError<'arena>> {
+    ) -> Result<TraitFunction<'ctx>, ParsingError<'ctx>> {
         let span = self.current().span;
         let name = self.expect_identifier()?;
         let annotations = std::mem::take(&mut self.current_annotations);
@@ -827,7 +892,7 @@ impl<'arena> Parser<'_, 'arena> {
         })
     }
 
-    fn parse_trait(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_trait(&mut self, public: bool) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         let span = if public {
             self.current().span
         } else {
@@ -875,17 +940,17 @@ impl<'arena> Parser<'_, 'arena> {
         }))
     }
 
-    fn parse_expression_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_expression_stmt(&mut self) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         let expr = self.parse_expression()?;
         self.consume_semicolon()?;
-        Ok(Statement::Expression(expr))
+        Ok(Statement::Expr(expr))
     }
 
-    fn parse_let_stmt(
+    fn parse_let(
         &mut self,
         is_static: bool,
         public: bool,
-    ) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    ) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         // pub only when in global scope
         // [pub] let <identifier>;
         // [pub] let <identifier> = <expr>;
@@ -942,7 +1007,7 @@ impl<'arena> Parser<'_, 'arena> {
             false => Ok(Statement::Var(var)),
         }
     }
-    fn parse_block_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_block(&mut self) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         let annotations = std::mem::take(&mut self.current_annotations);
         annotations.are_annotations_valid_for(AnnotationReceiver::Block)?;
 
@@ -960,7 +1025,7 @@ impl<'arena> Parser<'_, 'arena> {
             annotations,
         ))
     }
-    fn parse_return_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_return(&mut self) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         // return;
         // return <expr>;
         let span = self.eat().span; // skip `return`
@@ -971,7 +1036,102 @@ impl<'arena> Parser<'_, 'arena> {
         self.consume_semicolon()?;
         Ok(Statement::Return(Some(expr), self.span_from(span)))
     }
-    fn parse_if_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_defer(&mut self) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
+        // skip `defer`
+        self.dismiss();
+
+        let res = match self.peek().ty {
+            TokenType::For => self.parse_if().map(Statement::DeferredIf),
+            TokenType::While => self.parse_while().map(Statement::DeferredWhile),
+            TokenType::If => self.parse_for().map(Statement::DeferredFor),
+            TokenType::CurlyLeft => {
+                let annotations = std::mem::take(&mut self.current_annotations);
+                annotations.are_annotations_valid_for(AnnotationReceiver::Block)?;
+
+                // { <...statements...> }
+                let span = self.eat().span; // skip `{`
+                let mut statements = vec![];
+
+                while !self.match_tok(TokenType::CurlyRight) {
+                    statements.push(self.parse_statement(false)?);
+                }
+
+                Ok(Statement::Block(
+                    statements.into_boxed_slice(),
+                    self.span_from(span),
+                    annotations,
+                ))
+            }
+            _ => {
+                let expr = self.parse_expression()?;
+                self.consume_semicolon()?;
+                Ok(Statement::DeferredExpr(expr))
+            }
+        }?;
+
+        // ensure there are no defers or returns.
+        let mut left = Vec::new();
+
+        match &res {
+            Statement::DeferredFor(For { child, .. })
+            | Statement::DeferredWhile(While { child, .. }) => left.push(&**child),
+            Statement::DeferredBlock(stmts, _, _) => left.extend(stmts),
+            Statement::DeferredExpr(_) => {}
+            Statement::DeferredIf(v) => {
+                left.push(&v.if_stmt);
+                if let Some(else_stmt) = &v.else_stmt {
+                    left.push(else_stmt);
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        while let Some(v) = left.pop() {
+            match v {
+                Statement::If(If {
+                    else_stmt: None,
+                    if_stmt,
+                    ..
+                }) => left.push(if_stmt),
+                Statement::If(If {
+                    else_stmt: Some(else_stmt),
+                    if_stmt,
+                    ..
+                }) => left.extend([&**else_stmt, &**if_stmt]),
+                Statement::While(While { child, .. }) => left.push(child),
+                Statement::For(For { child, .. }) => left.push(child),
+
+                Statement::Block(stmts, ..) => left.extend(stmts),
+
+                Statement::DeferredExpr(_)
+                | Statement::DeferredBlock(..)
+                | Statement::DeferredWhile(_)
+                | Statement::DeferredFor(_)
+                | Statement::DeferredIf(_)
+                | Statement::Return(..) => {
+                    return Err(ParsingError::DeferOrReturnInDefer(v.span()));
+                }
+
+                Statement::None | Statement::Var(_) | Statement::Expr(_) => {}
+                Statement::Function { .. }
+                | Statement::ExternalFunction { .. }
+                | Statement::Struct { .. }
+                | Statement::Trait(_)
+                | Statement::ModuleAsm(..)
+                | Statement::Static { .. }
+                | Statement::Use { .. }
+                | Statement::Mod { .. }
+                | Statement::BakedFunction(..)
+                | Statement::BakedExternalFunction(..)
+                | Statement::BakedStruct(..)
+                | Statement::BakedStatic(..)
+                | Statement::BakedTrait(..) => unreachable!(),
+            }
+        }
+
+        Ok(res)
+    }
+    fn parse_if(&mut self) -> Result<If<'ctx>, ParsingError<'ctx>> {
         let annotations = std::mem::take(&mut self.current_annotations);
         annotations.are_annotations_valid_for(AnnotationReceiver::If)?;
 
@@ -986,7 +1146,7 @@ impl<'arena> Parser<'_, 'arena> {
         self.expect(TokenType::ParenRight)?;
         let if_stmt = self.parse_statement(false)?;
         if self.match_tok(TokenType::Else) {
-            return Ok(Statement::If {
+            return Ok(If {
                 condition,
                 if_stmt: Box::new(if_stmt),
                 else_stmt: Some(Box::new(self.parse_statement(false)?)),
@@ -994,7 +1154,7 @@ impl<'arena> Parser<'_, 'arena> {
                 annotations: std::mem::take(&mut self.current_annotations),
             });
         }
-        Ok(Statement::If {
+        Ok(If {
             condition,
             if_stmt: Box::new(if_stmt),
             else_stmt: None,
@@ -1002,7 +1162,7 @@ impl<'arena> Parser<'_, 'arena> {
             annotations,
         })
     }
-    fn parse_while_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_while(&mut self) -> Result<While<'ctx>, ParsingError<'ctx>> {
         let annotations = std::mem::take(&mut self.current_annotations);
         annotations.are_annotations_valid_for(AnnotationReceiver::While)?;
 
@@ -1014,14 +1174,14 @@ impl<'arena> Parser<'_, 'arena> {
         let condition = self.parse_expression()?;
         self.expect(TokenType::ParenRight)?;
 
-        Ok(Statement::While {
+        Ok(While {
             condition,
             child: Box::new(self.parse_statement(false)?),
             span: self.span_from(span),
             annotations,
         })
     }
-    fn parse_for_stmt(&mut self) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_for(&mut self) -> Result<For<'ctx>, ParsingError<'ctx>> {
         let annotations = std::mem::take(&mut self.current_annotations);
         annotations.are_annotations_valid_for(AnnotationReceiver::For)?;
 
@@ -1038,7 +1198,7 @@ impl<'arena> Parser<'_, 'arena> {
         self.expect(TokenType::ParenRight)?;
 
         let child = Box::new(self.parse_statement(false)?);
-        Ok(Statement::For {
+        Ok(For {
             iterator,
             var_name,
             child,
@@ -1046,7 +1206,7 @@ impl<'arena> Parser<'_, 'arena> {
             annotations,
         })
     }
-    fn parse_struct(&mut self, public: bool) -> Result<Statement<'arena>, ParsingError<'arena>> {
+    fn parse_struct(&mut self, public: bool) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         let annotations = std::mem::take(&mut self.current_annotations);
         let comment = self.take_doc_comment();
         annotations.are_annotations_valid_for(AnnotationReceiver::Struct)?;
@@ -1103,7 +1263,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
 
         let mut global_impl =
-            HashMap::<Ident<'arena>, (FunctionContract<'arena>, Statement<'arena>)>::new();
+            HashMap::<Ident<'ctx>, (FunctionContract<'ctx>, Statement<'ctx>)>::new();
         let mut impls = Vec::new();
 
         if self.current().ty == TokenType::Semicolon {
@@ -1140,10 +1300,9 @@ impl<'arena> Parser<'_, 'arena> {
                     TokenType::Impl => {
                         let span = self.eat().span;
                         let trait_name = self.expect_identifier()?;
-                        let mut current_impl = HashMap::<
-                            Ident<'arena>,
-                            (FunctionContract<'arena>, Statement<'arena>),
-                        >::new();
+                        let mut current_impl =
+                            HashMap::<Ident<'ctx>, (FunctionContract<'ctx>, Statement<'ctx>)>::new(
+                            );
 
                         self.expect(TokenType::CurlyLeft)?;
                         while !self.match_tok(TokenType::CurlyRight) {
@@ -1206,7 +1365,7 @@ impl<'arena> Parser<'_, 'arena> {
         })
     }
 
-    pub fn expect_identifier(&mut self) -> Result<Ident<'arena>, ParsingError<'arena>> {
+    pub fn expect_identifier(&mut self) -> Result<Ident<'ctx>, ParsingError<'ctx>> {
         if !self.match_tok(TokenType::IdentifierLiteral) {
             return Err(ParsingError::ExpectedIdentifier {
                 span: self.peek().span,
@@ -1215,7 +1374,7 @@ impl<'arena> Parser<'_, 'arena> {
         }
         Ok(self.current().into())
     }
-    pub fn parse_annotation(&mut self) -> Result<(), ParsingError<'arena>> {
+    pub fn parse_annotation(&mut self) -> Result<(), ParsingError<'ctx>> {
         let span = self.peek().span;
         assert_eq!(self.eat().ty, TokenType::AnnotationIntroducer);
 
@@ -1428,7 +1587,7 @@ impl<'arena> Parser<'_, 'arena> {
             None
         } else {
             Some(match self.peek().ty {
-                TokenType::CurlyLeft => self.parse_block_stmt()?,
+                TokenType::CurlyLeft => self.parse_block()?,
                 TokenType::Equal => {
                     self.dismiss();
                     let expr = self.parse_expression()?;

@@ -13,6 +13,9 @@ pub enum CodegenError<'arena> {
         BuilderError,
         #[primary_label("while trying to build an operation for")] Span<'arena>,
     ),
+    #[error("{_0}")]
+    #[note("While trying to build a deferred block")]
+    DeferredBlockBuild(BuilderError),
     #[error("Failed to write assembly: {_0}")]
     WriteAssemblyError(std::io::Error),
     #[error("Failed to write binary object: {_0}")]

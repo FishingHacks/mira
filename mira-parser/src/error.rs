@@ -218,6 +218,8 @@ pub enum ParsingError<'arena> {
     #[error("Cannot chain comparison operators")]
     #[note("use `::<...>` instead of `<...>` to specify type arguments.")]
     ChainedGenericLikeComparison(#[primary_label("")] Span<'arena>),
+    #[error("Cannot have a defer or return inside of a defer.")]
+    DeferOrReturnInDefer(#[primary_label("")] Span<'arena>),
 }
 
 #[derive(Debug, ErrorData)]

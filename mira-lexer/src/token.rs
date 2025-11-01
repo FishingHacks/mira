@@ -83,6 +83,7 @@ token_type! {
     If = "if",
     Else = "else",
     Asm = "asm",
+    Defer = "defer",
     Volatile = "volatile",
     While = "while",
     For = "for",

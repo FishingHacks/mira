@@ -2,7 +2,6 @@ use std::{collections::HashSet, ops::Deref};
 
 use crate::{
     CommonFunction, TypedFunctionContract,
-    context::TypeCtx,
     ir::{BlockId, ScopedIR},
     types::EMPTY_TYLIST,
 };
@@ -10,7 +9,7 @@ use mira_context::ErrorEmitted;
 use mira_errors::Diagnostic;
 use mira_lexer::NumberType;
 use mira_parser::{
-    ArrayLiteral, BinaryOp, Expression, LiteralValue, Path, Statement, TypeRef, UnaryOp,
+    ArrayLiteral, BinaryOp, Expression, If, LiteralValue, Path, Statement, TypeRef, UnaryOp, While,
     annotations::Annotations,
     module::{
         ExternalFunctionId, FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StaticId,
@@ -29,6 +28,46 @@ use super::{
     ir::{OffsetValue, TypedExpression, TypedLiteral},
     types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
 };
+
+struct TcCtx<'ctx, 'tcx> {
+    ir: ScopedIR<'ctx>,
+    /// a list of reversed deferred statements
+    rev_deferred_stmts: Vec<Statement<'ctx>>,
+
+    fn_ctx: FnContext<'ctx, 'tcx>,
+}
+
+impl<'ctx> TcCtx<'ctx, '_> {
+    /// creates a block and sets the current block to it, calls `f`, and restores the current block after f exits.
+    pub(super) fn with_new_block<R>(
+        &mut self,
+        span: Span<'ctx>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> (BlockId, R) {
+        let old = self.ir.current_block;
+        let block = self.ir.create_block(span);
+        self.ir.goto(block);
+        let v = f(self);
+        self.ir.goto(old);
+        (block, v)
+    }
+
+    fn append(&mut self, expr: TypedExpression<'ctx>) {
+        self.ir.append(expr);
+    }
+
+    fn append_deferred(&mut self, stmt: Statement<'ctx>) {
+        self.rev_deferred_stmts.push(stmt);
+    }
+}
+
+impl<'ctx, 'tcx> Deref for TcCtx<'ctx, 'tcx> {
+    type Target = FnContext<'ctx, 'tcx>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.fn_ctx
+    }
+}
 
 pub fn typecheck_static<'arena>(
     ctx: &TypeckCtx<'arena>,
@@ -62,9 +101,14 @@ pub fn typecheck_static<'arena>(
         contract: &contract,
     };
 
-    match typecheck_expression(
+    let mut ctx = TcCtx {
+        ir: ScopedIR::new(std::iter::empty(), span),
+        rev_deferred_stmts: Vec::new(),
         fn_ctx,
-        &mut ScopedIR::new(std::iter::empty(), span),
+    };
+
+    match typecheck_expression(
+        &mut ctx,
         &Expression::Literal(expr, span),
         TypeSuggestion::from_type(ty),
     ) {
@@ -169,37 +213,46 @@ fn inner_typecheck_function<'arena>(
         }
     };
 
-    let ctx = FnContext {
+    let fn_ctx = FnContext {
         tcx: tc_ctx,
         contract,
     };
-
-    let tracker = ctx.track_errors();
+    let tracker = fn_ctx.track_errors();
     if !contract.return_type.is_sized() {
-        ctx.ctx
+        fn_ctx
+            .ctx
             .emit_unsized_return_type(contract.span, contract.return_type);
     }
     for (_, arg) in contract.arguments.iter().filter(|v| !v.1.is_sized()) {
-        ctx.emit_unsized_argument(contract.span, *arg);
+        fn_ctx.emit_unsized_argument(contract.span, *arg);
     }
-    ctx.errors_happened_res(tracker)?;
+    fn_ctx.errors_happened_res(tracker)?;
 
-    let mut ir = ScopedIR::new(
+    let ir = ScopedIR::new(
         contract
             .arguments
             .iter()
             .map(|&(name, ty)| (name, name.span(), ty)),
-        ctx.combine_spans([contract.span, statement.span()]),
+        fn_ctx.combine_spans([contract.span, statement.span()]),
     );
-    let always_returns = typecheck_block_inline(ctx, &mut ir, statement)?;
+    let mut ctx = TcCtx {
+        ir,
+        rev_deferred_stmts: Vec::new(),
+        fn_ctx,
+    };
+
+    let always_returns = typecheck_block_inline(&mut ctx, statement)?;
     if contract.return_type != default_types::void && !always_returns {
-        ctx.ctx.emit_body_does_not_always_return(statement.span());
+        fn_ctx
+            .ctx
+            .emit_body_does_not_always_return(statement.span());
         return Err(ErrorEmitted);
     }
     // add an implicit `return;` at the end of the function
     if !always_returns {
-        typecheck_statement(ctx, &mut ir, &Statement::Return(None, statement.span()))?;
+        typecheck_statement(&mut ctx, &Statement::Return(None, statement.span()))?;
     }
+    let mut ir = ctx.ir.to_ir();
 
     drop(fn_reader);
     drop(ext_fn_reader);
@@ -209,12 +262,11 @@ fn inner_typecheck_function<'arena>(
 
     match function {
         CommonFunction::External(id) => {
-            let mut ir = Some(ir.to_ir());
+            let mut ir = Some(ir);
             std::mem::swap(&mut ir, &mut tc_ctx.external_functions.write()[id].1);
             assert!(ir.is_none())
         }
         CommonFunction::Normal(id) => {
-            let mut ir = ir.to_ir();
             std::mem::swap(&mut ir, &mut tc_ctx.functions.write()[id].1);
             assert!(ir.is_empty());
         }
@@ -224,42 +276,36 @@ fn inner_typecheck_function<'arena>(
 }
 
 fn typecheck_block_inline<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     statement: &Statement<'ctx>,
 ) -> Result<bool, ErrorEmitted> {
     if let Statement::Block(stmts, _, _) = statement {
         for stmt in stmts {
-            if let Ok(true) = typecheck_statement(ctx, ir, stmt) {
-                if !matches!(statement, Statement::Return(..)) {
-                    ir.append(TypedExpression::Unreachable(statement.span()));
-                }
+            if let Ok(true) = typecheck_statement(ctx, stmt) {
                 return Ok(true);
             }
         }
         return Ok(false);
     }
-    typecheck_statement(ctx, ir, statement)
+    typecheck_statement(ctx, statement)
 }
 
 /// Typechecks a statement that *acts* like a block, or a block. This means that
 /// - `if(a) b = c;` is `if _0 { _1 = _2; }`
 /// - `if(a) { b = c; }` is `if _0 { _1 = _2; }`, and not `if _0 { { _1 = _2 } }`
 fn typecheck_quasi_block<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     statement: &Statement<'ctx>,
 ) -> Result<(BlockId, bool), ErrorEmitted> {
-    if let Statement::Block(statements, span, _) = statement {
+    if let Statement::Block(statements, span, _) | Statement::DeferredBlock(statements, span, _) =
+        statement
+    {
         let tracker = ctx.track_errors();
-        let (block, always_returns) = ir.with_new_block(*span, |ir| {
+        let (block, always_returns) = ctx.with_new_block(*span, |ctx| {
             let mut always_returns = false;
             for statement in statements.iter() {
-                if let Ok(true) = typecheck_statement(ctx, ir, statement) {
+                if let Ok(true) = typecheck_statement(ctx, statement) {
                     always_returns = true;
-                    if !matches!(statement, Statement::Return(..)) {
-                        ir.append(TypedExpression::Unreachable(statement.span()));
-                    }
                     break;
                 }
             }
@@ -269,99 +315,182 @@ fn typecheck_quasi_block<'ctx>(
         ctx.errors_happened_res(tracker)?;
         return Ok((block, always_returns));
     }
-    let (block, res) = ir.with_new_block(statement.span(), |ir| {
-        typecheck_statement(ctx, ir, statement)
-    });
+    let (block, res) =
+        ctx.with_new_block(statement.span(), |ctx| typecheck_statement(ctx, statement));
     Ok((block, res?))
 }
 
 /// Returns if the statement and if it always returns
-fn typecheck_statement<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
-    statement: &Statement<'ctx>,
+fn typecheck_if<'ctx>(
+    ctx: &mut TcCtx<'ctx, '_>,
+    If {
+        condition,
+        if_stmt,
+        else_stmt,
+        span,
+        annotations,
+    }: &If<'ctx>,
 ) -> Result<bool, ErrorEmitted> {
     let tracker = ctx.track_errors();
-    match statement {
-        Statement::If {
-            condition,
-            if_stmt,
-            else_stmt,
-            span,
-            annotations,
-        } => {
-            let expr_result = typecheck_expression(ctx, ir, condition, TypeSuggestion::Bool)
-                .map_err(|v| ctx.emit_diag(v));
+    let expr_result =
+        typecheck_expression(ctx, condition, TypeSuggestion::Bool).map_err(|v| ctx.emit_diag(v));
 
-            let if_stmt_result = typecheck_quasi_block(ctx, ir, if_stmt);
-            let else_stmt_result = if let Some(else_stmt) = else_stmt {
-                typecheck_quasi_block(ctx, ir, else_stmt).map(|(blk, exits)| (Some(blk), exits))
-            } else {
-                Ok((None, false))
+    let if_stmt_result = typecheck_quasi_block(ctx, if_stmt);
+    let else_stmt_result = if let Some(else_stmt) = else_stmt {
+        typecheck_quasi_block(ctx, else_stmt).map(|(blk, exits)| (Some(blk), exits))
+    } else {
+        Ok((None, false))
+    };
+    let (condition_ty, cond) = expr_result?;
+    if condition_ty != default_types::bool {
+        ctx.ctx
+            .emit_mismatching_type(*span, default_types::bool, condition_ty);
+    }
+    let (if_block, if_stmt_exits) = if_stmt_result?;
+    let (else_block, else_stmt_exits) = else_stmt_result?;
+    ctx.errors_happened_res(tracker)?;
+    ctx.append(TypedExpression::If {
+        span: *span,
+        cond,
+        if_block,
+        else_block,
+        annotations: annotations.clone(),
+    });
+    Ok(if_stmt_exits && else_stmt_exits)
+}
+
+/// Returns if the statement and if it always returns
+fn typecheck_while<'ctx>(
+    ctx: &mut TcCtx<'ctx, '_>,
+    While {
+        condition,
+        child,
+        span,
+        ..
+    }: &While<'ctx>,
+) -> Result<bool, ErrorEmitted> {
+    let tracker = ctx.track_errors();
+
+    let (condition_body, condition_result) = ctx.with_new_block(condition.span(), |ctx| {
+        typecheck_expression(ctx, condition, TypeSuggestion::Bool)
+    });
+    let condition_result = condition_result.map_err(|diag| ctx.emit_diag(diag));
+
+    let body_result = typecheck_quasi_block(ctx, child);
+    let (condition_ty, cond) = condition_result?;
+    if condition_ty != default_types::bool {
+        ctx.ctx
+            .emit_mismatching_type(*span, default_types::bool, condition_ty);
+    }
+    let (body, mut always_exits) = body_result?;
+    ctx.errors_happened_res(tracker)?;
+
+    // while (true) {} also never exits
+    always_exits = always_exits || matches!(cond, TypedLiteral::Bool(true));
+    ctx.append(TypedExpression::While {
+        span: *span,
+        cond_block: condition_body,
+        cond,
+        body,
+    });
+
+    Ok(always_exits)
+}
+
+/// Returns if it always returns.
+fn run_deferred(ctx: &mut TcCtx<'_, '_>) -> Result<bool, ErrorEmitted> {
+    if ctx.rev_deferred_stmts.is_empty() {
+        return Ok(false);
+    }
+
+    let blk_span = ctx.ir.get_block_span(ctx.ir.current_block);
+    let tracker = ctx.track_errors();
+    let (block_id, always_returns) = ctx.with_new_block(blk_span, |ctx| {
+        let mut always_returns = false;
+        // this is fine because deferred expressions can't contain further deferred
+        // expressions or returns.
+        let deferred_stmts = std::mem::take(&mut ctx.rev_deferred_stmts);
+        for statement in deferred_stmts.iter().rev() {
+            let res = match statement {
+                Statement::DeferredBlock(_, span, annotations) => {
+                    match typecheck_quasi_block(ctx, statement) {
+                        Ok((block, always_returns)) => {
+                            ctx.append(TypedExpression::Block(*span, block, annotations.clone()));
+                            Ok(always_returns)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                Statement::DeferredExpr(expr) => {
+                    match typecheck_expression(ctx, expr, Default::default()) {
+                        Err(e) => Err(ctx.emit_diag(e)),
+                        Ok((ty, _)) if ty == default_types::never => {
+                            ctx.append(TypedExpression::Unreachable(expr.span()));
+                            Ok(true)
+                        }
+                        Ok(_) => Ok(false),
+                    }
+                }
+                Statement::DeferredIf(v) => typecheck_if(ctx, v),
+                Statement::DeferredWhile(v) => typecheck_while(ctx, v),
+                Statement::DeferredFor(_) => todo!("for loops (iterators)"),
+                _ => unreachable!("deferred only"),
             };
-            let (condition_ty, cond) = expr_result?;
-            if condition_ty != default_types::bool {
-                ctx.ctx
-                    .emit_mismatching_type(*span, default_types::bool, condition_ty);
+            if let Ok(true) = res {
+                always_returns = true;
             }
-            let (if_block, if_stmt_exits) = if_stmt_result?;
-            let (else_block, else_stmt_exits) = else_stmt_result?;
-            ctx.errors_happened_res(tracker)?;
-            ir.append(TypedExpression::If {
-                span: *span,
-                cond,
-                if_block,
-                else_block,
-                annotations: annotations.clone(),
-            });
-            Ok(if_stmt_exits && else_stmt_exits)
         }
-        Statement::While {
-            condition,
-            child,
-            span,
-            ..
-        } => {
-            let (condition_body, condition_result) = ir.with_new_block(condition.span(), |ir| {
-                typecheck_expression(ctx, ir, condition, TypeSuggestion::Bool)
-            });
-            let condition_result = condition_result.map_err(|diag| ctx.emit_diag(diag));
+        ctx.rev_deferred_stmts = deferred_stmts;
+        always_returns
+    });
+    ctx.append(TypedExpression::Block(
+        blk_span,
+        block_id,
+        Annotations::new(),
+    ));
+    ctx.errors_happened_res(tracker)?;
+    Ok(always_returns)
+}
 
-            let body_result = typecheck_quasi_block(ctx, ir, child);
-            let (condition_ty, cond) = condition_result?;
-            if condition_ty != default_types::bool {
-                ctx.ctx
-                    .emit_mismatching_type(*span, default_types::bool, condition_ty);
-            }
-            let (body, mut always_exits) = body_result?;
-            ctx.errors_happened_res(tracker)?;
-
-            // while (true) {} also never exits
-            always_exits = always_exits || matches!(cond, TypedLiteral::Bool(true));
-            ir.append(TypedExpression::While {
-                span: *span,
-                cond_block: condition_body,
-                cond,
-                body,
-            });
-
-            Ok(always_exits)
+/// Returns if the statement always returns
+fn typecheck_statement<'ctx>(
+    ctx: &mut TcCtx<'ctx, '_>,
+    statement: &Statement<'ctx>,
+) -> Result<bool, ErrorEmitted> {
+    match statement {
+        Statement::DeferredExpr(_)
+        | Statement::DeferredIf(_)
+        | Statement::DeferredWhile(_)
+        | Statement::DeferredBlock(_, _, _)
+        | Statement::DeferredFor { .. } => {
+            ctx.append_deferred(statement.clone());
+            Ok(false)
         }
+
+        Statement::If(v) => typecheck_if(ctx, v),
+        Statement::While(v) => typecheck_while(ctx, v),
         Statement::For { .. } => todo!("iterator (requires generics)"),
-        Statement::Return(None, span) => {
-            if ctx.contract.return_type == default_types::void {
-                ir.append(TypedExpression::Return(*span, None));
+        Statement::Return(None, span) => match run_deferred(ctx) {
+            e @ Err(_) => e,
+            Ok(true) => Ok(true),
+            Ok(false) if ctx.contract.return_type == default_types::void => {
+                ctx.append(TypedExpression::Return(*span, None));
                 Ok(true)
-            } else {
+            }
+            Ok(false) => {
                 ctx.ctx
                     .emit_mismatching_type(*span, ctx.contract.return_type, default_types::void);
                 Err(ErrorEmitted)
             }
-        }
+        },
         Statement::Return(Some(expression), span) => {
+            let res = match run_deferred(ctx) {
+                Ok(true) => return Ok(true),
+                res => res,
+            };
+
             let (ty, typed_expression) = typecheck_expression(
                 ctx,
-                ir,
                 expression,
                 TypeSuggestion::from_type(ctx.contract.return_type),
             )
@@ -376,23 +505,26 @@ fn typecheck_statement<'ctx>(
                 // using the id here is fine because we only return a ValueId because we want the
                 // return value to *always* be alloca'd, not because it represents a new value.
                 TypedLiteral::Dynamic(id) => {
-                    ir.make_stack_allocated(id);
+                    ctx.ir.make_stack_allocated(id);
                     Some(id)
                 }
                 TypedLiteral::Void => None,
                 lit => {
-                    let id = ir.add_value(ty);
-                    ir.make_stack_allocated(id);
-                    ir.append(TypedExpression::Literal(expression.span(), id, lit));
+                    let id = ctx.ir.add_value(ty);
+                    ctx.ir.make_stack_allocated(id);
+                    ctx.append(TypedExpression::Literal(expression.span(), id, lit));
                     Some(id)
                 }
             };
-            ir.append(TypedExpression::Return(*span, ret_val));
+            ctx.append(TypedExpression::Return(*span, ret_val));
+
+            // deferred statement errors
+            res?;
             Ok(true)
         }
         Statement::Block(_, span, annotations) => {
-            let (block, always_returns) = typecheck_quasi_block(ctx, ir, statement)?;
-            ir.append(TypedExpression::Block(*span, block, annotations.clone()));
+            let (block, always_returns) = typecheck_quasi_block(ctx, statement)?;
+            ctx.append(TypedExpression::Block(*span, block, annotations.clone()));
             Ok(always_returns)
         }
         Statement::Var(var) => {
@@ -405,7 +537,6 @@ fn typecheck_statement<'ctx>(
 
             let (ty, expr) = typecheck_expression(
                 ctx,
-                ir,
                 &var.value,
                 expected_typ
                     .as_ref()
@@ -422,24 +553,28 @@ fn typecheck_statement<'ctx>(
                 return Err(ErrorEmitted);
             }
 
-            let value = ir.add_value(ty);
-            ir.append(TypedExpression::Literal(var.value.span(), value, expr));
+            let value = ctx.ir.add_value(ty);
+            ctx.append(TypedExpression::Literal(var.value.span(), value, expr));
 
-            ir.scope_value(var.name, value);
-            ir.append(TypedExpression::DeclareVariable(
+            ctx.ir.scope_value(var.name, value);
+            ctx.append(TypedExpression::DeclareVariable(
                 var.span,
                 value,
                 ty,
                 var.name.symbol(),
             ));
-            ir.make_stack_allocated(value);
+            ctx.ir.make_stack_allocated(value);
             Ok(false)
         }
-        Statement::Expression(expression) => {
-            typecheck_expression(ctx, ir, expression, Default::default())
-                .map_err(|diag| ctx.emit_diag(diag))
-                .map(|(ty, _)| ty == default_types::never)
-        }
+        Statement::Expr(expr) => match typecheck_expression(ctx, expr, Default::default()) {
+            Err(e) => Err(ctx.emit_diag(e)),
+            Ok((ty, _)) if ty == default_types::never => {
+                ctx.append(TypedExpression::Unreachable(expr.span()));
+                Ok(true)
+            }
+            Ok(_) => Ok(false),
+        },
+
         Statement::Use { .. }
         | Statement::Mod { .. }
         | Statement::BakedFunction(..)
@@ -460,17 +595,17 @@ fn typecheck_statement<'ctx>(
 }
 
 macro_rules! tc_res {
-    (unary $ir:expr; $name:ident ($span:expr, $right_side:expr, $ty:expr)) => {{
+    (unary $ctx:expr; $name:ident ($span:expr, $right_side:expr, $ty:expr)) => {{
         let ty = $ty;
-        let id = $ir.add_value(ty);
-        $ir.append(TypedExpression::$name($span, id, $right_side));
+        let id = $ctx.ir.add_value(ty);
+        $ctx.append(TypedExpression::$name($span, id, $right_side));
         Ok((ty, TypedLiteral::Dynamic(id)))
     }};
 
-    (binary $ir:expr; $name:ident ($span:expr, $left_side:expr, $right_side:expr, $ty:expr)) => {{
+    (binary $ctx:expr; $name:ident ($span:expr, $left_side:expr, $right_side:expr, $ty:expr)) => {{
         let ty = $ty;
-        let id = $ir.add_value(ty);
-        $ir.append(TypedExpression::$name($span, id, $left_side, $right_side));
+        let id = $ctx.ir.add_value(ty);
+        $ctx.append(TypedExpression::$name($span, id, $left_side, $right_side));
         Ok((ty, TypedLiteral::Dynamic(id)))
     }};
 }
@@ -551,8 +686,7 @@ fn float_number_to_literal<'arena>(
 }
 
 fn typecheck_expression<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
@@ -564,7 +698,7 @@ fn typecheck_expression<'ctx>(
             LiteralValue::Array(ArrayLiteral::Values(vec)) if vec.is_empty() => {
                 let ty = match type_suggestion {
                     TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
-                        .to_type(&ctx)
+                        .to_type(ctx)
                         .ok_or_else(|| TypecheckingError::CannotInferArrayType(span).to_error())?,
                     _ => return Err(TypecheckingError::CannotInferArrayType(span).to_error()),
                 };
@@ -575,7 +709,7 @@ fn typecheck_expression<'ctx>(
                     TypeSuggestion::UnsizedArray(v) | TypeSuggestion::Array(v) => *v,
                     _ => TypeSuggestion::Unknown,
                 };
-                let (ty, lit) = typecheck_expression(ctx, ir, value, suggested_typ)?;
+                let (ty, lit) = typecheck_expression(ctx, value, suggested_typ)?;
                 Ok((
                     ctx.intern_ty(TyKind::SizedArray {
                         ty,
@@ -589,12 +723,11 @@ fn typecheck_expression<'ctx>(
                     TypeSuggestion::UnsizedArray(v) | TypeSuggestion::Array(v) => *v,
                     _ => TypeSuggestion::Unknown,
                 };
-                let (ty, mut elements) = typecheck_expression(ctx, ir, &vec[0], suggested_typ)
+                let (ty, mut elements) = typecheck_expression(ctx, &vec[0], suggested_typ)
                     .map(|(ty, lit)| (ty, vec![lit]))?;
                 let suggested_typ = TypeSuggestion::from_type(ty);
                 for expr in vec.iter().skip(1) {
-                    let (el_typ, el_lit) =
-                        typecheck_expression(ctx, ir, expr, suggested_typ.clone())?;
+                    let (el_typ, el_lit) = typecheck_expression(ctx, expr, suggested_typ.clone())?;
                     if el_typ != ty {
                         return Err(TypecheckingError::MismatchingType {
                             expected: ty,
@@ -625,7 +758,6 @@ fn typecheck_expression<'ctx>(
                 for (i, (_, value)) in values.iter().enumerate() {
                     let (ty, val) = typecheck_expression(
                         ctx,
-                        ir,
                         value,
                         suggested_element_types.get(i).cloned().unwrap_or_default(),
                     )?;
@@ -644,7 +776,7 @@ fn typecheck_expression<'ctx>(
                     return Err(TypecheckingError::CannotInferAnonStructType(span).to_error());
                 };
 
-                let structure = &ctx.structs.read()[struct_id];
+                let structure = &ctx.fn_ctx.tcx.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
@@ -666,7 +798,7 @@ fn typecheck_expression<'ctx>(
                         .to_error());
                     };
                     let (expr_typ, expr_lit) =
-                        typecheck_expression(ctx, ir, expr, TypeSuggestion::from_type(*ty))?;
+                        typecheck_expression(ctx, expr, TypeSuggestion::from_type(*ty))?;
                     if *ty != expr_typ {
                         return Err(TypecheckingError::MismatchingType {
                             expected: *ty,
@@ -699,7 +831,7 @@ fn typecheck_expression<'ctx>(
                 let ModuleScopeValue::Struct(struct_id) = value else {
                     return Err(TypecheckingError::CannotFindValue(span, path.clone()).to_error());
                 };
-                let structure = &ctx.structs.read()[struct_id];
+                let structure = &ctx.fn_ctx.tcx.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
@@ -721,7 +853,7 @@ fn typecheck_expression<'ctx>(
                         .to_error());
                     };
                     let (expr_typ, expr_lit) =
-                        typecheck_expression(ctx, ir, expr, TypeSuggestion::from_type(*ty))?;
+                        typecheck_expression(ctx, expr, TypeSuggestion::from_type(*ty))?;
                     if *ty != expr_typ {
                         return Err(TypecheckingError::MismatchingType {
                             expected: *ty,
@@ -755,9 +887,9 @@ fn typecheck_expression<'ctx>(
             LiteralValue::Dynamic(path) => {
                 if path.entries.len() == 1
                     && path.entries[0].1.is_empty()
-                    && let Some(id) = ir.get_scoped(&path.entries[0].0)
+                    && let Some(id) = ctx.ir.get_scoped(&path.entries[0].0)
                 {
-                    return Ok((ir.get_ty(id), TypedLiteral::Dynamic(id)));
+                    return Ok((ctx.ir.get_ty(id), TypedLiteral::Dynamic(id)));
                 }
                 let mut generics = Vec::new();
                 for (.., generic_value) in path.entries.iter() {
@@ -886,21 +1018,21 @@ fn typecheck_expression<'ctx>(
                 })?;
             let mut typed_inputs = Vec::with_capacity(inputs.len());
             for (span, name) in inputs {
-                let Some(id) = ir.get_scoped(name) else {
+                let Some(id) = ctx.ir.get_scoped(name) else {
                     return Err(TypecheckingError::CannotFindValue(
                         *span,
                         Path::new(*name, Vec::new()),
                     )
                     .to_error());
                 };
-                let ty = ir.get_ty(id);
+                let ty = ctx.ir.get_ty(id);
                 if !ty.is_asm_primitive() {
                     return Err(TypecheckingError::AsmNonNumericTypeResolved(*span, ty).to_error());
                 }
                 typed_inputs.push(id);
             }
-            let id = ir.add_value(output);
-            ir.append(TypedExpression::Asm {
+            let id = ctx.ir.add_value(output);
+            ctx.append(TypedExpression::Asm {
                 span: *span,
                 dst: id,
                 inputs: typed_inputs.into_boxed_slice(),
@@ -919,33 +1051,33 @@ fn typecheck_expression<'ctx>(
             right_side,
             ..
         } if *operator == UnaryOp::Reference => {
-            typecheck_take_ref(ctx, ir, right_side, type_suggestion)
+            typecheck_take_ref(ctx, right_side, type_suggestion)
         }
         Expression::Unary {
             operator,
             right_side,
             span,
         } => {
-            let (ty, right_side) = typecheck_expression(ctx, ir, right_side, type_suggestion)?;
+            let (ty, right_side) = typecheck_expression(ctx, right_side, type_suggestion)?;
             match operator {
                 UnaryOp::Plus if ty.is_int_like() => {
-                    tc_res!(unary ir; Pos(*span, right_side, ty))
+                    tc_res!(unary ctx; Pos(*span, right_side, ty))
                 }
                 UnaryOp::Plus => Err(TypecheckingError::CannotPos(*span, ty).to_error()),
                 UnaryOp::Minus if (ty.is_int_like() && !ty.is_unsigned()) || ty.is_float() => {
-                    tc_res!(unary ir; Neg(*span, right_side, ty))
+                    tc_res!(unary ctx; Neg(*span, right_side, ty))
                 }
                 UnaryOp::Minus => Err(TypecheckingError::CannotNeg(*span, ty).to_error()),
                 UnaryOp::LogicalNot if ty == default_types::bool => {
-                    tc_res!(unary ir; LNot(*span, right_side, ty))
+                    tc_res!(unary ctx; LNot(*span, right_side, ty))
                 }
                 UnaryOp::LogicalNot => Err(TypecheckingError::CannotLNot(*span, ty).to_error()),
                 UnaryOp::BitwiseNot if ty.is_int_like() || ty == default_types::bool => {
-                    tc_res!(unary ir; BNot(*span, right_side, ty))
+                    tc_res!(unary ctx; BNot(*span, right_side, ty))
                 }
                 UnaryOp::BitwiseNot => Err(TypecheckingError::CannotBNot(*span, ty).to_error()),
                 UnaryOp::Dereference => match ty.deref() {
-                    Some(ty) => tc_res!(unary ir; Dereference(*span, right_side, ty)),
+                    Some(ty) => tc_res!(unary ctx; Dereference(*span, right_side, ty)),
                     None => Err(TypecheckingError::CannotDeref(*span, ty).to_error()),
                 },
                 UnaryOp::Reference => unreachable!(),
@@ -958,10 +1090,9 @@ fn typecheck_expression<'ctx>(
             span,
         } => {
             if matches!(operator, BinaryOp::LShift | BinaryOp::RShift) {
-                let (ty, left_side) = typecheck_expression(ctx, ir, left_side, type_suggestion)?;
+                let (ty, left_side) = typecheck_expression(ctx, left_side, type_suggestion)?;
                 let (typ_right, right_side) = typecheck_expression(
                     ctx,
-                    ir,
                     right_side,
                     TypeSuggestion::Number(NumberType::Usize),
                 )?;
@@ -973,10 +1104,10 @@ fn typecheck_expression<'ctx>(
 
                 return match operator {
                     BinaryOp::LShift if ty.is_int_like() => {
-                        tc_res!(binary ir; LShift(*span, left_side, right_side, ty))
+                        tc_res!(binary ctx; LShift(*span, left_side, right_side, ty))
                     }
                     BinaryOp::RShift if ty.is_int_like() => {
-                        tc_res!(binary ir; RShift(*span, left_side, right_side, ty))
+                        tc_res!(binary ctx; RShift(*span, left_side, right_side, ty))
                     }
 
                     BinaryOp::LShift => Err(TypecheckingError::CannotShl(*span, ty).to_error()),
@@ -988,7 +1119,7 @@ fn typecheck_expression<'ctx>(
                 let span_left = left_side.span();
                 let span_right = right_side.span();
                 let (typ_left, left_side) =
-                    typecheck_expression(ctx, ir, left_side, TypeSuggestion::Bool)?;
+                    typecheck_expression(ctx, left_side, TypeSuggestion::Bool)?;
                 if typ_left != default_types::bool {
                     return Err(TypecheckingError::MismatchingType {
                         span: span_left,
@@ -997,8 +1128,8 @@ fn typecheck_expression<'ctx>(
                     }
                     .to_error());
                 }
-                let (rhs_block, right_res) = ir.with_new_block(right_side.span(), |ir| {
-                    typecheck_expression(ctx, ir, right_side, TypeSuggestion::Bool)
+                let (rhs_block, right_res) = ctx.with_new_block(right_side.span(), |ctx| {
+                    typecheck_expression(ctx, right_side, TypeSuggestion::Bool)
                 });
                 let (typ_right, right_side) = right_res?;
                 if typ_right != default_types::bool {
@@ -1011,21 +1142,21 @@ fn typecheck_expression<'ctx>(
                 }
                 let span = span_left.combine_with([span_right], ctx.span_interner());
 
-                let id = ir.add_value(default_types::bool);
+                let id = ctx.ir.add_value(default_types::bool);
                 match operator {
-                    BinaryOp::LogicalAnd => ir.append(TypedExpression::LAnd(
+                    BinaryOp::LogicalAnd => ctx.append(TypedExpression::LAnd(
                         span, id, left_side, right_side, rhs_block,
                     )),
-                    BinaryOp::LogicalOr => ir.append(TypedExpression::LOr(
+                    BinaryOp::LogicalOr => ctx.append(TypedExpression::LOr(
                         span, id, left_side, right_side, rhs_block,
                     )),
                     _ => unreachable!(),
                 }
                 return Ok((default_types::bool, TypedLiteral::Dynamic(id)));
             }
-            let (typ_left, left_side) = typecheck_expression(ctx, ir, left_side, type_suggestion)?;
+            let (typ_left, left_side) = typecheck_expression(ctx, left_side, type_suggestion)?;
             let (typ_right, right_side) =
-                typecheck_expression(ctx, ir, right_side, TypeSuggestion::from_type(typ_left))?;
+                typecheck_expression(ctx, right_side, TypeSuggestion::from_type(typ_left))?;
             if typ_left != typ_right {
                 return Err(TypecheckingError::LhsNotRhs(*span, typ_left, typ_right).to_error());
             }
@@ -1033,46 +1164,46 @@ fn typecheck_expression<'ctx>(
             let span = *span;
             match operator {
                 BinaryOp::Plus if ty.is_int_like() => {
-                    tc_res!(binary ir; Add(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Add(span, left_side, right_side, ty))
                 }
                 BinaryOp::Minus if ty.is_int_like() => {
-                    tc_res!(binary ir; Sub(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Sub(span, left_side, right_side, ty))
                 }
                 BinaryOp::Multiply if ty.is_int_like() => {
-                    tc_res!(binary ir; Mul(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Mul(span, left_side, right_side, ty))
                 }
                 BinaryOp::Divide if ty.is_int_like() => {
-                    tc_res!(binary ir; Div(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Div(span, left_side, right_side, ty))
                 }
                 BinaryOp::Modulo if ty.is_int_like() => {
-                    tc_res!(binary ir; Mod(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Mod(span, left_side, right_side, ty))
                 }
                 BinaryOp::BitwiseAnd if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ir; BAnd(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; BAnd(span, left_side, right_side, ty))
                 }
                 BinaryOp::BitwiseOr if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ir; BOr(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; BOr(span, left_side, right_side, ty))
                 }
                 BinaryOp::BitwiseXor if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ir; BXor(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; BXor(span, left_side, right_side, ty))
                 }
                 BinaryOp::GreaterThan if ty.is_int_like() => {
-                    tc_res!(binary ir; GreaterThan(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; GreaterThan(span, left_side, right_side, default_types::bool))
                 }
                 BinaryOp::GreaterThanEq if ty.is_int_like() => {
-                    tc_res!(binary ir; GreaterThanEq(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; GreaterThanEq(span, left_side, right_side, default_types::bool))
                 }
                 BinaryOp::LessThan if ty.is_int_like() => {
-                    tc_res!(binary ir; LessThan(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; LessThan(span, left_side, right_side, default_types::bool))
                 }
                 BinaryOp::LessThanEq if ty.is_int_like() => {
-                    tc_res!(binary ir; LessThanEq(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; LessThanEq(span, left_side, right_side, default_types::bool))
                 }
                 BinaryOp::Equals if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ir; Eq(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; Eq(span, left_side, right_side, default_types::bool))
                 }
                 BinaryOp::NotEquals if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ir; Neq(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; Neq(span, left_side, right_side, default_types::bool))
                 }
 
                 BinaryOp::Plus => Err(TypecheckingError::CannotAdd(span, ty).to_error()),
@@ -1101,7 +1232,7 @@ fn typecheck_expression<'ctx>(
         Expression::FunctionCall {
             func, arguments, ..
         } => {
-            let (ty, function_expr) = typecheck_expression(ctx, ir, func, TypeSuggestion::Unknown)?;
+            let (ty, function_expr) = typecheck_expression(ctx, func, TypeSuggestion::Unknown)?;
             let has_vararg = if let TypedLiteral::ExternalFunction(id) = function_expr {
                 ctx.external_functions.read()[id]
                     .0
@@ -1126,7 +1257,6 @@ fn typecheck_expression<'ctx>(
             for (i, arg) in arguments.iter().enumerate() {
                 let (ty, expr) = typecheck_expression(
                     ctx,
-                    ir,
                     arg,
                     function_type
                         .arguments
@@ -1152,8 +1282,8 @@ fn typecheck_expression<'ctx>(
 
             if let TypedLiteral::Intrinsic(intrinsic, generics) = function_expr {
                 let ty = function_type.return_type;
-                let id = ir.add_value(ty);
-                ir.append(TypedExpression::IntrinsicCall(
+                let id = ctx.ir.add_value(ty);
+                ctx.append(TypedExpression::IntrinsicCall(
                     func.span(),
                     id,
                     intrinsic,
@@ -1163,8 +1293,8 @@ fn typecheck_expression<'ctx>(
                 Ok((ty, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::LLVMIntrinsic(intrinsic) = function_expr {
                 let ty = function_type.return_type;
-                let id = ir.add_value(ty);
-                ir.append(TypedExpression::LLVMIntrinsicCall(
+                let id = ctx.ir.add_value(ty);
+                ctx.append(TypedExpression::LLVMIntrinsicCall(
                     func.span(),
                     id,
                     intrinsic,
@@ -1173,8 +1303,8 @@ fn typecheck_expression<'ctx>(
                 Ok((ty, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::Function(fn_id, generics) = function_expr {
                 let ty = function_type.return_type;
-                let id = ir.add_value(ty);
-                ir.append(TypedExpression::DirectCall(
+                let id = ctx.ir.add_value(ty);
+                ctx.append(TypedExpression::DirectCall(
                     func.span(),
                     id,
                     fn_id,
@@ -1183,20 +1313,20 @@ fn typecheck_expression<'ctx>(
                 ));
                 Ok((ty, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::ExternalFunction(fn_id) = function_expr {
-                tc_res!(binary ir; DirectExternCall(func.span(), fn_id, typed_arguments.into_boxed_slice(), function_type.return_type))
+                tc_res!(binary ctx; DirectExternCall(func.span(), fn_id, typed_arguments.into_boxed_slice(), function_type.return_type))
             } else {
-                tc_res!(binary ir; Call(func.span(), function_expr, typed_arguments.into_boxed_slice(), function_type.return_type))
+                tc_res!(binary ctx; Call(func.span(), function_expr, typed_arguments.into_boxed_slice(), function_type.return_type))
             }
         }
         Expression::Indexing { .. } | Expression::MemberAccess { .. } => {
-            copy_resolve_indexing(ctx, ir, expression, type_suggestion)
+            copy_resolve_indexing(ctx, expression, type_suggestion)
         }
         Expression::MemberCall {
             fn_name: identifier,
             lhs,
             arguments,
             ..
-        } => typecheck_membercall(ctx, ir, lhs, identifier, arguments),
+        } => typecheck_membercall(ctx, lhs, identifier, arguments),
         Expression::Assignment {
             left_side,
             right_side,
@@ -1208,8 +1338,7 @@ fn typecheck_expression<'ctx>(
                     right_side,
                     ..
                 } => {
-                    let (ty, lhs) =
-                        typecheck_expression(ctx, ir, right_side, TypeSuggestion::Unknown)?;
+                    let (ty, lhs) = typecheck_expression(ctx, right_side, TypeSuggestion::Unknown)?;
                     let ty = ty.deref().ok_or_else(|| {
                         TypecheckingError::CannotDeref(right_side.span(), ty).to_error()
                     })?;
@@ -1219,7 +1348,6 @@ fn typecheck_expression<'ctx>(
                 _ => {
                     let (ty, lhs) = typecheck_expression(
                         ctx,
-                        ir,
                         &Expression::Unary {
                             operator: UnaryOp::Reference,
                             span: *span,
@@ -1234,7 +1362,7 @@ fn typecheck_expression<'ctx>(
                 }
             };
             let (typ_rhs, rhs) =
-                typecheck_expression(ctx, ir, right_side, TypeSuggestion::from_type(typ_lhs))?;
+                typecheck_expression(ctx, right_side, TypeSuggestion::from_type(typ_lhs))?;
 
             if typ_lhs != typ_rhs {
                 return Err(TypecheckingError::MismatchingType {
@@ -1244,7 +1372,7 @@ fn typecheck_expression<'ctx>(
                 }
                 .to_error());
             }
-            ir.append(TypedExpression::StoreAssignment(*span, lhs, rhs));
+            ctx.append(TypedExpression::StoreAssignment(*span, lhs, rhs));
             Ok((default_types::void, TypedLiteral::Void))
         }
         Expression::Range {
@@ -1252,9 +1380,9 @@ fn typecheck_expression<'ctx>(
             right_side,
             ..
         } => {
-            let (ty, _) = typecheck_expression(ctx, ir, left_side, type_suggestion)?;
+            let (ty, _) = typecheck_expression(ctx, left_side, type_suggestion)?;
             let (typ_rhs, _) =
-                typecheck_expression(ctx, ir, right_side, TypeSuggestion::from_type(ty))?;
+                typecheck_expression(ctx, right_side, TypeSuggestion::from_type(ty))?;
             if ty != typ_rhs {
                 return Err(TypecheckingError::MismatchingType {
                     expected: ty,
@@ -1271,9 +1399,9 @@ fn typecheck_expression<'ctx>(
             new_ty,
             span,
         } => {
-            let (ty, lhs) = typecheck_expression(ctx, ir, left_side, type_suggestion)?;
+            let (ty, lhs) = typecheck_expression(ctx, left_side, type_suggestion)?;
             let new_ty = ctx.resolve_type(ctx.contract.module_id, new_ty)?;
-            typecheck_cast(ir, ty, new_ty, lhs, *span, ctx)
+            typecheck_cast(ctx, ty, new_ty, lhs, *span)
         }
         Expression::TraitFunctionCall {
             ty,
@@ -1295,9 +1423,9 @@ fn typecheck_expression<'ctx>(
                         .to_error(),
                 );
             };
-            let trait_value = &ctx.traits.read()[trait_id];
+            let trait_value = &ctx.fn_ctx.tcx.traits.read()[trait_id];
 
-            if !ty.implements(&[trait_id], &ctx) {
+            if !ty.implements(&[trait_id], ctx) {
                 return Err(TypecheckingError::MismatchingTraits(
                     *span,
                     ty,
@@ -1336,7 +1464,7 @@ fn typecheck_expression<'ctx>(
 
             for (i, arg) in arguments.iter().enumerate() {
                 let (ty, expr) =
-                    typecheck_expression(ctx, ir, arg, TypeSuggestion::from_type(args[i].1))?;
+                    typecheck_expression(ctx, arg, TypeSuggestion::from_type(args[i].1))?;
                 if ty != args[i].1 {
                     return Err(TypecheckingError::MismatchingType {
                         span: arg.span(),
@@ -1348,8 +1476,8 @@ fn typecheck_expression<'ctx>(
                 typed_args.push(expr);
             }
 
-            let value_id = ir.add_value(ret_ty);
-            ir.append(TypedExpression::TraitCall {
+            let value_id = ctx.ir.add_value(ret_ty);
+            ctx.append(TypedExpression::TraitCall {
                 span: *span,
                 ty,
                 trait_id,
@@ -1363,12 +1491,11 @@ fn typecheck_expression<'ctx>(
 }
 
 fn typecheck_cast<'ctx>(
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     ty: Ty<'ctx>,
     new_ty: Ty<'ctx>,
     lhs: TypedLiteral<'ctx>,
     span: Span<'ctx>,
-    ctx: FnContext<'ctx, '_>,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     if ty == new_ty {
         return Ok((new_ty, lhs));
@@ -1381,14 +1508,14 @@ fn typecheck_cast<'ctx>(
         (TyKind::PrimitiveStr, TyKind::UnsizedArray(ty))
             if ref_self == ref_other && ref_self > 0 && *ty == default_types::u8 =>
         {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::Alias(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::Alias(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &str -> &u8
         (TyKind::PrimitiveStr, TyKind::PrimitiveU8) if ref_self == 1 && ref_other == 1 => {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::StripMetadata(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::StripMetadata(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &T to &[T; 1]
@@ -1400,17 +1527,17 @@ fn typecheck_cast<'ctx>(
             },
         ) if ref_other > 0
             && ref_self >= ref_other
-            && *ty_other == ty.with_num_refs(ref_self - ref_other, **ctx) =>
+            && *ty_other == ty.with_num_refs(ref_self - ref_other, ctx.ctx) =>
         {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::Alias(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::Alias(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &T -> &dyn _
         (_, TyKind::DynType(trait_refs)) if ref_self > 0 && ref_other == 1 && ty.is_thin_ptr() => {
             let traits = trait_refs.iter().map(|v| v.0).collect::<Vec<_>>();
             let ty = ty.deref().expect("v should have a refcount of > 0");
-            if !ty.implements(&traits, &ctx) {
+            if !ty.implements(&traits, ctx) {
                 let trait_reader = ctx.traits.read();
                 return Err(TypecheckingError::MismatchingTraits(
                     span,
@@ -1422,8 +1549,8 @@ fn typecheck_cast<'ctx>(
                 )
                 .to_error());
             }
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::AttachVtable(
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::AttachVtable(
                 span,
                 id,
                 lhs,
@@ -1439,8 +1566,8 @@ fn typecheck_cast<'ctx>(
             },
             TyKind::UnsizedArray(typ_other),
         ) if ty == typ_other && ref_self == 1 && ref_other == 1 => {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::MakeUnsizedSlice(
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::MakeUnsizedSlice(
                 span,
                 id,
                 lhs,
@@ -1452,44 +1579,44 @@ fn typecheck_cast<'ctx>(
         (TyKind::UnsizedArray(ty), _)
             if ref_self == 1 && ref_other == 1 && **new_ty == TyKind::Ref(*ty) =>
         {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::StripMetadata(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::StripMetadata(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &&void -> &void
         (TyKind::PrimitiveVoid, TyKind::PrimitiveVoid) if ref_self > 0 && ref_other == 1 => {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::Bitcast(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::Bitcast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &void -> usize
         (TyKind::PrimitiveVoid, TyKind::PrimitiveUSize) if ref_self == 1 && ref_other == 0 => {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::PtrToInt(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::PtrToInt(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // usize -> &void
         (TyKind::PrimitiveUSize, TyKind::PrimitiveVoid) if ref_self == 0 && ref_other == 1 => {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::IntToPtr(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::IntToPtr(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // fn to &void
         (TyKind::Function(_), TyKind::PrimitiveVoid) if ref_self == 0 && ref_other == 1 => {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::Bitcast(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::Bitcast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &T to &void
         (_, TyKind::PrimitiveVoid) if ref_other > 0 && ref_self > 0 && ty.is_thin_ptr() => {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::Bitcast(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::Bitcast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &void to &T
         (TyKind::PrimitiveVoid, _) if ref_self > 0 && ref_other > 0 && new_ty.is_thin_ptr() => {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::Bitcast(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::Bitcast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         (
@@ -1522,8 +1649,8 @@ fn typecheck_cast<'ctx>(
             | TyKind::PrimitiveF32
             | TyKind::PrimitiveF64,
         ) if ref_self == 0 && ref_other == 0 => {
-            let id = ir.add_value(new_ty);
-            ir.append(TypedExpression::IntCast(span, id, lhs));
+            let id = ctx.ir.add_value(new_ty);
+            ctx.append(TypedExpression::IntCast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         _ => Err(TypecheckingError::DisallowedCast(span, ty, new_ty).to_error()),
@@ -1532,8 +1659,7 @@ fn typecheck_cast<'ctx>(
 
 #[allow(clippy::too_many_arguments)]
 fn typecheck_dyn_membercall<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     ident: &Ident<'ctx>,
     args: &[Expression<'ctx>],
     lhs: TypedLiteral<'ctx>,
@@ -1585,12 +1711,12 @@ fn typecheck_dyn_membercall<'ctx>(
     }
 
     let ty = ctx.intern_ty(TyKind::DynType(trait_refs));
-    let mut ty = with_refcount(**ctx, ty, num_references);
+    let mut ty = with_refcount(ctx.ctx, ty, num_references);
     let mut lhs = lhs;
     while ty.has_double_refs() {
         ty = ty.deref().expect("dereferencing &_ should never fail");
-        let id = ir.add_value(ctx.intern_ty_ref(&ty));
-        ir.append(TypedExpression::Dereference(lhs_span, id, lhs));
+        let id = ctx.ir.add_value(ctx.fn_ctx.ctx.intern_ty_ref(&ty));
+        ctx.append(TypedExpression::Dereference(lhs_span, id, lhs));
         lhs = TypedLiteral::Dynamic(id);
     }
 
@@ -1608,12 +1734,8 @@ fn typecheck_dyn_membercall<'ctx>(
     }
 
     for i in 0..args.len() {
-        let (ty, lit) = typecheck_expression(
-            ctx,
-            ir,
-            &args[i],
-            TypeSuggestion::from_type(arg_typs[i + 1].1),
-        )?;
+        let (ty, lit) =
+            typecheck_expression(ctx, &args[i], TypeSuggestion::from_type(arg_typs[i + 1].1))?;
         if ty != arg_typs[i + 1].1 {
             return Err(TypecheckingError::MismatchingType {
                 expected: arg_typs.remove(i + 1).1,
@@ -1626,8 +1748,8 @@ fn typecheck_dyn_membercall<'ctx>(
     }
 
     let is_void = return_ty == default_types::void || return_ty == default_types::never;
-    let id = ir.add_value(return_ty);
-    ir.append(TypedExpression::DynCall(
+    let id = ctx.ir.add_value(return_ty);
+    ctx.append(TypedExpression::DynCall(
         lhs_span,
         id,
         typed_args.into_boxed_slice(),
@@ -1640,20 +1762,18 @@ fn typecheck_dyn_membercall<'ctx>(
 }
 
 fn typecheck_membercall<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     lhs: &Expression<'ctx>,
     ident: &Ident<'ctx>,
     args: &[Expression<'ctx>],
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     let (mut typ_lhs, mut typed_literal_lhs) =
-        typecheck_take_ref(ctx, ir, lhs, TypeSuggestion::Unknown)?;
+        typecheck_take_ref(ctx, lhs, TypeSuggestion::Unknown)?;
     let lhs_refcount = typ_lhs.refcount();
     match **typ_lhs.without_ref() {
         TyKind::DynType(trait_refs) if lhs_refcount > 0 => {
             return typecheck_dyn_membercall(
                 ctx,
-                ir,
                 ident,
                 args,
                 typed_literal_lhs,
@@ -1665,9 +1785,9 @@ fn typecheck_membercall<'ctx>(
         _ => (),
     }
 
-    let function_reader = ctx.functions.read();
-    let langitem_reader = ctx.lang_items.read();
-    let struct_reader = ctx.structs.read();
+    let function_reader = ctx.fn_ctx.tcx.functions.read();
+    let langitem_reader = ctx.fn_ctx.tcx.lang_items.read();
+    let struct_reader = ctx.fn_ctx.tcx.structs.read();
 
     let struct_id = match **typ_lhs.without_ref() {
         TyKind::Ref(_) | TyKind::Generic { .. } | TyKind::PrimitiveSelf => unreachable!(),
@@ -1738,15 +1858,15 @@ fn typecheck_membercall<'ctx>(
             typ_lhs = typ_lhs
                 .deref()
                 .expect("you should always be able to deref &_");
-            let new_id = ir.add_value(typ_lhs);
-            ir.append(TypedExpression::Dereference(
+            let new_id = ctx.ir.add_value(typ_lhs);
+            ctx.append(TypedExpression::Dereference(
                 lhs.span(),
                 new_id,
                 typed_literal_lhs,
             ));
             typed_literal_lhs = TypedLiteral::Dynamic(new_id);
         } else {
-            typed_literal_lhs = make_reference(ir, typ_lhs, typed_literal_lhs, lhs.span(), ctx.ctx);
+            typed_literal_lhs = make_reference(ctx, typ_lhs, typed_literal_lhs, lhs.span());
             typ_lhs = typ_lhs.take_ref(ctx.ctx);
         }
     }
@@ -1765,7 +1885,6 @@ fn typecheck_membercall<'ctx>(
     for (i, (_, arg)) in function.0.arguments.iter().skip(1).enumerate() {
         let (ty, expr) = typecheck_expression(
             ctx,
-            ir,
             &args[i + 1], // skip one argument for the `self` argument
             TypeSuggestion::from_type(*arg),
         )?;
@@ -1780,8 +1899,8 @@ fn typecheck_membercall<'ctx>(
         typed_arguments.push(expr);
     }
 
-    let call_id = ir.add_value(function.0.return_type);
-    ir.append(TypedExpression::DirectCall(
+    let call_id = ctx.ir.add_value(function.0.return_type);
+    ctx.append(TypedExpression::DirectCall(
         lhs.span(),
         call_id,
         function_id,
@@ -1793,8 +1912,7 @@ fn typecheck_membercall<'ctx>(
 }
 
 fn typecheck_take_ref<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
@@ -1805,10 +1923,10 @@ fn typecheck_take_ref<'ctx>(
             right_side,
             ..
         } if *operator == UnaryOp::Dereference => {
-            typecheck_expression(ctx, ir, right_side, type_suggestion)
+            typecheck_expression(ctx, right_side, type_suggestion)
         }
         _ => {
-            let (ty, expr) = ref_resolve_indexing(ctx, ir, expression, type_suggestion, true)?;
+            let (ty, expr) = ref_resolve_indexing(ctx, expression, type_suggestion, true)?;
             Ok((ty.take_ref(ctx.ctx), expr))
         }
     }
@@ -1818,8 +1936,7 @@ fn typecheck_take_ref<'ctx>(
 // that as that would require additional computations. The reference is as such implicit but has to
 // be added when pushing the type onto the scope (e.g. during auto deref)
 fn ref_resolve_indexing<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion,
     increase_ref: bool,
@@ -1831,15 +1948,15 @@ fn ref_resolve_indexing<'ctx>(
             span,
         } => {
             let (mut typ_lhs, mut typed_literal_lhs) =
-                ref_resolve_indexing(ctx, ir, left_side, TypeSuggestion::Unknown, false)?;
+                ref_resolve_indexing(ctx, left_side, TypeSuggestion::Unknown, false)?;
             for element_name in index {
                 while typ_lhs.has_refs() {
                     let old_typ_lhs = typ_lhs;
                     typ_lhs = typ_lhs
                         .deref()
                         .expect("&_ should never fail to dereference");
-                    let id = ir.add_value(old_typ_lhs);
-                    ir.append(TypedExpression::Dereference(
+                    let id = ctx.ir.add_value(old_typ_lhs);
+                    ctx.append(TypedExpression::Dereference(
                         expression.span(),
                         id,
                         typed_literal_lhs,
@@ -1849,7 +1966,7 @@ fn ref_resolve_indexing<'ctx>(
                 assert!(!typ_lhs.has_refs(), "non-zero refcount after auto-deref");
                 match **typ_lhs {
                     TyKind::Struct { struct_id, .. } => {
-                        let structure = &ctx.structs.read()[struct_id];
+                        let structure = &ctx.fn_ctx.tcx.structs.read()[struct_id];
                         match structure
                             .elements
                             .iter()
@@ -1859,8 +1976,9 @@ fn ref_resolve_indexing<'ctx>(
                         {
                             Some((idx, ty)) => {
                                 typ_lhs = *ty;
-                                let new_val = ir.add_value(typ_lhs.take_ref(ctx.ctx));
-                                ir.append(TypedExpression::Offset(
+                                let new_ty = typ_lhs.take_ref(ctx.ctx);
+                                let new_val = ctx.ir.add_value(new_ty);
+                                ctx.append(TypedExpression::Offset(
                                     *span,
                                     new_val,
                                     typed_literal_lhs,
@@ -1894,7 +2012,6 @@ fn ref_resolve_indexing<'ctx>(
         } => {
             let (mut typ_lhs, mut typed_literal_lhs) = ref_resolve_indexing(
                 ctx,
-                ir,
                 left_side,
                 TypeSuggestion::Array(Box::new(type_suggestion)),
                 false,
@@ -1903,8 +2020,8 @@ fn ref_resolve_indexing<'ctx>(
                 typ_lhs = typ_lhs
                     .deref()
                     .expect("&_ should never fail to dereference");
-                let id = ir.add_value(typ_lhs);
-                ir.append(TypedExpression::Dereference(
+                let id = ctx.ir.add_value(typ_lhs);
+                ctx.append(TypedExpression::Dereference(
                     expression.span(),
                     id,
                     typed_literal_lhs,
@@ -1912,7 +2029,7 @@ fn ref_resolve_indexing<'ctx>(
                 typed_literal_lhs = TypedLiteral::Dynamic(id);
             }
             assert!(!typ_lhs.has_refs(), "non-zero refcount after auto-deref");
-            let offset = indexing_resolve_rhs(ctx, ir, right_side)?;
+            let offset = indexing_resolve_rhs(ctx, right_side)?;
             let ty = match &**typ_lhs {
                 TyKind::SizedArray { ty, .. } | TyKind::UnsizedArray(ty) => *ty,
                 TyKind::Tuple(elements) => match offset {
@@ -1938,8 +2055,8 @@ fn ref_resolve_indexing<'ctx>(
                 }
             };
 
-            let id = ir.add_value(ty.take_ref(ctx.ctx));
-            ir.append(TypedExpression::Offset(
+            let id = ctx.ir.add_value(ty.take_ref(ctx.fn_ctx.ctx));
+            ctx.append(TypedExpression::Offset(
                 expression.span(),
                 id,
                 typed_literal_lhs,
@@ -1949,7 +2066,7 @@ fn ref_resolve_indexing<'ctx>(
         }
         _ => {
             let (ty, typed_literal) =
-                typecheck_expression(ctx, ir, expression, type_suggestion.clone())?;
+                typecheck_expression(ctx, expression, type_suggestion.clone())?;
 
             if let TypeSuggestion::UnsizedArray(_) = type_suggestion
                 && let TyKind::Ref(ty) = **ty
@@ -1959,8 +2076,9 @@ fn ref_resolve_indexing<'ctx>(
                 } = **ty
             {
                 let ty = ctx.ctx.intern_ty(TyKind::UnsizedArray(ty));
-                let id = ir.add_value(ty.take_ref(ctx.ctx));
-                ir.append(TypedExpression::MakeUnsizedSlice(
+                let new_ty = ty.take_ref(ctx.ctx);
+                let id = ctx.ir.add_value(new_ty);
+                ctx.append(TypedExpression::MakeUnsizedSlice(
                     expression.span(),
                     id,
                     typed_literal,
@@ -1985,18 +2103,18 @@ fn ref_resolve_indexing<'ctx>(
                     },
                 ) => {
                     let typed_literal_sized_array_ref = make_reference(
-                        ir,
+                        ctx,
                         ctx.ctx.intern_ty(TyKind::SizedArray {
                             ty,
                             number_elements,
                         }),
                         typed_literal,
                         expression.span(),
-                        ctx.ctx,
                     );
                     let ty = ctx.ctx.intern_ty(TyKind::UnsizedArray(ty));
-                    let id = ir.add_value(ty.take_ref(ctx.ctx));
-                    ir.append(TypedExpression::MakeUnsizedSlice(
+                    let new_ty = ty.take_ref(ctx.ctx);
+                    let id = ctx.ir.add_value(new_ty);
+                    ctx.append(TypedExpression::MakeUnsizedSlice(
                         expression.span(),
                         id,
                         typed_literal_sized_array_ref,
@@ -2006,7 +2124,7 @@ fn ref_resolve_indexing<'ctx>(
                 }
                 _ => Ok((
                     ty,
-                    make_reference(ir, ty, typed_literal, expression.span(), ctx.ctx),
+                    make_reference(ctx, ty, typed_literal, expression.span()),
                 )),
             }
         }
@@ -2014,16 +2132,11 @@ fn ref_resolve_indexing<'ctx>(
 }
 
 fn indexing_resolve_rhs<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
 ) -> Result<OffsetValue, Diagnostic<'ctx>> {
-    let (ty, rhs) = typecheck_expression(
-        ctx,
-        ir,
-        expression,
-        TypeSuggestion::Number(NumberType::Usize),
-    )?;
+    let (ty, rhs) =
+        typecheck_expression(ctx, expression, TypeSuggestion::Number(NumberType::Usize))?;
     if ty != default_types::usize {
         return Err(TypecheckingError::MismatchingType {
             expected: default_types::usize,
@@ -2041,32 +2154,31 @@ fn indexing_resolve_rhs<'ctx>(
 
 /// ty - the type before the reference (as in, ty is the type of the typed_literal, the type of
 /// the returned type literal is ty.take_ref())
-fn make_reference<'arena>(
-    ir: &mut ScopedIR<'arena>,
-    ty: Ty<'arena>,
-    mut typed_literal: TypedLiteral<'arena>,
-    span: Span<'arena>,
-    ctx: TypeCtx<'arena>,
-) -> TypedLiteral<'arena> {
+fn make_reference<'ctx>(
+    ctx: &mut TcCtx<'ctx, '_>,
+    ty: Ty<'ctx>,
+    mut typed_literal: TypedLiteral<'ctx>,
+    span: Span<'ctx>,
+) -> TypedLiteral<'ctx> {
     match typed_literal {
         TypedLiteral::Void | TypedLiteral::Static(_) => {}
-        TypedLiteral::Dynamic(v) => ir.make_stack_allocated(v),
+        TypedLiteral::Dynamic(v) => ctx.ir.make_stack_allocated(v),
         _ => {
-            let lit_id = ir.add_value(ty);
-            ir.make_stack_allocated(lit_id);
-            ir.append(TypedExpression::Literal(span, lit_id, typed_literal));
+            let lit_id = ctx.ir.add_value(ty);
+            ctx.ir.make_stack_allocated(lit_id);
+            ctx.append(TypedExpression::Literal(span, lit_id, typed_literal));
             typed_literal = TypedLiteral::Dynamic(lit_id);
         }
     }
 
-    let new_id = ir.add_value(ty.take_ref(ctx));
-    ir.append(TypedExpression::Reference(span, new_id, typed_literal));
+    let ty = ty.take_ref(ctx.ctx);
+    let new_id = ctx.ir.add_value(ty);
+    ctx.append(TypedExpression::Reference(span, new_id, typed_literal));
     TypedLiteral::Dynamic(new_id)
 }
 
 fn copy_resolve_indexing<'ctx>(
-    ctx: FnContext<'ctx, '_>,
-    ir: &mut ScopedIR<'ctx>,
+    ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
@@ -2076,10 +2188,9 @@ fn copy_resolve_indexing<'ctx>(
             right_side,
             ..
         } => {
-            let offset = indexing_resolve_rhs(ctx, ir, right_side)?;
+            let offset = indexing_resolve_rhs(ctx, right_side)?;
             let (ty, lhs) = copy_resolve_indexing(
                 ctx,
-                ir,
                 left_side,
                 TypeSuggestion::Array(Box::new(type_suggestion)),
             )?;
@@ -2113,8 +2224,8 @@ fn copy_resolve_indexing<'ctx>(
                 };
                 let new_id = match offset {
                     OffsetValue::Static(offset) => {
-                        let new_id = ir.add_value(new_ty);
-                        ir.append(TypedExpression::OffsetNonPointer(
+                        let new_id = ctx.ir.add_value(new_ty);
+                        ctx.append(TypedExpression::OffsetNonPointer(
                             expression.span(),
                             new_id,
                             lhs,
@@ -2124,18 +2235,19 @@ fn copy_resolve_indexing<'ctx>(
                     }
                     off @ OffsetValue::Dynamic(_) => {
                         if let TypedLiteral::Dynamic(lhs) = lhs {
-                            ir.make_stack_allocated(lhs);
+                            ctx.ir.make_stack_allocated(lhs);
                         }
-                        let typed_lit_ref = make_reference(ir, ty, lhs, expression.span(), **ctx);
-                        let offset_id = ir.add_value(new_ty.take_ref(**ctx));
-                        let new_id = ir.add_value(new_ty);
-                        ir.append(TypedExpression::Offset(
+                        let typed_lit_ref = make_reference(ctx, ty, lhs, expression.span());
+                        let ref_ty = new_ty.take_ref(ctx.ctx);
+                        let offset_id = ctx.ir.add_value(ref_ty);
+                        let new_id = ctx.ir.add_value(new_ty);
+                        ctx.append(TypedExpression::Offset(
                             expression.span(),
                             offset_id,
                             typed_lit_ref,
                             off,
                         ));
-                        ir.append(TypedExpression::Dereference(
+                        ctx.append(TypedExpression::Dereference(
                             expression.span(),
                             new_id,
                             TypedLiteral::Dynamic(offset_id),
@@ -2149,23 +2261,24 @@ fn copy_resolve_indexing<'ctx>(
                 let mut lhs = lhs;
                 while ty.has_double_refs() {
                     ty = ty.deref().expect("dereferencing &_ should never fail");
-                    let new_id = ir.add_value(ty);
-                    ir.append(TypedExpression::Dereference(expression.span(), new_id, lhs));
+                    let new_id = ctx.ir.add_value(ty);
+                    ctx.append(TypedExpression::Dereference(expression.span(), new_id, lhs));
                     lhs = TypedLiteral::Dynamic(new_id);
                 }
                 let ty = match **ty {
                     TyKind::UnsizedArray(ty) | TyKind::SizedArray { ty, .. } => ty,
                     _ => unreachable!(),
                 };
-                let offset_id = ir.add_value(ty.take_ref(**ctx));
-                let value_id = ir.add_value(ty);
-                ir.append(TypedExpression::Offset(
+                let new_ty = ty.take_ref(ctx.ctx);
+                let offset_id = ctx.ir.add_value(new_ty);
+                let value_id = ctx.ir.add_value(ty);
+                ctx.append(TypedExpression::Offset(
                     expression.span(),
                     offset_id,
                     lhs,
                     offset,
                 ));
-                ir.append(TypedExpression::Dereference(
+                ctx.append(TypedExpression::Dereference(
                     expression.span(),
                     value_id,
                     TypedLiteral::Dynamic(offset_id),
@@ -2179,13 +2292,13 @@ fn copy_resolve_indexing<'ctx>(
             span,
         } => {
             let (mut typ_lhs, mut typed_literal_lhs) =
-                copy_resolve_indexing(ctx, ir, left_side, TypeSuggestion::Unknown)?;
+                copy_resolve_indexing(ctx, left_side, TypeSuggestion::Unknown)?;
             for element_name in index {
                 let needs_deref = typ_lhs.has_refs();
                 while typ_lhs.has_double_refs() {
                     typ_lhs = typ_lhs.deref().expect("dereferencing &_ should never fail");
-                    let new_id = ir.add_value(typ_lhs);
-                    ir.append(TypedExpression::Dereference(
+                    let new_id = ctx.ir.add_value(typ_lhs);
+                    ctx.append(TypedExpression::Dereference(
                         expression.span(),
                         new_id,
                         typed_literal_lhs,
@@ -2223,11 +2336,11 @@ fn copy_resolve_indexing<'ctx>(
                     }
                 };
                 if !needs_deref {
-                    let new_id = ir.add_value(typ_lhs);
+                    let new_id = ctx.ir.add_value(typ_lhs);
                     if let TypedLiteral::Dynamic(id) = typed_literal_lhs {
-                        ir.make_stack_allocated(id);
+                        ctx.ir.make_stack_allocated(id);
                     }
-                    ir.append(TypedExpression::OffsetNonPointer(
+                    ctx.append(TypedExpression::OffsetNonPointer(
                         *span,
                         new_id,
                         typed_literal_lhs,
@@ -2235,15 +2348,16 @@ fn copy_resolve_indexing<'ctx>(
                     ));
                     typed_literal_lhs = TypedLiteral::Dynamic(new_id);
                 } else {
-                    let offset_id = ir.add_value(typ_lhs.take_ref(**ctx));
-                    let deref_id = ir.add_value(typ_lhs);
-                    ir.append(TypedExpression::Offset(
+                    let new_ty = typ_lhs.take_ref(ctx.ctx);
+                    let offset_id = ctx.ir.add_value(new_ty);
+                    let deref_id = ctx.ir.add_value(typ_lhs);
+                    ctx.append(TypedExpression::Offset(
                         *span,
                         offset_id,
                         typed_literal_lhs,
                         OffsetValue::Static(offset),
                     ));
-                    ir.append(TypedExpression::Dereference(
+                    ctx.append(TypedExpression::Dereference(
                         *span,
                         deref_id,
                         TypedLiteral::Dynamic(offset_id),
@@ -2253,6 +2367,6 @@ fn copy_resolve_indexing<'ctx>(
             }
             Ok((typ_lhs, typed_literal_lhs))
         }
-        _ => typecheck_expression(ctx, ir, expression, type_suggestion),
+        _ => typecheck_expression(ctx, expression, type_suggestion),
     }
 }

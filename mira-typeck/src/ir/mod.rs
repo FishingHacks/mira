@@ -210,6 +210,7 @@ impl<'ctx> IR<'ctx> {
     pub fn append(&mut self, expr: TypedExpression<'ctx>) {
         self.blocks[self.current_block].exprs.push(expr);
     }
+
     pub fn add_value(&mut self, ty: Ty<'ctx>) -> ValueId {
         self.scope.add(ty)
     }
