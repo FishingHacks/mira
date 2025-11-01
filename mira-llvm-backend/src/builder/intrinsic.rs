@@ -146,29 +146,6 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
                 }
             }
 
-            Intrinsic::Read => {
-                let ty = self.substitute(generics[0]);
-                assert!(ty.is_sized());
-                let value =
-                    self.build_deref(self.basic_value(&args[0]).into_pointer_value(), ty, false)?;
-                self.push_value(dst, value);
-            }
-            Intrinsic::Write => {
-                let ty = self.substitute(generics[0]);
-                assert!(ty.is_sized());
-                self.build_ptr_store(
-                    self.basic_value(&args[0]).into_pointer_value(),
-                    self.basic_value(&args[1]),
-                    ty,
-                    false,
-                )?;
-            }
-
-            // TODO: raii
-            Intrinsic::Drop | Intrinsic::DropInPlace | Intrinsic::Forget => {
-                unreachable!("these are handled by the dropck pass")
-            }
-
             // These are being replaced by the `TypenameIntrinsicPass`
             Intrinsic::TypeName => unreachable!(),
         }

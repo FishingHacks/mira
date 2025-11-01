@@ -37,13 +37,7 @@ impl IntrinsicExt for Intrinsic {
             // ┌───────────────────────┐
             // │ Sized-only Intrinsics │
             // └───────────────────────┘
-            Intrinsic::Drop
-            | Intrinsic::SizeOf
-            | Intrinsic::Read
-            | Intrinsic::Write
-            | Intrinsic::VolatileRead
-            | Intrinsic::VolatileWrite
-            | Intrinsic::Forget => generics[0]
+            Intrinsic::SizeOf | Intrinsic::VolatileRead | Intrinsic::VolatileWrite => generics[0]
                 .is_sized()
                 .then_some(())
                 .ok_or_else(|| TypecheckingError::NonSizedType(span, generics[0])),
@@ -54,8 +48,7 @@ impl IntrinsicExt for Intrinsic {
             // ┌──────────────────────┐
             // │ All-types Intrinsics │
             // └──────────────────────┘
-            Intrinsic::DropInPlace
-            | Intrinsic::SizeOfVal
+            Intrinsic::SizeOfVal
             | Intrinsic::Offset
             | Intrinsic::GetMetadata
             | Intrinsic::WithMetadata

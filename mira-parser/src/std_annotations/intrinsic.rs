@@ -72,9 +72,6 @@ macro_rules! intrinsics {
 
 intrinsics! {
     CallMain => call_main, // () -> void, calls the main function
-    Drop => drop, // <T>(v: T), equivalent to drop_in_place(&v)
-    DropInPlace => drop_in_place, // <unsized T>(v: &T), equivalent to Drop::drop(v)
-    Forget => forget, // <T>(v: T), causes the value to not be dropped
     SizeOf => size_of, // <T>() -> usize, returns the size of T in bytes
     SizeOfVal => size_of_val, // <unsized T>(v: &T) -> usize, returns the size of v in bytes
     Offset => offset, // <unsized T>(v: &T, off: usize) -> &T, offsets a pointer
@@ -84,8 +81,6 @@ intrinsics! {
     // data to the ptr, assuming T is unsized. Errors if T is sized.
     TypeName => type_name, // <unsized T>() -> &str, returns the name of the type T
     Unreachable => unreachable, // marks a location as unreachable
-    Read => read, // <T>(v: &T) -> T, reads a memory location even if T is not Copy
-    Write => write, // <T>(v: &T, value: T), writes a memory location without dropping the value
     // that was previously there
     VolatileRead => volatile_read, // <T>(ptr: &T) -> T
     VolatileWrite => volatile_write, // <T>(ptr: &T, val: T);
