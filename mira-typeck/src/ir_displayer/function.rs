@@ -1,7 +1,11 @@
-use crate::{TypedFunctionContract, default_types, ir::IR};
+use crate::{
+    TypedFunctionContract, default_types,
+    ir::{IR, TypedExpression},
+    ir_displayer::expressions::ExpressionDisplay,
+};
 use mira_lexer::token::IdentDisplay;
 
-use super::{expressions::write_implicit_block, formatter::Formatter};
+use super::formatter::Formatter;
 
 pub(super) struct FuncDisplay<'a>(pub &'a TypedFunctionContract<'a>, pub Option<&'a IR<'a>>);
 
@@ -46,6 +50,32 @@ impl FuncDisplay<'_> {
             return f.write_char(';');
         };
         f.write_char(' ')?;
-        write_implicit_block(f, ir.get_entry_block(), ir)
+        let exprs = ir.get_entry_block_exprs();
+        let block_id = if exprs.len() == 1
+            && let TypedExpression::Block(_, id, _) = &exprs[0]
+        {
+            *id
+        } else {
+            ir.get_entry_block()
+        };
+
+        let exprs = ir.get_block_exprs(block_id);
+
+        f.write_char('{')?;
+        f.push_indent();
+        if !ir.scope().is_empty() {
+            f.write_char('\n')?;
+        }
+
+        for (id, entry) in ir.scope().iter().enumerate() {
+            f.write_fmt(format_args!("_{id}: {}\n", entry.ty))?;
+        }
+
+        for expr in exprs {
+            f.write_char('\n')?;
+            ExpressionDisplay(expr).fmt(f, ir)?;
+        }
+        f.pop_indent();
+        f.write_str("\n}")
     }
 }

@@ -9,14 +9,14 @@ use mira_parser::module::{ExternalFunctionId, FunctionId, ModuleId, StaticId, St
 
 pub const INDENT_STR: &str = "    ";
 
-pub struct ReadOnlyTypecheckingContext<'a, 'arena> {
-    pub modules: &'a IndexMap<ModuleId, TypedModule<'arena>>,
-    pub functions: &'a IndexMap<FunctionId, TypedFunction<'arena>>,
-    pub external_functions: &'a IndexMap<ExternalFunctionId, TypedExternalFunction<'arena>>,
-    pub statics: &'a IndexMap<StaticId, TypedStatic<'arena>>,
-    pub structs: &'a IndexMap<StructId, TypedStruct<'arena>>,
-    pub traits: &'a IndexMap<TraitId, TypedTrait<'arena>>,
-    pub lang_items: &'a LangItems<'arena>,
+pub struct ReadOnlyTypecheckingContext<'a, 'ctx> {
+    pub modules: &'a IndexMap<ModuleId, TypedModule<'ctx>>,
+    pub functions: &'a IndexMap<FunctionId, TypedFunction<'ctx>>,
+    pub external_functions: &'a IndexMap<ExternalFunctionId, TypedExternalFunction<'ctx>>,
+    pub statics: &'a IndexMap<StaticId, TypedStatic<'ctx>>,
+    pub structs: &'a IndexMap<StructId, TypedStruct<'ctx>>,
+    pub traits: &'a IndexMap<TraitId, TypedTrait<'ctx>>,
+    pub lang_items: &'a LangItems<'ctx>,
 }
 
 pub struct IoWriteWrapper<'a>(pub &'a mut (dyn std::io::Write + 'a));

@@ -78,7 +78,6 @@ pub fn walk_expr<'ctx, W: Visitor<'ctx> + ?Sized>(
         | TypedExpression::BNot(_, _, lit)
         | TypedExpression::Reference(_, _, lit)
         | TypedExpression::Dereference(_, _, lit)
-        | TypedExpression::OffsetNonPointer(_, _, lit, _)
         | TypedExpression::Literal(_, _, lit)
         | TypedExpression::Alias(_, _, lit)
         | TypedExpression::Bitcast(_, _, lit)
@@ -140,8 +139,6 @@ pub fn walk_expr<'ctx, W: Visitor<'ctx> + ?Sized>(
         | TypedExpression::Empty(_)
         | TypedExpression::Unreachable(_)
         | TypedExpression::DeclareVariable(_, _, _, _)
-        | TypedExpression::DropIf(_, _, _)
-        | TypedExpression::Drop(_, _)
         | TypedExpression::None
         | TypedExpression::Asm { .. } => {}
     }
@@ -279,7 +276,6 @@ pub fn walk_mut_expr_block<'ctx, W: MutVisitor<'ctx> + ?Sized>(
         | TypedExpression::BNot(_, _, lit)
         | TypedExpression::Reference(_, _, lit)
         | TypedExpression::Dereference(_, _, lit)
-        | TypedExpression::OffsetNonPointer(_, _, lit, _)
         | TypedExpression::Literal(_, _, lit)
         | TypedExpression::Alias(_, _, lit)
         | TypedExpression::Bitcast(_, _, lit)
@@ -354,8 +350,6 @@ pub fn walk_mut_expr_block<'ctx, W: MutVisitor<'ctx> + ?Sized>(
         | TypedExpression::Empty(_)
         | TypedExpression::Unreachable(_)
         | TypedExpression::DeclareVariable(_, _, _, _)
-        | TypedExpression::DropIf(_, _, _)
-        | TypedExpression::Drop(_, _)
         | TypedExpression::None
         | TypedExpression::Asm { .. } => {}
     }

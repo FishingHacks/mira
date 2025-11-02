@@ -30,16 +30,13 @@ macro_rules! expr {
 
 impl ExpressionDisplay<'_> {
     pub(super) fn fmt(&self, f: &mut Formatter<'_, '_, '_>, ir: &IR<'_>) -> std::fmt::Result {
+        macro_rules! fmt { ($($t:tt)*) => { f.write_fmt(format_args!($($t)*)) }; }
+
         match self.0 {
             TypedExpression::Unreachable(_) => f.write_str("unreachable"),
             TypedExpression::DeclareVariable(_, id, ty, name) => {
-                // let <name>: <ty> = _<id>
-                f.write_str("declare ")?;
-                f.write_value(name)?;
-                f.write_str(": ")?;
-                f.write_value(ty)?;
-                f.write_str(" = _")?;
-                f.write_value(id)
+                // let <name>: <ty> = <id>
+                fmt!("declare {name}: {ty} = {id}")
             }
             TypedExpression::Asm {
                 dst,
@@ -49,8 +46,7 @@ impl ExpressionDisplay<'_> {
                 asm,
                 ..
             } => {
-                f.write_value(dst)?;
-                f.write_str(" = asm")?;
+                fmt!("{dst} = asm")?;
                 if *volatile {
                     f.write_str(" volatile")?;
                 }
@@ -79,10 +75,7 @@ impl ExpressionDisplay<'_> {
                 f.write_str("\n)")
             }
             TypedExpression::Return(_, None) => f.write_str("return"),
-            TypedExpression::Return(_, Some(id)) => {
-                f.write_str("return ")?;
-                f.write_value(id)
-            }
+            TypedExpression::Return(_, Some(id)) => fmt!("return {id}"),
             TypedExpression::Block(_, block, annotations) => {
                 f.write_value(annotations)?;
                 write_block(f, *block, ir)
@@ -123,8 +116,7 @@ impl ExpressionDisplay<'_> {
                 dst,
                 ..
             } => {
-                f.write_value(dst)?;
-                f.write_str(" = ")?;
+                fmt!("{dst} = ")?;
                 Tld(lhs).fmt(f)?;
                 f.write_str("..")?;
                 if *inclusive {
@@ -139,8 +131,7 @@ impl ExpressionDisplay<'_> {
                 Tld(rhs).fmt(f)
             }
             TypedExpression::Call(_, lhs, rhs, args) => {
-                f.write_value(lhs)?;
-                f.write_str(" = ")?;
+                fmt!("{lhs} = ")?;
                 Tld(rhs).fmt(f)?;
                 for (idx, arg) in args.iter().enumerate() {
                     if idx != 0 {
@@ -151,8 +142,7 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::DirectCall(_, dst, func, args, _) => {
-                f.write_value(dst)?;
-                f.write_str(" = ")?;
+                fmt!("{dst} = ")?;
                 Tld(&TypedLiteral::Function(*func, EMPTY_TYLIST)).fmt(f)?;
                 f.write_char('(')?;
                 for (idx, arg) in args.iter().enumerate() {
@@ -164,8 +154,7 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::DirectExternCall(_, dst, func, args) => {
-                f.write_value(dst)?;
-                f.write_str(" = ")?;
+                fmt!("{dst} = ")?;
                 Tld(&TypedLiteral::ExternalFunction(*func)).fmt(f)?;
                 f.write_char('(')?;
                 for (idx, arg) in args.iter().enumerate() {
@@ -177,8 +166,7 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::LLVMIntrinsicCall(_, dst, intrinsic, args) => {
-                f.write_value(dst)?;
-                f.write_str(" = ")?;
+                fmt!("{dst} = ")?;
                 Tld(&TypedLiteral::LLVMIntrinsic(*intrinsic)).fmt(f)?;
                 f.write_char('(')?;
                 for (idx, arg) in args.iter().enumerate() {
@@ -190,8 +178,7 @@ impl ExpressionDisplay<'_> {
                 f.write_char(')')
             }
             TypedExpression::IntrinsicCall(_, dst, intrinsic, args, _) => {
-                f.write_value(dst)?;
-                f.write_str(" = ")?;
+                fmt!("{dst} = ")?;
                 Tld(&TypedLiteral::Intrinsic(*intrinsic, EMPTY_TYLIST)).fmt(f)?;
                 f.write_char('(')?;
                 for (idx, arg) in args.iter().enumerate() {
@@ -221,8 +208,7 @@ impl ExpressionDisplay<'_> {
                 expr!(binary f, dst, lhs, rhs, "<")
             }
             TypedExpression::LAnd(_, dst, lhs, rhs, blk) => {
-                f.write_value(dst)?;
-                f.write_str(" = ")?;
+                fmt!("{dst} = ")?;
                 Tld(lhs).fmt(f)?;
                 f.write_str(" && ")?;
                 if !ir.get_block_exprs(*blk).is_empty() {
@@ -232,8 +218,7 @@ impl ExpressionDisplay<'_> {
                 Tld(rhs).fmt(f)
             }
             TypedExpression::LOr(_, dst, lhs, rhs, blk) => {
-                f.write_value(dst)?;
-                f.write_str(" = ")?;
+                fmt!("{dst} = ")?;
                 Tld(lhs).fmt(f)?;
                 f.write_str(" || ")?;
                 if !ir.get_block_exprs(*blk).is_empty() {
@@ -255,24 +240,12 @@ impl ExpressionDisplay<'_> {
             TypedExpression::Reference(_, lhs, rhs) => expr!(unary f, lhs, rhs, "&"),
             TypedExpression::Dereference(_, lhs, rhs) => expr!(unary f, lhs, rhs, "*"),
             TypedExpression::Offset(_, lhs, rhs, offsets) => {
-                f.write_value(lhs)?;
-                f.write_str(" = offset(")?;
+                fmt!("{lhs} = offset(")?;
                 Tld(rhs).fmt(f)?;
-                f.write_str(", ")?;
-                f.write_debug(offsets)?;
-                f.write_char(')')
-            }
-            TypedExpression::OffsetNonPointer(_, lhs, rhs, offset_value) => {
-                f.write_value(lhs)?;
-                f.write_str(" = offset_non_ptr(")?;
-                Tld(rhs).fmt(f)?;
-                f.write_str(", ")?;
-                f.write_value(offset_value)?;
-                f.write_char(')')
+                fmt!(", {offsets:?})")
             }
             TypedExpression::DynCall(_, dst, args, offset) => {
-                f.write_value(dst)?;
-                f.write_str(" = dyncall(")?;
+                fmt!("{dst} = dyncall(")?;
                 f.write_value(offset)?;
                 for arg in args {
                     f.write_str(", ")?;
@@ -286,44 +259,23 @@ impl ExpressionDisplay<'_> {
             | TypedExpression::Alias(_, lhs, rhs)
             | TypedExpression::StripMetadata(_, lhs, rhs)
             | TypedExpression::IntCast(_, lhs, rhs) => {
-                f.write_value(lhs)?;
-                f.write_str(" = ")?;
+                fmt!("{lhs} = ")?;
                 Tld(rhs).fmt(f)?;
-                f.write_str(" as ")?;
-                f.write_value(&*ir.get_ty(*lhs))
+                fmt!(" as {}", ir.get_ty(*lhs))
             }
             TypedExpression::Literal(_, lhs, rhs) => {
-                f.write_value(lhs)?;
-                f.write_str(" = ")?;
+                fmt!("{lhs} = ")?;
                 Tld(rhs).fmt(f)
             }
             TypedExpression::AttachVtable(_, lhs, rhs, (_, traits)) => {
-                f.write_value(lhs)?;
-                f.write_str(" = attach_vtable(")?;
+                fmt!("{lhs} = attach_vtable(")?;
                 Tld(rhs).fmt(f)?;
-                f.write_str(", ")?;
-                f.write_debug(traits)?;
-                f.write_char(')')
+                fmt!(", {traits:?})")
             }
             TypedExpression::MakeUnsizedSlice(_, lhs, rhs, size) => {
-                f.write_value(lhs)?;
-                f.write_str(" = attach_size_metadata(")?;
+                fmt!("{lhs} = attach_size_metadata(")?;
                 Tld(rhs).fmt(f)?;
-                f.write_str(", ")?;
-                f.write_value(size)?;
-                f.write_char(')')
-            }
-            TypedExpression::Drop(_, value) => {
-                f.write_str("drop(_")?;
-                f.write_value(value)?;
-                f.write_char(')')
-            }
-            TypedExpression::DropIf(_, value, cond) => {
-                f.write_str("if _")?;
-                f.write_value(cond)?;
-                f.write_str(" drop(_")?;
-                f.write_value(value)?;
-                f.write_char(')')
+                fmt!(", {size})")
             }
             TypedExpression::TraitCall {
                 ty,
@@ -333,14 +285,8 @@ impl ExpressionDisplay<'_> {
                 dst,
                 span: _,
             } => {
-                f.write_value(dst)?;
-                f.write_str(" = trait_call trait_")?;
-                f.write_value(&trait_id.to_usize())?;
-                f.write_str("::func_")?;
-                f.write_value(func)?;
-                f.write_str(" on ")?;
-                f.write_value(ty)?;
-                f.write_char('(')?;
+                let trait_id = trait_id.to_usize();
+                fmt!("{dst} = trait_call trait_{trait_id}::func_{func} on {ty} (",)?;
                 for (idx, arg) in args.iter().enumerate() {
                     if idx != 0 {
                         f.write_str(", ")?;

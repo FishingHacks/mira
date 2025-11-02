@@ -412,29 +412,4 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             _ => unreachable!("cannot take offset of {ty:?}"),
         }
     }
-
-    pub(super) fn build_non_ptr_offset(
-        &mut self,
-        dst: ValueId,
-        value: &TypedLiteral<'arena>,
-        offset: usize,
-    ) -> Result {
-        let value = self.basic_value(value);
-        if value.is_array_value() {
-            self.push_value(
-                dst,
-                self.build_extract_value(value.into_array_value(), offset as u32, "")?,
-            );
-        } else if value.is_struct_value() {
-            self.push_value(
-                dst,
-                self.build_extract_value(value.into_struct_value(), offset as u32, "")?,
-            );
-        } else {
-            panic!(
-                "offsetnonptr should never be used with a src element that is not an aggregate value"
-            )
-        }
-        Ok(())
-    }
 }

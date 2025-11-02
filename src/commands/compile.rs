@@ -9,7 +9,8 @@ use std::{
 use mira_argparse::{CompileArgs, OptimizationMode, PathOrStdout};
 use mira_context::ErrorEmitted;
 use mira_driver::{
-    find_library, ContextData, DiagEmitter, EmitMethod, LibraryTree, LinkOpts, ProgressBarStyle,
+    find_library, ChildrenOfModuleFilter, ContextData, DiagEmitter, EmitMethod, LibraryTree,
+    LinkOpts, ProgressBarStyle,
 };
 use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder};
 use mira_spans::Arena;
@@ -147,7 +148,7 @@ pub(crate) fn compile(
     drop(module_ctx);
     ctx.validate_main_fn(&tc_ctx, main_module)?;
     if let Some(ir_writer) = ir_writer {
-        ctx.emit_ir(&tc_ctx, ir_writer)?;
+        ctx.emit_ir(&tc_ctx, ir_writer, &ChildrenOfModuleFilter(main_module))?;
     }
     ctx.remove_progress_item(typechecking_item);
 

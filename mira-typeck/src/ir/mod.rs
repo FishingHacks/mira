@@ -77,6 +77,10 @@ impl<'ctx> Scope<'ctx> {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ScopeEntry<'ctx>> {
         self.0.iter_mut()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ScopeEntry<'ctx>> {
+        self.0.iter()
+    }
 }
 
 impl<'ctx> Index<ValueId> for Scope<'ctx> {

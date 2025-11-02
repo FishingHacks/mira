@@ -24,6 +24,8 @@ use mira_context::GlobalCtx;
 #[cfg(feature = "typeck")]
 use mira_spans::Arena;
 #[cfg(feature = "typeck")]
+pub use mira_typeck::ir_displayer::{AllFilter, ChildrenOfModuleFilter, DisplayFilter};
+#[cfg(feature = "typeck")]
 use mira_typeck::{GlobalContext, TypeCtx, TypeckCtx, ir_displayer::Formatter};
 
 #[cfg(feature = "macros")]
@@ -422,7 +424,12 @@ impl<'ctx> Context<'ctx> {
     }
 
     #[cfg(feature = "typeck")]
-    pub fn emit_ir(&self, typeck_ctx: &TypeckCtx<'ctx>, mut method: EmitMethod) -> EmitResult<()> {
+    pub fn emit_ir(
+        &self,
+        typeck_ctx: &TypeckCtx<'ctx>,
+        mut method: EmitMethod,
+        filter: &impl DisplayFilter,
+    ) -> EmitResult<()> {
         use mira_typeck::ir_displayer::{ReadOnlyTypecheckingContext, TCContextDisplay};
 
         let readonly_ctx = ReadOnlyTypecheckingContext {
@@ -437,7 +444,7 @@ impl<'ctx> Context<'ctx> {
         let mut errs = Diagnostics::new();
         let mut writer = EmitMethodWithDiags(&mut method, &mut errs);
         let mut formatter = Formatter::new(&mut writer, readonly_ctx);
-        match TCContextDisplay.fmt(&mut formatter) {
+        match TCContextDisplay.fmt(&mut formatter, filter) {
             Ok(()) => Ok(()),
             Err(_) => {
                 self.ctx.emit_diags(errs);

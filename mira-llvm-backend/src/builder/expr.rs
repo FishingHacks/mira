@@ -155,9 +155,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
 
             // Offset
             TypedExpression::Offset(_, dst, ptr, offset) => self.build_offset(*dst, ptr, *offset),
-            TypedExpression::OffsetNonPointer(_, dst, value, offset) => {
-                self.build_non_ptr_offset(*dst, value, *offset)
-            }
 
             // Debug info
             TypedExpression::DeclareVariable(span, id, ty, name) => {
@@ -203,8 +200,6 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
 
             TypedExpression::Empty(_) | TypedExpression::None => Ok(()),
 
-            // TODO: raii
-            TypedExpression::DropIf(..) | TypedExpression::Drop(..) => todo!(),
             TypedExpression::TraitCall { .. } => todo!(),
             TypedExpression::Range { .. } => todo!(),
         }

@@ -236,10 +236,6 @@ pub enum TypedExpression<'arena> {
     // _1 = &(*_2).a[3].c.d; This is required, because we will offset the _2 pointer by the required
     // offsets
     Offset(Span<'arena>, ValueId, TypedLiteral<'arena>, OffsetValue),
-    // NOTE: the indexes into structs will be turned into their respective index
-    // e.g. on a struct { a: i32, b: i32 }, a `.a` will be turned into 0 and a `.b` into a 1.
-    // _1 = _2.a.b.c.d
-    OffsetNonPointer(Span<'arena>, ValueId, TypedLiteral<'arena>, usize),
     // Eq::val(&dyn Eq, ...)
     // The last value is the offset into the function pointer part of the vtable.
     DynCall(Span<'arena>, ValueId, Box<[TypedLiteral<'arena>]>, u32),
@@ -279,10 +275,6 @@ pub enum TypedExpression<'arena> {
         TypedLiteral<'arena>,
         (Ty<'arena>, Box<[TraitId]>),
     ),
-    // if (_2) drop_in_place(&_1);
-    DropIf(Span<'arena>, ValueId, ValueId),
-    // drop_in_place(&_1);
-    Drop(Span<'arena>, ValueId),
     // <$ty as $trait_id>::$func($args...)
     TraitCall {
         span: Span<'arena>,
@@ -311,7 +303,6 @@ impl<'arena> TypedExpression<'arena> {
             | TypedExpression::DirectExternCall(span, ..)
             | TypedExpression::DynCall(span, ..)
             | TypedExpression::StoreAssignment(span, ..)
-            | TypedExpression::OffsetNonPointer(span, ..)
             | TypedExpression::MakeUnsizedSlice(span, ..)
             | TypedExpression::StripMetadata(span, ..)
             | TypedExpression::Bitcast(span, ..)
@@ -348,8 +339,6 @@ impl<'arena> TypedExpression<'arena> {
             | TypedExpression::Alias(span, ..)
             | TypedExpression::Block(span, ..)
             | TypedExpression::Return(span, ..)
-            | TypedExpression::DropIf(span, ..)
-            | TypedExpression::Drop(span, ..)
             | TypedExpression::Unreachable(span)
             | TypedExpression::Empty(span) => *span,
             TypedExpression::None => Span::DUMMY,

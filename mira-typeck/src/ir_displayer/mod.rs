@@ -9,4 +9,4 @@ mod traits;
 mod typed_literal;
 
 pub use formatter::*;
-pub use tc_context::TCContextDisplay;
+pub use tc_context::{AllFilter, ChildrenOfModuleFilter, DisplayFilter, TCContextDisplay};
