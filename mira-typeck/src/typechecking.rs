@@ -29,45 +29,104 @@ use super::{
     types::{FunctionType, Ty, TyKind, TypeSuggestion, with_refcount},
 };
 
-struct TcCtx<'ctx, 'tcx> {
-    ir: ScopedIR<'ctx>,
-    /// a list of reversed deferred statements
-    rev_deferred_stmts: Vec<Statement<'ctx>>,
+mod private {
+    use super::*;
+    use crate::ir::ValueId;
 
-    fn_ctx: FnContext<'ctx, 'tcx>,
+    pub(super) struct TcCtx<'ctx, 'tcx> {
+        ir: ScopedIR<'ctx>,
+        /// a list of reversed deferred statements
+        pub rev_deferred_stmts: Vec<Statement<'ctx>>,
+        pub fn_ctx: FnContext<'ctx, 'tcx>,
+    }
+
+    impl<'ctx, 'tcx> TcCtx<'ctx, 'tcx> {
+        pub(super) fn new(ir: ScopedIR<'ctx>, fn_ctx: FnContext<'ctx, 'tcx>) -> Self {
+            Self {
+                ir,
+                rev_deferred_stmts: Vec::new(),
+                fn_ctx,
+            }
+        }
+    }
+
+    impl<'ctx> TcCtx<'ctx, '_> {
+        pub(super) fn into_ir(self) -> ScopedIR<'ctx> {
+            self.ir
+        }
+
+        pub(super) fn make_stack_allocated(&mut self, value: ValueId) {
+            self.ir.make_stack_allocated(value);
+        }
+
+        pub(super) fn add_value(&mut self, ty: Ty<'ctx>) -> ValueId {
+            self.ir.add_value(ty)
+        }
+
+        pub(super) fn current_block(&self) -> BlockId {
+            self.ir.current_block
+        }
+
+        pub(super) fn get_ty(&self, value: ValueId) -> Ty<'ctx> {
+            self.ir.get_ty(value)
+        }
+
+        /// creates a block and sets the current block to it, calls `f`, and restores the current block after f exits.
+        pub(super) fn with_new_block<R>(
+            &mut self,
+            span: Span<'ctx>,
+            f: impl FnOnce(&mut Self) -> R,
+        ) -> (BlockId, R) {
+            let old = self.ir.current_block;
+            let block = self.ir.create_block(span);
+            self.goto(block);
+            let v = f(self);
+            self.goto(old);
+            (block, v)
+        }
+
+        pub(super) fn goto(&mut self, block: BlockId) {
+            self.ir.goto(block)
+        }
+
+        pub(super) fn append(&mut self, expr: TypedExpression<'ctx>) {
+            self.ir.append(expr);
+        }
+
+        pub(super) fn append_deferred(&mut self, stmt: Statement<'ctx>) {
+            self.rev_deferred_stmts.push(stmt);
+        }
+
+        pub(super) fn scope_value(&mut self, ident: Ident<'ctx>, value: ValueId) {
+            self.ir.scope_value(ident, value)
+        }
+
+        pub(super) fn get_scoped(&self, i: &Ident<'ctx>) -> Option<ValueId> {
+            self.ir.get_scoped(i)
+        }
+
+        /// pushes a scope, calls f, and pops it.
+        pub(super) fn with_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+            self.ir.push_scope();
+            let v = f(self);
+            self.ir.pop_scope();
+            v
+        }
+
+        pub(super) fn get_block_span(&self, block: BlockId) -> Span<'ctx> {
+            self.ir.get_block_span(block)
+        }
+    }
+
+    impl<'ctx, 'tcx> Deref for TcCtx<'ctx, 'tcx> {
+        type Target = FnContext<'ctx, 'tcx>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.fn_ctx
+        }
+    }
 }
-
-impl<'ctx> TcCtx<'ctx, '_> {
-    /// creates a block and sets the current block to it, calls `f`, and restores the current block after f exits.
-    pub(super) fn with_new_block<R>(
-        &mut self,
-        span: Span<'ctx>,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> (BlockId, R) {
-        let old = self.ir.current_block;
-        let block = self.ir.create_block(span);
-        self.ir.goto(block);
-        let v = f(self);
-        self.ir.goto(old);
-        (block, v)
-    }
-
-    fn append(&mut self, expr: TypedExpression<'ctx>) {
-        self.ir.append(expr);
-    }
-
-    fn append_deferred(&mut self, stmt: Statement<'ctx>) {
-        self.rev_deferred_stmts.push(stmt);
-    }
-}
-
-impl<'ctx, 'tcx> Deref for TcCtx<'ctx, 'tcx> {
-    type Target = FnContext<'ctx, 'tcx>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.fn_ctx
-    }
-}
+use private::TcCtx;
 
 pub fn typecheck_static<'arena>(
     ctx: &TypeckCtx<'arena>,
@@ -101,11 +160,7 @@ pub fn typecheck_static<'arena>(
         contract: &contract,
     };
 
-    let mut ctx = TcCtx {
-        ir: ScopedIR::new(std::iter::empty(), span),
-        rev_deferred_stmts: Vec::new(),
-        fn_ctx,
-    };
+    let mut ctx = TcCtx::new(ScopedIR::new(std::iter::empty(), span), fn_ctx);
 
     match typecheck_expression(
         &mut ctx,
@@ -235,11 +290,7 @@ fn inner_typecheck_function<'arena>(
             .map(|&(name, ty)| (name, name.span(), ty)),
         fn_ctx.combine_spans([contract.span, statement.span()]),
     );
-    let mut ctx = TcCtx {
-        ir,
-        rev_deferred_stmts: Vec::new(),
-        fn_ctx,
-    };
+    let mut ctx = TcCtx::new(ir, fn_ctx);
 
     let always_returns = typecheck_block_inline(&mut ctx, statement)?;
     if contract.return_type != default_types::void && !always_returns {
@@ -252,7 +303,7 @@ fn inner_typecheck_function<'arena>(
     if !always_returns {
         typecheck_statement(&mut ctx, &Statement::Return(None, statement.span()))?;
     }
-    let mut ir = ctx.ir.to_ir();
+    let mut ir = ctx.into_ir().into_ir();
 
     drop(fn_reader);
     drop(ext_fn_reader);
@@ -297,27 +348,29 @@ fn typecheck_quasi_block<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     statement: &Statement<'ctx>,
 ) -> Result<(BlockId, bool), ErrorEmitted> {
-    if let Statement::Block(statements, span, _) | Statement::DeferredBlock(statements, span, _) =
-        statement
-    {
-        let tracker = ctx.track_errors();
-        let (block, always_returns) = ctx.with_new_block(*span, |ctx| {
-            let mut always_returns = false;
-            for statement in statements.iter() {
-                if let Ok(true) = typecheck_statement(ctx, statement) {
-                    always_returns = true;
-                    break;
+    ctx.with_scope(|ctx| {
+        if let Statement::Block(statements, span, _)
+        | Statement::DeferredBlock(statements, span, _) = statement
+        {
+            let tracker = ctx.track_errors();
+            let (block, always_returns) = ctx.with_new_block(*span, |ctx| {
+                let mut always_returns = false;
+                for statement in statements.iter() {
+                    if let Ok(true) = typecheck_statement(ctx, statement) {
+                        always_returns = true;
+                        break;
+                    }
                 }
-            }
-            always_returns
-        });
+                always_returns
+            });
 
-        ctx.errors_happened_res(tracker)?;
-        return Ok((block, always_returns));
-    }
-    let (block, res) =
-        ctx.with_new_block(statement.span(), |ctx| typecheck_statement(ctx, statement));
-    Ok((block, res?))
+            ctx.errors_happened_res(tracker)?;
+            return Ok((block, always_returns));
+        }
+        let (block, res) =
+            ctx.with_new_block(statement.span(), |ctx| typecheck_statement(ctx, statement));
+        Ok((block, res?))
+    })
 }
 
 /// Returns if the statement and if it always returns
@@ -403,7 +456,7 @@ fn run_deferred(ctx: &mut TcCtx<'_, '_>) -> Result<bool, ErrorEmitted> {
         return Ok(false);
     }
 
-    let blk_span = ctx.ir.get_block_span(ctx.ir.current_block);
+    let blk_span = ctx.get_block_span(ctx.current_block());
     let tracker = ctx.track_errors();
     let (block_id, always_returns) = ctx.with_new_block(blk_span, |ctx| {
         let mut always_returns = false;
@@ -505,13 +558,13 @@ fn typecheck_statement<'ctx>(
                 // using the id here is fine because we only return a ValueId because we want the
                 // return value to *always* be alloca'd, not because it represents a new value.
                 TypedLiteral::Dynamic(id) => {
-                    ctx.ir.make_stack_allocated(id);
+                    ctx.make_stack_allocated(id);
                     Some(id)
                 }
                 TypedLiteral::Void => None,
                 lit => {
-                    let id = ctx.ir.add_value(ty);
-                    ctx.ir.make_stack_allocated(id);
+                    let id = ctx.add_value(ty);
+                    ctx.make_stack_allocated(id);
                     ctx.append(TypedExpression::Literal(expression.span(), id, lit));
                     Some(id)
                 }
@@ -553,17 +606,17 @@ fn typecheck_statement<'ctx>(
                 return Err(ErrorEmitted);
             }
 
-            let value = ctx.ir.add_value(ty);
+            let value = ctx.add_value(ty);
             ctx.append(TypedExpression::Literal(var.value.span(), value, expr));
 
-            ctx.ir.scope_value(var.name, value);
+            ctx.scope_value(var.name, value);
             ctx.append(TypedExpression::DeclareVariable(
                 var.span,
                 value,
                 ty,
                 var.name.symbol(),
             ));
-            ctx.ir.make_stack_allocated(value);
+            ctx.make_stack_allocated(value);
             Ok(false)
         }
         Statement::Expr(expr) => match typecheck_expression(ctx, expr, Default::default()) {
@@ -597,14 +650,14 @@ fn typecheck_statement<'ctx>(
 macro_rules! tc_res {
     (unary $ctx:expr; $name:ident ($span:expr, $right_side:expr, $ty:expr)) => {{
         let ty = $ty;
-        let id = $ctx.ir.add_value(ty);
+        let id = $ctx.add_value(ty);
         $ctx.append(TypedExpression::$name($span, id, $right_side));
         Ok((ty, TypedLiteral::Dynamic(id)))
     }};
 
     (binary $ctx:expr; $name:ident ($span:expr, $left_side:expr, $right_side:expr, $ty:expr)) => {{
         let ty = $ty;
-        let id = $ctx.ir.add_value(ty);
+        let id = $ctx.add_value(ty);
         $ctx.append(TypedExpression::$name($span, id, $left_side, $right_side));
         Ok((ty, TypedLiteral::Dynamic(id)))
     }};
@@ -887,9 +940,9 @@ fn typecheck_expression<'ctx>(
             LiteralValue::Dynamic(path) => {
                 if path.entries.len() == 1
                     && path.entries[0].1.is_empty()
-                    && let Some(id) = ctx.ir.get_scoped(&path.entries[0].0)
+                    && let Some(id) = ctx.get_scoped(&path.entries[0].0)
                 {
-                    return Ok((ctx.ir.get_ty(id), TypedLiteral::Dynamic(id)));
+                    return Ok((ctx.get_ty(id), TypedLiteral::Dynamic(id)));
                 }
                 let mut generics = Vec::new();
                 for (.., generic_value) in path.entries.iter() {
@@ -1018,20 +1071,20 @@ fn typecheck_expression<'ctx>(
                 })?;
             let mut typed_inputs = Vec::with_capacity(inputs.len());
             for (span, name) in inputs {
-                let Some(id) = ctx.ir.get_scoped(name) else {
+                let Some(id) = ctx.get_scoped(name) else {
                     return Err(TypecheckingError::CannotFindValue(
                         *span,
                         Path::new(*name, Vec::new()),
                     )
                     .to_error());
                 };
-                let ty = ctx.ir.get_ty(id);
+                let ty = ctx.get_ty(id);
                 if !ty.is_asm_primitive() {
                     return Err(TypecheckingError::AsmNonNumericTypeResolved(*span, ty).to_error());
                 }
                 typed_inputs.push(id);
             }
-            let id = ctx.ir.add_value(output);
+            let id = ctx.add_value(output);
             ctx.append(TypedExpression::Asm {
                 span: *span,
                 dst: id,
@@ -1049,9 +1102,9 @@ fn typecheck_expression<'ctx>(
         Expression::Unary {
             operator,
             right_side,
-            ..
+            span,
         } if *operator == UnaryOp::Reference => {
-            typecheck_take_ref(ctx, right_side, type_suggestion)
+            typecheck_take_ref(ctx, right_side, type_suggestion, *span)
         }
         Expression::Unary {
             operator,
@@ -1142,7 +1195,7 @@ fn typecheck_expression<'ctx>(
                 }
                 let span = span_left.combine_with([span_right], ctx.span_interner());
 
-                let id = ctx.ir.add_value(default_types::bool);
+                let id = ctx.add_value(default_types::bool);
                 match operator {
                     BinaryOp::LogicalAnd => ctx.append(TypedExpression::LAnd(
                         span, id, left_side, right_side, rhs_block,
@@ -1282,7 +1335,7 @@ fn typecheck_expression<'ctx>(
 
             if let TypedLiteral::Intrinsic(intrinsic, generics) = function_expr {
                 let ty = function_type.return_type;
-                let id = ctx.ir.add_value(ty);
+                let id = ctx.add_value(ty);
                 ctx.append(TypedExpression::IntrinsicCall(
                     func.span(),
                     id,
@@ -1293,7 +1346,7 @@ fn typecheck_expression<'ctx>(
                 Ok((ty, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::LLVMIntrinsic(intrinsic) = function_expr {
                 let ty = function_type.return_type;
-                let id = ctx.ir.add_value(ty);
+                let id = ctx.add_value(ty);
                 ctx.append(TypedExpression::LLVMIntrinsicCall(
                     func.span(),
                     id,
@@ -1303,7 +1356,7 @@ fn typecheck_expression<'ctx>(
                 Ok((ty, TypedLiteral::Dynamic(id)))
             } else if let TypedLiteral::Function(fn_id, generics) = function_expr {
                 let ty = function_type.return_type;
-                let id = ctx.ir.add_value(ty);
+                let id = ctx.add_value(ty);
                 ctx.append(TypedExpression::DirectCall(
                     func.span(),
                     id,
@@ -1319,7 +1372,11 @@ fn typecheck_expression<'ctx>(
             }
         }
         Expression::Indexing { .. } | Expression::MemberAccess { .. } => {
-            copy_resolve_indexing(ctx, expression, type_suggestion)
+            let (ty, lit) = new_index(ctx, expression, type_suggestion)?;
+            let ty = ty.deref().unwrap();
+            let dst = ctx.add_value(ty);
+            ctx.append(TypedExpression::Dereference(expression.span(), dst, lit));
+            Ok((ty, TypedLiteral::Dynamic(dst)))
         }
         Expression::MemberCall {
             fn_name: identifier,
@@ -1476,7 +1533,7 @@ fn typecheck_expression<'ctx>(
                 typed_args.push(expr);
             }
 
-            let value_id = ctx.ir.add_value(ret_ty);
+            let value_id = ctx.add_value(ret_ty);
             ctx.append(TypedExpression::TraitCall {
                 span: *span,
                 ty,
@@ -1508,13 +1565,13 @@ fn typecheck_cast<'ctx>(
         (TyKind::PrimitiveStr, TyKind::UnsizedArray(ty))
             if ref_self == ref_other && ref_self > 0 && *ty == default_types::u8 =>
         {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::Alias(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &str -> &u8
         (TyKind::PrimitiveStr, TyKind::PrimitiveU8) if ref_self == 1 && ref_other == 1 => {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::StripMetadata(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
@@ -1529,7 +1586,7 @@ fn typecheck_cast<'ctx>(
             && ref_self >= ref_other
             && *ty_other == ty.with_num_refs(ref_self - ref_other, ctx.ctx) =>
         {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::Alias(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
@@ -1549,7 +1606,7 @@ fn typecheck_cast<'ctx>(
                 )
                 .to_error());
             }
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::AttachVtable(
                 span,
                 id,
@@ -1566,7 +1623,7 @@ fn typecheck_cast<'ctx>(
             },
             TyKind::UnsizedArray(typ_other),
         ) if ty == typ_other && ref_self == 1 && ref_other == 1 => {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::MakeUnsizedSlice(
                 span,
                 id,
@@ -1579,43 +1636,43 @@ fn typecheck_cast<'ctx>(
         (TyKind::UnsizedArray(ty), _)
             if ref_self == 1 && ref_other == 1 && **new_ty == TyKind::Ref(*ty) =>
         {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::StripMetadata(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &&void -> &void
         (TyKind::PrimitiveVoid, TyKind::PrimitiveVoid) if ref_self > 0 && ref_other == 1 => {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::Bitcast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &void -> usize
         (TyKind::PrimitiveVoid, TyKind::PrimitiveUSize) if ref_self == 1 && ref_other == 0 => {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::PtrToInt(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // usize -> &void
         (TyKind::PrimitiveUSize, TyKind::PrimitiveVoid) if ref_self == 0 && ref_other == 1 => {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::IntToPtr(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // fn to &void
         (TyKind::Function(_), TyKind::PrimitiveVoid) if ref_self == 0 && ref_other == 1 => {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::Bitcast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &T to &void
         (_, TyKind::PrimitiveVoid) if ref_other > 0 && ref_self > 0 && ty.is_thin_ptr() => {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::Bitcast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
         // &void to &T
         (TyKind::PrimitiveVoid, _) if ref_self > 0 && ref_other > 0 && new_ty.is_thin_ptr() => {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::Bitcast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
@@ -1649,7 +1706,7 @@ fn typecheck_cast<'ctx>(
             | TyKind::PrimitiveF32
             | TyKind::PrimitiveF64,
         ) if ref_self == 0 && ref_other == 0 => {
-            let id = ctx.ir.add_value(new_ty);
+            let id = ctx.add_value(new_ty);
             ctx.append(TypedExpression::IntCast(span, id, lhs));
             Ok((new_ty, TypedLiteral::Dynamic(id)))
         }
@@ -1711,14 +1768,12 @@ fn typecheck_dyn_membercall<'ctx>(
     }
 
     let ty = ctx.intern_ty(TyKind::DynType(trait_refs));
-    let mut ty = with_refcount(ctx.ctx, ty, num_references);
-    let mut lhs = lhs;
-    while ty.has_double_refs() {
-        ty = ty.deref().expect("dereferencing &_ should never fail");
-        let id = ctx.ir.add_value(ctx.fn_ctx.ctx.intern_ty_ref(&ty));
-        ctx.append(TypedExpression::Dereference(lhs_span, id, lhs));
-        lhs = TypedLiteral::Dynamic(id);
-    }
+    let lhs = make_single_ref(
+        ctx,
+        with_refcount(ctx.ctx, ty, num_references),
+        lhs,
+        lhs_span,
+    );
 
     let mut typed_args = Vec::with_capacity(args.len() + 1);
     typed_args.push(lhs);
@@ -1748,7 +1803,7 @@ fn typecheck_dyn_membercall<'ctx>(
     }
 
     let is_void = return_ty == default_types::void || return_ty == default_types::never;
-    let id = ctx.ir.add_value(return_ty);
+    let id = ctx.add_value(return_ty);
     ctx.append(TypedExpression::DynCall(
         lhs_span,
         id,
@@ -1767,8 +1822,8 @@ fn typecheck_membercall<'ctx>(
     ident: &Ident<'ctx>,
     args: &[Expression<'ctx>],
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
-    let (mut typ_lhs, mut typed_literal_lhs) =
-        typecheck_take_ref(ctx, lhs, TypeSuggestion::Unknown)?;
+    let (mut typ_lhs, mut typed_literal_lhs) = new_index(ctx, lhs, TypeSuggestion::Unknown)?;
+
     let lhs_refcount = typ_lhs.refcount();
     match **typ_lhs.without_ref() {
         TyKind::DynType(trait_refs) if lhs_refcount > 0 => {
@@ -1858,7 +1913,7 @@ fn typecheck_membercall<'ctx>(
             typ_lhs = typ_lhs
                 .deref()
                 .expect("you should always be able to deref &_");
-            let new_id = ctx.ir.add_value(typ_lhs);
+            let new_id = ctx.add_value(typ_lhs);
             ctx.append(TypedExpression::Dereference(
                 lhs.span(),
                 new_id,
@@ -1899,7 +1954,7 @@ fn typecheck_membercall<'ctx>(
         typed_arguments.push(expr);
     }
 
-    let call_id = ctx.ir.add_value(function.0.return_type);
+    let call_id = ctx.add_value(function.0.return_type);
     ctx.append(TypedExpression::DirectCall(
         lhs.span(),
         call_id,
@@ -1915,6 +1970,7 @@ fn typecheck_take_ref<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion,
+    span: Span<'ctx>,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
     match expression {
         //&*_1 => _1
@@ -1925,208 +1981,14 @@ fn typecheck_take_ref<'ctx>(
         } if *operator == UnaryOp::Dereference => {
             typecheck_expression(ctx, right_side, type_suggestion)
         }
+        Expression::Indexing { .. } | Expression::MemberAccess { .. } => {
+            new_index(ctx, expression, type_suggestion)
+        }
+
         _ => {
-            let (ty, expr) = ref_resolve_indexing(ctx, expression, type_suggestion, true)?;
-            Ok((ty.take_ref(ctx.ctx), expr))
-        }
-    }
-}
-
-// NOTE: the actual type of the value is a reference on top of the returned type, but we don't do
-// that as that would require additional computations. The reference is as such implicit but has to
-// be added when pushing the type onto the scope (e.g. during auto deref)
-fn ref_resolve_indexing<'ctx>(
-    ctx: &mut TcCtx<'ctx, '_>,
-    expression: &Expression<'ctx>,
-    type_suggestion: TypeSuggestion,
-    increase_ref: bool,
-) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
-    match expression {
-        Expression::MemberAccess {
-            left_side,
-            index,
-            span,
-        } => {
-            let (mut typ_lhs, mut typed_literal_lhs) =
-                ref_resolve_indexing(ctx, left_side, TypeSuggestion::Unknown, false)?;
-            for element_name in index {
-                while typ_lhs.has_refs() {
-                    let old_typ_lhs = typ_lhs;
-                    typ_lhs = typ_lhs
-                        .deref()
-                        .expect("&_ should never fail to dereference");
-                    let id = ctx.ir.add_value(old_typ_lhs);
-                    ctx.append(TypedExpression::Dereference(
-                        expression.span(),
-                        id,
-                        typed_literal_lhs,
-                    ));
-                    typed_literal_lhs = TypedLiteral::Dynamic(id);
-                }
-                assert!(!typ_lhs.has_refs(), "non-zero refcount after auto-deref");
-                match **typ_lhs {
-                    TyKind::Struct { struct_id, .. } => {
-                        let structure = &ctx.fn_ctx.tcx.structs.read()[struct_id];
-                        match structure
-                            .elements
-                            .iter()
-                            .enumerate()
-                            .find(|(_, (v, _, _))| v == element_name)
-                            .map(|(idx, (_, ty, _))| (idx, ty))
-                        {
-                            Some((idx, ty)) => {
-                                typ_lhs = *ty;
-                                let new_ty = typ_lhs.take_ref(ctx.ctx);
-                                let new_val = ctx.ir.add_value(new_ty);
-                                ctx.append(TypedExpression::Offset(
-                                    *span,
-                                    new_val,
-                                    typed_literal_lhs,
-                                    OffsetValue::Static(idx),
-                                ));
-                                typed_literal_lhs = TypedLiteral::Dynamic(new_val);
-                            }
-                            None => {
-                                return Err(TypecheckingError::FieldNotFound(
-                                    expression.span(),
-                                    typ_lhs,
-                                    element_name.symbol(),
-                                )
-                                .to_error());
-                            }
-                        }
-                    }
-                    _ => {
-                        return Err(
-                            TypecheckingError::AccessNonStructValue(*span, typ_lhs).to_error()
-                        );
-                    }
-                };
-            }
-            Ok((typ_lhs, typed_literal_lhs))
-        }
-        Expression::Indexing {
-            left_side,
-            right_side,
-            ..
-        } => {
-            let (mut typ_lhs, mut typed_literal_lhs) = ref_resolve_indexing(
-                ctx,
-                left_side,
-                TypeSuggestion::Array(Box::new(type_suggestion)),
-                false,
-            )?;
-            while typ_lhs.has_refs() {
-                typ_lhs = typ_lhs
-                    .deref()
-                    .expect("&_ should never fail to dereference");
-                let id = ctx.ir.add_value(typ_lhs);
-                ctx.append(TypedExpression::Dereference(
-                    expression.span(),
-                    id,
-                    typed_literal_lhs,
-                ));
-                typed_literal_lhs = TypedLiteral::Dynamic(id);
-            }
-            assert!(!typ_lhs.has_refs(), "non-zero refcount after auto-deref");
-            let offset = indexing_resolve_rhs(ctx, right_side)?;
-            let ty = match &**typ_lhs {
-                TyKind::SizedArray { ty, .. } | TyKind::UnsizedArray(ty) => *ty,
-                TyKind::Tuple(elements) => match offset {
-                    OffsetValue::Dynamic(_) => {
-                        return Err(
-                            TypecheckingError::TupleDynamicIndex(expression.span()).to_error()
-                        );
-                    }
-                    OffsetValue::Static(idx) if idx >= elements.len() => {
-                        return Err(TypecheckingError::TupleIndexOutOfBounds(
-                            expression.span(),
-                            elements.len(),
-                            idx,
-                        )
-                        .to_error());
-                    }
-                    OffsetValue::Static(idx) => elements[idx],
-                },
-                _ => {
-                    return Err(
-                        TypecheckingError::IndexNonArrayElem(expression.span(), typ_lhs).to_error(),
-                    );
-                }
-            };
-
-            let id = ctx.ir.add_value(ty.take_ref(ctx.fn_ctx.ctx));
-            ctx.append(TypedExpression::Offset(
-                expression.span(),
-                id,
-                typed_literal_lhs,
-                offset,
-            ));
-            Ok((ty, TypedLiteral::Dynamic(id)))
-        }
-        _ => {
-            let (ty, typed_literal) =
-                typecheck_expression(ctx, expression, type_suggestion.clone())?;
-
-            if let TypeSuggestion::UnsizedArray(_) = type_suggestion
-                && let TyKind::Ref(ty) = **ty
-                && let TyKind::SizedArray {
-                    number_elements,
-                    ty,
-                } = **ty
-            {
-                let ty = ctx.ctx.intern_ty(TyKind::UnsizedArray(ty));
-                let new_ty = ty.take_ref(ctx.ctx);
-                let id = ctx.ir.add_value(new_ty);
-                ctx.append(TypedExpression::MakeUnsizedSlice(
-                    expression.span(),
-                    id,
-                    typed_literal,
-                    number_elements,
-                ));
-                return Ok((ty, TypedLiteral::Dynamic(id)));
-            }
-
-            if ty.has_refs() && !increase_ref {
-                return Ok((
-                    ty.deref().expect("&_ should never fail to be dereferenced"),
-                    typed_literal,
-                ));
-            }
-
-            match (type_suggestion, &**ty) {
-                (
-                    TypeSuggestion::UnsizedArray(_),
-                    &TyKind::SizedArray {
-                        ty,
-                        number_elements,
-                    },
-                ) => {
-                    let typed_literal_sized_array_ref = make_reference(
-                        ctx,
-                        ctx.ctx.intern_ty(TyKind::SizedArray {
-                            ty,
-                            number_elements,
-                        }),
-                        typed_literal,
-                        expression.span(),
-                    );
-                    let ty = ctx.ctx.intern_ty(TyKind::UnsizedArray(ty));
-                    let new_ty = ty.take_ref(ctx.ctx);
-                    let id = ctx.ir.add_value(new_ty);
-                    ctx.append(TypedExpression::MakeUnsizedSlice(
-                        expression.span(),
-                        id,
-                        typed_literal_sized_array_ref,
-                        number_elements,
-                    ));
-                    Ok((ty, TypedLiteral::Dynamic(id)))
-                }
-                _ => Ok((
-                    ty,
-                    make_reference(ctx, ty, typed_literal, expression.span()),
-                )),
-            }
+            let (ty, lit) = typecheck_expression(ctx, expression, type_suggestion)?;
+            let new_lit = make_reference(ctx, ty, lit, span);
+            Ok((ty.take_ref(ctx.ctx), new_lit))
         }
     }
 }
@@ -2162,22 +2024,22 @@ fn make_reference<'ctx>(
 ) -> TypedLiteral<'ctx> {
     match typed_literal {
         TypedLiteral::Void | TypedLiteral::Static(_) => {}
-        TypedLiteral::Dynamic(v) => ctx.ir.make_stack_allocated(v),
+        TypedLiteral::Dynamic(v) => ctx.make_stack_allocated(v),
         _ => {
-            let lit_id = ctx.ir.add_value(ty);
-            ctx.ir.make_stack_allocated(lit_id);
+            let lit_id = ctx.add_value(ty);
+            ctx.make_stack_allocated(lit_id);
             ctx.append(TypedExpression::Literal(span, lit_id, typed_literal));
             typed_literal = TypedLiteral::Dynamic(lit_id);
         }
     }
 
     let ty = ty.take_ref(ctx.ctx);
-    let new_id = ctx.ir.add_value(ty);
+    let new_id = ctx.add_value(ty);
     ctx.append(TypedExpression::Reference(span, new_id, typed_literal));
     TypedLiteral::Dynamic(new_id)
 }
 
-fn copy_resolve_indexing<'ctx>(
+fn new_index<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion,
@@ -2186,144 +2048,84 @@ fn copy_resolve_indexing<'ctx>(
         Expression::Indexing {
             left_side,
             right_side,
-            ..
+            span,
         } => {
             let offset = indexing_resolve_rhs(ctx, right_side)?;
-            let (ty, lhs) = copy_resolve_indexing(
+            let (ty, lhs) = new_index(
                 ctx,
                 left_side,
                 TypeSuggestion::Array(Box::new(type_suggestion)),
             )?;
-            if !matches!(
-                **ty,
-                TyKind::UnsizedArray { .. } | TyKind::SizedArray { .. } | TyKind::Tuple { .. }
-            ) {
+            let single_ref_lit = make_single_ref(ctx, ty, lhs, *span);
+            if !ty.is_indexable() {
                 return Err(TypecheckingError::IndexNonArrayElem(expression.span(), ty).to_error());
             }
-            if !ty.has_refs() {
-                let new_ty = match &**ty {
-                    TyKind::SizedArray { ty, .. } => *ty,
-                    TyKind::Tuple(elements) => match offset {
-                        OffsetValue::Dynamic(_) => {
-                            return Err(
-                                TypecheckingError::TupleDynamicIndex(expression.span()).to_error()
-                            );
-                        }
-                        OffsetValue::Static(v) if v >= elements.len() => {
-                            return Err(TypecheckingError::TupleIndexOutOfBounds(
-                                expression.span(),
-                                elements.len(),
-                                v,
-                            )
-                            .to_error());
-                        }
-                        OffsetValue::Static(v) => elements[v],
-                    },
-                    TyKind::UnsizedArray { .. } => panic!("unsized element without references"),
-                    _ => unreachable!(),
-                };
-                let new_id = match offset {
-                    OffsetValue::Static(offset) => {
-                        let new_id = ctx.ir.add_value(new_ty);
-                        ctx.append(TypedExpression::OffsetNonPointer(
+            let elem_ty = match **ty.without_ref() {
+                TyKind::SizedArray {
+                    ty,
+                    number_elements,
+                } => {
+                    if let OffsetValue::Static(v) = offset
+                        && v >= number_elements
+                    {
+                        return Err(TypecheckingError::ArrayIndexOutOfBounds(
                             expression.span(),
-                            new_id,
-                            lhs,
-                            offset,
-                        ));
-                        new_id
+                            v,
+                            number_elements,
+                        )
+                        .to_error());
                     }
-                    off @ OffsetValue::Dynamic(_) => {
-                        if let TypedLiteral::Dynamic(lhs) = lhs {
-                            ctx.ir.make_stack_allocated(lhs);
-                        }
-                        let typed_lit_ref = make_reference(ctx, ty, lhs, expression.span());
-                        let ref_ty = new_ty.take_ref(ctx.ctx);
-                        let offset_id = ctx.ir.add_value(ref_ty);
-                        let new_id = ctx.ir.add_value(new_ty);
-                        ctx.append(TypedExpression::Offset(
-                            expression.span(),
-                            offset_id,
-                            typed_lit_ref,
-                            off,
-                        ));
-                        ctx.append(TypedExpression::Dereference(
-                            expression.span(),
-                            new_id,
-                            TypedLiteral::Dynamic(offset_id),
-                        ));
-                        new_id
-                    }
-                };
-                Ok((new_ty, TypedLiteral::Dynamic(new_id)))
-            } else {
-                let mut ty = ty;
-                let mut lhs = lhs;
-                while ty.has_double_refs() {
-                    ty = ty.deref().expect("dereferencing &_ should never fail");
-                    let new_id = ctx.ir.add_value(ty);
-                    ctx.append(TypedExpression::Dereference(expression.span(), new_id, lhs));
-                    lhs = TypedLiteral::Dynamic(new_id);
+                    ty
                 }
-                let ty = match **ty {
-                    TyKind::UnsizedArray(ty) | TyKind::SizedArray { ty, .. } => ty,
-                    _ => unreachable!(),
-                };
-                let new_ty = ty.take_ref(ctx.ctx);
-                let offset_id = ctx.ir.add_value(new_ty);
-                let value_id = ctx.ir.add_value(ty);
-                ctx.append(TypedExpression::Offset(
-                    expression.span(),
-                    offset_id,
-                    lhs,
-                    offset,
-                ));
-                ctx.append(TypedExpression::Dereference(
-                    expression.span(),
-                    value_id,
-                    TypedLiteral::Dynamic(offset_id),
-                ));
-                Ok((ty, TypedLiteral::Dynamic(value_id)))
-            }
+                TyKind::UnsizedArray(ty) => ty,
+                TyKind::Tuple(elems) => match offset {
+                    OffsetValue::Dynamic(_) => {
+                        return Err(
+                            TypecheckingError::TupleDynamicIndex(expression.span()).to_error()
+                        );
+                    }
+
+                    OffsetValue::Static(v) if v >= elems.len() => {
+                        return Err(TypecheckingError::TupleIndexOutOfBounds(
+                            expression.span(),
+                            elems.len(),
+                            v,
+                        )
+                        .to_error());
+                    }
+                    OffsetValue::Static(v) => elems[v],
+                },
+                _ => unreachable!(),
+            };
+            let new_ty = elem_ty.take_ref(ctx.ctx);
+            let dst = ctx.add_value(new_ty);
+            ctx.append(TypedExpression::Offset(*span, dst, single_ref_lit, offset));
+
+            Ok((new_ty, TypedLiteral::Dynamic(dst)))
         }
         Expression::MemberAccess {
-            index,
             left_side,
+            index,
             span,
         } => {
-            let (mut typ_lhs, mut typed_literal_lhs) =
-                copy_resolve_indexing(ctx, left_side, TypeSuggestion::Unknown)?;
-            for element_name in index {
-                let needs_deref = typ_lhs.has_refs();
-                while typ_lhs.has_double_refs() {
-                    typ_lhs = typ_lhs.deref().expect("dereferencing &_ should never fail");
-                    let new_id = ctx.ir.add_value(typ_lhs);
-                    ctx.append(TypedExpression::Dereference(
-                        expression.span(),
-                        new_id,
-                        typed_literal_lhs,
-                    ));
-                    typed_literal_lhs = TypedLiteral::Dynamic(new_id);
-                }
-                let offset = match **typ_lhs {
+            let (mut ty_lhs, mut lit) = new_index(ctx, left_side, TypeSuggestion::Unknown)?;
+            for field_name in index {
+                let (offset, new_ty) = match **ty_lhs.without_ref() {
                     TyKind::Struct { struct_id, .. } => {
                         let structure = &ctx.structs.read()[struct_id];
                         match structure
                             .elements
                             .iter()
                             .enumerate()
-                            .find(|(_, (v, _, _))| v == element_name)
+                            .find(|(_, (v, _, _))| v == field_name)
                             .map(|(idx, (_, ty, _))| (idx, ty))
                         {
-                            Some((idx, ty)) => {
-                                typ_lhs = *ty;
-                                idx
-                            }
+                            Some((idx, ty)) => (idx, ty.take_ref(ctx.ctx)),
                             None => {
                                 return Err(TypecheckingError::FieldNotFound(
                                     expression.span(),
-                                    typ_lhs.without_ref(),
-                                    element_name.symbol(),
+                                    ty_lhs.without_ref(),
+                                    field_name.symbol(),
                                 )
                                 .to_error());
                             }
@@ -2331,42 +2133,45 @@ fn copy_resolve_indexing<'ctx>(
                     }
                     _ => {
                         return Err(
-                            TypecheckingError::AccessNonStructValue(*span, typ_lhs).to_error()
+                            TypecheckingError::AccessNonStructValue(*span, ty_lhs).to_error()
                         );
                     }
                 };
-                if !needs_deref {
-                    let new_id = ctx.ir.add_value(typ_lhs);
-                    if let TypedLiteral::Dynamic(id) = typed_literal_lhs {
-                        ctx.ir.make_stack_allocated(id);
-                    }
-                    ctx.append(TypedExpression::OffsetNonPointer(
-                        *span,
-                        new_id,
-                        typed_literal_lhs,
-                        offset,
-                    ));
-                    typed_literal_lhs = TypedLiteral::Dynamic(new_id);
-                } else {
-                    let new_ty = typ_lhs.take_ref(ctx.ctx);
-                    let offset_id = ctx.ir.add_value(new_ty);
-                    let deref_id = ctx.ir.add_value(typ_lhs);
-                    ctx.append(TypedExpression::Offset(
-                        *span,
-                        offset_id,
-                        typed_literal_lhs,
-                        OffsetValue::Static(offset),
-                    ));
-                    ctx.append(TypedExpression::Dereference(
-                        *span,
-                        deref_id,
-                        TypedLiteral::Dynamic(offset_id),
-                    ));
-                    typed_literal_lhs = TypedLiteral::Dynamic(deref_id);
-                }
+                lit = make_single_ref(ctx, ty_lhs, lit, *span);
+                let dst = ctx.add_value(new_ty);
+                ctx.append(TypedExpression::Offset(
+                    *span,
+                    dst,
+                    lit,
+                    OffsetValue::Static(offset),
+                ));
+                lit = TypedLiteral::Dynamic(dst);
+                ty_lhs = new_ty;
             }
-            Ok((typ_lhs, typed_literal_lhs))
+
+            Ok((ty_lhs, lit))
         }
         _ => typecheck_expression(ctx, expression, type_suggestion),
     }
+}
+
+fn make_single_ref<'ctx>(
+    ctx: &mut TcCtx<'ctx, '_>,
+    mut current: Ty<'ctx>,
+    mut value: TypedLiteral<'ctx>,
+    span: Span<'ctx>,
+) -> TypedLiteral<'ctx> {
+    if !current.has_refs() {
+        // make ref
+        value = make_reference(ctx, current, value, span);
+    } else {
+        current = current.deref().unwrap();
+        while current.has_refs() {
+            let new_id = ctx.add_value(current);
+            current = current.deref().unwrap();
+            ctx.append(TypedExpression::Dereference(span, new_id, value));
+            value = TypedLiteral::Dynamic(new_id);
+        }
+    }
+    value
 }

@@ -463,6 +463,14 @@ impl<'arena> TyKind<'arena> {
         }
     }
 
+    /// returns if self is [_], [_; _] or (_, _, ...)
+    pub fn is_indexable(&self) -> bool {
+        matches!(
+            self,
+            TyKind::UnsizedArray { .. } | TyKind::SizedArray { .. } | TyKind::Tuple { .. }
+        )
+    }
+
     /// returns if this type is &_
     pub fn has_refs(&self) -> bool {
         matches!(self, Self::Ref(_))

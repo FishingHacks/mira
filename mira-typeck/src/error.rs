@@ -74,6 +74,8 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("expected a numeric type")] Span<'arena>,
         Symbol<'arena>,
     ),
+    #[error("Index `{_1}` is out of bounds for an array of size `{_2}`")]
+    ArrayIndexOutOfBounds(#[primary_label("")] Span<'arena>, usize, usize),
     #[error("No field `{_2}` on a tuple with {_1} fields")]
     TupleIndexOutOfBounds(#[primary_label("unknown field")] Span<'arena>, usize, usize),
     #[error("Cannot index into a tuple with a non-static literal")]

@@ -185,7 +185,7 @@ impl<'ctx> IR<'ctx> {
         })
     }
 
-    /// creates a block and sets the current block to it, calls `f`, and restores the current block after f exits.
+    /// sets the current block to the block, calls `f`, and restores the current block after f exits.
     pub fn with_block<R>(&mut self, block: BlockId, f: impl FnOnce(&mut Self) -> R) -> R {
         let old = self.current_block;
         self.goto(block);
@@ -202,6 +202,7 @@ impl<'ctx> IR<'ctx> {
     ) -> (BlockId, R) {
         let old = self.current_block;
         let block = self.create_block(span);
+        self.goto(block);
         let v = f(self);
         self.goto(old);
         (block, v)
@@ -282,7 +283,7 @@ impl<'ctx> ScopedIR<'ctx> {
         }
     }
 
-    pub fn to_ir(self) -> IR<'ctx> {
+    pub fn into_ir(self) -> IR<'ctx> {
         self.ir
     }
 
@@ -297,7 +298,12 @@ impl<'ctx> ScopedIR<'ctx> {
     }
 
     pub fn get_scoped(&self, i: &Ident<'ctx>) -> Option<ValueId> {
-        self.scopes.last().unwrap().get(i).copied()
+        for scope in self.scopes.iter().rev() {
+            if let Some(&v) = scope.get(i) {
+                return Some(v);
+            }
+        }
+        None
     }
 
     pub fn push_scope(&mut self) {
@@ -319,7 +325,7 @@ impl<'ctx> ScopedIR<'ctx> {
         v
     }
 
-    /// creates a block and sets the current block to it, calls `f`, and restores the current block after f exits.
+    /// sets the current block to the block, calls `f`, and restores the current block after f exits.
     pub fn with_block<R>(&mut self, block: BlockId, f: impl FnOnce(&mut Self) -> R) -> R {
         let old = self.current_block;
         self.goto(block);
