@@ -11,10 +11,11 @@ use super::{
 pub struct TCContextDisplay;
 
 #[derive(Clone, Copy)]
+/// filters out all modules that arent this module or it's children.
 pub struct ChildrenOfModuleFilter(pub ModuleId);
 
 #[derive(Clone, Copy)]
-// filters out nothing
+/// filters out nothing
 pub struct AllFilter;
 
 impl DisplayFilter for AllFilter {

@@ -36,7 +36,9 @@ mod private {
     pub(super) struct TcCtx<'ctx, 'tcx> {
         ir: ScopedIR<'ctx>,
         /// a list of reversed deferred statements
-        pub rev_deferred_stmts: Vec<Statement<'ctx>>,
+        pub rev_deferred_exprs: Vec<TypedExpression<'ctx>>,
+        deferred_always_return: bool,
+        is_deferred: bool,
         pub fn_ctx: FnContext<'ctx, 'tcx>,
     }
 
@@ -44,8 +46,10 @@ mod private {
         pub(super) fn new(ir: ScopedIR<'ctx>, fn_ctx: FnContext<'ctx, 'tcx>) -> Self {
             Self {
                 ir,
-                rev_deferred_stmts: Vec::new(),
+                rev_deferred_exprs: Vec::new(),
                 fn_ctx,
+                is_deferred: false,
+                deferred_always_return: false,
             }
         }
     }
@@ -61,10 +65,6 @@ mod private {
 
         pub(super) fn add_value(&mut self, ty: Ty<'ctx>) -> ValueId {
             self.ir.add_value(ty)
-        }
-
-        pub(super) fn current_block(&self) -> BlockId {
-            self.ir.current_block
         }
 
         pub(super) fn get_ty(&self, value: ValueId) -> Ty<'ctx> {
@@ -90,11 +90,106 @@ mod private {
         }
 
         pub(super) fn append(&mut self, expr: TypedExpression<'ctx>) {
-            self.ir.append(expr);
+            if self.is_deferred {
+                self.rev_deferred_exprs.push(expr);
+            } else {
+                self.ir.append(expr);
+            }
         }
 
-        pub(super) fn append_deferred(&mut self, stmt: Statement<'ctx>) {
-            self.rev_deferred_stmts.push(stmt);
+        /// Puts all deferred statements like before a return and returns true if one of the
+        /// deferred statements always returns.
+        pub(super) fn put_all_deferred(&mut self) -> bool {
+            assert!(!self.is_deferred);
+            for expr in self.rev_deferred_exprs.iter().rev().cloned() {
+                self.ir.append(expr);
+            }
+            self.deferred_always_return
+        }
+
+        /// returns if the statement always returns.
+        pub(super) fn append_deferred(
+            &mut self,
+            stmt: &Statement<'ctx>,
+        ) -> Result<(), ErrorEmitted> {
+            assert!(!self.is_deferred);
+            let current_deferred = self.rev_deferred_exprs.len();
+            self.is_deferred = true;
+
+            let res = match stmt {
+                Statement::DeferredBlock(_, span, annotations) => {
+                    match typecheck_quasi_block(self, stmt) {
+                        Ok((block, always_returns)) => {
+                            self.append(TypedExpression::Block(*span, block, annotations.clone()));
+                            Ok(always_returns)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                Statement::DeferredExpr(expr) => {
+                    match typecheck_expression(self, expr, Default::default()) {
+                        Err(e) => Err(self.emit_diag(e)),
+                        Ok((ty, _)) if ty == default_types::never => {
+                            self.append(TypedExpression::Unreachable(expr.span()));
+                            Ok(true)
+                        }
+                        Ok(_) => Ok(false),
+                    }
+                }
+                Statement::DeferredIf(v) => typecheck_if(self, v),
+                Statement::DeferredWhile(v) => typecheck_while(self, v),
+                Statement::DeferredFor(_) => todo!("for loops (iterators)"),
+                _ => unreachable!("deferred only"),
+            };
+
+            if self.deferred_always_return {
+                // if the deferred always return (== have an expression evaluating to !), truncate
+                // the newly generated exprs, because they'll never run anyway (and the backend
+                // expects the last expression of a block to always be an always returning
+                // expression).
+                self.rev_deferred_exprs.truncate(current_deferred);
+            } else {
+                // reverse the expressions of this statement, because they're gonna be placed  in
+                // opposite order. This achieves that the expressions of one statement are all in
+                // order, but the groups are in opposite order from the way they were deferred.
+                //
+                // ```
+                // defer 4;
+                // rev_deferred:
+                // _0 = 4;
+                //
+                // deferred:
+                // _0 = 4;
+                //
+                // defer 1 + 2 + 3;
+                //
+                // rev_deferred (without this reverse):
+                // _0 = 4;
+                // _1 = 1 + 2
+                // _2 = _1 + 3
+                //
+                // deferred (without this reverse):
+                // _2 = _1 + 3
+                // _1 = 1 + 2
+                // _0 = 4;
+                //
+                // rev_deferred (with this reverse):
+                // _0 = 4;
+                // _2 = _1 + 3
+                // _1 = 1 + 2
+                //
+                // deferred (with this reverse):
+                // _1 = 1 + 2
+                // _2 = _1 + 3
+                // _0 = 4;
+                // ```
+                self.rev_deferred_exprs[current_deferred..].reverse();
+            }
+            self.is_deferred = false;
+            if res? {
+                self.deferred_always_return = true;
+            }
+            Ok(())
         }
 
         pub(super) fn scope_value(&mut self, ident: Ident<'ctx>, value: ValueId) {
@@ -105,16 +200,90 @@ mod private {
             self.ir.get_scoped(i)
         }
 
-        /// pushes a scope, calls f, and pops it.
-        pub(super) fn with_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        // does the same as `with_scope_block`, except handling defers.
+        // This is used when we're in a defer block already, where defers *never* happen.
+        fn with_scope_block_no_defer<E>(
+            &mut self,
+            f: impl FnOnce(&mut Self) -> Result<bool, E>,
+            span: Span<'ctx>,
+        ) -> Result<(BlockId, bool), E> {
+            assert!(self.is_deferred);
+
+            let old = self.ir.current_block;
+            let block = self.ir.create_block(span);
+            self.goto(block);
+
             self.ir.push_scope();
-            let v = f(self);
+
+            let res = f(self);
             self.ir.pop_scope();
-            v
+            self.goto(old);
+            Ok((block, res?))
         }
 
-        pub(super) fn get_block_span(&self, block: BlockId) -> Span<'ctx> {
-            self.ir.get_block_span(block)
+        /// pushes a scope and creates a new block, calls f, runs all deferred things inside of the
+        /// block, pops the scope, goes to the previous block, and returns the block and if the
+        /// deferred things always return.
+        ///
+        /// If f returns true, always returns is always true and the deferred expressions won't be
+        /// put at the end of the block. This means f's return value should be if the block's
+        /// contents always return or not.
+        pub(super) fn with_scope_block<E>(
+            &mut self,
+            f: impl FnOnce(&mut Self) -> Result<bool, E>,
+            span: Span<'ctx>,
+        ) -> Result<(BlockId, bool), E> {
+            if self.is_deferred {
+                return self.with_scope_block_no_defer(f, span);
+            }
+            assert!(!self.is_deferred);
+
+            let old = self.ir.current_block;
+            let block = self.ir.create_block(span);
+            self.goto(block);
+
+            self.ir.push_scope();
+
+            let current_deferred = self.rev_deferred_exprs.len();
+            let previous_deferred_always_return = self.deferred_always_return;
+            let res = f(self);
+
+            match res {
+                Err(e) => {
+                    // truncate to remove this scope's deferred values, reset the
+                    // deferred_always_return value, pop the scope and go back to the previous block.
+                    self.rev_deferred_exprs.truncate(current_deferred);
+                    self.deferred_always_return = previous_deferred_always_return;
+                    self.ir.pop_scope();
+                    self.goto(old);
+
+                    Err(e)
+                }
+                Ok(true) => {
+                    // truncate to remove this scope's deferred values, reset the
+                    // deferred_always_return value, pop the scope and go back to the previous block.
+                    self.rev_deferred_exprs.truncate(current_deferred);
+                    self.deferred_always_return = previous_deferred_always_return;
+                    self.ir.pop_scope();
+                    self.goto(old);
+
+                    Ok((block, true))
+                }
+                Ok(false) => {
+                    for expr in self.rev_deferred_exprs[current_deferred..].iter().rev() {
+                        // clone is fine here, because these exprs should only ever be reachable by one
+                        // codepath.
+                        self.ir.append(expr.clone());
+                    }
+                    self.rev_deferred_exprs.truncate(current_deferred);
+                    let deferred_always_return = self.deferred_always_return;
+                    self.deferred_always_return = previous_deferred_always_return;
+                    self.ir.pop_scope();
+                    self.goto(old);
+
+                    Ok((block, deferred_always_return))
+                }
+            }
         }
     }
 
@@ -348,12 +517,12 @@ fn typecheck_quasi_block<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     statement: &Statement<'ctx>,
 ) -> Result<(BlockId, bool), ErrorEmitted> {
-    ctx.with_scope(|ctx| {
-        if let Statement::Block(statements, span, _)
-        | Statement::DeferredBlock(statements, span, _) = statement
-        {
-            let tracker = ctx.track_errors();
-            let (block, always_returns) = ctx.with_new_block(*span, |ctx| {
+    ctx.with_scope_block(
+        |ctx| {
+            if let Statement::Block(statements, _, _) | Statement::DeferredBlock(statements, _, _) =
+                statement
+            {
+                let tracker = ctx.track_errors();
                 let mut always_returns = false;
                 for statement in statements.iter() {
                     if let Ok(true) = typecheck_statement(ctx, statement) {
@@ -361,16 +530,14 @@ fn typecheck_quasi_block<'ctx>(
                         break;
                     }
                 }
-                always_returns
-            });
 
-            ctx.errors_happened_res(tracker)?;
-            return Ok((block, always_returns));
-        }
-        let (block, res) =
-            ctx.with_new_block(statement.span(), |ctx| typecheck_statement(ctx, statement));
-        Ok((block, res?))
-    })
+                ctx.errors_happened_res(tracker)?;
+                return Ok(always_returns);
+            }
+            typecheck_statement(ctx, statement)
+        },
+        statement.span(),
+    )
 }
 
 /// Returns if the statement and if it always returns
@@ -450,61 +617,6 @@ fn typecheck_while<'ctx>(
     Ok(always_exits)
 }
 
-/// Returns if it always returns.
-fn run_deferred(ctx: &mut TcCtx<'_, '_>) -> Result<bool, ErrorEmitted> {
-    if ctx.rev_deferred_stmts.is_empty() {
-        return Ok(false);
-    }
-
-    let blk_span = ctx.get_block_span(ctx.current_block());
-    let tracker = ctx.track_errors();
-    let (block_id, always_returns) = ctx.with_new_block(blk_span, |ctx| {
-        let mut always_returns = false;
-        // this is fine because deferred expressions can't contain further deferred
-        // expressions or returns.
-        let deferred_stmts = std::mem::take(&mut ctx.rev_deferred_stmts);
-        for statement in deferred_stmts.iter().rev() {
-            let res = match statement {
-                Statement::DeferredBlock(_, span, annotations) => {
-                    match typecheck_quasi_block(ctx, statement) {
-                        Ok((block, always_returns)) => {
-                            ctx.append(TypedExpression::Block(*span, block, annotations.clone()));
-                            Ok(always_returns)
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-                Statement::DeferredExpr(expr) => {
-                    match typecheck_expression(ctx, expr, Default::default()) {
-                        Err(e) => Err(ctx.emit_diag(e)),
-                        Ok((ty, _)) if ty == default_types::never => {
-                            ctx.append(TypedExpression::Unreachable(expr.span()));
-                            Ok(true)
-                        }
-                        Ok(_) => Ok(false),
-                    }
-                }
-                Statement::DeferredIf(v) => typecheck_if(ctx, v),
-                Statement::DeferredWhile(v) => typecheck_while(ctx, v),
-                Statement::DeferredFor(_) => todo!("for loops (iterators)"),
-                _ => unreachable!("deferred only"),
-            };
-            if let Ok(true) = res {
-                always_returns = true;
-            }
-        }
-        ctx.rev_deferred_stmts = deferred_stmts;
-        always_returns
-    });
-    ctx.append(TypedExpression::Block(
-        blk_span,
-        block_id,
-        Annotations::new(),
-    ));
-    ctx.errors_happened_res(tracker)?;
-    Ok(always_returns)
-}
-
 /// Returns if the statement always returns
 fn typecheck_statement<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
@@ -515,32 +627,27 @@ fn typecheck_statement<'ctx>(
         | Statement::DeferredIf(_)
         | Statement::DeferredWhile(_)
         | Statement::DeferredBlock(_, _, _)
-        | Statement::DeferredFor { .. } => {
-            ctx.append_deferred(statement.clone());
-            Ok(false)
-        }
+        | Statement::DeferredFor { .. } => ctx.append_deferred(statement).map(|()| false),
 
         Statement::If(v) => typecheck_if(ctx, v),
         Statement::While(v) => typecheck_while(ctx, v),
         Statement::For { .. } => todo!("iterator (requires generics)"),
-        Statement::Return(None, span) => match run_deferred(ctx) {
-            e @ Err(_) => e,
-            Ok(true) => Ok(true),
-            Ok(false) if ctx.contract.return_type == default_types::void => {
+        Statement::Return(None, span) => match ctx.put_all_deferred() {
+            true => Ok(true),
+            false if ctx.contract.return_type == default_types::void => {
                 ctx.append(TypedExpression::Return(*span, None));
                 Ok(true)
             }
-            Ok(false) => {
+            false => {
                 ctx.ctx
                     .emit_mismatching_type(*span, ctx.contract.return_type, default_types::void);
                 Err(ErrorEmitted)
             }
         },
         Statement::Return(Some(expression), span) => {
-            let res = match run_deferred(ctx) {
-                Ok(true) => return Ok(true),
-                res => res,
-            };
+            if ctx.put_all_deferred() {
+                return Ok(true);
+            }
 
             let (ty, typed_expression) = typecheck_expression(
                 ctx,
@@ -571,8 +678,6 @@ fn typecheck_statement<'ctx>(
             };
             ctx.append(TypedExpression::Return(*span, ret_val));
 
-            // deferred statement errors
-            res?;
             Ok(true)
         }
         Statement::Block(_, span, annotations) => {

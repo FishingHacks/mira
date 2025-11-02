@@ -14,7 +14,7 @@ use crate::{
 
 use super::TypedLiteral;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypedExpression<'arena> {
     Return(Span<'arena>, Option<ValueId>),
     Block(Span<'arena>, BlockId, Annotations<'arena>),
