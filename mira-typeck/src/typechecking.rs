@@ -645,21 +645,28 @@ fn typecheck_statement<'ctx>(
             }
         },
         Statement::Return(Some(expression), span) => {
-            if ctx.put_all_deferred() {
-                return Ok(true);
-            }
-
             let (ty, typed_expression) = typecheck_expression(
                 ctx,
                 expression,
                 TypeSuggestion::from_type(ctx.contract.return_type),
             )
             .map_err(|diag| ctx.emit_diag(diag))?;
+
+            if ty == default_types::never {
+                ctx.append(TypedExpression::Unreachable(*span));
+                return Ok(true);
+            }
+
             if ty != ctx.contract.return_type {
                 ctx.ctx
                     .emit_mismatching_type(expression.span(), ctx.contract.return_type, ty);
                 return Err(ErrorEmitted);
             }
+
+            if ctx.put_all_deferred() {
+                return Ok(true);
+            }
+
             let ret_val = match typed_expression {
                 _ if ty.is_voidlike() => None,
                 // using the id here is fine because we only return a ValueId because we want the
