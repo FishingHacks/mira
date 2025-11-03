@@ -46,7 +46,7 @@ mod types;
 pub use error::{FunctionList, TypecheckingError, TypecheckingErrorDiagnosticsExt};
 pub use types::{FunctionType, Ty, TyKind, TyList, TypeInterner, TypeListInterner, default_types};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum CommonFunction {
     Normal(FunctionId),
     External(ExternalFunctionId),

@@ -1,13 +1,7 @@
-use std::{
-    cell::RefCell,
-    marker::PhantomData,
-    panic::AssertUnwindSafe,
-    rc::Rc,
-    sync::{Arc, Mutex},
-    thread::JoinHandle,
-};
+use std::{cell::RefCell, marker::PhantomData, rc::Rc, sync::Arc, thread::JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender};
+use parking_lot::{Condvar, Mutex};
 
 pub struct HeapJob<F: FnOnce() + Send>(F);
 
@@ -49,24 +43,55 @@ impl<F: FnOnce() + Send> Job for HeapJob<F> {
     }
 }
 
+struct ThreadHandle {
+    join: JoinHandle<()>,
+    is_doing_work: Arc<(Mutex<bool>, Condvar)>,
+}
+
 enum ThreadPoolMessage {
     JobAvailable,
     Exit,
 }
 
-pub struct ThreadPool {
-    threads: Box<[JoinHandle<()>]>,
+struct MultiThreaded {
+    threads: Box<[ThreadHandle]>,
     sender: Sender<ThreadPoolMessage>,
     jobs: Arc<Mutex<Vec<JobRef>>>,
 }
 
+#[allow(private_interfaces)]
+pub enum ThreadPool {
+    SingleThreaded,
+    MultiThreaded(MultiThreaded),
+}
+
 impl ThreadPool {
-    fn thread_function(receiver: Receiver<ThreadPoolMessage>, jobs: Arc<Mutex<Vec<JobRef>>>) {
+    fn thread_function(
+        receiver: Receiver<ThreadPoolMessage>,
+        jobs: Arc<Mutex<Vec<JobRef>>>,
+        is_doing_work: Arc<(Mutex<bool>, Condvar)>,
+    ) {
         loop {
-            let job = { jobs.lock().expect("failed to lock the jobs mutex").pop() };
-            if let Some(job) = job {
-                job.exec();
+            let mut job = { jobs.lock().pop() };
+
+            let prev = std::mem::replace(&mut *is_doing_work.0.lock(), job.is_some());
+            if prev != job.is_some() {
+                is_doing_work.1.notify_all();
             }
+
+            if job.is_some() {
+                while let Some(inner_job) = job {
+                    inner_job.exec();
+                    job = jobs.lock().pop();
+                    continue;
+                }
+            }
+
+            let prev = std::mem::replace(&mut *is_doing_work.0.lock(), false);
+            if prev {
+                is_doing_work.1.notify_all();
+            }
+
             match receiver.recv() {
                 Ok(ThreadPoolMessage::JobAvailable) => {}
                 Err(_) | Ok(ThreadPoolMessage::Exit) => return,
@@ -74,7 +99,15 @@ impl ThreadPool {
         }
     }
 
+    pub const fn new_singlethreaded() -> Self {
+        Self::SingleThreaded
+    }
+
     pub fn new(num_threads: usize) -> Self {
+        if num_threads <= 1 {
+            return Self::SingleThreaded;
+        }
+
         let mut threads = Vec::with_capacity(num_threads);
         let jobs = Default::default();
 
@@ -82,71 +115,99 @@ impl ThreadPool {
         for _ in 0..num_threads {
             let receiver = receiver.clone();
             let jobs = Arc::clone(&jobs);
-            let thread_handle = std::thread::spawn(move || Self::thread_function(receiver, jobs));
-            threads.push(thread_handle);
+            let is_doing_work = Arc::new((Mutex::new(false), Condvar::new()));
+            let _is_doing_work = is_doing_work.clone();
+            let thread_handle =
+                std::thread::spawn(move || Self::thread_function(receiver, jobs, _is_doing_work));
+            threads.push(ThreadHandle {
+                join: thread_handle,
+                is_doing_work,
+            });
         }
 
-        Self {
+        Self::MultiThreaded(MultiThreaded {
             threads: threads.into_boxed_slice(),
             sender,
             jobs,
-        }
+        })
     }
 
     pub fn new_auto() -> Self {
         let thread_count = match std::thread::available_parallelism() {
             Ok(v) => v.into(),
-            Err(e) => {
-                println!("Cannot get the number of cpu threads, using 8: {e:?}");
-                8
-            }
+            Err(_) => 8,
         };
         Self::new(thread_count)
     }
 
     fn spawn<F: FnOnce() + Send>(&mut self, func: F) {
-        self.jobs
-            .lock()
-            .expect("failed to lock the job mutex")
-            .push(HeapJob::new(func).into_job_ref());
-        self.broadcast_job_availability();
+        match self {
+            ThreadPool::SingleThreaded => func(),
+            ThreadPool::MultiThreaded(MultiThreaded { jobs, sender, .. }) => {
+                jobs.lock().push(HeapJob::new(func).into_job_ref());
+                sender
+                    .send(ThreadPoolMessage::JobAvailable)
+                    .expect("thread pool: all threads exited");
+            }
+        }
     }
 
-    fn broadcast_job_availability(&self) {
-        self.sender
-            .send(ThreadPoolMessage::JobAvailable)
-            .expect("failed to send message to jobs");
-    }
     pub fn enter<'env, F: for<'scope> FnOnce(&'scope ThreadpoolHandle<'scope, 'env>)>(
         &'env mut self,
         func: F,
     ) {
         let me = Rc::new(RefCell::new(&raw mut *self));
         let handle = ThreadpoolHandle(me.clone(), PhantomData, PhantomData);
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| func(&handle)));
-        unsafe { (&mut **handle.0.borrow_mut()).finish() };
-        if let Err(res) = result {
-            std::panic::resume_unwind(res);
+        func(&handle);
+        unsafe {
+            if let ThreadPool::MultiThreaded(v) = &mut **handle.0.borrow_mut() {
+                v.finish();
+            }
         }
     }
+}
 
+impl MultiThreaded {
     fn finish(&mut self) {
+        loop {
+            for thread in self.threads.iter() {
+                let (mutex, cond) = &*thread.is_doing_work;
+                // wait until the mutex has false (== the thread isnt doing any work).
+                let mut lock = mutex.lock();
+                if *lock {
+                    cond.wait_while(&mut lock, |v| *v);
+                }
+            }
+            if self.jobs.lock().is_empty() {
+                return;
+            }
+            if self.sender.is_empty() {
+                unreachable!("empty sender but uncompleted jobs??");
+            }
+        }
+    }
+}
+
+impl Drop for MultiThreaded {
+    fn drop(&mut self) {
+        self.finish();
+
         _ = self.sender.send(ThreadPoolMessage::Exit);
         self.sender = crossbeam_channel::bounded(0).0;
 
-        let threads: Vec<JoinHandle<()>> = std::mem::take(&mut self.threads).into();
+        let threads: Vec<ThreadHandle> = std::mem::take(&mut self.threads).into();
         for (i, handle) in threads.into_iter().enumerate() {
-            if let Err(payload) = handle.join() {
+            if let Err(payload) = handle.join.join() {
                 if let Some(v) = payload.downcast_ref::<&'static str>() {
-                    println!("threadpool thread #{i} panicked: {v:?}");
+                    panic!("threadpool thread #{i} panicked: {v}");
                 } else if let Some(v) = payload.downcast_ref::<String>() {
-                    println!("threadpool thread #{i} panicked: {v:?}");
+                    panic!("threadpool thread #{i} panicked: {v}");
                 } else {
                     panic!("threadpool thread #{i} panicked");
                 }
             }
         }
-        self.jobs.lock().unwrap().clear();
+        self.jobs.lock().clear();
     }
 }
 

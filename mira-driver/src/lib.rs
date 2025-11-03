@@ -2,7 +2,6 @@ use std::{fmt::Arguments, fs::File, io::Write, path::Path, sync::Arc};
 
 use mira_context::DiagEmitter as DiagEmitMethod;
 use mira_context::ErrorEmitted;
-use mira_context::SharedCtx;
 use mira_errors::{Diagnostic, Diagnostics, FileOpenError, IoWriteError, StdoutWriteError};
 #[cfg(feature = "typeck")]
 use mira_parser::module::FunctionId;
@@ -206,27 +205,21 @@ impl ContextData {
 
 pub struct Context<'ctx> {
     #[cfg(not(feature = "typeck"))]
-    ctx: SharedCtx,
+    pub ctx: SharedCtx,
     #[cfg(feature = "typeck")]
-    ctx: TypeCtx<'ctx>,
+    pub ctx: TypeCtx<'ctx>,
     data: ContextData,
 }
 
 impl<'ctx> Context<'ctx> {
-    fn shared_ctx(&self) -> SharedCtx<'ctx> {
-        #[cfg(feature = "typeck")]
-        return self.ctx.to_shared();
-        #[cfg(not(feature = "typeck"))]
-        self.ctx
-    }
-
     #[cfg(feature = "macros")]
     pub fn expand_macros(&mut self, file: Arc<Path>) -> EmitResult<Vec<Token<'ctx>>> {
         use mira_errors::IoReadError;
         use mira_lexer::{Lexer, LexingError};
 
         let f = match self
-            .shared_ctx()
+            .ctx
+            .to_shared()
             .source_map
             .load_file(file.clone(), file.parent().unwrap().into())
         {
@@ -237,7 +230,7 @@ impl<'ctx> Context<'ctx> {
                 return Err(ErrorEmitted);
             }
         };
-        let mut lexer = Lexer::new(self.shared_ctx(), f);
+        let mut lexer = Lexer::new(self.ctx.to_shared(), f);
         _ = lexer.scan_tokens().map_err(|e| {
             self.ctx
                 .emit_diags(e.into_iter().map(LexingError::to_error))
@@ -246,7 +239,7 @@ impl<'ctx> Context<'ctx> {
         let file = lexer.file.clone();
         let tokens = lexer.into_tokens();
         let mut diags = Diagnostics::new();
-        match mira_parser::expand_tokens(self.shared_ctx(), file.clone(), tokens, &mut diags) {
+        match mira_parser::expand_tokens(self.ctx.to_shared(), file.clone(), tokens, &mut diags) {
             Some(v) => Ok(v),
             None => {
                 self.ctx.emit_diags(diags);
@@ -285,7 +278,7 @@ impl<'ctx> Context<'ctx> {
         let parser_item = self.data.progress_bar.add_item("Parsing".into());
 
         let res = parse_all(
-            self.shared_ctx(),
+            self.ctx.to_shared(),
             self.data.progress_bar.clone(),
             parser_item,
             libtree,
@@ -359,52 +352,52 @@ impl<'ctx> Context<'ctx> {
 
         let tracker = typeck_ctx.track_errors();
 
+        let ctx = self.ctx;
+        let progress_bar = &self.data.progress_bar;
+
         for key in function_keys {
             use mira_typeck::typechecking::typecheck_function;
 
-            let item = self.add_progress_item_child(
+            let item = progress_bar.add_child(
                 typechecking_item,
-                format!("Typechecking function {}", key.to_usize()),
+                format!("Typechecking function {}", key.to_usize()).into(),
             );
 
             if typecheck_function(typeck_ctx, module_ctx, key).is_ok() {
-                mira_typeck::ir::passes::run_passes(
-                    &mut typeck_ctx.functions.write()[key].1,
-                    self.ctx,
-                );
+                mira_typeck::ir::passes::run_passes(&mut typeck_ctx.functions.write()[key].1, ctx);
             }
 
-            self.remove_progress_item(item);
+            progress_bar.remove(item);
         }
 
         for key in ext_function_keys {
             use mira_typeck::typechecking::typecheck_external_function;
 
-            let item = self.add_progress_item_child(
+            let item = progress_bar.add_child(
                 typechecking_item,
-                format!("Typechecking external function {}", key.to_usize()),
+                format!("Typechecking external function {}", key.to_usize()).into(),
             );
 
             if typecheck_external_function(typeck_ctx, module_ctx, key).is_ok()
                 && let Some(body) = typeck_ctx.external_functions.write()[key].1.as_mut()
             {
-                mira_typeck::ir::passes::run_passes(body, self.ctx);
+                mira_typeck::ir::passes::run_passes(body, ctx);
             }
 
-            self.remove_progress_item(item);
+            progress_bar.remove(item);
         }
 
         for key in static_keys {
             use mira_typeck::typechecking::typecheck_static;
 
-            let item = self.add_progress_item_child(
+            let item = progress_bar.add_child(
                 typechecking_item,
-                format!("Typechecking static {}", key.to_usize()),
+                format!("Typechecking static {}", key.to_usize()).into(),
             );
 
             _ = typecheck_static(typeck_ctx, module_ctx, key);
 
-            self.remove_progress_item(item);
+            progress_bar.remove(item);
         }
 
         typeck_ctx.errors_happened_res(tracker)

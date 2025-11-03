@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 crossbeam-channel.workspace = true
+parking_lot.workspace = true
 
 [lints]
 workspace = true

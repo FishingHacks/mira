@@ -1,14 +1,19 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    sync::mpsc::{Sender, channel},
+};
 
-use crossbeam_channel::{Sender, bounded};
-use mira_common::index::{IndexMap, IndexStore};
+use mira_common::{
+    index::{IndexMap, IndexStore},
+    threadpool::ThreadPool,
+};
 use mira_context::{DocComment, SharedCtx};
 use mira_errors::Diagnostics;
 use mira_parser::module::ModuleId;
 use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
 
-use mira_common::threadpool::ThreadPool;
 use mira_errors::IoReadError;
 use mira_lexer::{Lexer, LexingError, Literal, TokenType};
 use mira_parser::{
@@ -142,7 +147,7 @@ fn parse_single<'arena>(
         .insert_reserved(module, cur_entry.module_id);
     progress_bar.remove(item);
 
-    _ = finish_sender.send(())
+    _ = finish_sender.send(());
 }
 
 /// Parses a string of text into a module
@@ -206,13 +211,11 @@ pub(crate) fn parse_all<'arena>(
     let module_context = Arc::new(ModuleContext::new(module_store, ctx, dependencies));
 
     let parsing_queue = Arc::new(RwLock::new(parsing_queue));
-    let (finish_sender, finish_receiver) = bounded::<()>(1);
+    let (finish_sender, finish_receiver) = channel();
 
     let mut modules_left = 0;
 
-    let mut thread_pool = ThreadPool::new_auto();
-
-    thread_pool.enter(|handle| {
+    ThreadPool::new_auto().enter(|handle| {
         'outer_loop: loop {
             if parsing_queue.read().is_empty() {
                 break;

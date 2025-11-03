@@ -428,6 +428,9 @@ fn inner_typecheck_function<'arena>(
                 let span = contract.span;
                 drop(typ_fn_reader);
                 drop(typ_ext_fn_reader);
+                drop(fn_reader);
+                drop(ext_fn_reader);
+
                 tc_ctx.functions.write()[id]
                     .1
                     .append(TypedExpression::Unreachable(span));

@@ -84,6 +84,11 @@ impl<'arena> SharedCtx<'arena> {
         }
     }
 
+    #[inline(always)]
+    pub fn to_shared(self) -> Self {
+        self
+    }
+
     pub fn intern_str(self, s: &str) -> Symbol<'arena> {
         self.string_interner.lock().intern(s)
     }

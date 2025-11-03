@@ -22,7 +22,7 @@ mira-llvm-backend = { path = "./mira-llvm-backend" }
 mira-progress-bar = { path = "./mira-progress-bar" }
 mira-spans = { path = "./mira-spans" }
 mira-context = { path = "./mira-context" }
-parking_lot = "0.12.3"
+parking_lot = "0.12.5"
 clap = { version = "4.5.28", features = ["derive"] }
 inkwell = { git = "https://github.com/fishinghacks/inkwell.git" }
 cfg-if = "1.0.0"

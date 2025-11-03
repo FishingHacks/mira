@@ -25,7 +25,6 @@ mira-llvm-backend = { workspace = true, optional = true }
 
 mira-progress-bar.workspace = true
 mira-common.workspace = true
-crossbeam-channel.workspace = true
 parking_lot.workspace = true
 mira-errors.workspace = true
 mira-spans.workspace = true
