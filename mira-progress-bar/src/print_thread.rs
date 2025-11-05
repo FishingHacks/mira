@@ -165,6 +165,7 @@ pub fn start_thread(style: Option<ProgressBarStyle>) -> ProgressBarThread {
         Some(style) => start_thread_with(ProgressBar::new(style)),
         None => ProgressBarThread::NoThread,
     }
+    // ProgressBarThread::NoThread
 }
 
 fn handle_msg(msg: ProgressMessage, bar: &mut ProgressBar) -> bool {

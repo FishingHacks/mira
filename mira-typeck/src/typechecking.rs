@@ -1,7 +1,7 @@
-use std::{collections::HashSet, ops::Deref};
+use std::ops::Deref;
 
 use crate::{
-    CommonFunction, ResolvedValue, TypedFunctionContract,
+    CommonFunction, ResolvedValue, ScopeKind, TypedFunctionContract,
     ir::{BlockId, ScopedIR},
     types::EMPTY_TYLIST,
 };
@@ -124,7 +124,7 @@ mod private {
                 }
                 Statement::DeferredExpr(expr) => {
                     match typecheck_expression(self, expr, Default::default()) {
-                        Err(e) => Err(self.emit_diag(e)),
+                        Err(e) => Err(e),
                         Ok((ty, _)) if ty == default_types::never => {
                             self.append(TypedExpression::Unreachable(expr.span()));
                             Ok(true)
@@ -332,7 +332,7 @@ pub fn typecheck_static<'arena>(
         &Expression::Literal(expr, span),
         TypeSuggestion::from_type(ty),
     ) {
-        Err(e) => return Err(ctx.emit_diag(e)),
+        Err(e) => return Err(e),
         Ok((expr_typ, expr)) => {
             let tracker = ctx.track_errors();
             if !expr.is_entirely_literal() {
@@ -369,9 +369,35 @@ impl<'ctx> FnContext<'ctx, '_> {
         &self,
         module_id: ModuleId,
         ty: &TypeRef<'ctx>,
-    ) -> Result<Ty<'ctx>, Diagnostic<'ctx>> {
+    ) -> Result<Ty<'ctx>, ErrorEmitted> {
         self.tcx
             .resolve_type(module_id, ty, &self.contract.generics)
+    }
+
+    fn resolve_import<'a>(
+        &self,
+        current_module: ModuleId,
+        import: impl Iterator<Item = (&'a Ident<'ctx>, &'a [TypeRef<'ctx>])>,
+        span: Span<'ctx>,
+    ) -> Result<ResolvedValue<'ctx>, ErrorEmitted>
+    where
+        'ctx: 'a,
+    {
+        self.tcx
+            .resolve_import(current_module, import, span, &self.contract.generics, true)
+    }
+
+    fn resolve_import_simple<'a>(
+        &self,
+        current_module: ModuleId,
+        import: impl Iterator<Item = &'a Ident<'ctx>>,
+        span: Span<'ctx>,
+    ) -> Result<ResolvedValue<'ctx>, ErrorEmitted>
+    where
+        'ctx: 'a,
+    {
+        self.tcx
+            .resolve_import_simple(current_module, import, span, &self.contract.generics, true)
     }
 }
 
@@ -550,8 +576,7 @@ fn typecheck_if<'ctx>(
     }: &If<'ctx>,
 ) -> Result<bool, ErrorEmitted> {
     let tracker = ctx.track_errors();
-    let expr_result =
-        typecheck_expression(ctx, condition, TypeSuggestion::Bool).map_err(|v| ctx.emit_diag(v));
+    let expr_result = typecheck_expression(ctx, condition, TypeSuggestion::Bool);
 
     let if_stmt_result = typecheck_quasi_block(ctx, if_stmt);
     let else_stmt_result = if let Some(else_stmt) = else_stmt {
@@ -591,7 +616,6 @@ fn typecheck_while<'ctx>(
     let (condition_body, condition_result) = ctx.with_new_block(condition.span(), |ctx| {
         typecheck_expression(ctx, condition, TypeSuggestion::Bool)
     });
-    let condition_result = condition_result.map_err(|diag| ctx.emit_diag(diag));
 
     let body_result = typecheck_quasi_block(ctx, child);
     let (condition_ty, cond) = condition_result?;
@@ -643,8 +667,7 @@ fn typecheck_statement<'ctx>(
                 ctx,
                 expression,
                 TypeSuggestion::from_type(ctx.contract.return_type),
-            )
-            .map_err(|diag| ctx.emit_diag(diag))?;
+            )?;
 
             if ty == default_types::never {
                 ctx.append(TypedExpression::Unreachable(*span));
@@ -693,8 +716,7 @@ fn typecheck_statement<'ctx>(
                 .ty
                 .as_ref()
                 .map(|v| ctx.resolve_type(ctx.contract.module_id, v))
-                .transpose()
-                .map_err(|diag| ctx.emit_diag(diag))?;
+                .transpose()?;
 
             let (ty, expr) = typecheck_expression(
                 ctx,
@@ -704,8 +726,7 @@ fn typecheck_statement<'ctx>(
                     .copied()
                     .map(TypeSuggestion::from_type)
                     .unwrap_or_default(),
-            )
-            .map_err(|diag| ctx.emit_diag(diag))?;
+            )?;
 
             if let Some(expected_typ) = expected_typ
                 && expected_typ != ty
@@ -727,7 +748,7 @@ fn typecheck_statement<'ctx>(
             Ok(false)
         }
         Statement::Expr(expr) => match typecheck_expression(ctx, expr, Default::default()) {
-            Err(e) => Err(ctx.emit_diag(e)),
+            Err(e) => Err(e),
             Ok((ty, _)) if ty == default_types::never => {
                 ctx.append(TypedExpression::Unreachable(expr.span()));
                 Ok(true)
@@ -849,7 +870,7 @@ fn typecheck_expression<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion,
-) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     match expression {
         &Expression::Literal(ref literal_value, span) => match literal_value {
             LiteralValue::String(global_str) => {
@@ -859,8 +880,8 @@ fn typecheck_expression<'ctx>(
                 let ty = match type_suggestion {
                     TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
                         .to_type(ctx)
-                        .ok_or_else(|| TypecheckingError::CannotInferArrayType(span).to_error())?,
-                    _ => return Err(TypecheckingError::CannotInferArrayType(span).to_error()),
+                        .ok_or_else(|| ctx.emit_cannot_infer_array_type(span))?,
+                    _ => return Err(ctx.emit_cannot_infer_array_type(span)),
                 };
                 Ok((ty, TypedLiteral::Array(ty, [].into())))
             }
@@ -889,12 +910,7 @@ fn typecheck_expression<'ctx>(
                 for expr in vec.iter().skip(1) {
                     let (el_typ, el_lit) = typecheck_expression(ctx, expr, suggested_typ.clone())?;
                     if el_typ != ty {
-                        return Err(TypecheckingError::MismatchingType {
-                            expected: ty,
-                            found: el_typ,
-                            span: expr.span(),
-                        }
-                        .to_error());
+                        return Err(ctx.emit_mismatching_type(expr.span(), ty, el_typ));
                     }
                     elements.push(el_lit);
                 }
@@ -933,39 +949,26 @@ fn typecheck_expression<'ctx>(
                 let struct_id = if let TypeSuggestion::Struct(id) = type_suggestion {
                     id
                 } else {
-                    return Err(TypecheckingError::CannotInferAnonStructType(span).to_error());
+                    return Err(ctx.emit_cannot_infer_anon_struct_type(span));
                 };
 
                 let structure = &ctx.fn_ctx.tcx.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
-                        return Err(TypecheckingError::NoSuchFieldFound {
-                            span: values[k].0,
-                            name: k.symbol(),
-                        }
-                        .to_error());
+                        return Err(ctx.emit_no_such_field_found(values[k].0, k.symbol()));
                     }
                 }
 
                 let mut elements = Vec::with_capacity(structure.elements.len());
                 for (key, ty, _) in structure.elements.iter() {
                     let Some(&(span, ref expr)) = values.get(key) else {
-                        return Err(TypecheckingError::MissingField {
-                            span,
-                            name: key.symbol(),
-                        }
-                        .to_error());
+                        return Err(ctx.emit_missing_field(span, key.symbol()));
                     };
                     let (expr_typ, expr_lit) =
                         typecheck_expression(ctx, expr, TypeSuggestion::from_type(*ty))?;
                     if *ty != expr_typ {
-                        return Err(TypecheckingError::MismatchingType {
-                            expected: *ty,
-                            found: expr_typ,
-                            span,
-                        }
-                        .to_error());
+                        return Err(ctx.emit_mismatching_type(span, expr_typ, *ty));
                     }
                     elements.push(expr_lit);
                 }
@@ -978,49 +981,31 @@ fn typecheck_expression<'ctx>(
                 ))
             }
             LiteralValue::Struct(values, path) => {
-                let value = ctx
-                    .typed_resolve_import(
-                        ctx.contract.module_id,
-                        &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
-                        span,
-                        &mut HashSet::new(),
-                    )
-                    .map_err(|_| {
-                        TypecheckingError::CannotFindValue(span, path.clone()).to_error()
-                    })?;
+                let value = ctx.resolve_import(ctx.contract.module_id, path.iter(), span)?;
                 let ResolvedValue::Struct(struct_id) = value else {
-                    return Err(TypecheckingError::CannotFindValue(span, path.clone()).to_error());
+                    return Err(ctx.emit_mismatching_scope_type(
+                        span,
+                        ScopeKind::Struct,
+                        value.into(),
+                    ));
                 };
                 let structure = &ctx.fn_ctx.tcx.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
-                        return Err(TypecheckingError::NoSuchFieldFound {
-                            span: values[k].0,
-                            name: k.symbol(),
-                        }
-                        .to_error());
+                        return Err(ctx.emit_no_such_field_found(values[k].0, k.symbol()));
                     }
                 }
 
                 let mut elements = Vec::with_capacity(structure.elements.len());
                 for (key, ty, _) in structure.elements.iter() {
                     let Some(&(span, ref expr)) = values.get(key) else {
-                        return Err(TypecheckingError::MissingField {
-                            span,
-                            name: key.symbol(),
-                        }
-                        .to_error());
+                        return Err(ctx.emit_missing_field(span, key.symbol()));
                     };
                     let (expr_typ, expr_lit) =
                         typecheck_expression(ctx, expr, TypeSuggestion::from_type(*ty))?;
                     if *ty != expr_typ {
-                        return Err(TypecheckingError::MismatchingType {
-                            expected: *ty,
-                            found: expr_typ,
-                            span,
-                        }
-                        .to_error());
+                        return Err(ctx.emit_mismatching_type(span, *ty, expr_typ));
                     }
                     elements.push(expr_lit);
                 }
@@ -1046,53 +1031,23 @@ fn typecheck_expression<'ctx>(
             LiteralValue::Bool(v) => Ok((default_types::bool, TypedLiteral::Bool(*v))),
             LiteralValue::Dynamic(path) => {
                 if path.entries.len() == 1
-                    && path.entries[0].1.is_empty()
                     && let Some(id) = ctx.get_scoped(&path.entries[0].0)
                 {
+                    if !path.entries[0].1.is_empty() {
+                        return Err(ctx.emit_unexpected_generics(path.span));
+                    }
                     return Ok((ctx.get_ty(id), TypedLiteral::Dynamic(id)));
                 }
-                let mut generics = Vec::new();
-                for (.., generic_value) in path.entries.iter() {
-                    generics.extend_from_slice(generic_value);
-                }
+                let value = ctx.resolve_import(ctx.contract.module_id, path.iter(), span)?;
 
-                let value = ctx
-                    .typed_resolve_import(
-                        ctx.contract.module_id,
-                        &path.entries.iter().map(|v| v.0).collect::<Vec<_>>(),
-                        span,
-                        &mut HashSet::new(),
-                    )
-                    .map_err(|e| {
-                        e.dismiss();
-                        TypecheckingError::CannotFindValue(span, path.clone()).to_error()
-                    })?;
                 match value {
-                    ResolvedValue::Function(id, _) => {
+                    ResolvedValue::Function(id, generics) => {
                         let reader = &ctx.functions.read()[id];
                         let return_type = reader.0.return_type;
                         let arguments = reader.0.arguments.iter().map(|v| v.1).collect::<Vec<_>>();
-                        if reader.0.generics.len() != generics.len() {
-                            return Err(TypecheckingError::MismatchingGenericCount(
-                                span,
-                                reader.0.generics.len(),
-                                generics.len(),
-                            )
-                            .to_error());
-                        }
-                        let mut generic_types = Vec::with_capacity(generics.len());
-                        for (i, ty) in generics.iter().enumerate() {
-                            let ty = ctx.resolve_type(ctx.contract.module_id, ty)?;
-                            if reader.0.generics[i].sized && !ty.is_sized() {
-                                return Err(
-                                    TypecheckingError::UnsizedForSizedGeneric(span, ty).to_error()
-                                );
-                            }
-                            generic_types.push(ty);
-                        }
 
-                        let arguments = ctx.substitute(&generic_types, arguments);
-                        let return_type = ctx.substitute(&generic_types, return_type);
+                        let arguments = ctx.substitute(&*generics, arguments);
+                        let return_type = ctx.substitute(&*generics, return_type);
 
                         let function_ty = FunctionType {
                             arguments: ctx.intern_tylist(&arguments),
@@ -1105,7 +1060,7 @@ fn typecheck_expression<'ctx>(
                             .get_first_annotation::<IntrinsicAnnotation>()
                             .map(IntrinsicAnnotation::get)
                         {
-                            TypedLiteral::Intrinsic(intrinsic, ctx.intern_tylist(&generic_types))
+                            TypedLiteral::Intrinsic(intrinsic, generics)
                         } else if let Some(llvm_intrinsic) = reader
                             .0
                             .annotations
@@ -1115,7 +1070,7 @@ fn typecheck_expression<'ctx>(
                             let sym = ctx.intern_str(llvm_intrinsic);
                             TypedLiteral::LLVMIntrinsic(sym)
                         } else {
-                            TypedLiteral::Function(id, ctx.intern_tylist(&generic_types))
+                            TypedLiteral::Function(id, generics)
                         };
                         Ok((ctx.intern_ty(TyKind::Function(function_ty)), literal))
                     }
@@ -1133,12 +1088,11 @@ fn typecheck_expression<'ctx>(
                         ))
                     }
                     ResolvedValue::Static(id) => {
-                        if !generics.is_empty() {
-                            return Err(TypecheckingError::UnexpectedGenerics { span }.to_error());
-                        }
                         Ok((ctx.statics.read()[id].ty, TypedLiteral::Static(id)))
                     }
-                    _ => Err(TypecheckingError::CannotFindValue(span, path.clone()).to_error()),
+                    v => {
+                        Err(ctx.emit_mismatching_scope_type(path.span, ScopeKind::Value, v.into()))
+                    }
                 }
             }
             &LiteralValue::BakedAnonymousFunction(fn_id) => {
@@ -1173,21 +1127,16 @@ fn typecheck_expression<'ctx>(
                 .resolve_type(ctx.contract.module_id, output)
                 .ok()
                 .filter(|v| (*v == default_types::void && name.is_none()) || v.is_asm_primitive())
-                .ok_or_else(|| {
-                    TypecheckingError::AsmNonNumericType(*span, name.unwrap().symbol()).to_error()
-                })?;
+                .ok_or_else(|| ctx.emit_asm_non_numeric_type(*span, name.unwrap().symbol()))?;
+
             let mut typed_inputs = Vec::with_capacity(inputs.len());
             for (span, name) in inputs {
                 let Some(id) = ctx.get_scoped(name) else {
-                    return Err(TypecheckingError::CannotFindValue(
-                        *span,
-                        Path::new(*name, Vec::new()),
-                    )
-                    .to_error());
+                    return Err(ctx.emit_cannot_find_value(*span, Path::new(*name, Vec::new())));
                 };
                 let ty = ctx.get_ty(id);
                 if !ty.is_asm_primitive() {
-                    return Err(TypecheckingError::AsmNonNumericTypeResolved(*span, ty).to_error());
+                    return Err(ctx.emit_asm_non_numeric_type_resolved(*span, ty));
                 }
                 typed_inputs.push(id);
             }
@@ -1223,22 +1172,22 @@ fn typecheck_expression<'ctx>(
                 UnaryOp::Plus if ty.is_int_like() => {
                     tc_res!(unary ctx; Pos(*span, right_side, ty))
                 }
-                UnaryOp::Plus => Err(TypecheckingError::CannotPos(*span, ty).to_error()),
+                UnaryOp::Plus => Err(ctx.emit_cannot_pos(*span, ty)),
                 UnaryOp::Minus if (ty.is_int_like() && !ty.is_unsigned()) || ty.is_float() => {
                     tc_res!(unary ctx; Neg(*span, right_side, ty))
                 }
-                UnaryOp::Minus => Err(TypecheckingError::CannotNeg(*span, ty).to_error()),
+                UnaryOp::Minus => Err(ctx.emit_cannot_neg(*span, ty)),
                 UnaryOp::LogicalNot if ty == default_types::bool => {
                     tc_res!(unary ctx; LNot(*span, right_side, ty))
                 }
-                UnaryOp::LogicalNot => Err(TypecheckingError::CannotLNot(*span, ty).to_error()),
+                UnaryOp::LogicalNot => Err(ctx.emit_cannot_l_not(*span, ty)),
                 UnaryOp::BitwiseNot if ty.is_int_like() || ty == default_types::bool => {
                     tc_res!(unary ctx; BNot(*span, right_side, ty))
                 }
-                UnaryOp::BitwiseNot => Err(TypecheckingError::CannotBNot(*span, ty).to_error()),
+                UnaryOp::BitwiseNot => Err(ctx.emit_cannot_b_not(*span, ty)),
                 UnaryOp::Dereference => match ty.deref() {
                     Some(ty) => tc_res!(unary ctx; Dereference(*span, right_side, ty)),
-                    None => Err(TypecheckingError::CannotDeref(*span, ty).to_error()),
+                    None => Err(ctx.emit_cannot_deref(*span, ty)),
                 },
                 UnaryOp::Reference => unreachable!(),
             }
@@ -1257,9 +1206,7 @@ fn typecheck_expression<'ctx>(
                     TypeSuggestion::Number(NumberType::Usize),
                 )?;
                 if !typ_right.is_int_like() || !typ_right.is_unsigned() {
-                    return Err(
-                        TypecheckingError::CannotShiftByNonUInt(*span, typ_right).to_error()
-                    );
+                    return Err(ctx.emit_cannot_shift_by_non_u_int(*span, typ_right));
                 }
 
                 return match operator {
@@ -1270,8 +1217,8 @@ fn typecheck_expression<'ctx>(
                         tc_res!(binary ctx; RShift(*span, left_side, right_side, ty))
                     }
 
-                    BinaryOp::LShift => Err(TypecheckingError::CannotShl(*span, ty).to_error()),
-                    BinaryOp::RShift => Err(TypecheckingError::CannotShr(*span, ty).to_error()),
+                    BinaryOp::LShift => Err(ctx.emit_cannot_shl(*span, ty)),
+                    BinaryOp::RShift => Err(ctx.emit_cannot_shr(*span, ty)),
                     _ => unreachable!(),
                 };
             }
@@ -1281,24 +1228,22 @@ fn typecheck_expression<'ctx>(
                 let (typ_left, left_side) =
                     typecheck_expression(ctx, left_side, TypeSuggestion::Bool)?;
                 if typ_left != default_types::bool {
-                    return Err(TypecheckingError::MismatchingType {
-                        span: span_left,
-                        expected: default_types::bool,
-                        found: typ_left,
-                    }
-                    .to_error());
+                    return Err(ctx.emit_mismatching_type(
+                        span_left,
+                        default_types::bool,
+                        typ_left,
+                    ));
                 }
                 let (rhs_block, right_res) = ctx.with_new_block(right_side.span(), |ctx| {
                     typecheck_expression(ctx, right_side, TypeSuggestion::Bool)
                 });
                 let (typ_right, right_side) = right_res?;
                 if typ_right != default_types::bool {
-                    return Err(TypecheckingError::MismatchingType {
-                        span: span_right,
-                        expected: default_types::bool,
-                        found: typ_right,
-                    }
-                    .to_error());
+                    return Err(ctx.emit_mismatching_type(
+                        span_right,
+                        default_types::bool,
+                        typ_right,
+                    ));
                 }
                 let span = span_left.combine_with([span_right], ctx.span_interner());
 
@@ -1318,7 +1263,7 @@ fn typecheck_expression<'ctx>(
             let (typ_right, right_side) =
                 typecheck_expression(ctx, right_side, TypeSuggestion::from_type(typ_left))?;
             if typ_left != typ_right {
-                return Err(TypecheckingError::LhsNotRhs(*span, typ_left, typ_right).to_error());
+                return Err(ctx.emit_lhs_not_rhs(*span, typ_left, typ_right));
             }
             let ty = typ_left;
             let span = *span;
@@ -1366,23 +1311,19 @@ fn typecheck_expression<'ctx>(
                     tc_res!(binary ctx; Neq(span, left_side, right_side, default_types::bool))
                 }
 
-                BinaryOp::Plus => Err(TypecheckingError::CannotAdd(span, ty).to_error()),
-                BinaryOp::Minus => Err(TypecheckingError::CannotSub(span, ty).to_error()),
-                BinaryOp::Multiply => Err(TypecheckingError::CannotMul(span, ty).to_error()),
-                BinaryOp::Divide => Err(TypecheckingError::CannotDiv(span, ty).to_error()),
-                BinaryOp::Modulo => Err(TypecheckingError::CannotMod(span, ty).to_error()),
-                BinaryOp::BitwiseAnd => Err(TypecheckingError::CannotBAnd(span, ty).to_error()),
-                BinaryOp::BitwiseOr => Err(TypecheckingError::CannotBOr(span, ty).to_error()),
-                BinaryOp::BitwiseXor => Err(TypecheckingError::CannotBXor(span, ty).to_error()),
+                BinaryOp::Plus => Err(ctx.emit_cannot_add(span, ty)),
+                BinaryOp::Minus => Err(ctx.emit_cannot_sub(span, ty)),
+                BinaryOp::Multiply => Err(ctx.emit_cannot_mul(span, ty)),
+                BinaryOp::Divide => Err(ctx.emit_cannot_div(span, ty)),
+                BinaryOp::Modulo => Err(ctx.emit_cannot_mod(span, ty)),
+                BinaryOp::BitwiseAnd => Err(ctx.emit_cannot_b_and(span, ty)),
+                BinaryOp::BitwiseOr => Err(ctx.emit_cannot_b_or(span, ty)),
+                BinaryOp::BitwiseXor => Err(ctx.emit_cannot_b_xor(span, ty)),
                 BinaryOp::GreaterThan
                 | BinaryOp::GreaterThanEq
                 | BinaryOp::LessThan
-                | BinaryOp::LessThanEq => {
-                    Err(TypecheckingError::CannotCompare(span, ty).to_error())
-                }
-                BinaryOp::Equals | BinaryOp::NotEquals => {
-                    Err(TypecheckingError::CannotEq(span, ty).to_error())
-                }
+                | BinaryOp::LessThanEq => Err(ctx.emit_cannot_compare(span, ty)),
+                BinaryOp::Equals | BinaryOp::NotEquals => Err(ctx.emit_cannot_eq(span, ty)),
                 BinaryOp::LogicalOr
                 | BinaryOp::LogicalAnd
                 | BinaryOp::RShift
@@ -1402,17 +1343,16 @@ fn typecheck_expression<'ctx>(
                 false
             };
             let TyKind::Function(function_type) = &**ty.without_ref() else {
-                return Err(TypecheckingError::TypeIsNotAFunction { span: func.span() }.to_error());
+                return Err(ctx.emit_type_is_not_a_function(func.span()));
             };
             let mut typed_arguments = Vec::with_capacity(function_type.arguments.len());
             if arguments.len() < function_type.arguments.len() {
-                return Err(TypecheckingError::MissingArguments { span: func.span() }.to_error());
+                return Err(ctx.emit_missing_arguments(func.span()));
             }
             if arguments.len() > function_type.arguments.len() && !has_vararg {
-                return Err(TypecheckingError::TooManyArguments {
-                    span: arguments[function_type.arguments.len().saturating_sub(1)].span(),
-                }
-                .to_error());
+                return Err(ctx.emit_too_many_arguments(
+                    arguments[function_type.arguments.len().saturating_sub(1)].span(),
+                ));
             }
             for (i, arg) in arguments.iter().enumerate() {
                 let (ty, expr) = typecheck_expression(
@@ -1430,12 +1370,11 @@ fn typecheck_expression<'ctx>(
                 // precautions have to be taken when calling a function with varargs, but the
                 // compiler cannot help with those.
                 if i < function_type.arguments.len() && ty != function_type.arguments[i] {
-                    return Err(TypecheckingError::MismatchingType {
-                        expected: function_type.arguments[i],
-                        found: ty,
-                        span: arguments[i].span(),
-                    }
-                    .to_error());
+                    return Err(ctx.emit_mismatching_type(
+                        arguments[i].span(),
+                        function_type.arguments[i],
+                        ty,
+                    ));
                 }
                 typed_arguments.push(expr);
             }
@@ -1496,16 +1435,16 @@ fn typecheck_expression<'ctx>(
             right_side,
             span,
         } => {
-            let (typ_lhs, lhs) = match &**left_side {
+            let (ty_lhs, lhs) = match &**left_side {
                 Expression::Unary {
                     operator: UnaryOp::Dereference,
                     right_side,
                     ..
                 } => {
                     let (ty, lhs) = typecheck_expression(ctx, right_side, TypeSuggestion::Unknown)?;
-                    let ty = ty.deref().ok_or_else(|| {
-                        TypecheckingError::CannotDeref(right_side.span(), ty).to_error()
-                    })?;
+                    let ty = ty
+                        .deref()
+                        .ok_or_else(|| ctx.emit_cannot_deref(right_side.span(), ty))?;
 
                     (ty, lhs)
                 }
@@ -1525,16 +1464,11 @@ fn typecheck_expression<'ctx>(
                     )
                 }
             };
-            let (typ_rhs, rhs) =
-                typecheck_expression(ctx, right_side, TypeSuggestion::from_type(typ_lhs))?;
+            let (ty_rhs, rhs) =
+                typecheck_expression(ctx, right_side, TypeSuggestion::from_type(ty_lhs))?;
 
-            if typ_lhs != typ_rhs {
-                return Err(TypecheckingError::MismatchingType {
-                    expected: typ_lhs,
-                    found: typ_rhs,
-                    span: *span,
-                }
-                .to_error());
+            if ty_lhs != ty_rhs {
+                return Err(ctx.emit_mismatching_type(*span, ty_lhs, ty_rhs));
             }
             ctx.append(TypedExpression::StoreAssignment(*span, lhs, rhs));
             Ok((default_types::void, TypedLiteral::Void))
@@ -1545,18 +1479,12 @@ fn typecheck_expression<'ctx>(
             ..
         } => {
             let (ty, _) = typecheck_expression(ctx, left_side, type_suggestion)?;
-            let (typ_rhs, _) =
-                typecheck_expression(ctx, right_side, TypeSuggestion::from_type(ty))?;
-            if ty != typ_rhs {
-                return Err(TypecheckingError::MismatchingType {
-                    expected: ty,
-                    found: typ_rhs,
-                    span: right_side.span(),
-                }
-                .to_error());
+            let (ty_rhs, _) = typecheck_expression(ctx, right_side, TypeSuggestion::from_type(ty))?;
+            if ty != ty_rhs {
+                return Err(ctx.emit_mismatching_type(right_side.span(), ty, ty_rhs));
             }
 
-            unimplemented!("lang-items");
+            unimplemented!("lang-items, generics");
         }
         Expression::TypeCast {
             left_side,
@@ -1565,7 +1493,7 @@ fn typecheck_expression<'ctx>(
         } => {
             let (ty, lhs) = typecheck_expression(ctx, left_side, type_suggestion)?;
             let new_ty = ctx.resolve_type(ctx.contract.module_id, new_ty)?;
-            typecheck_cast(ctx, ty, new_ty, lhs, *span)
+            typecheck_cast(ctx, ty, new_ty, lhs, *span).map_err(|diag| ctx.emit_diag(diag))
         }
         Expression::TraitFunctionCall {
             ty,
@@ -1575,27 +1503,22 @@ fn typecheck_expression<'ctx>(
             span,
         } => {
             let ty = ctx.resolve_type(ctx.contract.module_id, ty)?;
-            let import = ctx.typed_resolve_import(
+            let import = ctx.resolve_import_simple(
                 ctx.contract.module_id,
-                trait_path.as_slice(),
+                trait_path.iter(),
                 trait_path.span,
-                &mut HashSet::new(),
             )?;
             let ResolvedValue::Trait(trait_id) = import else {
-                return Err(
-                    TypecheckingError::CannotFindValue(*span, trait_path.to_normal_path())
-                        .to_error(),
-                );
+                return Err(ctx.emit_cannot_find_value(*span, trait_path.to_normal_path()));
             };
             let trait_value = &ctx.fn_ctx.tcx.traits.read()[trait_id];
 
             if !ty.implements(&[trait_id], ctx) {
-                return Err(TypecheckingError::MismatchingTraits(
+                return Err(ctx.emit_mismatching_traits(
                     *span,
                     ty,
                     vec![trait_value.name.symbol()],
-                )
-                .to_error());
+                ));
             }
 
             let func = trait_value
@@ -1603,19 +1526,18 @@ fn typecheck_expression<'ctx>(
                 .iter()
                 .position(|(id, ..)| id == fn_name);
             let Some(func_id) = func else {
-                return Err(TypecheckingError::CannotFindFunctionOnTrait {
-                    span: fn_name.span(),
-                    func_name: fn_name.symbol(),
-                    trait_name: trait_value.name.symbol(),
-                }
-                .to_error());
+                return Err(ctx.emit_cannot_find_function_on_trait(
+                    fn_name.span(),
+                    fn_name.symbol(),
+                    trait_value.name.symbol(),
+                ));
             };
             let &(_, ref args, ret_ty, _, fn_span, _) = &trait_value.functions[func_id];
 
             let mut typed_args = Vec::with_capacity(arguments.len());
 
             if arguments.len() < args.len() {
-                return Err(TypecheckingError::MissingArguments { span: fn_span }.to_error());
+                return Err(ctx.emit_missing_arguments(fn_span));
             }
             if arguments.len() > args.len() {
                 let span = if arguments.is_empty() {
@@ -1623,19 +1545,14 @@ fn typecheck_expression<'ctx>(
                 } else {
                     arguments[arguments.len() - 1].span()
                 };
-                return Err(TypecheckingError::TooManyArguments { span }.to_error());
+                return Err(ctx.emit_too_many_arguments(span));
             }
 
             for (i, arg) in arguments.iter().enumerate() {
                 let (ty, expr) =
                     typecheck_expression(ctx, arg, TypeSuggestion::from_type(args[i].1))?;
                 if ty != args[i].1 {
-                    return Err(TypecheckingError::MismatchingType {
-                        span: arg.span(),
-                        expected: args[i].1,
-                        found: ty,
-                    }
-                    .to_error());
+                    return Err(ctx.emit_mismatching_type(arg.span(), args[i].1, ty));
                 }
                 typed_args.push(expr);
             }
@@ -1830,7 +1747,7 @@ fn typecheck_dyn_membercall<'ctx>(
     lhs_span: Span<'ctx>,
     trait_refs: ArenaList<'ctx, (TraitId, Ident<'ctx>)>,
     num_references: u8,
-) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     let trait_reader = ctx.traits.read();
     let mut offset = 0;
     let (mut arg_typs, return_ty, trait_name) = 'out: {
@@ -1843,22 +1760,16 @@ fn typecheck_dyn_membercall<'ctx>(
             }
         }
 
-        return Err(TypecheckingError::CannotFindFunctionOnType(
+        return Err(ctx.emit_cannot_find_function_on_type(
             lhs_span,
             ident.symbol(),
             ctx.intern_ty(TyKind::DynType(trait_refs)),
-        )
-        .to_error());
+        ));
     };
     drop(trait_reader);
 
     if arg_typs[0].1.without_ref() != default_types::self_ {
-        return Err(TypecheckingError::InvalidDynTypeFunc(
-            lhs_span,
-            ident.symbol(),
-            trait_name.symbol(),
-        )
-        .to_error());
+        return Err(ctx.emit_invalid_dyn_type_func(lhs_span, ident.symbol(), trait_name.symbol()));
     }
     if return_ty.without_ref() == default_types::self_
         || arg_typs
@@ -1866,12 +1777,7 @@ fn typecheck_dyn_membercall<'ctx>(
             .skip(1)
             .any(|v| v.1.without_ref() == default_types::self_)
     {
-        return Err(TypecheckingError::InvalidDynTypeFunc(
-            lhs_span,
-            ident.symbol(),
-            trait_name.symbol(),
-        )
-        .to_error());
+        return Err(ctx.emit_invalid_dyn_type_func(lhs_span, ident.symbol(), trait_name.symbol()));
     }
 
     let ty = ctx.intern_ty(TyKind::DynType(trait_refs));
@@ -1886,25 +1792,17 @@ fn typecheck_dyn_membercall<'ctx>(
     typed_args.push(lhs);
 
     if args.len() < arg_typs.len() - 1 {
-        return Err(TypecheckingError::MissingArguments { span: lhs_span }.to_error());
+        return Err(ctx.emit_missing_arguments(lhs_span));
     }
     if args.len() > arg_typs.len() - 1 {
-        return Err(TypecheckingError::TooManyArguments {
-            span: args[arg_typs.len() - 1].span(),
-        }
-        .to_error());
+        return Err(ctx.emit_too_many_arguments(args[arg_typs.len() - 1].span()));
     }
 
     for i in 0..args.len() {
         let (ty, lit) =
             typecheck_expression(ctx, &args[i], TypeSuggestion::from_type(arg_typs[i + 1].1))?;
         if ty != arg_typs[i + 1].1 {
-            return Err(TypecheckingError::MismatchingType {
-                expected: arg_typs.remove(i + 1).1,
-                found: ty,
-                span: args[i].span(),
-            }
-            .to_error());
+            return Err(ctx.emit_mismatching_type(args[i].span(), arg_typs.remove(i + 1).1, ty));
         }
         typed_args.push(lit);
     }
@@ -1928,7 +1826,7 @@ fn typecheck_membercall<'ctx>(
     lhs: &Expression<'ctx>,
     ident: &Ident<'ctx>,
     args: &[Expression<'ctx>],
-) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     let (mut typ_lhs, mut typed_literal_lhs) = new_index(ctx, lhs, TypeSuggestion::Unknown)?;
 
     let lhs_refcount = typ_lhs.refcount();
@@ -1999,20 +1897,12 @@ fn typecheck_membercall<'ctx>(
         });
     drop(struct_reader);
     let Some(function_id) = function_id else {
-        return Err(TypecheckingError::CannotFindFunctionOnType(
-            lhs.span(),
-            ident.symbol(),
-            typ_lhs,
-        )
-        .to_error());
+        return Err(ctx.emit_cannot_find_function_on_type(lhs.span(), ident.symbol(), typ_lhs));
     };
 
     let function: &(_, _) = &function_reader[function_id];
     if function.0.arguments.first().map(|v| v.1.without_ref()) != Some(typ_lhs.without_ref()) {
-        return Err(
-            TypecheckingError::NonMemberFunction(function.0.span, ident.symbol(), typ_lhs)
-                .to_error(),
-        );
+        return Err(ctx.emit_non_member_function(function.0.span, ident.symbol(), typ_lhs));
     }
     let arg_refcount = function.0.arguments[0].1.refcount();
     while typ_lhs.refcount() != arg_refcount {
@@ -2036,13 +1926,10 @@ fn typecheck_membercall<'ctx>(
     let mut typed_arguments = Vec::with_capacity(function.0.arguments.len() + 1);
     typed_arguments.push(typed_literal_lhs);
     if args.len() < function.0.arguments.len() - 1 {
-        return Err(TypecheckingError::MissingArguments { span: lhs.span() }.to_error());
+        return Err(ctx.emit_missing_arguments(lhs.span()));
     }
     if args.len() > function.0.arguments.len() - 1 {
-        return Err(TypecheckingError::TooManyArguments {
-            span: args[function.0.arguments.len() - 1].span(),
-        }
-        .to_error());
+        return Err(ctx.emit_too_many_arguments(args[function.0.arguments.len() - 1].span()));
     }
     for (i, (_, arg)) in function.0.arguments.iter().skip(1).enumerate() {
         let (ty, expr) = typecheck_expression(
@@ -2051,12 +1938,11 @@ fn typecheck_membercall<'ctx>(
             TypeSuggestion::from_type(*arg),
         )?;
         if ty != function.0.arguments[i + 1].1 {
-            return Err(TypecheckingError::MismatchingType {
-                expected: function.0.arguments[i + 1].1,
-                found: ty,
-                span: args[i].span(),
-            }
-            .to_error());
+            return Err(ctx.emit_mismatching_type(
+                args[i].span(),
+                function.0.arguments[i + 1].1,
+                ty,
+            ));
         }
         typed_arguments.push(expr);
     }
@@ -2078,7 +1964,7 @@ fn typecheck_take_ref<'ctx>(
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion,
     span: Span<'ctx>,
-) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     match expression {
         //&*_1 => _1
         Expression::Unary {
@@ -2103,16 +1989,11 @@ fn typecheck_take_ref<'ctx>(
 fn indexing_resolve_rhs<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
-) -> Result<OffsetValue, Diagnostic<'ctx>> {
+) -> Result<OffsetValue, ErrorEmitted> {
     let (ty, rhs) =
         typecheck_expression(ctx, expression, TypeSuggestion::Number(NumberType::Usize))?;
     if ty != default_types::usize {
-        return Err(TypecheckingError::MismatchingType {
-            expected: default_types::usize,
-            found: ty,
-            span: expression.span(),
-        }
-        .to_error());
+        return Err(ctx.emit_mismatching_type(expression.span(), default_types::usize, ty));
     }
     match rhs {
         TypedLiteral::Dynamic(v) => Ok(OffsetValue::Dynamic(v)),
@@ -2150,7 +2031,7 @@ fn new_index<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion,
-) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), Diagnostic<'ctx>> {
+) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     match expression {
         Expression::Indexing {
             left_side,
@@ -2165,7 +2046,7 @@ fn new_index<'ctx>(
             )?;
             let single_ref_lit = make_single_ref(ctx, ty, lhs, *span);
             if !ty.is_indexable() {
-                return Err(TypecheckingError::IndexNonArrayElem(expression.span(), ty).to_error());
+                return Err(ctx.emit_index_non_array_elem(expression.span(), ty));
             }
             let elem_ty = match **ty.without_ref() {
                 TyKind::SizedArray {
@@ -2175,30 +2056,26 @@ fn new_index<'ctx>(
                     if let OffsetValue::Static(v) = offset
                         && v >= number_elements
                     {
-                        return Err(TypecheckingError::ArrayIndexOutOfBounds(
+                        return Err(ctx.emit_array_index_out_of_bounds(
                             expression.span(),
                             v,
                             number_elements,
-                        )
-                        .to_error());
+                        ));
                     }
                     ty
                 }
                 TyKind::UnsizedArray(ty) => ty,
                 TyKind::Tuple(elems) => match offset {
                     OffsetValue::Dynamic(_) => {
-                        return Err(
-                            TypecheckingError::TupleDynamicIndex(expression.span()).to_error()
-                        );
+                        return Err(ctx.emit_tuple_dynamic_index(expression.span()));
                     }
 
                     OffsetValue::Static(v) if v >= elems.len() => {
-                        return Err(TypecheckingError::TupleIndexOutOfBounds(
+                        return Err(ctx.emit_tuple_index_out_of_bounds(
                             expression.span(),
                             elems.len(),
                             v,
-                        )
-                        .to_error());
+                        ));
                     }
                     OffsetValue::Static(v) => elems[v],
                 },
@@ -2229,19 +2106,16 @@ fn new_index<'ctx>(
                         {
                             Some((idx, ty)) => (idx, ty.take_ref(ctx.ctx)),
                             None => {
-                                return Err(TypecheckingError::FieldNotFound(
+                                return Err(ctx.emit_field_not_found(
                                     expression.span(),
                                     ty_lhs.without_ref(),
                                     field_name.symbol(),
-                                )
-                                .to_error());
+                                ));
                             }
                         }
                     }
                     _ => {
-                        return Err(
-                            TypecheckingError::AccessNonStructValue(*span, ty_lhs).to_error()
-                        );
+                        return Err(ctx.emit_access_non_struct_value(*span, ty_lhs));
                     }
                 };
                 lit = make_single_ref(ctx, ty_lhs, lit, *span);

@@ -1,8 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use mira_context::DocComment;
-use mira_errors::Diagnostic;
 use mira_parser::module::ModuleId;
 use mira_spans::{Ident, Span};
 use pulldown_cmark::{BrokenLink, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
@@ -46,11 +45,13 @@ impl HTMLGenerateContext<'_> {
             imports.push(Ident::new(sym, Span::DUMMY));
         }
 
+        self.tc_ctx.set_diag_muted(true);
         let entry = self
             .tc_ctx
-            .typed_resolve_import(module, &imports, Span::DUMMY, &mut HashSet::new())
-            .map_err(Diagnostic::dismiss)
+            .resolve_import_simple(module, imports.iter(), Span::DUMMY, &[], false)
             .ok()?;
+        self.tc_ctx.set_diag_muted(false);
+
         let url = self.get_item_path(entry, current_path);
         Some(url.into())
     }

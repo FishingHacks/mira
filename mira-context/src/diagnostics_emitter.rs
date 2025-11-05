@@ -30,6 +30,7 @@ impl Debug for DiagEmitter {
 pub struct DiagCtx {
     emitter: DiagEmitter,
     printer: DiagnosticFormatter,
+    mute: bool,
     err_count: usize,
 }
 
@@ -59,10 +60,20 @@ impl DiagCtx {
             emitter,
             printer,
             err_count: 0,
+            mute: false,
         }
     }
 
+    pub fn set_muted(&mut self, muted: bool) {
+        self.mute = muted;
+    }
+
     pub fn emit_diag(&mut self, diag: Diagnostic<'_>) -> ErrorEmitted {
+        if self.mute {
+            diag.dismiss();
+            #[allow(deprecated)]
+            return ErrorEmitted::new();
+        }
         if diag.is_error() {
             self.err_count += 1;
         }

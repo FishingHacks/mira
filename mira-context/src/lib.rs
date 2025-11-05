@@ -131,6 +131,10 @@ impl<'arena> SharedCtx<'arena> {
         self.dctx.lock().emit_diag(diag)
     }
 
+    pub fn set_diag_muted(&self, muted: bool) {
+        self.dctx.lock().set_muted(muted);
+    }
+
     pub fn err_count(&self) -> usize {
         self.dctx.lock().err_count()
     }

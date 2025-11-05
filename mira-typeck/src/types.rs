@@ -274,24 +274,50 @@ impl<'arena> Ty<'arena> {
 }
 impl<'arena> TyKind<'arena> {
     pub fn implements(&self, traits: &[TraitId], tc_ctx: &TypeckCtx<'_>) -> bool {
-        match self {
+        let langitem_reader = tc_ctx.lang_items.read();
+
+        let struct_id = match self {
             TyKind::Ref(v) => {
                 if let TyKind::DynType(trait_refs) = &***v {
-                    values_match(&trait_refs.iter().map(|v| v.0).collect::<Vec<_>>(), traits)
+                    return values_match(
+                        &trait_refs.iter().map(|v| v.0).collect::<Vec<_>>(),
+                        traits,
+                    );
                 } else {
-                    false
+                    return false;
                 }
             }
-            TyKind::Struct { struct_id, .. } => values_match(
-                &tc_ctx.structs.read()[*struct_id]
-                    .trait_impl
-                    .keys()
-                    .collect::<Vec<_>>(),
-                traits,
-            ),
-            Self::Generic { bounds, .. } => values_match(bounds, traits),
-            _ => false,
-        }
+            &TyKind::Struct { struct_id, .. } => Some(struct_id),
+            Self::Generic { bounds, .. } => return values_match(bounds, traits),
+
+            TyKind::PrimitiveI8 => langitem_reader.i8,
+            TyKind::PrimitiveI16 => langitem_reader.i16,
+            TyKind::PrimitiveI32 => langitem_reader.i32,
+            TyKind::PrimitiveI64 => langitem_reader.i64,
+            TyKind::PrimitiveISize => langitem_reader.isize,
+            TyKind::PrimitiveU8 => langitem_reader.u8,
+            TyKind::PrimitiveU16 => langitem_reader.u16,
+            TyKind::PrimitiveU32 => langitem_reader.u32,
+            TyKind::PrimitiveU64 => langitem_reader.u64,
+            TyKind::PrimitiveUSize => langitem_reader.usize,
+            TyKind::PrimitiveF32 => langitem_reader.f32,
+            TyKind::PrimitiveF64 => langitem_reader.f64,
+            TyKind::PrimitiveStr => langitem_reader.str,
+            TyKind::PrimitiveBool => langitem_reader.bool,
+            _ => return traits.is_empty(),
+        };
+        drop(langitem_reader);
+        let Some(struct_id) = struct_id else {
+            return traits.is_empty();
+        };
+
+        values_match(
+            &tc_ctx.structs.read()[struct_id]
+                .trait_impl
+                .keys()
+                .collect::<Vec<_>>(),
+            traits,
+        )
     }
 
     pub fn struct_offset(

@@ -130,6 +130,10 @@ impl<'arena> TypeCtx<'arena> {
         self.0.diag_ctx.lock().emit_diag(diag)
     }
 
+    pub fn set_diag_muted(&self, muted: bool) {
+        self.0.diag_ctx.lock().set_muted(muted);
+    }
+
     pub fn err_count(&self) -> usize {
         self.0.diag_ctx.lock().err_count()
     }

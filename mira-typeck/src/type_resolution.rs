@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use mira_common::index::IndexMap;
 use mira_errors::ErrorEmitted;
@@ -12,13 +12,12 @@ use mira_parser::{
 
 use crate::{
     ResolvedValue, ScopeKind, Ty, TypeCtx, TypecheckingError, TypedStruct,
-    error::TypecheckingErrorEmitterExt,
+    error::TypecheckingErrorEmitterExt, resolve_import_simple,
 };
 
 use super::{
     TypeckCtx, TypedFunctionContract, TypedGeneric, TypedStatic, TypedTrait,
     ir::TypedLiteral,
-    resolve_import,
     types::{TyKind, default_types, with_refcount},
 };
 
@@ -232,13 +231,15 @@ impl<'arena> TypeckCtx<'arena> {
         let module = struct_writer[struct_key].module_id;
 
         for (name, implementation, span) in trait_impl {
-            let trait_id = match resolve_import(
+            let trait_id = match resolve_import_simple(
                 context,
                 self.ctx,
                 module,
                 std::iter::once(&name),
                 span,
-                &mut HashSet::new(),
+                // TODO: Add generics here when adding generics to structs.
+                &[],
+                true,
             ) {
                 Err(ErrorEmitted(..)) => {
                     continue;
@@ -461,13 +462,15 @@ impl<'arena> TypeckCtx<'arena> {
         for generic in untyped_generics {
             let mut bounds = Vec::with_capacity(generic.bounds.len());
             for bound in generic.bounds {
-                match resolve_import(
+                match resolve_import_simple(
                     context,
                     self.ctx,
                     module_id,
                     bound.0.as_slice().iter(),
                     bound.1,
-                    &mut HashSet::new(),
+                    // no generics during bound resolution, because traits don't have generics.
+                    &[],
+                    true,
                 ) {
                     Ok(ResolvedValue::Trait(v)) => bounds.push(v),
                     Ok(v) => {
@@ -495,19 +498,19 @@ impl<'arena> TypeckCtx<'arena> {
         drop(writer);
 
         let error_tracker = self.track_errors();
-        match self.resolve_type(
+        if let Ok(v) = self.resolve_type(
             module_id,
             &return_type,
             &resolved_function_contract.generics,
         ) {
-            Ok(v) => resolved_function_contract.return_type = v,
-            Err(e) => _ = self.emit_diag(e),
+            resolved_function_contract.return_type = v
         }
 
         for arg in arguments {
-            match self.resolve_type(module_id, &arg.ty, &resolved_function_contract.generics) {
-                Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                Err(e) => _ = self.emit_diag(e),
+            if let Ok(v) =
+                self.resolve_type(module_id, &arg.ty, &resolved_function_contract.generics)
+            {
+                resolved_function_contract.arguments.push((arg.name, v))
             }
         }
 
@@ -543,15 +546,13 @@ impl<'arena> TypeckCtx<'arena> {
         drop(writer);
 
         let tracker = self.track_errors();
-        match self.resolve_type(module_id, &return_type, &[]) {
-            Ok(v) => resolved_function_contract.return_type = v,
-            Err(e) => _ = self.emit_diag(e),
+        if let Ok(v) = self.resolve_type(module_id, &return_type, &[]) {
+            resolved_function_contract.return_type = v
         }
 
         for arg in arguments {
-            match self.resolve_type(module_id, &arg.ty, &[]) {
-                Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                Err(e) => _ = self.emit_diag(e),
+            if let Ok(v) = self.resolve_type(module_id, &arg.ty, &[]) {
+                resolved_function_contract.arguments.push((arg.name, v))
             }
         }
 
@@ -570,19 +571,16 @@ impl<'arena> TypeckCtx<'arena> {
         let module_id = writer[static_id].module;
         let comment = writer[static_id].comment;
         drop(writer);
-        match self.resolve_type(module_id, &ty, &[]) {
-            Ok(v) => {
-                self.statics.write()[static_id] = TypedStatic::new(
-                    v,
-                    TypedLiteral::Void,
-                    module_id,
-                    span,
-                    annotations,
-                    name,
-                    comment,
-                );
-            }
-            Err(e) => _ = self.emit_diag(e),
+        if let Ok(v) = self.resolve_type(module_id, &ty, &[]) {
+            self.statics.write()[static_id] = TypedStatic::new(
+                v,
+                TypedLiteral::Void,
+                module_id,
+                span,
+                annotations,
+                name,
+                comment,
+            );
         }
     }
 
@@ -602,18 +600,14 @@ impl<'arena> TypeckCtx<'arena> {
         for func in functions {
             let typed_return_type = match self.resolve_type(module_id, &func.return_ty, &[]) {
                 Ok(v) => v,
-                Err(e) => {
-                    _ = self.emit_diag(e);
-                    continue;
-                }
+                Err(ErrorEmitted(..)) => continue,
             };
 
             let mut typed_arguments = Vec::new();
 
             for arg in &func.args {
-                match self.resolve_type(module_id, &arg.ty, &[]) {
-                    Ok(v) => typed_arguments.push((arg.name, v)),
-                    Err(e) => _ = self.emit_diag(e),
+                if let Ok(v) = self.resolve_type(module_id, &arg.ty, &[]) {
+                    typed_arguments.push((arg.name, v))
                 }
             }
 

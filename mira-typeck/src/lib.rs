@@ -1,4 +1,4 @@
-use mira_errors::{Diagnostic, ErrorEmitted};
+use mira_errors::ErrorEmitted;
 use mira_macros::Display;
 use parking_lot::RwLock;
 use std::{
@@ -382,13 +382,16 @@ impl<'ctx> TypeckCtx<'ctx> {
         let tracker = self.track_errors();
         for key in module_reader.keys() {
             for (name, (span, import)) in module_reader[key].imports.iter() {
-                let res = resolve_import(
+                let res = resolve_import_simple(
                     &context,
                     self.ctx,
                     key,
-                    import.entries.iter(),
+                    import.iter(),
                     *span,
-                    &mut HashSet::new(),
+                    // a module doesn't have any generics in the context cuz it can't be generic
+                    // lol
+                    &[],
+                    false,
                 );
                 match res {
                     Err(ErrorEmitted(..)) => {}
@@ -406,7 +409,7 @@ impl<'ctx> TypeckCtx<'ctx> {
         module_id: ModuleId,
         ty: &TypeRef<'ctx>,
         generics: &[TypedGeneric<'ctx>],
-    ) -> Result<Ty<'ctx>, Diagnostic<'ctx>> {
+    ) -> Result<Ty<'ctx>, ErrorEmitted> {
         if let Some(primitive) = resolve_primitive_type(self.ctx, ty) {
             return Ok(primitive);
         }
@@ -419,17 +422,19 @@ impl<'ctx> TypeckCtx<'ctx> {
             } => {
                 let mut trait_refs = Vec::with_capacity(traits.len());
                 for trait_name in traits.iter() {
-                    let v = self.typed_resolve_import(
+                    let v = self.resolve_import_simple(
                         module_id,
-                        trait_name.as_slice(),
+                        trait_name.iter(),
                         *span,
-                        &mut HashSet::new(),
-                    );
-                    let Ok(ResolvedValue::Trait(id)) = v else {
-                        return Err(
-                            TypecheckingError::CannotFindTrait(*span, trait_name.clone())
-                                .to_error(),
-                        );
+                        generics,
+                        true,
+                    )?;
+                    let ResolvedValue::Trait(id) = v else {
+                        return Err(self.emit_mismatching_scope_type(
+                            *span,
+                            ScopeKind::Trait,
+                            v.into(),
+                        ));
                     };
                     trait_refs.push((id, *trait_name.as_slice().last().unwrap()));
                 }
@@ -483,18 +488,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                     return Ok(with_refcount(self.ctx, ty, *num_references));
                 }
 
-                let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();
-                // NOTE: this should only have a generic at the end as this is a type
-                // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
-                for (.., generics) in type_name.entries.iter() {
-                    if !generics.is_empty() {
-                        return Err(
-                            TypecheckingError::UnexpectedGenerics { span: *span }.to_error()
-                        );
-                    }
-                }
-
-                match self.typed_resolve_import(module_id, &path, *span, &mut HashSet::new())? {
+                match self.resolve_import(module_id, type_name.iter(), *span, generics, true)? {
                     ResolvedValue::Struct(struct_id) => Ok(with_refcount(
                         self.ctx,
                         self.intern_ty(TyKind::Struct {
@@ -503,12 +497,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                         }),
                         *num_references,
                     )),
-                    v => Err(TypecheckingError::MismatchingScopeType {
-                        span: *span,
-                        expected: ScopeKind::Type,
-                        found: v.into(),
-                    }
-                    .to_error()),
+                    v => Err(self.emit_mismatching_scope_type(*span, ScopeKind::Type, v.into())),
                 }
             }
             TypeRef::Void(..) | TypeRef::Never(_) => unreachable!(),
@@ -581,13 +570,15 @@ impl<'ctx> TypeckCtx<'ctx> {
             let mut bounds = Vec::new();
 
             for (bound, span) in &generic.bounds {
-                match resolve_import(
+                match resolve_import_simple(
                     &context,
                     self.ctx,
                     module_id,
-                    bound.as_slice().iter(),
+                    bound.iter(),
                     *span,
-                    &mut HashSet::new(),
+                    // TODO: put the in-scope generics when adding struct generics.
+                    &[],
+                    true,
                 ) {
                     Err(_) => {}
                     Ok(ResolvedValue::Trait(trait_id)) => bounds.push(trait_id),
@@ -639,250 +630,232 @@ impl<'ctx> TypeckCtx<'ctx> {
         self.errors_happened_res(tracker)
     }
 
-    // fn type_resolution_resolve_type(
-    //     &self,
-    //     ty: &TypeRef<'ctx>,
-    //     generics: &[TypedGeneric<'ctx>],
-    //     module: ModuleId,
-    //     context: Arc<ModuleContext<'ctx>>,
-    //     left: &mut IndexMap<StructId, ResolvingState>,
-    // ) -> Result<Ty<'ctx>> {
-    //     if let Some(ty) = resolve_primitive_type(self.ctx, ty) {
-    //         return Some(ty);
-    //     }
-    //     match ty {
-    //         TypeRef::DynReference {
-    //             traits,
-    //             num_references,
-    //             span,
-    //         } => {
-    //             let mut trait_refs = Vec::with_capacity(traits.len());
-    //             for trait_name in traits.iter() {
-    //                 let v = self.typed_resolve_import(
-    //                     module,
-    //                     trait_name.as_slice(),
-    //                     *span,
-    //                     &mut HashSet::new(),
-    //                 );
-    //                 let Ok(ModuleScopeValue::Trait(id)) = v else {
-    //                     return None;
-    //                 };
-    //                 trait_refs.push((id, *trait_name.as_slice().last().unwrap()));
-    //             }
-    //             let trait_refs = ArenaList::new(self.arena(), &trait_refs);
-    //             Some(with_refcount(
-    //                 self.ctx,
-    //                 self.intern_ty(TyKind::DynType(trait_refs)),
-    //                 *num_references,
-    //             ))
-    //         }
-    //         TypeRef::Function {
-    //             return_ty,
-    //             args,
-    //             num_references,
-    //             ..
-    //         } => {
-    //             let return_type = self.type_resolution_resolve_type(
-    //                 return_ty,
-    //                 generics,
-    //                 module,
-    //                 context.clone(),
-    //                 left,
-    //             )?;
-    //             let mut arguments = Vec::with_capacity(args.len());
-    //             for arg in args {
-    //                 arguments.push(self.type_resolution_resolve_type(
-    //                     arg,
-    //                     generics,
-    //                     module,
-    //                     context.clone(),
-    //                     left,
-    //                 )?);
-    //             }
-    //             let arguments = self.intern_tylist(&arguments);
-    //             let ty = self.intern_ty(TyKind::Function(FunctionType {
-    //                 return_type,
-    //                 arguments,
-    //             }));
-    //             Some(with_refcount(self.ctx, ty, *num_references))
-    //         }
-    //         TypeRef::Reference {
-    //             num_references,
-    //             type_name,
-    //             span,
-    //         } => {
-    //             let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();
-    //             // NOTE: this should only have a generic at the end as this is a type
-    //             // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
-    //             for (.., generics) in type_name.entries.iter() {
-    //                 if !generics.is_empty() {
-    //                     return None;
-    //                 }
-    //             }
-    //
-    //             // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
-    //             if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
-    //                 let name = type_name.entries[0].0;
-    //                 if let Some((generic_id, generic)) =
-    //                     generics.iter().enumerate().find(|(_, v)| v.name == name)
-    //                 {
-    //                     return Some(self.intern_ty(TyKind::Generic {
-    //                         name: generic.name,
-    //                         generic_id: generic_id as u8,
-    //                         sized: generic.sized,
-    //                         bounds: generic.bounds,
-    //                     }));
-    //                 }
-    //             }
-    //
-    //             let Ok(value) = resolve_import(
-    //                 &context,
-    //                 self.ctx,
-    //                 module,
-    //                 path.iter(),
-    //                 *span,
-    //                 &mut HashSet::new(),
-    //             ) else {
-    //                 return Err(self
-    //                     .ctx
-    //                     .emit_unbound_ident(*span, path[path.len() - 1].symbol()));
-    //             };
-    //
-    //             let ResolvedValue::Struct(id) = value else {
-    //                 return Err(ctx.emit_mismatching_scope_type(
-    //                     *span,
-    //                     ScopeKind::Type,
-    //                     value.into(),
-    //                 ));
-    //             };
-    //
-    //             {
-    //                 if !left.contains(id) {
-    //                     let typechecked_struct = &self.structs.read()[id];
-    //                     let ty = self.intern_ty(TyKind::Struct {
-    //                         struct_id: typechecked_struct.id,
-    //                         name: typechecked_struct.name,
-    //                     });
-    //                     return Some(with_refcount(self.ctx, ty, *num_references));
-    //                 }
-    //             }
-    //
-    //             let module = context.structs.read()[id].module_id;
-    //             if self.resolve_struct(context, id, module, left) {
-    //                 self.emit_recursive_type_detected(*span);
-    //                 return None;
-    //             }
-    //             let typechecked_struct = &self.structs.read()[id];
-    //             let ty = self.intern_ty(TyKind::Struct {
-    //                 struct_id: typechecked_struct.id,
-    //                 name: typechecked_struct.name,
-    //             });
-    //             Some(with_refcount(self.ctx, ty, *num_references))
-    //         }
-    //         TypeRef::Void(..) => unreachable!(),
-    //         TypeRef::Never(_) => unreachable!(),
-    //         TypeRef::UnsizedArray {
-    //             num_references,
-    //             child,
-    //             span: _,
-    //         } => Some(with_refcount(
-    //             self.ctx,
-    //             self.intern_ty(TyKind::UnsizedArray(
-    //                 self.type_resolution_resolve_type(child, generics, module, context, left)?,
-    //             )),
-    //             *num_references,
-    //         )),
-    //         TypeRef::SizedArray {
-    //             num_references,
-    //             child,
-    //             number_elements,
-    //             span: _,
-    //         } => Some(with_refcount(
-    //             self.ctx,
-    //             self.intern_ty(TyKind::SizedArray {
-    //                 ty: self
-    //                     .type_resolution_resolve_type(child, generics, module, context, left)?,
-    //                 number_elements: *number_elements,
-    //             }),
-    //             *num_references,
-    //         )),
-    //         TypeRef::Tuple {
-    //             num_references,
-    //             elements,
-    //             ..
-    //         } => {
-    //             let mut typed_elements = Vec::with_capacity(elements.len());
-    //             for elem in elements.iter() {
-    //                 typed_elements.push(self.type_resolution_resolve_type(
-    //                     elem,
-    //                     generics,
-    //                     module,
-    //                     context.clone(),
-    //                     left,
-    //                 )?);
-    //             }
-    //             let ty = self
-    //                 .ctx
-    //                 .intern_ty(TyKind::Tuple(self(&typed_elements)));
-    //             Some(with_refcount(self.ctx, ty, *num_references))
-    //         }
-    //     }
-    // }
-
-    pub fn typed_resolve_import(
+    /// `with_generics`: If this is true, this function will error if generics are missing.
+    /// This is wanted in case of uses (e.g. `type_name()`), but not wanted in the case of use
+    /// statements.
+    pub fn resolve_import_simple<'a>(
         &self,
-        module: ModuleId,
-        import: &[Ident<'ctx>],
+        current_module: ModuleId,
+        mut import: impl Iterator<Item = &'a Ident<'ctx>>,
+        span: Span<'ctx>,
+        generics_in_context: &[TypedGeneric<'ctx>],
+        with_generics: bool,
+    ) -> Result<ResolvedValue<'ctx>, ErrorEmitted>
+    where
+        'ctx: 'a,
+    {
+        let name = import
+            .next()
+            .expect("resolve_import called on an empty import");
+        self.resolve_import_inner(
+            current_module,
+            #[allow(trivial_casts)]
+            import.map(|v| (v, &[] as &[_])),
+            (name, &[]),
+            span,
+            &mut HashSet::new(),
+            generics_in_context,
+            with_generics,
+        )
+    }
+
+    /// `with_generics`: If this is true, this function will error if generics are missing.
+    /// This is wanted in case of uses (e.g. `type_name()`), but not wanted in the case of use
+    /// statements.
+    fn resolve_import<'a>(
+        &self,
+        current_module: ModuleId,
+        mut import: impl Iterator<Item = (&'a Ident<'ctx>, &'a [TypeRef<'ctx>])>,
+        span: Span<'ctx>,
+        generics_in_context: &[TypedGeneric<'ctx>],
+        with_generics: bool,
+    ) -> Result<ResolvedValue<'ctx>, ErrorEmitted>
+    where
+        'ctx: 'a,
+    {
+        let next = import
+            .next()
+            .expect("resolve_import called on an empty import");
+        self.resolve_import_inner(
+            current_module,
+            import,
+            next,
+            span,
+            &mut HashSet::new(),
+            generics_in_context,
+            with_generics,
+        )
+    }
+
+    /// TODO: make this better
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_import_inner<'a>(
+        &self,
+        current_module: ModuleId,
+        mut import: impl Iterator<Item = (&'a Ident<'ctx>, &'a [TypeRef<'ctx>])>,
+        (name, generics): (&'a Ident<'ctx>, &'a [TypeRef<'ctx>]),
         span: Span<'ctx>,
         already_included: &mut HashSet<(ModuleId, Symbol<'ctx>)>,
-    ) -> Result<ResolvedValue<'ctx>, Diagnostic<'ctx>> {
-        assert!(!import.is_empty());
-        if !already_included.insert((module, import[0].symbol())) {
-            return Err(TypecheckingError::CyclicDependency(span).to_error());
+        generics_in_context: &[TypedGeneric<'ctx>],
+        with_generics: bool,
+    ) -> Result<ResolvedValue<'ctx>, ErrorEmitted>
+    where
+        'ctx: 'a,
+    {
+        if !already_included.insert((current_module, name.symbol())) {
+            return Err(self.emit_cyclic_dependency(span));
         }
 
         let module_reader = self.modules.read();
-        let cur_mod = &module_reader[module];
-        let thing;
-
-        if &*import[0] == "pkg" {
+        let cur_mod = &module_reader[current_module];
+        let mut thing;
+        if &**name == "pkg" {
             thing = ResolvedValue::Module(cur_mod.root_module);
-        } else if &*import[0] == "super" {
+        } else if &**name == "super" {
             let Some(parent) = cur_mod.parent else {
-                return Err(TypecheckingError::ItemNotFound {
-                    span: import[0].span(),
-                    name: import[0].symbol(),
-                }
-                .to_error());
+                return Err(self.emit_item_not_found(name.span(), name.symbol()));
             };
             thing = ResolvedValue::Module(parent);
-        } else if let Some(&value) = cur_mod.scope.get(&import[0].symbol()) {
+        } else if let Some(&value) = cur_mod.scope.get(&name.symbol()) {
             thing = value;
-        } else if let Some(package) = self.dependencies[cur_mod.root_module].get(&*import[0]) {
+        } else if let Some(&value) = cur_mod.scope.get(&name.symbol()) {
+            thing = value;
+        } else if let Some(package) = self.dependencies[cur_mod.root_module].get(&**name) {
             thing = ResolvedValue::Module(*package);
         } else {
-            return Err(TypecheckingError::ItemNotFound {
-                span,
-                name: import[0].symbol(),
-            }
-            .to_error());
+            return Err(self.emit_item_not_found(span, name.symbol()));
         }
 
-        if import.len() == 1 {
+        if with_generics {
+            thing =
+                self.fill_in_generics(thing, generics, span, current_module, generics_in_context)?
+        }
+
+        let Some((name, generics)) = import.next() else {
             return Ok(thing);
-        }
+        };
         match thing {
-            ResolvedValue::Module(module) => {
-                self.typed_resolve_import(module, &import[1..], span, already_included)
-            }
+            ResolvedValue::Module(module) => self.resolve_import_inner(
+                module,
+                import,
+                (name, generics),
+                span,
+                already_included,
+                generics_in_context,
+                with_generics,
+            ),
 
-            _ => Err(TypecheckingError::ItemNotFound {
-                span: import[1].span(),
-                name: import[1].symbol(),
-            }
-            .to_error()),
+            _ => Err(self.emit_item_not_found(name.span(), name.symbol())),
         }
     }
+
+    /// Fills in generics for the resolved value, erroring if too many/little were given. Does **NOT**
+    /// check trait bounds.
+    fn fill_in_generics(
+        &self,
+        thing: ResolvedValue<'ctx>,
+        generics: &[TypeRef<'ctx>],
+        span: Span<'ctx>,
+        module: ModuleId,
+        generics_in_context: &[TypedGeneric<'ctx>],
+    ) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
+        match thing {
+            ResolvedValue::Function(id, ty_list) => {
+                assert!(ty_list.is_empty());
+                let fn_reader = self.functions.read();
+                let required = &fn_reader[id].0.generics;
+                if generics.len() != required.len() {
+                    return Err(self.emit_mismatching_generic_count(
+                        span,
+                        required.len(),
+                        generics.len(),
+                    ));
+                }
+                let mut list = Vec::with_capacity(generics.len());
+                for (i, generic) in generics.iter().enumerate() {
+                    let ty = self.resolve_type(module, generic, generics_in_context)?;
+                    if required[i].sized && !ty.is_sized() {
+                        return Err(self.emit_unsized_for_sized_generic(generic.span(), ty));
+                    }
+                    if !ty.implements(&required[i].bounds, self) {
+                        return Err(self.emit_ty_does_not_implement_bounds(
+                            generic.span(),
+                            required[i].name.span(),
+                            ty,
+                        ));
+                    }
+                    list.push(ty);
+                }
+                Ok(ResolvedValue::Function(id, self.intern_tylist(&list)))
+            }
+            ResolvedValue::ExternalFunction(_)
+            | ResolvedValue::Struct(_)
+            | ResolvedValue::Static(_)
+            | ResolvedValue::Module(_)
+            | ResolvedValue::Trait(_) => {
+                if generics.is_empty() {
+                    Ok(thing)
+                } else {
+                    Err(self.emit_mismatching_generic_count(span, 0, generics.len()))
+                }
+            }
+        }
+    }
+
+    // pub fn typed_resolve_import(
+    //     &self,
+    //     module: ModuleId,
+    //     import: &[Ident<'ctx>],
+    //     span: Span<'ctx>,
+    //     already_included: &mut HashSet<(ModuleId, Symbol<'ctx>)>,
+    // ) -> Result<ResolvedValue<'ctx>, Diagnostic<'ctx>> {
+    //     assert!(!import.is_empty());
+    //     if !already_included.insert((module, import[0].symbol())) {
+    //         return Err(TypecheckingError::CyclicDependency(span).to_error());
+    //     }
+    //
+    //     let module_reader = self.modules.read();
+    //     let cur_mod = &module_reader[module];
+    //     let thing;
+    //
+    //     if &*import[0] == "pkg" {
+    //         thing = ResolvedValue::Module(cur_mod.root_module);
+    //     } else if &*import[0] == "super" {
+    //         let Some(parent) = cur_mod.parent else {
+    //             return Err(TypecheckingError::ItemNotFound {
+    //                 span: import[0].span(),
+    //                 name: import[0].symbol(),
+    //             }
+    //             .to_error());
+    //         };
+    //         thing = ResolvedValue::Module(parent);
+    //     } else if let Some(&value) = cur_mod.scope.get(&import[0].symbol()) {
+    //         thing = value;
+    //     } else if let Some(package) = self.dependencies[cur_mod.root_module].get(&*import[0]) {
+    //         thing = ResolvedValue::Module(*package);
+    //     } else {
+    //         return Err(TypecheckingError::ItemNotFound {
+    //             span,
+    //             name: import[0].symbol(),
+    //         }
+    //         .to_error());
+    //     }
+    //
+    //     if import.len() == 1 {
+    //         return Ok(thing);
+    //     }
+    //     match thing {
+    //         ResolvedValue::Module(module) => {
+    //             self.typed_resolve_import(module, &import[1..], span, already_included)
+    //         }
+    //
+    //         _ => Err(TypecheckingError::ItemNotFound {
+    //             span: import[1].span(),
+    //             name: import[1].symbol(),
+    //         }
+    //         .to_error()),
+    //     }
+    // }
 }
 
 impl<'ctx> Deref for TypeckCtx<'ctx> {
@@ -893,13 +866,41 @@ impl<'ctx> Deref for TypeckCtx<'ctx> {
     }
 }
 
+/// `with_generics`: If this is true, this function will error if generics are missing.
+/// This is wanted in case of uses (e.g. `type_name()`), but not wanted in the case of use
+/// statements.
+fn resolve_import_simple<'a, 'ctx: 'a>(
+    context: &ModuleContext<'ctx>,
+    ctx: TypeCtx<'ctx>,
+    current_module: ModuleId,
+    import: impl Iterator<Item = &'a Ident<'ctx>>,
+    span: Span<'ctx>,
+    generics_in_context: &[TypedGeneric<'ctx>],
+    with_generics: bool,
+) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
+    resolve_import(
+        context,
+        ctx,
+        current_module,
+        #[allow(trivial_casts)]
+        import.map(|v| (v, &[] as &[_])),
+        span,
+        generics_in_context,
+        with_generics,
+    )
+}
+
+/// `with_generics`: If this is true, this function will error if generics are missing.
+/// This is wanted in case of uses (e.g. `type_name()`), but not wanted in the case of use
+/// statements.
 fn resolve_import<'a, 'ctx: 'a>(
     context: &ModuleContext<'ctx>,
     ctx: TypeCtx<'ctx>,
     current_module: ModuleId,
-    mut import: impl Iterator<Item = &'a Ident<'ctx>>,
+    mut import: impl Iterator<Item = (&'a Ident<'ctx>, &'a [TypeRef<'ctx>])>,
     span: Span<'ctx>,
-    already_included: &mut HashSet<(ModuleId, Symbol<'ctx>)>,
+    generics_in_context: &[TypedGeneric<'ctx>],
+    with_generics: bool,
 ) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
     let next = import
         .next()
@@ -911,67 +912,96 @@ fn resolve_import<'a, 'ctx: 'a>(
         import,
         next,
         span,
-        already_included,
+        &mut HashSet::new(),
+        generics_in_context,
+        with_generics,
     )
 }
 
+// TODO: make this better lol
+#[allow(clippy::too_many_arguments)]
 fn resolve_import_inner<'a, 'ctx: 'a>(
     context: &ModuleContext<'ctx>,
     ctx: TypeCtx<'ctx>,
     current_module: ModuleId,
-    mut import: impl Iterator<Item = &'a Ident<'ctx>>,
-    next: &'a Ident<'ctx>,
+    mut import: impl Iterator<Item = (&'a Ident<'ctx>, &'a [TypeRef<'ctx>])>,
+    (name, generics): (&'a Ident<'ctx>, &'a [TypeRef<'ctx>]),
     span: Span<'ctx>,
     already_included: &mut HashSet<(ModuleId, Symbol<'ctx>)>,
+    generics_in_context: &[TypedGeneric<'ctx>],
+    with_generics: bool,
 ) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
-    if !already_included.insert((current_module, next.symbol())) {
+    if !already_included.insert((current_module, name.symbol())) {
         return Err(ctx.emit_cyclic_dependency(span));
     }
 
     let module_reader = context.modules.read();
     let cur_mod = &module_reader[current_module];
-    let thing;
-    if &**next == "pkg" {
+    let mut thing;
+    if &**name == "pkg" {
         thing = ResolvedValue::Module(cur_mod.package_root);
-    } else if &**next == "super" {
+    } else if &**name == "super" {
         let Some(parent) = cur_mod.parent else {
-            return Err(ctx.emit_item_not_found(next.span(), next.symbol()));
+            return Err(ctx.emit_item_not_found(name.span(), name.symbol()));
         };
         thing = ResolvedValue::Module(parent);
-    } else if let Some(&value) = cur_mod.scope.get(&next.symbol()) {
+    } else if let Some(&value) = cur_mod.scope.get(&name.symbol()) {
         thing = value.into();
-    } else if let Some((span, import)) = cur_mod.imports.get(&next.symbol()) {
-        thing = resolve_import(
+    } else if let Some((span, import)) = cur_mod.imports.get(&name.symbol()) {
+        #[allow(trivial_casts)]
+        let mut iter = import.iter_with_pathbuf();
+        let next = iter.next().unwrap();
+        thing = resolve_import_inner(
             context,
             ctx,
             current_module,
-            import.entries.iter(),
+            iter,
+            next,
             *span,
             already_included,
+            generics_in_context,
+            false,
         )?
-    } else if let Some(package) = context.dependencies[cur_mod.package_root].get(&**next) {
+    } else if let Some(package) = context.dependencies[cur_mod.package_root].get(&**name) {
         thing = ResolvedValue::Module(*package);
     } else {
-        return Err(ctx.emit_item_not_found(span, next.symbol()));
+        return Err(ctx.emit_item_not_found(span, name.symbol()));
     }
 
-    fill_in_generics(thing, &[], span, context, ctx, current_module)?;
+    if with_generics {
+        thing = fill_in_generics(
+            thing,
+            generics,
+            span,
+            context,
+            ctx,
+            current_module,
+            generics_in_context,
+        )?;
+    }
 
-    let Some(next) = import.next() else {
+    let Some((name, generics)) = import.next() else {
         return Ok(thing);
     };
     match thing {
-        ResolvedValue::Module(module) => {
-            resolve_import_inner(context, ctx, module, import, next, span, already_included)
-        }
+        ResolvedValue::Module(module) => resolve_import_inner(
+            context,
+            ctx,
+            module,
+            import,
+            (name, generics),
+            span,
+            already_included,
+            generics_in_context,
+            with_generics,
+        ),
 
-        _ => Err(ctx.emit_item_not_found(next.span(), next.symbol())),
+        _ => Err(ctx.emit_item_not_found(name.span(), name.symbol())),
     }
 }
 
 /// Fills in generics for the resolved value, erroring if too many/little were given. Does **NOT**
 /// check trait bounds.
-#[allow(unused_variables, unreachable_code)]
 fn fill_in_generics<'ctx>(
     thing: ResolvedValue<'ctx>,
     generics: &[TypeRef<'ctx>],
@@ -979,8 +1009,8 @@ fn fill_in_generics<'ctx>(
     context: &ModuleContext<'ctx>,
     ctx: TypeCtx<'ctx>,
     module: ModuleId,
+    generics_in_context: &[TypedGeneric<'ctx>],
 ) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
-    return Ok(thing);
     match thing {
         ResolvedValue::Function(id, ty_list) => {
             assert!(ty_list.is_empty());
@@ -993,7 +1023,7 @@ fn fill_in_generics<'ctx>(
                 list.push(type_resolution_resolve_type(
                     ctx,
                     generic,
-                    &[],
+                    generics_in_context,
                     module,
                     context,
                 )?);
@@ -1032,13 +1062,14 @@ fn type_resolution_resolve_type<'ctx>(
         } => {
             let mut trait_refs = Vec::with_capacity(traits.len());
             for trait_name in traits.iter() {
-                let v = resolve_import(
+                let v = resolve_import_simple(
                     context,
                     ctx,
                     module,
                     trait_name.as_slice().iter(),
                     *span,
-                    &mut HashSet::new(),
+                    generics,
+                    true,
                 );
                 let id = match v {
                     Ok(ResolvedValue::Trait(id)) => id,
@@ -1086,15 +1117,6 @@ fn type_resolution_resolve_type<'ctx>(
             type_name,
             span,
         } => {
-            let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();
-            // NOTE: this should only have a generic at the end as this is a type
-            // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
-            for (.., generics) in type_name.entries.iter() {
-                if !generics.is_empty() {
-                    todo!("this will be handled by resolve_import.")
-                }
-            }
-
             // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
             if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
                 let name = type_name.entries[0].0;
@@ -1110,16 +1132,15 @@ fn type_resolution_resolve_type<'ctx>(
                 }
             }
 
-            let Ok(value) = resolve_import(
+            let value = resolve_import(
                 context,
                 ctx,
                 module,
-                path.iter(),
+                type_name.iter(),
                 *span,
-                &mut HashSet::new(),
-            ) else {
-                return Err(ctx.emit_unbound_ident(*span, path[path.len() - 1].symbol()));
-            };
+                generics,
+                true,
+            )?;
 
             let ResolvedValue::Struct(struct_id) = value else {
                 return Err(ctx.emit_mismatching_scope_type(*span, ScopeKind::Type, value.into()));
@@ -1129,8 +1150,8 @@ fn type_resolution_resolve_type<'ctx>(
             let ty = ctx.intern_ty(TyKind::Struct { struct_id, name });
             Ok(with_refcount(ctx, ty, *num_references))
         }
-        TypeRef::Void(..) => unreachable!(),
-        TypeRef::Never(_) => unreachable!(),
+        &TypeRef::Void(_, refs) => Ok(with_refcount(ctx, default_types::void, refs)),
+        TypeRef::Never(_) => Ok(default_types::never),
         TypeRef::UnsizedArray {
             num_references,
             child,
@@ -1176,7 +1197,7 @@ impl From<ResolvedValue<'_>> for ScopeKind {
     fn from(value: ResolvedValue<'_>) -> Self {
         match value {
             ResolvedValue::Trait(_) => Self::Trait,
-            ResolvedValue::Struct(_) => Self::Type,
+            ResolvedValue::Struct(_) => Self::Struct,
             ResolvedValue::Static(_) => Self::Static,
             ResolvedValue::Module(_) => Self::Module,
             ResolvedValue::Function(_, _) | ResolvedValue::ExternalFunction(_) => Self::Function,
@@ -1214,6 +1235,10 @@ pub enum ScopeKind {
     Trait,
     #[display("type")]
     Type,
+    #[display("value")]
+    Value,
+    #[display("struct")]
+    Struct,
     #[display("function")]
     Function,
     #[display("global variable")]

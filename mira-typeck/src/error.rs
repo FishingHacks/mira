@@ -27,6 +27,14 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("expected a sized type")] Span<'arena>,
         Ty<'arena>,
     ),
+    #[error("Type {ty} does not implement all generic bounds")]
+    TyDoesNotImplementBounds {
+        #[primary_label("Expected this type to implement all bounds")]
+        ty_span: Span<'arena>,
+        #[secondary_label("generic")]
+        bounds_span: Span<'arena>,
+        ty: Ty<'arena>,
+    },
     #[error("Unsized Type {_1} is not a return type")]
     UnsizedReturnType(
         #[primary_label("type has to be sized")] Span<'arena>,

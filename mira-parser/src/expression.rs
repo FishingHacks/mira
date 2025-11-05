@@ -50,6 +50,11 @@ impl Display for Path<'_> {
 }
 
 impl<'ctx> Path<'ctx> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Ident<'ctx>, &[TypeRef<'ctx>])> {
+        self.entries
+            .iter()
+            .map(|(name, generics)| (name, generics.as_slice()))
+    }
     pub fn push(&mut self, name: Ident<'ctx>, generics: Vec<TypeRef<'ctx>>) {
         self.entries.push((name, generics));
     }
@@ -129,6 +134,15 @@ pub struct PathWithoutGenerics<'ctx> {
 }
 
 impl<'ctx> PathWithoutGenerics<'ctx> {
+    pub fn iter(&self) -> std::slice::Iter<'_, Ident<'ctx>> {
+        self.entries.iter()
+    }
+
+    pub fn iter_with_pathbuf(&self) -> impl Iterator<Item = (&Ident<'ctx>, &[TypeRef<'ctx>])> {
+        #[allow(trivial_casts)]
+        self.entries.iter().map(|v| (v, &[] as &[_]))
+    }
+
     pub fn to_normal_path(&self) -> Path<'ctx> {
         Path {
             entries: self
