@@ -1,13 +1,10 @@
 use std::{fmt::Debug, fs::File, io::Write, sync::Arc};
 
-use mira_errors::{Diagnostic, DiagnosticFormatter, Output, StyledPrinter, Styles};
+use mira_errors::{Diagnostic, DiagnosticFormatter, ErrorEmitted, Output, StyledPrinter, Styles};
 use mira_progress_bar::print_thread::ProgressBarThread;
 use mira_spans::SourceMap;
 
 use crate::ErrorTracker;
-
-#[derive(Clone, Copy)]
-pub struct ErrorEmitted;
 
 pub enum DiagEmitter {
     Stdout(ProgressBarThread),
@@ -71,7 +68,8 @@ impl DiagCtx {
         }
         if matches!(self.emitter, DiagEmitter::Discard) {
             diag.dismiss();
-            return ErrorEmitted;
+            #[allow(deprecated)]
+            return ErrorEmitted::new();
         }
         self.printer
             .display_diagnostic(diag)
@@ -101,7 +99,8 @@ impl DiagCtx {
             }
             DiagEmitter::Discard => unreachable!(),
         }
-        ErrorEmitted
+        #[allow(deprecated)]
+        return ErrorEmitted::new();
     }
 
     pub fn err_count(&self) -> usize {

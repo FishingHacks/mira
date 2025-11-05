@@ -38,6 +38,12 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("type has to be sized")] Span<'arena>,
         Ty<'arena>,
     ),
+    #[error("Struct fields have to be sized.")]
+    #[note("Try using `&{_1}`")]
+    UnsizedStructField(
+        #[primary_label("type has to be sized")] Span<'arena>,
+        Ty<'arena>,
+    ),
     #[error("Function {0} on trait {1} is not valid for &dyn {1} types", IdentDisplay(*_1), IdentDisplay(*_2))]
     InvalidDynTypeFunc(
         #[primary_label("dyn-incompatible trait")] Span<'arena>,
@@ -213,8 +219,15 @@ pub enum TypecheckingError<'arena> {
         span: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("cyclic dependency detected")]
-    CyclicDependency(#[primary_label("cyclic dependency")] Span<'arena>),
+    #[error("recursive type has infinite size")]
+    CyclicStruct {
+        #[primary_label("recursive")]
+        field: Span<'arena>,
+        #[secondary_label("")]
+        struct_def: Span<'arena>,
+    },
+    #[error("Cyclic dependency")]
+    CyclicDependency(#[primary_label("cyclic dependency detected")] Span<'arena>),
     #[error("Unbound identifier {}", IdentDisplay(*name))]
     UnboundIdent {
         #[primary_label("unbound identifier")]
@@ -319,6 +332,9 @@ pub enum TypecheckingError<'arena> {
         expected: Ty<'arena>,
         found: Ty<'arena>,
     },
+    #[error("Debug: {_0}")]
+    #[is_warning]
+    Debug(String),
 }
 
 pub struct FunctionList<'a>(pub &'a [Ty<'a>]);

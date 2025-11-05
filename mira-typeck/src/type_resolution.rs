@@ -1,18 +1,19 @@
 use std::{collections::HashSet, sync::Arc};
 
 use mira_common::index::IndexMap;
-use mira_spans::ArenaList;
+use mira_errors::ErrorEmitted;
+use mira_spans::{ArenaList, Span, interner::symbols};
 
 use mira_parser::{
     TypeRef,
-    module::{
-        ExternalFunctionId, FunctionId, ModuleContext, ModuleScopeValue, StaticId, StructId,
-        TraitId,
-    },
+    module::{ExternalFunctionId, FunctionId, ModuleContext, StaticId, StructId, TraitId},
     std_annotations::lang_item::LangItemAnnotation,
 };
 
-use crate::error::TypecheckingErrorEmitterExt;
+use crate::{
+    ResolvedValue, ScopeKind, Ty, TypeCtx, TypecheckingError, TypedStruct,
+    error::TypecheckingErrorEmitterExt,
+};
 
 use super::{
     TypeckCtx, TypedFunctionContract, TypedGeneric, TypedStatic, TypedTrait,
@@ -34,9 +35,10 @@ impl<'arena> TypeckCtx<'arena> {
     /// and don't free them until fully resolving a value. This module is designed in a way that
     /// such a deadlock should never happen but.. uhh... :3c :3
     /// meow
-    pub fn resolve_types(&self, context: Arc<ModuleContext<'arena>>) {
+    pub fn resolve_types(&self, context: Arc<ModuleContext<'arena>>) -> Result<(), ErrorEmitted> {
         let mut lang_items_writer = self.lang_items.write();
         let lang_items_writer = &mut *lang_items_writer;
+        let tracker = self.track_errors();
 
         let mut structs_left = IndexMap::new();
         context
@@ -57,12 +59,9 @@ impl<'arena> TypeckCtx<'arena> {
             let struct_reader = context.structs.read();
             let module_id = struct_reader[key].module_id;
             drop(struct_reader);
-            let tracker = self.ctx.track_errors();
-            assert!(
-                !self.resolve_struct(context.clone(), key, module_id, &mut structs_left),
-                "this came from no field, so this shouldn't be recursive"
-            );
-            if self.ctx.errors_happened(tracker) {
+            let tracker = self.track_errors();
+            _ = self.resolve_struct(context.clone(), key, module_id, &mut structs_left);
+            if self.errors_happened_res(tracker).is_err() {
                 continue;
             }
             let struct_reader = self.structs.read();
@@ -75,7 +74,7 @@ impl<'arena> TypeckCtx<'arena> {
                     annotation.get_langitem(),
                     struct_reader[key].span,
                 ) {
-                    self.ctx.emit_diag(e);
+                    _ = self.emit_diag(e);
                 }
             }
         }
@@ -85,9 +84,9 @@ impl<'arena> TypeckCtx<'arena> {
         // └───────────┘
         let function_keys = context.functions.read().keys().collect::<Vec<_>>();
         for function_key in function_keys {
-            let tracker = self.ctx.track_errors();
+            let tracker = self.track_errors();
             self.resolve_function(function_key, &context);
-            if self.ctx.errors_happened(tracker) {
+            if self.errors_happened_res(tracker).is_err() {
                 continue;
             }
             let function_reader = self.functions.read();
@@ -101,7 +100,7 @@ impl<'arena> TypeckCtx<'arena> {
                     annotation.get_langitem(),
                     function_reader[function_key].0.span,
                 ) {
-                    self.ctx.emit_diag(e);
+                    _ = self.emit_diag(e);
                 }
             }
         }
@@ -111,9 +110,9 @@ impl<'arena> TypeckCtx<'arena> {
         // └────────────────────┘
         let ext_function_keys = context.external_functions.read().keys().collect::<Vec<_>>();
         for ext_function_key in ext_function_keys {
-            let tracker = self.ctx.track_errors();
+            let tracker = self.track_errors();
             self.resolve_ext_function(ext_function_key, &context);
-            if self.ctx.errors_happened(tracker) {
+            if self.errors_happened_res(tracker).is_err() {
                 continue;
             }
             let ext_function_reader = self.external_functions.read();
@@ -127,7 +126,7 @@ impl<'arena> TypeckCtx<'arena> {
                     annotation.get_langitem(),
                     ext_function_reader[ext_function_key].0.span,
                 ) {
-                    self.ctx.emit_diag(e);
+                    _ = self.emit_diag(e);
                 }
             }
         }
@@ -137,9 +136,9 @@ impl<'arena> TypeckCtx<'arena> {
         // └─────────┘
         let statics_keys = context.statics.read().keys().collect::<Vec<_>>();
         for static_key in statics_keys {
-            let tracker = self.ctx.track_errors();
+            let tracker = self.track_errors();
             self.resolve_static(static_key, &context);
-            if self.ctx.errors_happened(tracker) {
+            if self.errors_happened_res(tracker).is_err() {
                 continue;
             }
             let static_reader = self.statics.read();
@@ -152,7 +151,7 @@ impl<'arena> TypeckCtx<'arena> {
                     annotation.get_langitem(),
                     static_reader[static_key].span,
                 ) {
-                    self.ctx.emit_diag(e);
+                    _ = self.emit_diag(e);
                 }
             }
         }
@@ -162,9 +161,9 @@ impl<'arena> TypeckCtx<'arena> {
         // └────────┘
         let trait_keys = context.traits.read().keys().collect::<Vec<_>>();
         for trait_key in trait_keys {
-            let tracker = self.ctx.track_errors();
+            let tracker = self.track_errors();
             self.resolve_trait(trait_key, &context);
-            if self.ctx.errors_happened(tracker) {
+            if self.errors_happened_res(tracker).is_err() {
                 continue;
             }
             let trait_reader = self.traits.read();
@@ -177,7 +176,7 @@ impl<'arena> TypeckCtx<'arena> {
                     annotation.get_langitem(),
                     trait_reader[trait_key].span,
                 ) {
-                    self.ctx.emit_diag(e);
+                    _ = self.emit_diag(e);
                 }
             }
         }
@@ -187,7 +186,37 @@ impl<'arena> TypeckCtx<'arena> {
             self.resolve_struct_impls(struct_id, &context);
         }
 
-        lang_items_writer.check(self);
+        let mut structs_left = IndexMap::new();
+        context
+            .structs
+            .read()
+            .keys()
+            .zip(std::iter::repeat(ResolvingState::Pending))
+            .for_each(|(k, v)| structs_left.insert(k, v));
+
+        // ┌──────────────────────────────────────────┐
+        // │ Structs v2 (checking that they're sized) │
+        // └──────────────────────────────────────────┘
+        let struct_reader = self.structs.read();
+        let mut field_struct_list = Vec::new();
+        loop {
+            let Some(key) = structs_left.keys().next() else {
+                break;
+            };
+
+            field_struct_list.clear();
+            Self::check_struct(
+                self.ctx,
+                key,
+                &mut structs_left,
+                &mut field_struct_list,
+                &struct_reader,
+            );
+        }
+        drop(struct_reader);
+
+        lang_items_writer.check(self)?;
+        self.errors_happened_res(tracker)
     }
 
     fn resolve_struct_impls(&self, struct_key: StructId, context: &ModuleContext<'arena>) {
@@ -203,15 +232,20 @@ impl<'arena> TypeckCtx<'arena> {
         let module = struct_writer[struct_key].module_id;
 
         for (name, implementation, span) in trait_impl {
-            let trait_id = match resolve_import(context, module, &[name], span, &mut HashSet::new())
-            {
-                Err(e) => {
-                    self.ctx.emit_diag(e);
+            let trait_id = match resolve_import(
+                context,
+                self.ctx,
+                module,
+                std::iter::once(&name),
+                span,
+                &mut HashSet::new(),
+            ) {
+                Err(ErrorEmitted(..)) => {
                     continue;
                 }
-                Ok(ModuleScopeValue::Trait(trait_id)) => trait_id,
-                Ok(_) => {
-                    self.ctx.emit_unbound_ident(span, name.symbol());
+                Ok(ResolvedValue::Trait(trait_id)) => trait_id,
+                Ok(v) => {
+                    _ = self.emit_mismatching_scope_type(span, v.into(), ScopeKind::Trait);
                     continue;
                 }
             };
@@ -220,7 +254,7 @@ impl<'arena> TypeckCtx<'arena> {
             if typed_trait.functions.len() != implementation.len() {
                 for (name, &func_id) in &implementation {
                     if !typed_trait.functions.iter().any(|(v, ..)| v == name) {
-                        self.ctx.emit_is_not_trait_member(
+                        _ = self.emit_is_not_trait_member(
                             function_reader[func_id].0.span,
                             name.symbol(),
                         );
@@ -231,7 +265,7 @@ impl<'arena> TypeckCtx<'arena> {
             let mut trait_impl = Vec::new();
             for (name, args, return_type, ..) in &typed_trait.functions {
                 let Some(&func_id) = implementation.get(name) else {
-                    self.ctx.emit_missing_trait_item(span, name.symbol());
+                    _ = self.emit_missing_trait_item(span, name.symbol());
                     continue;
                 };
 
@@ -250,13 +284,12 @@ impl<'arena> TypeckCtx<'arena> {
                         .iter()
                         .map(|(_, v)| *v)
                         .collect::<Vec<_>>();
-                    self.ctx
-                        .emit_mismatching_arguments(function_contract.span, expected, found);
+                    _ = self.emit_mismatching_arguments(function_contract.span, expected, found);
                     with_errs = true;
                 }
 
                 if *return_type != function_contract.return_type {
-                    self.ctx.emit_mismatching_return_type(
+                    _ = self.emit_mismatching_return_type(
                         function_contract.span,
                         *return_type,
                         function_contract.return_type,
@@ -292,7 +325,7 @@ impl<'arena> TypeckCtx<'arena> {
                     .copied(),
             )
         {
-            let self_ty = self.ctx.intern_ty(TyKind::Struct {
+            let self_ty = self.intern_ty(TyKind::Struct {
                 struct_id: struct_key,
                 name: struct_reader[struct_key].name,
             });
@@ -311,6 +344,109 @@ impl<'arena> TypeckCtx<'arena> {
         }
     }
 
+    // Checks that the struct isn't recursive, as well as that
+    fn check_struct(
+        ctx: TypeCtx<'arena>,
+        struct_id: StructId,
+        left: &mut IndexMap<StructId, ResolvingState>,
+        // a list of field and struct spans
+        field_struct_list: &mut Vec<(Span<'arena>, Span<'arena>)>,
+        struct_reader: &IndexMap<StructId, TypedStruct<'arena>>,
+    ) {
+        fn check_ty<'ctx>(
+            ctx: TypeCtx<'ctx>,
+            ty: Ty<'ctx>,
+            left: &mut IndexMap<StructId, ResolvingState>,
+            // a list of field and struct spans
+            field_struct_list: &mut Vec<(Span<'ctx>, Span<'ctx>)>,
+            struct_reader: &IndexMap<StructId, TypedStruct<'ctx>>,
+        ) {
+            match &**ty {
+                // unsized types
+                TyKind::DynType(_)
+                | TyKind::UnsizedArray(_)
+                | TyKind::Generic { sized: false, .. } => {
+                    _ = ctx.emit_unsized_struct_field(field_struct_list.last().unwrap().0, ty)
+                }
+                // check struct
+                &TyKind::Struct { struct_id, .. } => match left.get(struct_id) {
+                    Some(ResolvingState::Working) => {
+                        let last = field_struct_list.last().unwrap();
+                        let mut diagnostic = TypecheckingError::CyclicStruct {
+                            field: last.0,
+                            struct_def: last.1,
+                        }
+                        .to_error();
+                        for &(field_span, struct_span) in field_struct_list.iter().rev().skip(1) {
+                            diagnostic.add_primary_label(field_span, "recursive");
+                            diagnostic.add_secondary_label(struct_span, "");
+                        }
+                    }
+                    Some(ResolvingState::Pending) => TypeckCtx::check_struct(
+                        ctx,
+                        struct_id,
+                        left,
+                        field_struct_list,
+                        struct_reader,
+                    ),
+                    None => {}
+                },
+                // containers
+                &TyKind::SizedArray { ty, .. } => {
+                    check_ty(ctx, ty, left, field_struct_list, struct_reader);
+                }
+                TyKind::Tuple(ty_list) => {
+                    for &ty in ty_list.iter() {
+                        check_ty(ctx, ty, left, field_struct_list, struct_reader);
+                    }
+                }
+
+                // self
+                TyKind::PrimitiveSelf => {
+                    _ = ctx.emit_item_not_found(
+                        field_struct_list.last().unwrap().0,
+                        symbols::Types::self_ty,
+                    );
+                }
+
+                // primitives, sized generics, function pointers, and &_
+                TyKind::Function(_)
+                | TyKind::Ref(_)
+                | TyKind::PrimitiveVoid
+                | TyKind::PrimitiveNever
+                | TyKind::PrimitiveI8
+                | TyKind::PrimitiveI16
+                | TyKind::PrimitiveI32
+                | TyKind::PrimitiveI64
+                | TyKind::PrimitiveISize
+                | TyKind::PrimitiveU8
+                | TyKind::PrimitiveU16
+                | TyKind::PrimitiveU32
+                | TyKind::PrimitiveU64
+                | TyKind::PrimitiveUSize
+                | TyKind::PrimitiveF32
+                | TyKind::PrimitiveF64
+                | TyKind::PrimitiveStr
+                | TyKind::PrimitiveBool
+                | TyKind::Generic { sized: true, .. } => {}
+            }
+        }
+
+        match left.get_mut(struct_id) {
+            Some(v @ ResolvingState::Pending) => *v = ResolvingState::Working,
+            Some(ResolvingState::Working) => unreachable!(),
+            None => return,
+        }
+        let structure = &struct_reader[struct_id];
+        let struct_def = structure.name.span();
+        for &(name, ty, _) in &structure.elements {
+            field_struct_list.push((name.span(), struct_def));
+            check_ty(ctx, ty, left, field_struct_list, struct_reader);
+            field_struct_list.pop();
+        }
+        left.remove(struct_id);
+    }
+
     fn resolve_function(&self, function_id: FunctionId, context: &ModuleContext<'arena>) {
         let mut writer = context.functions.write();
         let module_id = writer[function_id].2;
@@ -324,32 +460,26 @@ impl<'arena> TypeckCtx<'arena> {
         let mut generics = Vec::with_capacity(untyped_generics.len());
         for generic in untyped_generics {
             let mut bounds = Vec::with_capacity(generic.bounds.len());
-            for mut bound in generic.bounds {
+            for bound in generic.bounds {
                 match resolve_import(
                     context,
+                    self.ctx,
                     module_id,
-                    bound.0.as_slice(),
+                    bound.0.as_slice().iter(),
                     bound.1,
                     &mut HashSet::new(),
                 ) {
-                    Ok(ModuleScopeValue::Trait(v)) => bounds.push(v),
-                    Ok(_) => {
-                        self.ctx.emit_unbound_ident(
-                            bound.1,
-                            bound
-                                .0
-                                .pop()
-                                .expect("a path has to have at least one element")
-                                .symbol(),
-                        );
+                    Ok(ResolvedValue::Trait(v)) => bounds.push(v),
+                    Ok(v) => {
+                        _ = self.emit_mismatching_scope_type(bound.1, ScopeKind::Trait, v.into());
                     }
-                    Err(e) => _ = self.ctx.emit_diag(e),
+                    Err(ErrorEmitted(..)) => {}
                 }
             }
             generics.push(TypedGeneric {
                 name: generic.name,
                 sized: generic.sized,
-                bounds: ArenaList::new(self.ctx.arena(), &bounds),
+                bounds: ArenaList::new(self.arena(), &bounds),
             });
         }
         let mut resolved_function_contract = TypedFunctionContract {
@@ -364,24 +494,24 @@ impl<'arena> TypeckCtx<'arena> {
         };
         drop(writer);
 
-        let error_tracker = self.ctx.track_errors();
+        let error_tracker = self.track_errors();
         match self.resolve_type(
             module_id,
             &return_type,
             &resolved_function_contract.generics,
         ) {
             Ok(v) => resolved_function_contract.return_type = v,
-            Err(e) => _ = self.ctx.emit_diag(e),
+            Err(e) => _ = self.emit_diag(e),
         }
 
         for arg in arguments {
             match self.resolve_type(module_id, &arg.ty, &resolved_function_contract.generics) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                Err(e) => _ = self.ctx.emit_diag(e),
+                Err(e) => _ = self.emit_diag(e),
             }
         }
 
-        if !self.ctx.errors_happened(error_tracker) {
+        if self.errors_happened_res(error_tracker).is_ok() {
             self.functions.write()[function_id].0 = resolved_function_contract;
         }
     }
@@ -412,20 +542,20 @@ impl<'arena> TypeckCtx<'arena> {
         };
         drop(writer);
 
-        let tracker = self.ctx.track_errors();
+        let tracker = self.track_errors();
         match self.resolve_type(module_id, &return_type, &[]) {
             Ok(v) => resolved_function_contract.return_type = v,
-            Err(e) => _ = self.ctx.emit_diag(e),
+            Err(e) => _ = self.emit_diag(e),
         }
 
         for arg in arguments {
             match self.resolve_type(module_id, &arg.ty, &[]) {
                 Ok(v) => resolved_function_contract.arguments.push((arg.name, v)),
-                Err(e) => _ = self.ctx.emit_diag(e),
+                Err(e) => _ = self.emit_diag(e),
             }
         }
 
-        if !self.ctx.errors_happened(tracker) {
+        if self.errors_happened_res(tracker).is_ok() {
             self.external_functions.write()[ext_function_id] = (resolved_function_contract, None);
         }
     }
@@ -452,7 +582,7 @@ impl<'arena> TypeckCtx<'arena> {
                     comment,
                 );
             }
-            Err(e) => _ = self.ctx.emit_diag(e),
+            Err(e) => _ = self.emit_diag(e),
         }
     }
 
@@ -467,13 +597,13 @@ impl<'arena> TypeckCtx<'arena> {
         drop(writer);
 
         let mut typed_functions = Vec::new();
-        let tracker = self.ctx.track_errors();
+        let tracker = self.track_errors();
 
         for func in functions {
             let typed_return_type = match self.resolve_type(module_id, &func.return_ty, &[]) {
                 Ok(v) => v,
                 Err(e) => {
-                    self.ctx.emit_diag(e);
+                    _ = self.emit_diag(e);
                     continue;
                 }
             };
@@ -483,7 +613,7 @@ impl<'arena> TypeckCtx<'arena> {
             for arg in &func.args {
                 match self.resolve_type(module_id, &arg.ty, &[]) {
                     Ok(v) => typed_arguments.push((arg.name, v)),
-                    Err(e) => _ = self.ctx.emit_diag(e),
+                    Err(e) => _ = self.emit_diag(e),
                 }
             }
 
@@ -497,7 +627,7 @@ impl<'arena> TypeckCtx<'arena> {
             ));
         }
 
-        if !self.ctx.errors_happened(tracker) {
+        if self.errors_happened_res(tracker).is_ok() {
             self.traits.write()[trait_id] = TypedTrait {
                 name,
                 span,

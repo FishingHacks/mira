@@ -1,27 +1,6 @@
-// pub fn main() {
-//     if (get_bool() || get_bool()) "1".println();
-//     else "2".println();
-//
-//     if (get_bool() && get_bool()) "1".println();
-//     else "2".println();
-// }
-//
-// /// meow
-// /// This is a doc comment.
-// /**
-//  *  This is a multiline comment
-//     With spaces
-// *   and other stuff
-// */
-// /// and back to a single line doc comment
-// extern fn get_bool() -> bool;
-
-trait Meow {}
-
-pub fn read<T: Meow>(v: &T) -> T = *v;
+struct meow { me: &meow }
 
 pub fn main() {
-    let a = 12u32;
-    let b = read::<u32>(&a);
-    b.println();
+    let v = meow { me: &void as &meow };
+    let v1 = meow { me: &v };
 }

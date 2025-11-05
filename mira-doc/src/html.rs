@@ -11,12 +11,12 @@ use mira_context::DocComment;
 use mira_errors::Diagnostic;
 use mira_parser::{
     annotations::Annotations,
-    module::{
-        ExternalFunctionId, FunctionId, ModuleId, ModuleScopeValue, StaticId, StructId, TraitId,
-    },
+    module::{ExternalFunctionId, FunctionId, ModuleId, StaticId, StructId, TraitId},
 };
 use mira_spans::Symbol;
-use mira_typeck::{CommonFunction, Ty, TyKind, TypeCtx, TypeckCtx, default_types};
+use mira_typeck::{
+    CommonFunction, EMPTY_TYLIST, ResolvedValue, Ty, TyKind, TypeCtx, TypeckCtx, default_types,
+};
 
 pub(crate) mod err_fs {
     use std::{fs, path::PathBuf};
@@ -53,8 +53,8 @@ type QualifiedPaths<'ctx> = (PathBuf, Vec<Symbol<'ctx>>, Vec<ModuleId>);
 
 pub(crate) struct HTMLGenerateContext<'ctx> {
     pub path: PathBuf,
-    pub generated: RefCell<HashMap<ModuleScopeValue, Rc<QualifiedPaths<'ctx>>>>,
-    pub queued: RefCell<HashMap<ModuleScopeValue, Rc<QualifiedPaths<'ctx>>>>,
+    pub generated: RefCell<HashMap<ResolvedValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
+    pub queued: RefCell<HashMap<ResolvedValue<'ctx>, Rc<QualifiedPaths<'ctx>>>>,
     pub tc_ctx: Arc<TypeckCtx<'ctx>>,
     modules: Vec<ModuleId>,
 }
@@ -77,7 +77,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             modules,
         };
         for &module in &me.modules {
-            me.ensure_exists(ModuleScopeValue::Module(module));
+            me.ensure_exists(ResolvedValue::Module(module));
         }
         Ok(me)
     }
@@ -86,36 +86,36 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     /// std::intrinsics::type_name) and the list of modules to get there (e.g. std::intrinsics).
     /// Note that if you put in a module however, the module path does *not* contain that module
     /// (e.g. the result for the intrinsics module in std would be `$root/std/intrinsics/index.html`, ["std", "intrinsics"], [module<std>])
-    pub(crate) fn get_path(&self, mut item: ModuleScopeValue) -> QualifiedPaths<'ctx> {
+    pub(crate) fn get_path(&self, mut item: ResolvedValue<'_>) -> QualifiedPaths<'ctx> {
         let mut symbol_path = Vec::new();
         let mut module_path = Vec::new();
-        let is_module = matches!(item, ModuleScopeValue::Module(_));
+        let is_module = matches!(item, ResolvedValue::Module(_));
         loop {
             let (name, parent_module) = match item {
-                ModuleScopeValue::Function(key) => {
+                ResolvedValue::Function(key, _) => {
                     let res = &self.tc_ctx.functions.read()[key];
                     // this should never be an anonymous function, as those can only be inside
                     // expressions, which miradoc doesn't care about.
                     (res.0.name.unwrap().symbol(), res.0.module_id)
                 }
-                ModuleScopeValue::ExternalFunction(key) => {
+                ResolvedValue::ExternalFunction(key) => {
                     let res = &self.tc_ctx.external_functions.read()[key];
                     // extern fn can't be anonymous
                     (res.0.name.unwrap().symbol(), res.0.module_id)
                 }
-                ModuleScopeValue::Struct(key) => {
+                ResolvedValue::Struct(key) => {
                     let res = &self.tc_ctx.structs.read()[key];
                     (res.name.symbol(), res.module_id)
                 }
-                ModuleScopeValue::Static(key) => {
+                ResolvedValue::Static(key) => {
                     let res = &self.tc_ctx.statics.read()[key];
                     (res.name.symbol(), res.module_id)
                 }
-                ModuleScopeValue::Trait(key) => {
+                ResolvedValue::Trait(key) => {
                     let res = &self.tc_ctx.traits.read()[key];
                     (res.name.symbol(), res.module_id)
                 }
-                ModuleScopeValue::Module(key) => {
+                ResolvedValue::Module(key) => {
                     let res = &self.tc_ctx.modules.read()[key];
                     let Some(parent) = res.parent else {
                         symbol_path.push(res.name);
@@ -126,7 +126,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             };
             symbol_path.push(name);
             module_path.push(parent_module);
-            item = ModuleScopeValue::Module(parent_module);
+            item = ResolvedValue::Module(parent_module);
         }
         symbol_path.reverse();
         module_path.reverse();
@@ -142,7 +142,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         (path, symbol_path, module_path)
     }
 
-    pub(crate) fn ensure_exists(&self, item: ModuleScopeValue) {
+    pub(crate) fn ensure_exists(&self, item: ResolvedValue<'ctx>) {
         if self.generated.borrow().contains_key(&item) || self.queued.borrow().contains_key(&item) {
             return;
         }
@@ -151,11 +151,11 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             .borrow_mut()
             .insert(item, Rc::clone(&fully_qualified_path));
         for &path in fully_qualified_path.2.iter() {
-            self.ensure_exists(ModuleScopeValue::Module(path));
+            self.ensure_exists(ResolvedValue::Module(path));
         }
     }
 
-    pub(crate) fn get_item_path(&self, item: ModuleScopeValue, my_path: &Path) -> String {
+    pub(crate) fn get_item_path(&self, item: ResolvedValue<'ctx>, my_path: &Path) -> String {
         let generated = self.generated.borrow();
         let mut queued = self.queued.borrow();
         let path = match generated.get(&item).or_else(|| queued.get(&item)) {
@@ -194,7 +194,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         }
         match item {
             // a::b turns into a/b/index.html if b is a module.
-            ModuleScopeValue::Module(_) => s.push_str("index.html"),
+            ResolvedValue::Module(_) => s.push_str("index.html"),
             _ => {
                 // a::b turns into a/b/. remove the last character for a/b and add .html for
                 // a/b.html.
@@ -256,7 +256,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let reader = self.tc_ctx.modules.read();
         // <a href="#">root</a>
         for &key in &self.modules {
-            let path = self.get_item_path(ModuleScopeValue::Module(key), curfile);
+            let path = self.get_item_path(ResolvedValue::Module(key), curfile);
             s.push_str("<a href=\"");
             s.push_fmt(format_args!("{}", urlencode(&path)));
             s.push_str("\">");
@@ -272,7 +272,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         &self,
         output: &mut String,
         path: &QualifiedPaths<'ctx>,
-        item: ModuleScopeValue,
+        item: ResolvedValue<'_>,
     ) {
         let (my_path, sym_path, path) = path;
         // <div class="path"><a href="#">std</a><span>::</span><a href="#">intrinsics</a><span>::</span><a href="#">type_name</a></div>
@@ -285,7 +285,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             output.push_str("<a href=");
             output.push_fmt(format_args!(
                 "\"{}\"",
-                urlencode(&self.get_item_path(ModuleScopeValue::Module(path[i]), my_path))
+                urlencode(&self.get_item_path(ResolvedValue::Module(path[i]), my_path))
             ));
             output.push('>');
             output.escaped().push_str(sym.to_str());
@@ -322,7 +322,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         self.generate_header(
             &mut s,
             fully_qualified_path,
-            ModuleScopeValue::Function(key),
+            ResolvedValue::Function(key, EMPTY_TYLIST),
         );
         // <pre class="item-decl code"><code>fn type_name&lt;unsized T&gt;() -&gt; &amp;str { .. }</code></pre>
         s.push_str(r#"<pre class="item-decl code"><code>"#);
@@ -349,7 +349,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                     }
 
                     s.push_str("<a class=\"trait\" href=\"");
-                    let path = self.get_item_path(ModuleScopeValue::Trait(bound), curfile);
+                    let path = self.get_item_path(ResolvedValue::Trait(bound), curfile);
                     s.push_fmt(format_args!("{}", urlencode(&path)));
                     s.push_str("\">");
                     s.escaped()
@@ -392,7 +392,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         self.generate_header(
             &mut s,
             fully_qualified_path,
-            ModuleScopeValue::ExternalFunction(key),
+            ResolvedValue::ExternalFunction(key),
         );
         // <pre class="item-decl code"><code>fn type_name&lt;unsized T&gt;() -&gt; &amp;str { .. }</code></pre>
         s.push_str(r#"<pre class="item-decl code"><code>"#);
@@ -430,7 +430,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let v = &self.tc_ctx.statics.read()[key];
         let mut s = self.generate_file_start(curfile, v.name.symbol().to_str());
 
-        self.generate_header(&mut s, fully_qualified_path, ModuleScopeValue::Static(key));
+        self.generate_header(&mut s, fully_qualified_path, ResolvedValue::Static(key));
         // <pre class="item-decl code"><code>fn type_name&lt;unsized T&gt;() -&gt; &amp;str { .. }</code></pre>
         s.push_str(r#"<pre class="item-decl code"><code>"#);
         Self::generate_annotations(&v.annotations, &mut s);
@@ -455,7 +455,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let mut s = self.generate_file_start(curfile, trait_.name.symbol().to_str());
         let module = trait_.module_id;
 
-        self.generate_header(&mut s, fully_qualified_path, ModuleScopeValue::Trait(key));
+        self.generate_header(&mut s, fully_qualified_path, ResolvedValue::Trait(key));
         // <pre class="item-decl code"><code>fn type_name&lt;unsized T&gt;() -&gt; &amp;str { .. }</code></pre>
         s.push_str(r#"<pre class="item-decl code"><code>"#);
         Self::generate_annotations(&trait_.annotations, &mut s);
@@ -515,7 +515,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let mut s = self.generate_file_start(curfile, structure.name.symbol().to_str());
         let module = structure.module_id;
 
-        self.generate_header(&mut s, fully_qualified_path, ModuleScopeValue::Struct(key));
+        self.generate_header(&mut s, fully_qualified_path, ResolvedValue::Struct(key));
         // <pre class="item-decl code"><code>fn type_name&lt;unsized T&gt;() -&gt; &amp;str { .. }</code></pre>
         s.push_str(r#"<pre class="item-decl code"><code>"#);
         Self::generate_annotations(&structure.annotations, &mut s);
@@ -541,7 +541,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                     }
 
                     s.push_str("<a class=\"trait\" href=\"");
-                    let path = self.get_item_path(ModuleScopeValue::Trait(bound), curfile);
+                    let path = self.get_item_path(ResolvedValue::Trait(bound), curfile);
                     s.push_fmt(format_args!("{}", urlencode(&path)));
                     s.push_str("\">");
                     s.escaped()
@@ -615,12 +615,12 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         }
 
         let traits = self.tc_ctx.traits.read();
-        for (traitid, implementation) in structure.trait_impl.entries() {
-            let trait_ = &traits[traitid];
+        for (trait_id, implementation) in structure.trait_impl.entries() {
+            let trait_ = &traits[trait_id];
             s.push_str("<h3 id=\"traits.");
             s.escaped().push_str(trait_.name.symbol().to_str());
             s.push_str("\" class=\"anchorable header\">impl <a href=\"");
-            let path = self.get_item_path(ModuleScopeValue::Trait(traitid), curfile);
+            let path = self.get_item_path(ResolvedValue::Trait(trait_id), curfile);
             s.push_fmt(format_args!("{}", urlencode(&path)));
             s.push_str("\" class=\"trait\">");
             s.escaped().push_str(trait_.name.symbol().to_str());
@@ -708,7 +708,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         self.generate_header(
             &mut s,
             fully_qualified_path,
-            ModuleScopeValue::Module(module_id),
+            ResolvedValue::Module(module_id),
         );
 
         self.generate_doc_comment(module.comment, &mut s, module_id, curfile);
@@ -721,14 +721,14 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
 
         for export in module.exports.iter() {
             match module.scope[export] {
-                ModuleScopeValue::Function(key) => functions.push(CommonFunction::Normal(key)),
-                ModuleScopeValue::ExternalFunction(key) => {
+                ResolvedValue::Function(key, _) => functions.push(CommonFunction::Normal(key)),
+                ResolvedValue::ExternalFunction(key) => {
                     functions.push(CommonFunction::External(key))
                 }
-                ModuleScopeValue::Struct(key) => structs.push(key),
-                ModuleScopeValue::Static(key) => statics.push(key),
-                ModuleScopeValue::Module(key) => modules.push(key),
-                ModuleScopeValue::Trait(key) => traits.push(key),
+                ResolvedValue::Struct(key) => structs.push(key),
+                ResolvedValue::Static(key) => statics.push(key),
+                ResolvedValue::Module(key) => modules.push(key),
+                ResolvedValue::Trait(key) => traits.push(key),
             }
         }
 
@@ -737,7 +737,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(r##"<h2 id="modules" class="anchorable header">Modules<a class="anchor" href="#modules">§</a></h2><dl class="item-list">"##);
         }
         for key in modules {
-            self.write_reference(ModuleScopeValue::Module(key), &mut s, curfile, module_id);
+            self.write_reference(ResolvedValue::Module(key), &mut s, curfile, module_id);
         }
         if has_modules {
             s.push_str("</dl>");
@@ -749,8 +749,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         }
         for key in functions {
             let key = match key {
-                CommonFunction::External(key) => ModuleScopeValue::ExternalFunction(key),
-                CommonFunction::Normal(key) => ModuleScopeValue::Function(key),
+                CommonFunction::External(key) => ResolvedValue::ExternalFunction(key),
+                CommonFunction::Normal(key) => ResolvedValue::Function(key, EMPTY_TYLIST),
             };
             self.write_reference(key, &mut s, curfile, module_id);
         }
@@ -763,7 +763,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(r##"<h2 id="structs" class="anchorable header">Structs<a class="anchor" href="#structs">§</a></h2><dl class="item-list">"##);
         }
         for key in structs {
-            self.write_reference(ModuleScopeValue::Struct(key), &mut s, curfile, module_id);
+            self.write_reference(ResolvedValue::Struct(key), &mut s, curfile, module_id);
         }
         if has_structs {
             s.push_str("</dl>");
@@ -774,7 +774,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(r##"<h2 id="traits" class="anchorable header">Traits<a class="anchor" href="#traits">§</a></h2><dl class="item-list">"##);
         }
         for key in traits {
-            self.write_reference(ModuleScopeValue::Trait(key), &mut s, curfile, module_id);
+            self.write_reference(ResolvedValue::Trait(key), &mut s, curfile, module_id);
         }
         if has_traits {
             s.push_str("</dl>");
@@ -785,7 +785,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(r##"<h2 id="statics" class="anchorable header">Statics<a class="anchor" href="#statics">§</a></h2><dl class="item-list">"##);
         }
         for key in statics {
-            self.write_reference(ModuleScopeValue::Static(key), &mut s, curfile, module_id);
+            self.write_reference(ResolvedValue::Static(key), &mut s, curfile, module_id);
         }
         if has_statics {
             s.push_str("</dl>");
@@ -797,7 +797,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
 
     fn write_reference(
         &self,
-        value: ModuleScopeValue,
+        value: ResolvedValue<'ctx>,
         s: &mut String,
         curfile: &Path,
         module: ModuleId,
@@ -816,34 +816,34 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         self.generate_ref_comment(comment, s, module, curfile);
     }
 
-    fn comment_name_of(&self, item: ModuleScopeValue) -> (Symbol<'ctx>, DocComment) {
+    fn comment_name_of(&self, item: ResolvedValue<'_>) -> (Symbol<'ctx>, DocComment) {
         match item {
-            ModuleScopeValue::Function(store_key) => {
+            ResolvedValue::Function(store_key, _) => {
                 let reader = self.tc_ctx.functions.read();
                 let v = &reader[store_key].0;
                 (v.name.unwrap().symbol(), v.comment)
             }
-            ModuleScopeValue::ExternalFunction(store_key) => {
+            ResolvedValue::ExternalFunction(store_key) => {
                 let reader = self.tc_ctx.external_functions.read();
                 let v = &reader[store_key].0;
                 (v.name.unwrap().symbol(), v.comment)
             }
-            ModuleScopeValue::Struct(store_key) => {
+            ResolvedValue::Struct(store_key) => {
                 let reader = self.tc_ctx.structs.read();
                 let v = &reader[store_key];
                 (v.name.symbol(), v.comment)
             }
-            ModuleScopeValue::Static(store_key) => {
+            ResolvedValue::Static(store_key) => {
                 let reader = self.tc_ctx.statics.read();
                 let v = &reader[store_key];
                 (v.name.symbol(), v.comment)
             }
-            ModuleScopeValue::Module(store_key) => {
+            ResolvedValue::Module(store_key) => {
                 let reader = self.tc_ctx.modules.read();
                 let v = &reader[store_key];
                 (v.name, v.comment)
             }
-            ModuleScopeValue::Trait(store_key) => {
+            ResolvedValue::Trait(store_key) => {
                 let reader = self.tc_ctx.traits.read();
                 let v = &reader[store_key];
                 (v.name.symbol(), v.comment)
@@ -862,7 +862,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                         s.push_str(" + ");
                     }
                     s.push_str("<a class=\"trait\" href=\"");
-                    let path = self.get_item_path(ModuleScopeValue::Trait(trait_), curfile);
+                    let path = self.get_item_path(ResolvedValue::Trait(trait_), curfile);
                     s.push_fmt(format_args!("{}", urlencode(&path)));
                     s.push_str("\">");
                     s.escaped().push_str(trait_name.symbol().to_str());
@@ -871,7 +871,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             }
             &&T::Struct { struct_id, name } => {
                 s.push_str("<a class=\"struct\" href=\"");
-                let path = self.get_item_path(ModuleScopeValue::Struct(struct_id), curfile);
+                let path = self.get_item_path(ResolvedValue::Struct(struct_id), curfile);
                 s.push_fmt(format_args!("{}", urlencode(&path)));
                 s.push_str("\">");
                 s.escaped().push_str(name.symbol().to_str());
@@ -1087,13 +1087,13 @@ impl HTMLEscapeExt for String {
     }
 }
 
-fn item_ty(v: ModuleScopeValue) -> &'static str {
+fn item_ty(v: ResolvedValue<'_>) -> &'static str {
     match v {
-        ModuleScopeValue::Function(_) | ModuleScopeValue::ExternalFunction(_) => "function",
-        ModuleScopeValue::Struct(_) => "struct",
-        ModuleScopeValue::Static(_) => "static",
-        ModuleScopeValue::Module(_) => "module",
-        ModuleScopeValue::Trait(_) => "trait",
+        ResolvedValue::Function(_, _) | ResolvedValue::ExternalFunction(_) => "function",
+        ResolvedValue::Struct(_) => "struct",
+        ResolvedValue::Static(_) => "static",
+        ResolvedValue::Module(_) => "module",
+        ResolvedValue::Trait(_) => "trait",
     }
 }
 

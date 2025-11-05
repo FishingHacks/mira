@@ -214,8 +214,8 @@ fn enum_diagnostics_ext<'a>(
             }
         });
         emitter_def.extend(quote! {
-            fn #emit_name(&self, #function_args) {
-                self.emit_diagnostic(mira_errors::Diagnostic::new(#constructor, #level));
+            fn #emit_name(&self, #function_args) -> mira_errors::ErrorEmitted {
+                self.emit_diagnostic(mira_errors::Diagnostic::new(#constructor, #level))
             }
         });
     }

@@ -1,8 +1,9 @@
 use std::{fmt::Arguments, fs::File, io::Write, path::Path, sync::Arc};
 
 use mira_context::DiagEmitter as DiagEmitMethod;
-use mira_context::ErrorEmitted;
-use mira_errors::{Diagnostic, Diagnostics, FileOpenError, IoWriteError, StdoutWriteError};
+use mira_errors::{
+    Diagnostic, Diagnostics, ErrorEmitted, FileOpenError, IoWriteError, StdoutWriteError,
+};
 #[cfg(feature = "typeck")]
 use mira_parser::module::FunctionId;
 #[cfg(feature = "typeck")]
@@ -225,9 +226,9 @@ impl<'ctx> Context<'ctx> {
         {
             Ok(v) => v,
             Err(e) => {
-                self.ctx
-                    .emit_diag(IoReadError(file.to_path_buf(), e).to_error());
-                return Err(ErrorEmitted);
+                return Err(self
+                    .ctx
+                    .emit_diag(IoReadError(file.to_path_buf(), e).to_error()));
             }
         };
         let mut lexer = Lexer::new(self.ctx.to_shared(), f);
@@ -241,20 +242,14 @@ impl<'ctx> Context<'ctx> {
         let mut diags = Diagnostics::new();
         match mira_parser::expand_tokens(self.ctx.to_shared(), file.clone(), tokens, &mut diags) {
             Some(v) => Ok(v),
-            None => {
-                self.ctx.emit_diags(diags);
-                Err(ErrorEmitted)
-            }
+            None => Err(self.ctx.emit_diags(diags)),
         }
     }
 
     fn emit(&self, method: &mut EmitMethod, args: Arguments<'_>) -> EmitResult<()> {
         match method.emit_fmt(args) {
             Ok(()) => Ok(()),
-            Err(diag) => {
-                self.ctx.emit_diag(diag);
-                Err(ErrorEmitted)
-            }
+            Err(diag) => Err(self.ctx.emit_diag(diag)),
         }
     }
 
@@ -321,15 +316,8 @@ impl<'ctx> Context<'ctx> {
             self.add_progress_item_child(typechecking_item, "Type Resolution");
 
         let typeck_ctx = TypeckCtx::new(self.ctx, module_ctx.clone());
-        let tracker = self.ctx.track_errors();
-        typeck_ctx.resolve_imports(module_ctx.clone());
-        if self.ctx.errors_happened(tracker) {
-            return Err(ErrorEmitted);
-        }
-        typeck_ctx.resolve_types(module_ctx.clone());
-        if self.ctx.errors_happened(tracker) {
-            return Err(ErrorEmitted);
-        }
+        typeck_ctx.resolve_imports(module_ctx.clone())?;
+        typeck_ctx.resolve_types(module_ctx.clone())?;
 
         self.remove_progress_item(type_resolution_item);
         Ok(typeck_ctx)
@@ -439,10 +427,7 @@ impl<'ctx> Context<'ctx> {
         let mut formatter = Formatter::new(&mut writer, readonly_ctx);
         match TCContextDisplay.fmt(&mut formatter, filter) {
             Ok(()) => Ok(()),
-            Err(_) => {
-                self.ctx.emit_diags(errs);
-                Err(ErrorEmitted)
-            }
+            Err(_) => Err(self.ctx.emit_diags(errs)),
         }
     }
 
@@ -590,8 +575,7 @@ impl<'ctx> Context<'ctx> {
 
         if let Err(e) = codegen_ctx.finish() {
             self.remove_progress_item(codegen_item);
-            self.ctx.emit_diag(CodegenError::from(e).to_error());
-            return Err(ErrorEmitted);
+            return Err(self.ctx.emit_diag(CodegenError::from(e).to_error()));
         }
 
         self.remove_progress_item(codegen_item);
@@ -607,10 +591,7 @@ impl<'ctx> Context<'ctx> {
         let ir = codegen_ctx.gen_ir();
         match method.emit(ir.to_bytes()) {
             Ok(()) => Ok(()),
-            Err(e) => {
-                self.ctx.emit_diag(e);
-                Err(ErrorEmitted)
-            }
+            Err(e) => Err(self.ctx.emit_diag(e)),
         }
     }
 
@@ -623,10 +604,7 @@ impl<'ctx> Context<'ctx> {
         let bitcode = codegen_ctx.gen_bitcode();
         match method.emit(bitcode.as_slice()) {
             Ok(()) => Ok(()),
-            Err(e) => {
-                self.ctx.emit_diag(e);
-                Err(ErrorEmitted)
-            }
+            Err(e) => Err(self.ctx.emit_diag(e)),
         }
     }
 
@@ -641,10 +619,7 @@ impl<'ctx> Context<'ctx> {
             .map_err(|v| self.ctx.emit_diag(v.to_error()))?;
         match method.emit(asm.as_slice()) {
             Ok(()) => Ok(()),
-            Err(e) => {
-                self.ctx.emit_diag(e);
-                Err(ErrorEmitted)
-            }
+            Err(e) => Err(self.ctx.emit_diag(e)),
         }
     }
 
@@ -675,9 +650,9 @@ impl<'ctx> Context<'ctx> {
             opts.target.needs_crt(),
             opts.additional_linker_searchdir,
         ) else {
-            self.ctx
-                .emit_diag(LinkerError::UnableToLocateLinker.to_error());
-            return Err(ErrorEmitted);
+            return Err(self
+                .ctx
+                .emit_diag(LinkerError::UnableToLocateLinker.to_error()));
         };
 
         opts.input.push(LinkerInput::LinkLibrary("unwind".into()));

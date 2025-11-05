@@ -1,6 +1,6 @@
-use crate::TypedModule;
+use crate::{ResolvedValue, TypedModule};
 use mira_lexer::token::IdentDisplay;
-use mira_parser::module::{ModuleId, ModuleScopeValue};
+use mira_parser::module::ModuleId;
 
 use super::formatter::Formatter;
 
@@ -61,31 +61,42 @@ impl ModuleDisplay<'_> {
 }
 
 fn fmt_module_scope_value(
-    value: &ModuleScopeValue,
+    value: &ResolvedValue<'_>,
     f: &mut Formatter<'_, '_, '_>,
 ) -> std::fmt::Result {
     match value {
-        ModuleScopeValue::Function(id) => {
+        ResolvedValue::Function(id, generics) => {
             f.write_str("fn_")?;
-            f.write_value(&id.to_usize())
+            f.write_value(&id.to_usize())?;
+            if !generics.is_empty() {
+                f.write_char('<')?;
+                for (i, ty) in generics.iter().enumerate() {
+                    if i != 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_value(ty)?;
+                }
+                f.write_char('>')?;
+            }
+            Ok(())
         }
-        ModuleScopeValue::ExternalFunction(id) => {
+        ResolvedValue::ExternalFunction(id) => {
             f.write_str("external fn_")?;
             f.write_value(&id.to_usize())
         }
-        ModuleScopeValue::Struct(id) => {
+        ResolvedValue::Struct(id) => {
             f.write_str("struct_")?;
             f.write_value(&id.to_usize())
         }
-        ModuleScopeValue::Static(id) => {
+        ResolvedValue::Static(id) => {
             f.write_str("static_")?;
             f.write_value(&id.to_usize())
         }
-        ModuleScopeValue::Module(id) => {
+        ResolvedValue::Module(id) => {
             f.write_str("module_")?;
             f.write_value(&id.to_usize())
         }
-        ModuleScopeValue::Trait(id) => {
+        ResolvedValue::Trait(id) => {
             f.write_str("trait_")?;
             f.write_value(&id.to_usize())
         }

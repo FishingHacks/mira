@@ -1,20 +1,16 @@
 use std::{collections::HashSet, ops::Deref};
 
 use crate::{
-    CommonFunction, TypedFunctionContract,
+    CommonFunction, ResolvedValue, TypedFunctionContract,
     ir::{BlockId, ScopedIR},
     types::EMPTY_TYLIST,
 };
-use mira_context::ErrorEmitted;
-use mira_errors::Diagnostic;
+use mira_errors::{Diagnostic, ErrorEmitted};
 use mira_lexer::NumberType;
 use mira_parser::{
     ArrayLiteral, BinaryOp, Expression, If, LiteralValue, Path, Statement, TypeRef, UnaryOp, While,
     annotations::Annotations,
-    module::{
-        ExternalFunctionId, FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StaticId,
-        TraitId,
-    },
+    module::{ExternalFunctionId, FunctionId, ModuleContext, ModuleId, StaticId, TraitId},
     std_annotations::{
         ext_vararg::ExternVarArg, intrinsic::IntrinsicAnnotation,
         llvm_intrinsic::LLVMIntrinsicAnnotation,
@@ -340,10 +336,10 @@ pub fn typecheck_static<'arena>(
         Ok((expr_typ, expr)) => {
             let tracker = ctx.track_errors();
             if !expr.is_entirely_literal() {
-                ctx.emit_statics_need_to_be_literal(tc_module_reader[static_id].span);
+                _ = ctx.emit_statics_need_to_be_literal(tc_module_reader[static_id].span);
             }
             if ty != expr_typ {
-                ctx.emit_mismatching_type(tc_module_reader[static_id].span, ty, expr_typ);
+                _ = ctx.emit_mismatching_type(tc_module_reader[static_id].span, ty, expr_typ);
             }
             ctx.errors_happened_res(tracker)?;
             drop(tc_module_reader);
@@ -446,12 +442,12 @@ fn inner_typecheck_function<'arena>(
     };
     let tracker = fn_ctx.track_errors();
     if !contract.return_type.is_sized() {
-        fn_ctx
+        _ = fn_ctx
             .ctx
             .emit_unsized_return_type(contract.span, contract.return_type);
     }
     for (_, arg) in contract.arguments.iter().filter(|v| !v.1.is_sized()) {
-        fn_ctx.emit_unsized_argument(contract.span, *arg);
+        _ = fn_ctx.emit_unsized_argument(contract.span, *arg);
     }
     fn_ctx.errors_happened_res(tracker)?;
 
@@ -466,10 +462,9 @@ fn inner_typecheck_function<'arena>(
 
     let always_returns = typecheck_block_inline(&mut ctx, statement)?;
     if contract.return_type != default_types::void && !always_returns {
-        fn_ctx
+        return Err(fn_ctx
             .ctx
-            .emit_body_does_not_always_return(statement.span());
-        return Err(ErrorEmitted);
+            .emit_body_does_not_always_return(statement.span()));
     }
     // add an implicit `return;` at the end of the function
     if !always_returns {
@@ -566,8 +561,7 @@ fn typecheck_if<'ctx>(
     };
     let (condition_ty, cond) = expr_result?;
     if condition_ty != default_types::bool {
-        ctx.ctx
-            .emit_mismatching_type(*span, default_types::bool, condition_ty);
+        return Err(ctx.emit_mismatching_type(*span, default_types::bool, condition_ty));
     }
     let (if_block, if_stmt_exits) = if_stmt_result?;
     let (else_block, else_stmt_exits) = else_stmt_result?;
@@ -602,8 +596,7 @@ fn typecheck_while<'ctx>(
     let body_result = typecheck_quasi_block(ctx, child);
     let (condition_ty, cond) = condition_result?;
     if condition_ty != default_types::bool {
-        ctx.ctx
-            .emit_mismatching_type(*span, default_types::bool, condition_ty);
+        _ = ctx.emit_mismatching_type(*span, default_types::bool, condition_ty);
     }
     let (body, mut always_exits) = body_result?;
     ctx.errors_happened_res(tracker)?;
@@ -642,9 +635,7 @@ fn typecheck_statement<'ctx>(
                 Ok(true)
             }
             false => {
-                ctx.ctx
-                    .emit_mismatching_type(*span, ctx.contract.return_type, default_types::void);
-                Err(ErrorEmitted)
+                Err(ctx.emit_mismatching_type(*span, ctx.contract.return_type, default_types::void))
             }
         },
         Statement::Return(Some(expression), span) => {
@@ -661,9 +652,11 @@ fn typecheck_statement<'ctx>(
             }
 
             if ty != ctx.contract.return_type {
-                ctx.ctx
-                    .emit_mismatching_type(expression.span(), ctx.contract.return_type, ty);
-                return Err(ErrorEmitted);
+                return Err(ctx.emit_mismatching_type(
+                    expression.span(),
+                    ctx.contract.return_type,
+                    ty,
+                ));
             }
 
             if ctx.put_all_deferred() {
@@ -717,8 +710,7 @@ fn typecheck_statement<'ctx>(
             if let Some(expected_typ) = expected_typ
                 && expected_typ != ty
             {
-                ctx.ctx.emit_mismatching_type(var.span, expected_typ, ty);
-                return Err(ErrorEmitted);
+                return Err(ctx.emit_mismatching_type(var.span, expected_typ, ty));
             }
 
             let value = ctx.add_value(ty);
@@ -996,7 +988,7 @@ fn typecheck_expression<'ctx>(
                     .map_err(|_| {
                         TypecheckingError::CannotFindValue(span, path.clone()).to_error()
                     })?;
-                let ModuleScopeValue::Struct(struct_id) = value else {
+                let ResolvedValue::Struct(struct_id) = value else {
                     return Err(TypecheckingError::CannotFindValue(span, path.clone()).to_error());
                 };
                 let structure = &ctx.fn_ctx.tcx.structs.read()[struct_id];
@@ -1076,7 +1068,7 @@ fn typecheck_expression<'ctx>(
                         TypecheckingError::CannotFindValue(span, path.clone()).to_error()
                     })?;
                 match value {
-                    ModuleScopeValue::Function(id) => {
+                    ResolvedValue::Function(id, _) => {
                         let reader = &ctx.functions.read()[id];
                         let return_type = reader.0.return_type;
                         let arguments = reader.0.arguments.iter().map(|v| v.1).collect::<Vec<_>>();
@@ -1127,7 +1119,7 @@ fn typecheck_expression<'ctx>(
                         };
                         Ok((ctx.intern_ty(TyKind::Function(function_ty)), literal))
                     }
-                    ModuleScopeValue::ExternalFunction(id) => {
+                    ResolvedValue::ExternalFunction(id) => {
                         let reader = &ctx.external_functions.read()[id];
                         let function_typ = FunctionType {
                             return_type: reader.0.return_type,
@@ -1140,7 +1132,7 @@ fn typecheck_expression<'ctx>(
                             TypedLiteral::ExternalFunction(id),
                         ))
                     }
-                    ModuleScopeValue::Static(id) => {
+                    ResolvedValue::Static(id) => {
                         if !generics.is_empty() {
                             return Err(TypecheckingError::UnexpectedGenerics { span }.to_error());
                         }
@@ -1589,7 +1581,7 @@ fn typecheck_expression<'ctx>(
                 trait_path.span,
                 &mut HashSet::new(),
             )?;
-            let ModuleScopeValue::Trait(trait_id) = import else {
+            let ResolvedValue::Trait(trait_id) = import else {
                 return Err(
                     TypecheckingError::CannotFindValue(*span, trait_path.to_normal_path())
                         .to_error(),

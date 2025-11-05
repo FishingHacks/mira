@@ -193,7 +193,7 @@ macro_rules! symbols {
 }
 
 symbols!(
-    Types { u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, NeverType = "!" },
+    Types { u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, NeverType = "!", self_ty = "Self" },
     Keywords { If, While, For, Pub, As, Else, Asm, Volatile, Impl, Fn, In, Unsized, Struct, Trait },
     DefaultIdents { main, r#macro = "macro", hidden }
 );

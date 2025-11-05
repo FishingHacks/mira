@@ -55,7 +55,7 @@ pub mod default_types {
     ];
 }
 
-pub(crate) static EMPTY_TYLIST: TyList<'static> = TyList(&[]);
+pub static EMPTY_TYLIST: TyList<'static> = TyList(&[]);
 interner!(
     TypeListInterner,
     TyList,
@@ -273,53 +273,6 @@ impl<'arena> Ty<'arena> {
     }
 }
 impl<'arena> TyKind<'arena> {
-    pub fn needs_drop(&self, tcx: &TypeckCtx<'_>) -> bool {
-        match self {
-            // we don't know if this type has to be dropped or not, so always invoke the drop impl.
-            TyKind::DynType(_) => true,
-            TyKind::UnsizedArray(ty) | TyKind::SizedArray { ty, .. } => ty.needs_drop(tcx),
-            &TyKind::Struct { struct_id, .. } => {
-                let drop_trait = tcx.lang_items.read().drop_trait;
-                if let Some(drop_trait) = drop_trait
-                    && self.implements(&[drop_trait], tcx)
-                {
-                    return true;
-                }
-                tcx.structs.read()[struct_id]
-                    .elements
-                    .iter()
-                    .any(|v| v.1.needs_drop(tcx))
-            }
-            TyKind::Tuple(tys) => tys.iter().any(|v| v.needs_drop(tcx)),
-            // primitives and pointers (fn(_) -> _ is a pointer) don't need to be dropped.
-            TyKind::Function(_)
-            | TyKind::PrimitiveVoid
-            | TyKind::PrimitiveNever
-            | TyKind::PrimitiveI8
-            | TyKind::PrimitiveI16
-            | TyKind::PrimitiveI32
-            | TyKind::PrimitiveI64
-            | TyKind::PrimitiveISize
-            | TyKind::PrimitiveU8
-            | TyKind::PrimitiveU16
-            | TyKind::PrimitiveU32
-            | TyKind::PrimitiveU64
-            | TyKind::PrimitiveUSize
-            | TyKind::PrimitiveF32
-            | TyKind::PrimitiveF64
-            | TyKind::PrimitiveStr
-            | TyKind::PrimitiveBool
-            | TyKind::Ref(_) => false,
-            TyKind::Generic { bounds, .. } => tcx
-                .lang_items
-                .read()
-                .copy_trait
-                .map(|v| !bounds.contains(&v))
-                .unwrap_or(true),
-            TyKind::PrimitiveSelf => unreachable!("Self should be resolved by now."),
-        }
-    }
-
     pub fn implements(&self, traits: &[TraitId], tc_ctx: &TypeckCtx<'_>) -> bool {
         match self {
             TyKind::Ref(v) => {

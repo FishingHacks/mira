@@ -447,6 +447,10 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                     unreachable!("cannot turn unsized type into a dwarf type")
                 }
                 TyKind::Struct { struct_id, .. } => {
+                    let tmp_ty =
+                        unsafe { self.builder.create_placeholder_derived_type(self.context) };
+                    self.type_store.borrow_mut().insert(ty, tmp_ty.as_type());
+
                     let structure = &structs[*struct_id];
                     let elements = &structure.elements;
                     let ptr_size = (self.default_types.isize.get_bit_width() / 8) as u64;
@@ -478,22 +482,27 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                                 .as_type()
                         })
                         .collect::<Vec<_>>();
-                    self.builder
-                        .create_struct_type(
-                            self.modules[structure.module_id].0.as_debug_info_scope(),
-                            &name,
-                            self.modules[structure.module_id].1,
-                            line,
-                            size * 8,
-                            alignment * 8,
-                            DIFlags::ZERO,
-                            None,
-                            &fields,
-                            0,
-                            None,
-                            &format!("{:x}", calculate_hash(&ty)),
-                        )
-                        .as_type()
+                    let debug_ty = self.builder.create_struct_type(
+                        self.modules[structure.module_id].0.as_debug_info_scope(),
+                        &name,
+                        self.modules[structure.module_id].1,
+                        line,
+                        size * 8,
+                        alignment * 8,
+                        DIFlags::ZERO,
+                        None,
+                        &fields,
+                        0,
+                        None,
+                        &format!("{:x}", calculate_hash(&ty)),
+                    );
+                    unsafe {
+                        inkwell::llvm_sys::debuginfo::LLVMMetadataReplaceAllUsesWith(
+                            tmp_ty.as_mut_ptr(),
+                            debug_ty.as_mut_ptr(),
+                        );
+                    }
+                    debug_ty.as_type()
                 }
                 TyKind::SizedArray {
                     ty: child,

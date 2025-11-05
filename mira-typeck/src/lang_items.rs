@@ -1,4 +1,4 @@
-use mira_errors::Diagnostic;
+use mira_errors::{Diagnostic, ErrorEmitted};
 use mira_lexer::token::IdentDisplay;
 use mira_parser::module::{ExternalFunctionId, FunctionId, StaticId, StructId, TraitId};
 use std::fmt::{Debug, Display};
@@ -335,7 +335,7 @@ enum LangItemError<'arena> {
 macro_rules! check_langitem {
     (required $self:ident.$lang_item:ident: $ty:ident; $reader:ident $context:ident) => {
         if $self.$lang_item.is_none() {
-            $context.ctx.emit_missing_item(stringify!($lang_item), LangItemType::$ty);
+            _ = $context.emit_missing_item(stringify!($lang_item), LangItemType::$ty);
         }
         check_langitem!($lang_item: $ty; $self $reader $context);
     };
@@ -345,17 +345,17 @@ macro_rules! check_langitem {
 
     ($lang_item:ident: Trait; $self:ident $reader:ident $context:ident) => {
         if let Some(trait_id) = $self.$lang_item {
-            does_trait_match(&$self.$lang_item(), &$reader[trait_id], stringify!($lang_item), $context);
+            _ = does_trait_match(&$self.$lang_item(), &$reader[trait_id], stringify!($lang_item), $context);
         }
     };
     ($lang_item:ident: Static; $self:ident $reader:ident $context:ident) => {
         if let Some(static_id) = $self.$lang_item {
-            $self.$lang_item(|arr| does_static_match(arr, $reader[static_id].ty, stringify!($lang_item), $context));
+            _ = $self.$lang_item(|arr| does_static_match(arr, $reader[static_id].ty, stringify!($lang_item), $context));
         }
     };
     ($lang_item:ident: Struct; $self:ident $reader:ident $context:ident) => {
         if let Some(struct_id) = $self.$lang_item {
-            does_struct_match(&$self.$lang_item(), &$reader[struct_id], stringify!($lang_item), $context);
+            _ = does_struct_match(&$self.$lang_item(), &$reader[struct_id], stringify!($lang_item), $context);
         }
     };
     ($lang_item:ident: Function; $self:ident $reader:ident $context:ident) => {
@@ -364,7 +364,7 @@ macro_rules! check_langitem {
                 FunctionLangItem::Internal(id) => &$context.functions.read()[id].0,
                 FunctionLangItem::External(id) => &$context.external_functions.read()[id].0,
             };
-            does_function_match(&$self.$lang_item(), func, stringify!($lang_item), $context);
+            _ = does_function_match(&$self.$lang_item(), func, stringify!($lang_item), $context);
         }
     };
     ($lang_item:ident: $ty: ident; $self:ident $reader:ident) => { compile_error!(concat!(stringify!($ty), " is not yet supported")) };
@@ -393,9 +393,6 @@ lang_item_def! {
     // let allocator: dyn lang_item!("allocator_trait");
     allocator => Static, // done
 
-    clone_trait => Trait, // done
-    copy_trait => Trait, // done
-    drop_trait => Trait, // done
     allocator_trait => Trait, // done
     eq_trait => Trait,
     neq_trait => Trait,
@@ -519,40 +516,13 @@ impl<'arena> LangItems<'arena> {
         }
     }
 
-    fn copy_trait(&self) -> LangItemTrait<'arena> {
-        // trait Copy {}
-        LangItemTrait { funcs: Vec::new() }
-    }
-
-    fn clone_trait(&self) -> LangItemTrait<'arena> {
-        // trait Clone { fn clone(self: &Self) -> Self; }
-        LangItemTrait {
-            funcs: vec![(
-                self.ctx.intern_str("clone"),
-                LangItemFunction::new(vec![default_types::self_ref], default_types::self_),
-            )],
-        }
-    }
-
-    fn drop_trait(&self) -> LangItemTrait<'arena> {
-        // trait Clone { fn clone(self: &Self) -> Self; }
-        LangItemTrait {
-            funcs: vec![(
-                self.ctx.intern_str("drop"),
-                LangItemFunction::new(vec![default_types::self_ref], default_types::void),
-            )],
-        }
-    }
-
-    pub fn check(&self, context: &TypeckCtx<'arena>) {
+    pub fn check(&self, context: &TypeckCtx<'arena>) -> Result<(), ErrorEmitted> {
         let trait_reader = context.traits.read();
         let struct_reader = context.structs.read();
         let static_reader = context.statics.read();
+        let tracker = context.track_errors();
 
         check_langitem!(required self.allocator_trait: Trait; trait_reader context);
-        check_langitem!(required self.clone_trait: Trait; trait_reader context);
-        check_langitem!(required self.drop_trait: Trait; trait_reader context);
-        check_langitem!(required self.copy_trait: Trait; trait_reader context);
         check_langitem!(required self.allocator: Static; static_reader context);
         check_langitem!(self.bool: Struct; struct_reader context);
         check_langitem!(self.f32: Struct; struct_reader context);
@@ -567,6 +537,8 @@ impl<'arena> LangItems<'arena> {
         check_langitem!(self.u64: Struct; struct_reader context);
         check_langitem!(self.isize: Struct; struct_reader context);
         check_langitem!(self.usize: Struct; struct_reader context);
+
+        context.errors_happened_res(tracker)
     }
 }
 
@@ -576,13 +548,11 @@ fn does_function_match<'arena>(
     func_b: &TypedFunctionContract<'arena>,
     lang_item: &'static str,
     context: &TypeckCtx<'arena>,
-) -> bool {
-    let tracker = context.ctx.track_errors();
+) -> Result<(), ErrorEmitted> {
+    let tracker = context.track_errors();
 
     if func_a.return_type != func_b.return_type {
-        context
-            .ctx
-            .emit_mismatching_return_type(func_a.return_type, func_b.return_type, lang_item);
+        _ = context.emit_mismatching_return_type(func_a.return_type, func_b.return_type, lang_item);
     }
 
     if !func_a
@@ -592,12 +562,10 @@ fn does_function_match<'arena>(
         .all(|(a, (_, b))| *a == *b)
     {
         let args = func_b.arguments.iter().map(|(_, v)| v).cloned().collect();
-        context
-            .ctx
-            .emit_mismatching_arguments(func_a.args.clone(), args, lang_item);
+        _ = context.emit_mismatching_arguments(func_a.args.clone(), args, lang_item);
     }
 
-    !context.ctx.errors_happened(tracker)
+    context.errors_happened_res(tracker)
 }
 
 fn does_struct_match<'arena>(
@@ -605,8 +573,8 @@ fn does_struct_match<'arena>(
     structure_b: &TypedStruct<'arena>,
     lang_item: &'static str,
     context: &TypeckCtx<'arena>,
-) -> bool {
-    let tracker = context.ctx.track_errors();
+) -> Result<(), ErrorEmitted> {
+    let tracker = context.track_errors();
     let trait_reader = context.traits.read();
 
     for (i, bounds) in structure_a.generics.iter().enumerate() {
@@ -623,7 +591,7 @@ fn does_struct_match<'arena>(
                         .iter()
                         .map(|v| trait_reader[*v].name.symbol())
                         .collect();
-                    context.ctx.emit_struct_generic_mismatch(
+                    _ = context.emit_struct_generic_mismatch(
                         lang_item,
                         generic.name.symbol(),
                         expected,
@@ -631,14 +599,14 @@ fn does_struct_match<'arena>(
                     );
                 }
                 if !bounds.0 && generic.sized {
-                    context.ctx.emit_struct_generic_sizing_incompatability(
+                    _ = context.emit_struct_generic_sizing_incompatability(
                         lang_item,
                         generic.name.symbol(),
                     );
                 }
             }
             None => {
-                context.ctx.emit_struct_misses_generic(
+                _ = context.emit_struct_misses_generic(
                     lang_item,
                     bounds
                         .1
@@ -655,9 +623,7 @@ fn does_struct_match<'arena>(
         .skip(structure_a.generics.len())
         .map(|v| v.name.symbol())
     {
-        context
-            .ctx
-            .emit_struct_unexpected_generic(lang_item, generic);
+        _ = context.emit_struct_unexpected_generic(lang_item, generic);
     }
 
     for (element_name, element_type) in structure_a.fields.iter() {
@@ -668,7 +634,7 @@ fn does_struct_match<'arena>(
         {
             Some(v) if v.1 == *element_type => {}
             Some((_, other_type, _)) => {
-                context.ctx.emit_struct_mismatching_field(
+                _ = context.emit_struct_mismatching_field(
                     *element_name,
                     *element_type,
                     *other_type,
@@ -676,9 +642,7 @@ fn does_struct_match<'arena>(
                 );
             }
             None => {
-                context
-                    .ctx
-                    .emit_struct_missing_element(*element_name, *element_type, lang_item);
+                _ = context.emit_struct_missing_element(*element_name, *element_type, lang_item);
             }
         }
     }
@@ -689,16 +653,12 @@ fn does_struct_match<'arena>(
             .iter()
             .any(|(name, _)| *name == v.symbol())
     }) {
-        context
-            .ctx
-            .emit_struct_unexpected_field(element_name.symbol(), lang_item);
+        _ = context.emit_struct_unexpected_field(element_name.symbol(), lang_item);
     }
 
     for trait_id in structure_a.traits.iter().copied() {
         if !structure_b.trait_impl.contains(trait_id) {
-            context
-                .ctx
-                .emit_struct_missing_trait(lang_item, trait_reader[trait_id].name.symbol());
+            _ = context.emit_struct_missing_trait(lang_item, trait_reader[trait_id].name.symbol());
         }
     }
     drop(trait_reader);
@@ -706,15 +666,13 @@ fn does_struct_match<'arena>(
 
     for (fn_name, func) in structure_a.funcs.iter() {
         let Some(func_impl) = structure_b.global_impl.get(fn_name) else {
-            context
-                .ctx
-                .emit_struct_missing_function(lang_item, *fn_name);
+            _ = context.emit_struct_missing_function(lang_item, *fn_name);
             continue;
         };
         let func_impl = &func_reader[*func_impl].0;
 
         if func_impl.return_type != func.return_type {
-            context.ctx.emit_struct_mismatching_return_type(
+            _ = context.emit_struct_mismatching_return_type(
                 func.return_type,
                 func_impl.return_type,
                 *fn_name,
@@ -734,7 +692,7 @@ fn does_struct_match<'arena>(
                 .map(|(_, v)| v)
                 .cloned()
                 .collect();
-            context.ctx.emit_struct_mismatching_arguments(
+            _ = context.emit_struct_mismatching_arguments(
                 func.args.clone(),
                 found,
                 *fn_name,
@@ -743,7 +701,7 @@ fn does_struct_match<'arena>(
         }
     }
 
-    !context.ctx.errors_happened(tracker)
+    context.errors_happened_res(tracker)
 }
 
 fn does_static_match<'arena>(
@@ -751,38 +709,35 @@ fn does_static_match<'arena>(
     ty: Ty<'arena>,
     lang_item: &'static str,
     context: &TypeckCtx<'arena>,
-) -> bool {
+) -> Result<(), ErrorEmitted> {
     let trait_reader = context.traits.read();
     match &**ty {
         TyKind::DynType(trait_refs) => {
-            let tracker = context.ctx.track_errors();
+            let tracker = context.track_errors();
             for trait_id in traits.iter().copied() {
                 if !trait_refs.iter().any(|(v, _)| *v == trait_id) {
-                    context.ctx.emit_static_is_missing_trait(
+                    _ = context.emit_static_is_missing_trait(
                         trait_reader[trait_id].name.symbol(),
                         lang_item,
                     );
                 }
             }
-            !context.ctx.errors_happened(tracker)
+            context.errors_happened_res(tracker)
         }
         TyKind::Struct { struct_id, .. } => {
             let struct_traits = &context.structs.read()[*struct_id].trait_impl;
-            let tracker = context.ctx.track_errors();
+            let tracker = context.track_errors();
             for &trait_id in traits {
                 if !struct_traits.contains(trait_id) {
-                    context.ctx.emit_static_is_missing_trait(
+                    _ = context.emit_static_is_missing_trait(
                         trait_reader[trait_id].name.symbol(),
                         lang_item,
                     );
                 }
             }
-            !context.ctx.errors_happened(tracker)
+            context.errors_happened_res(tracker)
         }
-        _ => {
-            context.ctx.emit_static_is_primitive(lang_item);
-            false
-        }
+        _ => Err(context.emit_static_is_primitive(lang_item)),
     }
 }
 
@@ -791,8 +746,8 @@ fn does_trait_match<'arena>(
     trait_b: &TypedTrait<'arena>,
     lang_item: &'static str,
     context: &TypeckCtx<'arena>,
-) -> bool {
-    let tracker = context.ctx.track_errors();
+) -> Result<(), ErrorEmitted> {
+    let tracker = context.track_errors();
 
     for (func_name, func_a) in trait_a.funcs.iter() {
         let Some((_, func_args_b, func_return_b, ..)) = trait_b
@@ -800,14 +755,14 @@ fn does_trait_match<'arena>(
             .iter()
             .find(|(name, ..)| *func_name == name.symbol())
         else {
-            context
+            _ = context
                 .ctx
                 .emit_trait_missing_function(lang_item, *func_name);
             continue;
         };
 
         if func_a.return_type != *func_return_b {
-            context.ctx.emit_trait_mismatching_return_type(
+            _ = context.emit_trait_mismatching_return_type(
                 func_a.return_type,
                 *func_return_b,
                 *func_name,
@@ -823,7 +778,7 @@ fn does_trait_match<'arena>(
                 .all(|(a, (_, b))| a == b)
         {
             let found = func_args_b.iter().map(|(_, v)| v).cloned().collect();
-            context.ctx.emit_trait_mismatching_arguments(
+            _ = context.emit_trait_mismatching_arguments(
                 func_a.args.clone(),
                 found,
                 *func_name,
@@ -838,11 +793,11 @@ fn does_trait_match<'arena>(
             .iter()
             .any(|(name, ..)| *name == func_name.symbol())
         {
-            context
+            _ = context
                 .ctx
                 .emit_trait_excessive_function(lang_item, func_name.symbol());
         }
     }
 
-    !context.ctx.errors_happened(tracker)
+    context.errors_happened_res(tracker)
 }

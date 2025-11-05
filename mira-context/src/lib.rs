@@ -1,6 +1,8 @@
 use std::{fmt::Debug, ops::Index, sync::Arc};
 
-use mira_errors::{Diagnostic, StyledPrinter, Styles, default_printer, default_styles};
+use mira_errors::{
+    Diagnostic, ErrorEmitted, StyledPrinter, Styles, default_printer, default_styles,
+};
 use mira_spans::{
     Arena, SourceMap, Span, SpanData, Symbol,
     interner::{SpanInterner, SymbolInterner},
@@ -117,13 +119,13 @@ impl<'arena> SharedCtx<'arena> {
         self.doc_comment_store.lock().clear_doc_comment(v);
     }
 
-    pub fn emit_diags(&self, diags: impl IntoIterator<Item = Diagnostic<'arena>>) -> ErrorEmitted {
-        let mut dctx = self.dctx.lock();
-        for diag in diags {
-            dctx.emit_diag(diag);
-        }
-        ErrorEmitted
-    }
+    // pub fn emit_diags(&self, diags: impl IntoIterator<Item = Diagnostic<'arena>>) -> ErrorEmitted {
+    //     let mut dctx = self.dctx.lock();
+    //     for diag in diags {
+    //         dctx.emit_diag(diag);
+    //     }
+    //     ErrorEmitted
+    // }
 
     pub fn emit_diag(&self, diag: Diagnostic<'arena>) -> ErrorEmitted {
         self.dctx.lock().emit_diag(diag)
@@ -143,8 +145,8 @@ impl<'arena> SharedCtx<'arena> {
 }
 
 impl<'ctx> mira_errors::DiagEmitter<'ctx> for SharedCtx<'ctx> {
-    fn emit_diagnostic(&self, diag: Diagnostic<'ctx>) {
-        SharedCtx::emit_diag(self, diag);
+    fn emit_diagnostic(&self, diag: Diagnostic<'ctx>) -> ErrorEmitted {
+        SharedCtx::emit_diag(self, diag)
     }
 }
 

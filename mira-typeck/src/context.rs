@@ -1,9 +1,7 @@
 use std::{fmt::Debug, sync::Arc};
 
-use mira_context::{
-    DiagCtx, DiagEmitter, DocComment, DocCommentStore, ErrorEmitted, ErrorTracker, SharedCtx,
-};
-use mira_errors::{Diagnostic, StyledPrinter, Styles};
+use mira_context::{DiagCtx, DiagEmitter, DocComment, DocCommentStore, ErrorTracker, SharedCtx};
+use mira_errors::{Diagnostic, ErrorEmitted, StyledPrinter, Styles};
 use parking_lot::Mutex;
 
 use mira_spans::{
@@ -119,10 +117,13 @@ impl<'arena> TypeCtx<'arena> {
 
     pub fn emit_diags(&self, diags: impl IntoIterator<Item = Diagnostic<'arena>>) -> ErrorEmitted {
         let mut dctx = self.0.diag_ctx.lock();
-        for diag in diags {
-            dctx.emit_diag(diag);
+        let mut iter = diags.into_iter();
+        let first = iter.next().expect("emit_diags: no diagnostics?");
+        let emitted = dctx.emit_diag(first);
+        for diag in iter {
+            _ = dctx.emit_diag(diag);
         }
-        ErrorEmitted
+        emitted
     }
 
     pub fn emit_diag(&self, diag: Diagnostic<'arena>) -> ErrorEmitted {
@@ -137,13 +138,16 @@ impl<'arena> TypeCtx<'arena> {
         self.0.diag_ctx.lock().track_errors()
     }
 
+    #[deprecated = "use error_happened_res"]
     pub fn errors_happened(&self, tracker: ErrorTracker) -> bool {
         self.0.diag_ctx.lock().errors_happened(tracker)
     }
 
     pub fn errors_happened_res(&self, tracker: ErrorTracker) -> Result<(), ErrorEmitted> {
         if self.0.diag_ctx.lock().errors_happened(tracker) {
-            Err(ErrorEmitted)
+            // This is fine, because we *know* errors were emitted.
+            #[allow(deprecated)]
+            Err(ErrorEmitted::new())
         } else {
             Ok(())
         }
@@ -170,8 +174,8 @@ impl<'arena> TypeCtx<'arena> {
 }
 
 impl<'ctx> mira_errors::DiagEmitter<'ctx> for TypeCtx<'ctx> {
-    fn emit_diagnostic(&self, diag: Diagnostic<'ctx>) {
-        TypeCtx::emit_diag(self, diag);
+    fn emit_diagnostic(&self, diag: Diagnostic<'ctx>) -> ErrorEmitted {
+        self.emit_diag(diag)
     }
 }
 

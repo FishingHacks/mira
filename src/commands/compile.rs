@@ -7,11 +7,11 @@ use std::{
 };
 
 use mira_argparse::{CompileArgs, OptimizationMode, PathOrStdout};
-use mira_context::ErrorEmitted;
 use mira_driver::{
     find_library, ChildrenOfModuleFilter, ContextData, DiagEmitter, EmitMethod, LibraryTree,
     LinkOpts, ProgressBarStyle,
 };
+use mira_errors::ErrorEmitted;
 use mira_llvm_backend::{CodegenConfig, CodegenContextBuilder};
 use mira_spans::Arena;
 use mira_target::Target;

@@ -2,11 +2,11 @@ use std::{path::PathBuf, process::ExitCode, rc::Rc};
 
 use html::err_fs;
 use mira_common::index::Idx;
-use mira_context::ErrorEmitted;
 use mira_driver::{ContextData, DiagEmitter, EmitResult, LibraryTree, find_library};
 use mira_errors::IoWriteError;
-use mira_parser::module::{ModuleId, ModuleScopeValue};
+use mira_parser::module::ModuleId;
 use mira_spans::Arena;
+use mira_typeck::ResolvedValue;
 
 mod default_ty_links;
 mod html;
@@ -81,10 +81,7 @@ fn _main() -> EmitResult<()> {
         ($e:expr) => {
             match $e {
                 Ok(v) => v,
-                Err(diag) => {
-                    typeck_ctx.ctx.emit_diag(diag);
-                    return Err(ErrorEmitted);
-                }
+                Err(diag) => return Err(typeck_ctx.ctx.emit_diag(diag)),
             }
         };
     }
@@ -104,7 +101,7 @@ fn _main() -> EmitResult<()> {
         let v = context.queued.borrow_mut().remove(&k).unwrap();
         context.generated.borrow_mut().insert(k, Rc::clone(&v));
         match k {
-            ModuleScopeValue::Function(key) => {
+            ResolvedValue::Function(key, _) => {
                 let s = context.generate_function(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
@@ -112,7 +109,7 @@ fn _main() -> EmitResult<()> {
                         .map_err(|e| IoWriteError(v.0.to_path_buf(), e).to_error())
                 );
             }
-            ModuleScopeValue::ExternalFunction(key) => {
+            ResolvedValue::ExternalFunction(key) => {
                 let s = context.generate_external_function(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
@@ -120,7 +117,7 @@ fn _main() -> EmitResult<()> {
                         .map_err(|e| IoWriteError(v.0.to_path_buf(), e).to_error())
                 );
             }
-            ModuleScopeValue::Static(key) => {
+            ResolvedValue::Static(key) => {
                 let s = context.generate_static(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
@@ -128,7 +125,7 @@ fn _main() -> EmitResult<()> {
                         .map_err(|e| IoWriteError(v.0.to_path_buf(), e).to_error())
                 );
             }
-            ModuleScopeValue::Trait(key) => {
+            ResolvedValue::Trait(key) => {
                 let s = context.generate_trait(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
@@ -136,7 +133,7 @@ fn _main() -> EmitResult<()> {
                         .map_err(|e| IoWriteError(v.0.to_path_buf(), e).to_error())
                 );
             }
-            ModuleScopeValue::Struct(key) => {
+            ResolvedValue::Struct(key) => {
                 let s = context.generate_struct(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
@@ -144,7 +141,7 @@ fn _main() -> EmitResult<()> {
                         .map_err(|e| IoWriteError(v.0.to_path_buf(), e).to_error())
                 );
             }
-            ModuleScopeValue::Module(key) => {
+            ResolvedValue::Module(key) => {
                 let s = context.generate_module(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(
@@ -164,7 +161,7 @@ fn _main() -> EmitResult<()> {
     // generate the module file of the main lib in the root directory under index.html
 
     let qualified_paths =
-        Rc::clone(&context.generated.borrow()[&ModuleScopeValue::Module(main_module)]);
+        Rc::clone(&context.generated.borrow()[&ResolvedValue::Module(main_module)]);
     let qualified_paths = (
         index_file,
         qualified_paths.1.clone(),

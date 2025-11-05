@@ -22,6 +22,7 @@ cargo +nightly doc --open --no-deps \
  -p mira-context \
  -p parking_lot \
  -p inkwell \
+ -p llvm-sys \
  -p cfg-if \
  -p crossbeam-channel \
  -p syn \

@@ -320,7 +320,7 @@ impl<'arena> QuerySystem<'arena> {
             descs,
             main_query_desc,
         };
-        ctx.emit_diag(Diagnostic::new(err, Severity::Error));
+        _ = ctx.emit_diag(Diagnostic::new(err, Severity::Error));
         FatalError.raise()
     }
 }

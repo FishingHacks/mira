@@ -428,8 +428,8 @@ name = "mirac"
 version = "0.2.1"
 dependencies = [
  "mira-argparse",
- "mira-context",
  "mira-driver",
+ "mira-errors",
  "mira-llvm-backend",
  "mira-spans",
  "mira-target",

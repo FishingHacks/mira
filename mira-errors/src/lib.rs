@@ -17,6 +17,24 @@ pub use printers::{AsciiPrinter, StyledPrinter, Styles, UnicodePrinter};
 #[cfg(test)]
 pub(crate) mod test_errors;
 
+mod private {
+    #[derive(Clone, Copy)]
+    pub(super) struct ErrorEmittedInner;
+}
+
+#[derive(Clone, Copy)]
+#[must_use]
+#[allow(private_interfaces)]
+pub struct ErrorEmitted(pub private::ErrorEmittedInner);
+
+impl ErrorEmitted {
+    #[allow(clippy::new_without_default)]
+    #[deprecated = "never construct this unless you're a diagnostic emitter."]
+    pub fn new() -> Self {
+        Self(private::ErrorEmittedInner)
+    }
+}
+
 #[macro_export]
 macro_rules! pluralize {
     ($v:expr) => {
@@ -34,7 +52,7 @@ impl<T: Write + Any> OutputWriter for T {}
 use crate as mira_errors;
 
 pub trait DiagEmitter<'ctx>: 'ctx {
-    fn emit_diagnostic(&self, diag: Diagnostic<'ctx>);
+    fn emit_diagnostic(&self, diag: Diagnostic<'ctx>) -> ErrorEmitted;
 }
 
 #[derive(ErrorData)]

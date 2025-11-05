@@ -28,8 +28,7 @@ use inkwell::{
 };
 
 use mira_common::index::IndexMap;
-use mira_context::ErrorEmitted;
-use mira_errors::FatalError;
+use mira_errors::{ErrorEmitted, FatalError};
 use mira_parser::{
     module::{ExternalFunctionId, FunctionId, StaticId, StructId, TraitId},
     std_annotations::{
@@ -557,7 +556,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         if let Err(e) =
             module.add_global_metadata("llvm.ident", &context.metadata_node(&[mira_version.into()]))
         {
-            ctx.emit_diag(CodegenError::LLVMNative(format!("!llvm.ident: {e}")).to_error());
+            _ = ctx.emit_diag(CodegenError::LLVMNative(format!("!llvm.ident: {e}")).to_error());
             FatalError.raise();
         }
 

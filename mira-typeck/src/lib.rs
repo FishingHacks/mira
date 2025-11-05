@@ -1,4 +1,4 @@
-use mira_errors::Diagnostic;
+use mira_errors::{Diagnostic, ErrorEmitted};
 use mira_macros::Display;
 use parking_lot::RwLock;
 use std::{
@@ -44,7 +44,9 @@ mod type_resolution;
 pub mod typechecking;
 mod types;
 pub use error::{FunctionList, TypecheckingError, TypecheckingErrorDiagnosticsExt};
-pub use types::{FunctionType, Ty, TyKind, TyList, TypeInterner, TypeListInterner, default_types};
+pub use types::{
+    EMPTY_TYLIST, FunctionType, Ty, TyKind, TyList, TypeInterner, TypeListInterner, default_types,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum CommonFunction {
@@ -182,15 +184,15 @@ pub struct TypeckCtx<'arena> {
 }
 
 #[derive(Debug)]
-pub struct TypedModule<'arena> {
-    pub scope: HashMap<Ident<'arena>, ModuleScopeValue>,
-    pub exports: HashSet<Ident<'arena>>,
+pub struct TypedModule<'ctx> {
+    pub scope: HashMap<Ident<'ctx>, ResolvedValue<'ctx>>,
+    pub exports: HashSet<Ident<'ctx>>,
     pub parent: Option<ModuleId>,
     pub root_module: ModuleId,
     pub module_id: ModuleId,
-    pub name: Symbol<'arena>,
+    pub name: Symbol<'ctx>,
     pub file: Arc<SourceFile>,
-    pub assembly: Vec<(Span<'arena>, String)>,
+    pub assembly: Vec<(Span<'ctx>, String)>,
     pub comment: DocComment,
 }
 
@@ -208,7 +210,7 @@ impl<'ctx> TypeckCtx<'ctx> {
         main_pkg: ModuleId,
     ) -> Result<FunctionId, TypecheckingError<'ctx>> {
         let module = &self.modules.read()[main_pkg];
-        let Some(&ModuleScopeValue::Function(main_fn)) =
+        let Some(&ResolvedValue::Function(main_fn, _)) =
             module.scope.get(&symbols::DefaultIdents::main)
         else {
             return Err(TypecheckingError::MainFuncNotFound(
@@ -216,7 +218,10 @@ impl<'ctx> TypeckCtx<'ctx> {
             ));
         };
         let func = &self.functions.read()[main_fn].0;
-        if !func.arguments.is_empty() || func.return_type != default_types::void {
+        if !func.arguments.is_empty()
+            || func.return_type != default_types::void
+            || !func.generics.is_empty()
+        {
             return Err(TypecheckingError::MainFuncWrongType {
                 func_span: func.span,
             });
@@ -343,7 +348,11 @@ impl<'ctx> TypeckCtx<'ctx> {
         let module_reader = module_context.modules.read();
 
         for (key, module) in module_reader.entries() {
-            let scope = module.scope.clone();
+            let scope = module
+                .scope
+                .iter()
+                .map(|(&ident, &value)| (ident, value.into()))
+                .collect();
 
             typechecked_module_writer.insert(
                 key,
@@ -367,21 +376,29 @@ impl<'ctx> TypeckCtx<'ctx> {
         me
     }
 
-    pub fn resolve_imports(&self, context: Arc<ModuleContext<'ctx>>) {
+    pub fn resolve_imports(&self, context: Arc<ModuleContext<'ctx>>) -> Result<(), ErrorEmitted> {
         let mut typechecked_module_writer = self.modules.write();
         let module_reader = context.modules.read();
+        let tracker = self.track_errors();
         for key in module_reader.keys() {
             for (name, (span, import)) in module_reader[key].imports.iter() {
-                let res =
-                    resolve_import(&context, key, &import.entries, *span, &mut HashSet::new());
+                let res = resolve_import(
+                    &context,
+                    self.ctx,
+                    key,
+                    import.entries.iter(),
+                    *span,
+                    &mut HashSet::new(),
+                );
                 match res {
-                    Err(diag) => _ = self.ctx.emit_diag(diag),
+                    Err(ErrorEmitted(..)) => {}
                     Ok(k) => {
                         typechecked_module_writer[key].scope.insert(*name, k);
                     }
                 }
             }
         }
+        self.errors_happened_res(tracker)
     }
 
     pub fn resolve_type(
@@ -408,7 +425,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                         *span,
                         &mut HashSet::new(),
                     );
-                    let Ok(ModuleScopeValue::Trait(id)) = v else {
+                    let Ok(ResolvedValue::Trait(id)) = v else {
                         return Err(
                             TypecheckingError::CannotFindTrait(*span, trait_name.clone())
                                 .to_error(),
@@ -416,10 +433,10 @@ impl<'ctx> TypeckCtx<'ctx> {
                     };
                     trait_refs.push((id, *trait_name.as_slice().last().unwrap()));
                 }
-                let trait_refs = ArenaList::new(self.ctx.arena(), &trait_refs);
+                let trait_refs = ArenaList::new(self.arena(), &trait_refs);
                 Ok(with_refcount(
                     self.ctx,
-                    self.ctx.intern_ty(TyKind::DynType(trait_refs)),
+                    self.intern_ty(TyKind::DynType(trait_refs)),
                     *num_references,
                 ))
             }
@@ -434,14 +451,14 @@ impl<'ctx> TypeckCtx<'ctx> {
                 for arg in args {
                     arguments.push(self.resolve_type(module_id, arg, generics)?);
                 }
-                let arguments = self.ctx.intern_tylist(&arguments);
+                let arguments = self.intern_tylist(&arguments);
                 let function_typ = FunctionType {
                     arguments,
                     return_type,
                 };
                 Ok(with_refcount(
                     self.ctx,
-                    self.ctx.intern_ty(TyKind::Function(function_typ)),
+                    self.intern_ty(TyKind::Function(function_typ)),
                     *num_references,
                 ))
             }
@@ -457,7 +474,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                         .enumerate()
                         .find(|(_, v)| v.name == type_name.entries[0].0)
                 {
-                    let ty = self.ctx.intern_ty(TyKind::Generic {
+                    let ty = self.intern_ty(TyKind::Generic {
                         name: type_name.entries[0].0,
                         generic_id: id as u8,
                         sized: generic.sized,
@@ -478,9 +495,9 @@ impl<'ctx> TypeckCtx<'ctx> {
                 }
 
                 match self.typed_resolve_import(module_id, &path, *span, &mut HashSet::new())? {
-                    ModuleScopeValue::Struct(struct_id) => Ok(with_refcount(
+                    ResolvedValue::Struct(struct_id) => Ok(with_refcount(
                         self.ctx,
-                        self.ctx.intern_ty(TyKind::Struct {
+                        self.intern_ty(TyKind::Struct {
                             struct_id,
                             name: self.structs.read()[struct_id].name,
                         }),
@@ -501,7 +518,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                 span: _,
             } => Ok(with_refcount(
                 self.ctx,
-                self.ctx.intern_ty(TyKind::UnsizedArray(
+                self.intern_ty(TyKind::UnsizedArray(
                     self.resolve_type(module_id, child, generics)?,
                 )),
                 *num_references,
@@ -513,7 +530,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                 ..
             } => Ok(with_refcount(
                 self.ctx,
-                self.ctx.intern_ty(TyKind::SizedArray {
+                self.intern_ty(TyKind::SizedArray {
                     ty: self.resolve_type(module_id, child, generics)?,
                     number_elements: *number_elements,
                 }),
@@ -530,7 +547,7 @@ impl<'ctx> TypeckCtx<'ctx> {
                 }
                 let ty = self
                     .ctx
-                    .intern_ty(TyKind::Tuple(self.ctx.intern_tylist(&typed_elements)));
+                    .intern_ty(TyKind::Tuple(self.intern_tylist(&typed_elements)));
                 Ok(with_refcount(self.ctx, ty, *num_references))
             }
         }
@@ -543,15 +560,15 @@ impl<'ctx> TypeckCtx<'ctx> {
         id: StructId,
         module_id: ModuleId,
         left: &mut IndexMap<StructId, ResolvingState>,
-    ) -> bool {
-        if !left.contains(id) {
-            return false;
-        }
+    ) -> Result<(), ErrorEmitted> {
         match left.get_mut(id) {
-            None => return false,
-            Some(ResolvingState::Working) => return true,
+            None => return Ok(()),
+            Some(ResolvingState::Working) => {
+                unreachable!("tried resolving struct while resolving a struct")
+            }
             Some(v @ ResolvingState::Pending) => *v = ResolvingState::Working,
         }
+        let tracker = self.track_errors();
 
         let mut writer = context.structs.write();
 
@@ -566,23 +583,24 @@ impl<'ctx> TypeckCtx<'ctx> {
             for (bound, span) in &generic.bounds {
                 match resolve_import(
                     &context,
+                    self.ctx,
                     module_id,
-                    &bound.entries,
+                    bound.as_slice().iter(),
                     *span,
                     &mut HashSet::new(),
                 ) {
-                    Err(e) => _ = self.ctx.emit_diag(e),
-                    Ok(ModuleScopeValue::Trait(trait_id)) => bounds.push(trait_id),
+                    Err(_) => {}
+                    Ok(ResolvedValue::Trait(trait_id)) => bounds.push(trait_id),
                     Ok(_) => {
-                        self.ctx.emit_unbound_ident(
+                        _ = self.emit_unbound_ident(
                             *span,
-                            bound.entries[bound.entries.len() - 1].symbol(),
+                            bound.as_slice()[bound.as_slice().len() - 1].symbol(),
                         );
                     }
                 }
             }
 
-            let bounds = ArenaList::new(self.ctx.arena(), &bounds);
+            let bounds = ArenaList::new(self.arena(), &bounds);
             generics.push(TypedGeneric {
                 name: generic.name,
                 sized: generic.sized,
@@ -605,12 +623,12 @@ impl<'ctx> TypeckCtx<'ctx> {
         drop(writer);
 
         for element in elements {
-            if let Some(ty) = self.type_resolution_resolve_type(
+            if let Ok(ty) = type_resolution_resolve_type(
+                self.ctx,
                 &element.1,
                 &typed_struct.generics,
                 module_id,
-                context.clone(),
-                left,
+                &context,
             ) {
                 typed_struct.elements.push((element.0, ty, element.2));
             }
@@ -618,190 +636,198 @@ impl<'ctx> TypeckCtx<'ctx> {
         self.structs.write()[id] = typed_struct;
 
         left.remove(id);
-        false
+        self.errors_happened_res(tracker)
     }
 
-    fn type_resolution_resolve_type(
-        &self,
-        ty: &TypeRef<'ctx>,
-        generics: &[TypedGeneric<'ctx>],
-        module: ModuleId,
-        context: Arc<ModuleContext<'ctx>>,
-        left: &mut IndexMap<StructId, ResolvingState>,
-    ) -> Option<Ty<'ctx>> {
-        if let Some(ty) = resolve_primitive_type(self.ctx, ty) {
-            return Some(ty);
-        }
-        match ty {
-            TypeRef::DynReference {
-                traits,
-                num_references,
-                span,
-            } => {
-                let mut trait_refs = Vec::with_capacity(traits.len());
-                for trait_name in traits.iter() {
-                    let v = self.typed_resolve_import(
-                        module,
-                        trait_name.as_slice(),
-                        *span,
-                        &mut HashSet::new(),
-                    );
-                    let Ok(ModuleScopeValue::Trait(id)) = v else {
-                        return None;
-                    };
-                    trait_refs.push((id, *trait_name.as_slice().last().unwrap()));
-                }
-                let trait_refs = ArenaList::new(self.ctx.arena(), &trait_refs);
-                Some(with_refcount(
-                    self.ctx,
-                    self.ctx.intern_ty(TyKind::DynType(trait_refs)),
-                    *num_references,
-                ))
-            }
-            TypeRef::Function {
-                return_ty,
-                args,
-                num_references,
-                ..
-            } => {
-                let return_type = self.type_resolution_resolve_type(
-                    return_ty,
-                    generics,
-                    module,
-                    context.clone(),
-                    left,
-                )?;
-                let mut arguments = Vec::with_capacity(args.len());
-                for arg in args {
-                    arguments.push(self.type_resolution_resolve_type(
-                        arg,
-                        generics,
-                        module,
-                        context.clone(),
-                        left,
-                    )?);
-                }
-                let arguments = self.ctx.intern_tylist(&arguments);
-                let ty = self.ctx.intern_ty(TyKind::Function(FunctionType {
-                    return_type,
-                    arguments,
-                }));
-                Some(with_refcount(self.ctx, ty, *num_references))
-            }
-            TypeRef::Reference {
-                num_references,
-                type_name,
-                span,
-            } => {
-                let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();
-                // NOTE: this should only have a generic at the end as this is a type
-                // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
-                for (.., generics) in type_name.entries.iter() {
-                    if !generics.is_empty() {
-                        return None;
-                    }
-                }
-
-                // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
-                if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
-                    let name = type_name.entries[0].0;
-                    if let Some((generic_id, generic)) =
-                        generics.iter().enumerate().find(|(_, v)| v.name == name)
-                    {
-                        return Some(self.ctx.intern_ty(TyKind::Generic {
-                            name: generic.name,
-                            generic_id: generic_id as u8,
-                            sized: generic.sized,
-                            bounds: generic.bounds,
-                        }));
-                    }
-                }
-
-                let Ok(value) = resolve_import(&context, module, &path, *span, &mut HashSet::new())
-                else {
-                    self.ctx
-                        .emit_unbound_ident(*span, path[path.len() - 1].symbol());
-                    return None;
-                };
-
-                let ModuleScopeValue::Struct(id) = value else {
-                    self.ctx
-                        .emit_mismatching_scope_type(*span, ScopeKind::Type, value.into());
-                    return None;
-                };
-
-                {
-                    if !left.contains(id) {
-                        let typechecked_struct = &self.structs.read()[id];
-                        let ty = self.ctx.intern_ty(TyKind::Struct {
-                            struct_id: typechecked_struct.id,
-                            name: typechecked_struct.name,
-                        });
-                        return Some(with_refcount(self.ctx, ty, *num_references));
-                    }
-                }
-
-                let module = context.structs.read()[id].module_id;
-                if self.resolve_struct(context, id, module, left) {
-                    self.ctx.emit_recursive_type_detected(*span);
-                    return None;
-                }
-                let typechecked_struct = &self.structs.read()[id];
-                let ty = self.ctx.intern_ty(TyKind::Struct {
-                    struct_id: typechecked_struct.id,
-                    name: typechecked_struct.name,
-                });
-                Some(with_refcount(self.ctx, ty, *num_references))
-            }
-            TypeRef::Void(..) => unreachable!(),
-            TypeRef::Never(_) => unreachable!(),
-            TypeRef::UnsizedArray {
-                num_references,
-                child,
-                span: _,
-            } => Some(with_refcount(
-                self.ctx,
-                self.ctx.intern_ty(TyKind::UnsizedArray(
-                    self.type_resolution_resolve_type(child, generics, module, context, left)?,
-                )),
-                *num_references,
-            )),
-            TypeRef::SizedArray {
-                num_references,
-                child,
-                number_elements,
-                span: _,
-            } => Some(with_refcount(
-                self.ctx,
-                self.ctx.intern_ty(TyKind::SizedArray {
-                    ty: self
-                        .type_resolution_resolve_type(child, generics, module, context, left)?,
-                    number_elements: *number_elements,
-                }),
-                *num_references,
-            )),
-            TypeRef::Tuple {
-                num_references,
-                elements,
-                ..
-            } => {
-                let mut typed_elements = Vec::with_capacity(elements.len());
-                for elem in elements.iter() {
-                    typed_elements.push(self.type_resolution_resolve_type(
-                        elem,
-                        generics,
-                        module,
-                        context.clone(),
-                        left,
-                    )?);
-                }
-                let ty = self
-                    .ctx
-                    .intern_ty(TyKind::Tuple(self.ctx.intern_tylist(&typed_elements)));
-                Some(with_refcount(self.ctx, ty, *num_references))
-            }
-        }
-    }
+    // fn type_resolution_resolve_type(
+    //     &self,
+    //     ty: &TypeRef<'ctx>,
+    //     generics: &[TypedGeneric<'ctx>],
+    //     module: ModuleId,
+    //     context: Arc<ModuleContext<'ctx>>,
+    //     left: &mut IndexMap<StructId, ResolvingState>,
+    // ) -> Result<Ty<'ctx>> {
+    //     if let Some(ty) = resolve_primitive_type(self.ctx, ty) {
+    //         return Some(ty);
+    //     }
+    //     match ty {
+    //         TypeRef::DynReference {
+    //             traits,
+    //             num_references,
+    //             span,
+    //         } => {
+    //             let mut trait_refs = Vec::with_capacity(traits.len());
+    //             for trait_name in traits.iter() {
+    //                 let v = self.typed_resolve_import(
+    //                     module,
+    //                     trait_name.as_slice(),
+    //                     *span,
+    //                     &mut HashSet::new(),
+    //                 );
+    //                 let Ok(ModuleScopeValue::Trait(id)) = v else {
+    //                     return None;
+    //                 };
+    //                 trait_refs.push((id, *trait_name.as_slice().last().unwrap()));
+    //             }
+    //             let trait_refs = ArenaList::new(self.arena(), &trait_refs);
+    //             Some(with_refcount(
+    //                 self.ctx,
+    //                 self.intern_ty(TyKind::DynType(trait_refs)),
+    //                 *num_references,
+    //             ))
+    //         }
+    //         TypeRef::Function {
+    //             return_ty,
+    //             args,
+    //             num_references,
+    //             ..
+    //         } => {
+    //             let return_type = self.type_resolution_resolve_type(
+    //                 return_ty,
+    //                 generics,
+    //                 module,
+    //                 context.clone(),
+    //                 left,
+    //             )?;
+    //             let mut arguments = Vec::with_capacity(args.len());
+    //             for arg in args {
+    //                 arguments.push(self.type_resolution_resolve_type(
+    //                     arg,
+    //                     generics,
+    //                     module,
+    //                     context.clone(),
+    //                     left,
+    //                 )?);
+    //             }
+    //             let arguments = self.intern_tylist(&arguments);
+    //             let ty = self.intern_ty(TyKind::Function(FunctionType {
+    //                 return_type,
+    //                 arguments,
+    //             }));
+    //             Some(with_refcount(self.ctx, ty, *num_references))
+    //         }
+    //         TypeRef::Reference {
+    //             num_references,
+    //             type_name,
+    //             span,
+    //         } => {
+    //             let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();
+    //             // NOTE: this should only have a generic at the end as this is a type
+    //             // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
+    //             for (.., generics) in type_name.entries.iter() {
+    //                 if !generics.is_empty() {
+    //                     return None;
+    //                 }
+    //             }
+    //
+    //             // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
+    //             if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
+    //                 let name = type_name.entries[0].0;
+    //                 if let Some((generic_id, generic)) =
+    //                     generics.iter().enumerate().find(|(_, v)| v.name == name)
+    //                 {
+    //                     return Some(self.intern_ty(TyKind::Generic {
+    //                         name: generic.name,
+    //                         generic_id: generic_id as u8,
+    //                         sized: generic.sized,
+    //                         bounds: generic.bounds,
+    //                     }));
+    //                 }
+    //             }
+    //
+    //             let Ok(value) = resolve_import(
+    //                 &context,
+    //                 self.ctx,
+    //                 module,
+    //                 path.iter(),
+    //                 *span,
+    //                 &mut HashSet::new(),
+    //             ) else {
+    //                 return Err(self
+    //                     .ctx
+    //                     .emit_unbound_ident(*span, path[path.len() - 1].symbol()));
+    //             };
+    //
+    //             let ResolvedValue::Struct(id) = value else {
+    //                 return Err(ctx.emit_mismatching_scope_type(
+    //                     *span,
+    //                     ScopeKind::Type,
+    //                     value.into(),
+    //                 ));
+    //             };
+    //
+    //             {
+    //                 if !left.contains(id) {
+    //                     let typechecked_struct = &self.structs.read()[id];
+    //                     let ty = self.intern_ty(TyKind::Struct {
+    //                         struct_id: typechecked_struct.id,
+    //                         name: typechecked_struct.name,
+    //                     });
+    //                     return Some(with_refcount(self.ctx, ty, *num_references));
+    //                 }
+    //             }
+    //
+    //             let module = context.structs.read()[id].module_id;
+    //             if self.resolve_struct(context, id, module, left) {
+    //                 self.emit_recursive_type_detected(*span);
+    //                 return None;
+    //             }
+    //             let typechecked_struct = &self.structs.read()[id];
+    //             let ty = self.intern_ty(TyKind::Struct {
+    //                 struct_id: typechecked_struct.id,
+    //                 name: typechecked_struct.name,
+    //             });
+    //             Some(with_refcount(self.ctx, ty, *num_references))
+    //         }
+    //         TypeRef::Void(..) => unreachable!(),
+    //         TypeRef::Never(_) => unreachable!(),
+    //         TypeRef::UnsizedArray {
+    //             num_references,
+    //             child,
+    //             span: _,
+    //         } => Some(with_refcount(
+    //             self.ctx,
+    //             self.intern_ty(TyKind::UnsizedArray(
+    //                 self.type_resolution_resolve_type(child, generics, module, context, left)?,
+    //             )),
+    //             *num_references,
+    //         )),
+    //         TypeRef::SizedArray {
+    //             num_references,
+    //             child,
+    //             number_elements,
+    //             span: _,
+    //         } => Some(with_refcount(
+    //             self.ctx,
+    //             self.intern_ty(TyKind::SizedArray {
+    //                 ty: self
+    //                     .type_resolution_resolve_type(child, generics, module, context, left)?,
+    //                 number_elements: *number_elements,
+    //             }),
+    //             *num_references,
+    //         )),
+    //         TypeRef::Tuple {
+    //             num_references,
+    //             elements,
+    //             ..
+    //         } => {
+    //             let mut typed_elements = Vec::with_capacity(elements.len());
+    //             for elem in elements.iter() {
+    //                 typed_elements.push(self.type_resolution_resolve_type(
+    //                     elem,
+    //                     generics,
+    //                     module,
+    //                     context.clone(),
+    //                     left,
+    //                 )?);
+    //             }
+    //             let ty = self
+    //                 .ctx
+    //                 .intern_ty(TyKind::Tuple(self(&typed_elements)));
+    //             Some(with_refcount(self.ctx, ty, *num_references))
+    //         }
+    //     }
+    // }
 
     pub fn typed_resolve_import(
         &self,
@@ -809,7 +835,7 @@ impl<'ctx> TypeckCtx<'ctx> {
         import: &[Ident<'ctx>],
         span: Span<'ctx>,
         already_included: &mut HashSet<(ModuleId, Symbol<'ctx>)>,
-    ) -> Result<ModuleScopeValue, Diagnostic<'ctx>> {
+    ) -> Result<ResolvedValue<'ctx>, Diagnostic<'ctx>> {
         assert!(!import.is_empty());
         if !already_included.insert((module, import[0].symbol())) {
             return Err(TypecheckingError::CyclicDependency(span).to_error());
@@ -820,7 +846,7 @@ impl<'ctx> TypeckCtx<'ctx> {
         let thing;
 
         if &*import[0] == "pkg" {
-            thing = ModuleScopeValue::Module(cur_mod.root_module);
+            thing = ResolvedValue::Module(cur_mod.root_module);
         } else if &*import[0] == "super" {
             let Some(parent) = cur_mod.parent else {
                 return Err(TypecheckingError::ItemNotFound {
@@ -829,11 +855,11 @@ impl<'ctx> TypeckCtx<'ctx> {
                 }
                 .to_error());
             };
-            thing = ModuleScopeValue::Module(parent);
-        } else if let Some(value) = cur_mod.scope.get(&import[0].symbol()) {
-            thing = *value;
+            thing = ResolvedValue::Module(parent);
+        } else if let Some(&value) = cur_mod.scope.get(&import[0].symbol()) {
+            thing = value;
         } else if let Some(package) = self.dependencies[cur_mod.root_module].get(&*import[0]) {
-            thing = ModuleScopeValue::Module(*package);
+            thing = ResolvedValue::Module(*package);
         } else {
             return Err(TypecheckingError::ItemNotFound {
                 span,
@@ -846,7 +872,7 @@ impl<'ctx> TypeckCtx<'ctx> {
             return Ok(thing);
         }
         match thing {
-            ModuleScopeValue::Module(module) => {
+            ResolvedValue::Module(module) => {
                 self.typed_resolve_import(module, &import[1..], span, already_included)
             }
 
@@ -867,78 +893,319 @@ impl<'ctx> Deref for TypeckCtx<'ctx> {
     }
 }
 
-fn resolve_import<'arena>(
-    context: &ModuleContext<'arena>,
+fn resolve_import<'a, 'ctx: 'a>(
+    context: &ModuleContext<'ctx>,
+    ctx: TypeCtx<'ctx>,
     current_module: ModuleId,
-    import: &[Ident<'arena>],
-    span: Span<'arena>,
-    already_included: &mut HashSet<(ModuleId, Symbol<'arena>)>,
-) -> Result<ModuleScopeValue, Diagnostic<'arena>> {
-    assert!(!import.is_empty());
-    if !already_included.insert((current_module, import[0].symbol())) {
-        return Err(TypecheckingError::CyclicDependency(span).to_error());
+    mut import: impl Iterator<Item = &'a Ident<'ctx>>,
+    span: Span<'ctx>,
+    already_included: &mut HashSet<(ModuleId, Symbol<'ctx>)>,
+) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
+    let next = import
+        .next()
+        .expect("resolve_import called on an empty import");
+    resolve_import_inner(
+        context,
+        ctx,
+        current_module,
+        import,
+        next,
+        span,
+        already_included,
+    )
+}
+
+fn resolve_import_inner<'a, 'ctx: 'a>(
+    context: &ModuleContext<'ctx>,
+    ctx: TypeCtx<'ctx>,
+    current_module: ModuleId,
+    mut import: impl Iterator<Item = &'a Ident<'ctx>>,
+    next: &'a Ident<'ctx>,
+    span: Span<'ctx>,
+    already_included: &mut HashSet<(ModuleId, Symbol<'ctx>)>,
+) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
+    if !already_included.insert((current_module, next.symbol())) {
+        return Err(ctx.emit_cyclic_dependency(span));
     }
 
     let module_reader = context.modules.read();
     let cur_mod = &module_reader[current_module];
     let thing;
-    if &*import[0] == "pkg" {
-        thing = ModuleScopeValue::Module(cur_mod.package_root);
-    } else if &*import[0] == "super" {
+    if &**next == "pkg" {
+        thing = ResolvedValue::Module(cur_mod.package_root);
+    } else if &**next == "super" {
         let Some(parent) = cur_mod.parent else {
-            return Err(TypecheckingError::ItemNotFound {
-                span: import[0].span(),
-                name: import[0].symbol(),
-            }
-            .to_error());
+            return Err(ctx.emit_item_not_found(next.span(), next.symbol()));
         };
-        thing = ModuleScopeValue::Module(parent);
-    } else if let Some(value) = cur_mod.scope.get(&import[0].symbol()) {
-        thing = *value;
-    } else if let Some((span, import)) = cur_mod.imports.get(&import[0].symbol()) {
+        thing = ResolvedValue::Module(parent);
+    } else if let Some(&value) = cur_mod.scope.get(&next.symbol()) {
+        thing = value.into();
+    } else if let Some((span, import)) = cur_mod.imports.get(&next.symbol()) {
         thing = resolve_import(
             context,
+            ctx,
             current_module,
-            &import.entries,
+            import.entries.iter(),
             *span,
             already_included,
         )?
-    } else if let Some(package) = context.dependencies[cur_mod.package_root].get(&*import[0]) {
-        thing = ModuleScopeValue::Module(*package);
+    } else if let Some(package) = context.dependencies[cur_mod.package_root].get(&**next) {
+        thing = ResolvedValue::Module(*package);
     } else {
-        return Err(TypecheckingError::ItemNotFound {
-            span,
-            name: import[0].symbol(),
-        }
-        .to_error());
+        return Err(ctx.emit_item_not_found(span, next.symbol()));
     }
 
-    if import.len() == 1 {
+    fill_in_generics(thing, &[], span, context, ctx, current_module)?;
+
+    let Some(next) = import.next() else {
         return Ok(thing);
-    }
+    };
     match thing {
-        ModuleScopeValue::Module(module) => {
-            resolve_import(context, module, &import[1..], span, already_included)
+        ResolvedValue::Module(module) => {
+            resolve_import_inner(context, ctx, module, import, next, span, already_included)
         }
 
-        _ => Err(TypecheckingError::ItemNotFound {
-            span: import[1].span(),
-            name: import[1].symbol(),
-        }
-        .to_error()),
+        _ => Err(ctx.emit_item_not_found(next.span(), next.symbol())),
     }
 }
 
-impl From<ModuleScopeValue> for ScopeKind {
-    fn from(value: ModuleScopeValue) -> Self {
-        match value {
-            ModuleScopeValue::Trait(_) => Self::Trait,
-            ModuleScopeValue::Struct(_) => Self::Type,
-            ModuleScopeValue::Static(_) => Self::Static,
-            ModuleScopeValue::Module(_) => Self::Module,
-            ModuleScopeValue::Function(_) | ModuleScopeValue::ExternalFunction(_) => Self::Function,
+/// Fills in generics for the resolved value, erroring if too many/little were given. Does **NOT**
+/// check trait bounds.
+#[allow(unused_variables, unreachable_code)]
+fn fill_in_generics<'ctx>(
+    thing: ResolvedValue<'ctx>,
+    generics: &[TypeRef<'ctx>],
+    span: Span<'ctx>,
+    context: &ModuleContext<'ctx>,
+    ctx: TypeCtx<'ctx>,
+    module: ModuleId,
+) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
+    return Ok(thing);
+    match thing {
+        ResolvedValue::Function(id, ty_list) => {
+            assert!(ty_list.is_empty());
+            let required = context.functions.read()[id].0.generics.len();
+            if generics.len() != required {
+                return Err(ctx.emit_mismatching_generic_count(span, required, generics.len()));
+            }
+            let mut list = Vec::with_capacity(generics.len());
+            for generic in generics {
+                list.push(type_resolution_resolve_type(
+                    ctx,
+                    generic,
+                    &[],
+                    module,
+                    context,
+                )?);
+            }
+            Ok(ResolvedValue::Function(id, ctx.intern_tylist(&list)))
+        }
+        ResolvedValue::ExternalFunction(_)
+        | ResolvedValue::Struct(_)
+        | ResolvedValue::Static(_)
+        | ResolvedValue::Module(_)
+        | ResolvedValue::Trait(_) => {
+            if generics.is_empty() {
+                Ok(thing)
+            } else {
+                Err(ctx.emit_mismatching_generic_count(span, 0, generics.len()))
+            }
         }
     }
+}
+
+fn type_resolution_resolve_type<'ctx>(
+    ctx: TypeCtx<'ctx>,
+    ty: &TypeRef<'ctx>,
+    generics: &[TypedGeneric<'ctx>],
+    module: ModuleId,
+    context: &ModuleContext<'ctx>,
+) -> Result<Ty<'ctx>, ErrorEmitted> {
+    if let Some(ty) = resolve_primitive_type(ctx, ty) {
+        return Ok(ty);
+    }
+    match ty {
+        TypeRef::DynReference {
+            traits,
+            num_references,
+            span,
+        } => {
+            let mut trait_refs = Vec::with_capacity(traits.len());
+            for trait_name in traits.iter() {
+                let v = resolve_import(
+                    context,
+                    ctx,
+                    module,
+                    trait_name.as_slice().iter(),
+                    *span,
+                    &mut HashSet::new(),
+                );
+                let id = match v {
+                    Ok(ResolvedValue::Trait(id)) => id,
+                    Ok(res_val) => {
+                        return Err(ctx.emit_mismatching_scope_type(
+                            *span,
+                            ScopeKind::Trait,
+                            res_val.into(),
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                };
+                trait_refs.push((id, *trait_name.as_slice().last().unwrap()));
+            }
+            let trait_refs = ArenaList::new(ctx.arena(), &trait_refs);
+            Ok(with_refcount(
+                ctx,
+                ctx.intern_ty(TyKind::DynType(trait_refs)),
+                *num_references,
+            ))
+        }
+        TypeRef::Function {
+            return_ty,
+            args,
+            num_references,
+            ..
+        } => {
+            let return_type =
+                type_resolution_resolve_type(ctx, return_ty, generics, module, context)?;
+            let mut arguments = Vec::with_capacity(args.len());
+            for arg in args {
+                arguments.push(type_resolution_resolve_type(
+                    ctx, arg, generics, module, context,
+                )?);
+            }
+            let arguments = ctx.intern_tylist(&arguments);
+            let ty = ctx.intern_ty(TyKind::Function(FunctionType {
+                return_type,
+                arguments,
+            }));
+            Ok(with_refcount(ctx, ty, *num_references))
+        }
+        TypeRef::Reference {
+            num_references,
+            type_name,
+            span,
+        } => {
+            let path = type_name.entries.iter().map(|v| v.0).collect::<Vec<_>>();
+            // NOTE: this should only have a generic at the end as this is a type
+            // (std::vec::Vec, can never be std::vec::Vec<u32>::Vec.)
+            for (.., generics) in type_name.entries.iter() {
+                if !generics.is_empty() {
+                    todo!("this will be handled by resolve_import.")
+                }
+            }
+
+            // generics can never have a generic attribute (struct Moew<T> { value: T<u32> })
+            if type_name.entries.len() == 1 && type_name.entries[0].1.is_empty() {
+                let name = type_name.entries[0].0;
+                if let Some((generic_id, generic)) =
+                    generics.iter().enumerate().find(|(_, v)| v.name == name)
+                {
+                    return Ok(ctx.intern_ty(TyKind::Generic {
+                        name: generic.name,
+                        generic_id: generic_id as u8,
+                        sized: generic.sized,
+                        bounds: generic.bounds,
+                    }));
+                }
+            }
+
+            let Ok(value) = resolve_import(
+                context,
+                ctx,
+                module,
+                path.iter(),
+                *span,
+                &mut HashSet::new(),
+            ) else {
+                return Err(ctx.emit_unbound_ident(*span, path[path.len() - 1].symbol()));
+            };
+
+            let ResolvedValue::Struct(struct_id) = value else {
+                return Err(ctx.emit_mismatching_scope_type(*span, ScopeKind::Type, value.into()));
+            };
+
+            let name = context.structs.read()[struct_id].name;
+            let ty = ctx.intern_ty(TyKind::Struct { struct_id, name });
+            Ok(with_refcount(ctx, ty, *num_references))
+        }
+        TypeRef::Void(..) => unreachable!(),
+        TypeRef::Never(_) => unreachable!(),
+        TypeRef::UnsizedArray {
+            num_references,
+            child,
+            span: _,
+        } => Ok(with_refcount(
+            ctx,
+            ctx.intern_ty(TyKind::UnsizedArray(type_resolution_resolve_type(
+                ctx, child, generics, module, context,
+            )?)),
+            *num_references,
+        )),
+        TypeRef::SizedArray {
+            num_references,
+            child,
+            number_elements,
+            span: _,
+        } => Ok(with_refcount(
+            ctx,
+            ctx.intern_ty(TyKind::SizedArray {
+                ty: type_resolution_resolve_type(ctx, child, generics, module, context)?,
+                number_elements: *number_elements,
+            }),
+            *num_references,
+        )),
+        TypeRef::Tuple {
+            num_references,
+            elements,
+            ..
+        } => {
+            let mut typed_elements = Vec::with_capacity(elements.len());
+            for elem in elements.iter() {
+                typed_elements.push(type_resolution_resolve_type(
+                    ctx, elem, generics, module, context,
+                )?);
+            }
+            let ty = ctx.intern_ty(TyKind::Tuple(ctx.intern_tylist(&typed_elements)));
+            Ok(with_refcount(ctx, ty, *num_references))
+        }
+    }
+}
+
+impl From<ResolvedValue<'_>> for ScopeKind {
+    fn from(value: ResolvedValue<'_>) -> Self {
+        match value {
+            ResolvedValue::Trait(_) => Self::Trait,
+            ResolvedValue::Struct(_) => Self::Type,
+            ResolvedValue::Static(_) => Self::Static,
+            ResolvedValue::Module(_) => Self::Module,
+            ResolvedValue::Function(_, _) | ResolvedValue::ExternalFunction(_) => Self::Function,
+        }
+    }
+}
+
+impl From<ModuleScopeValue> for ResolvedValue<'static> {
+    fn from(value: ModuleScopeValue) -> Self {
+        use ModuleScopeValue as MSV;
+        match value {
+            MSV::Function(v) => Self::Function(v, EMPTY_TYLIST),
+            MSV::ExternalFunction(v) => Self::ExternalFunction(v),
+            MSV::Struct(v) => Self::Struct(v),
+            MSV::Static(v) => Self::Static(v),
+            MSV::Module(v) => Self::Module(v),
+            MSV::Trait(v) => Self::Trait(v),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum ResolvedValue<'ctx> {
+    Function(FunctionId, TyList<'ctx>),
+    ExternalFunction(ExternalFunctionId),
+    Struct(StructId),
+    Static(StaticId),
+    Module(ModuleId),
+    Trait(TraitId),
 }
 
 #[derive(Debug, Clone, Copy, Display)]

@@ -95,7 +95,7 @@ mira-llvm-backend.workspace = true
 mira-target.workspace = true
 mira-argparse.workspace = true
 mira-spans.workspace = true
-mira-context.workspace = true
+mira-errors.workspace = true
 
 [lints]
 workspace = true
