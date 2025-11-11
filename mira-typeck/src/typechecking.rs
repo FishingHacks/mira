@@ -10,7 +10,9 @@ use mira_lexer::NumberType;
 use mira_parser::{
     ArrayLiteral, BinaryOp, Expression, If, LiteralValue, Path, Statement, TypeRef, UnaryOp, While,
     annotations::Annotations,
-    module::{ExternalFunctionId, FunctionId, ModuleContext, ModuleId, StaticId, TraitId},
+    module::{
+        ExternalFunctionId, FunctionContext, FunctionId, ModuleContext, ModuleId, StaticId, TraitId,
+    },
     std_annotations::{
         ext_vararg::ExternVarArg, intrinsic::IntrinsicAnnotation,
         llvm_intrinsic::LLVMIntrinsicAnnotation,
@@ -317,6 +319,7 @@ pub fn typecheck_static<'arena>(
         module_id: tc_module_reader[static_id].module_id,
         generics: Vec::new(),
         comment: tc_module_reader[static_id].comment,
+        context: FunctionContext::Freestanding,
     };
 
     // TODO: Rename
@@ -430,9 +433,9 @@ fn inner_typecheck_function<'arena>(
     let typ_fn_reader = tc_ctx.functions.read();
 
     let statement = match function {
-        CommonFunction::Normal(id) => &fn_reader[id].1,
+        CommonFunction::Normal(id) => &fn_reader[id].stmt,
         CommonFunction::External(id) => {
-            let Some(statement) = &ext_fn_reader[id].1 else {
+            let Some(statement) = &ext_fn_reader[id].stmt else {
                 return Ok(());
             };
             statement

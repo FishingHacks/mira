@@ -138,8 +138,8 @@ pub(crate) fn compile(
 ) -> Result<(), ErrorEmitted> {
     let arena = Arena::new();
     let (ctx, data) = ContextData::new(&arena, Some(ProgressBarStyle::Normal), DiagEmitter::Stdout);
-    let s_ctx = ctx.ty_ctx();
-    let mut ctx = data.to_context(s_ctx);
+    let ty_ctx = ctx.ty_ctx();
+    let mut ctx = data.to_context(ty_ctx);
 
     let (module_ctx, main_module) = ctx.parse_all_files(libtree)?;
     let typechecking_item = ctx.add_typechecking_item();

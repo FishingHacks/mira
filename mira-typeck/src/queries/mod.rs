@@ -1,12 +1,15 @@
 mod plumbing;
 use crate::define_system;
 use mira_macros::queries;
-use mira_parser::module::ModuleId;
+use mira_parser::module::{ModuleId, StructId};
 pub use plumbing::{DefaultCache, QueryCache, QueryKey, SingleCache};
 
 queries! {
     #[manually_allocated(u8)]
     mangle_module(ModuleId) -> &'arena str;
+
+    #[manually_allocated(u8)]
+    mangle_struct_segment(StructId) -> &'arena str;
 
     #[manually_allocated(u8)]
     get_module_path(ModuleId) -> &'arena str;

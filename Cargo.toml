@@ -96,6 +96,8 @@ mira-target.workspace = true
 mira-argparse.workspace = true
 mira-spans.workspace = true
 mira-errors.workspace = true
+mira-lexer.workspace = true
+mira-parser.workspace = true
 
 [lints]
 workspace = true

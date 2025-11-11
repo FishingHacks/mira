@@ -21,8 +21,8 @@ use mira_parser::{
     TypeRef,
     annotations::Annotations,
     module::{
-        ExternalFunctionId, FunctionId, ModuleContext, ModuleId, ModuleScopeValue, StaticId,
-        StructId, TraitId,
+        ExternalFunctionId, FunctionContext, FunctionId, ModuleContext, ModuleId, ModuleScopeValue,
+        StaticId, StructId, TraitId,
     },
 };
 use mira_spans::{
@@ -77,17 +77,20 @@ pub struct TypedFunctionContract<'arena> {
     pub module_id: ModuleId,
     pub generics: Vec<TypedGeneric<'arena>>,
     pub comment: DocComment,
+    pub context: FunctionContext,
 }
 
+/// TODO: Remove this?
 impl Hash for TypedFunctionContract<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        match &self.name {
-            None => "{{anon_fn}}".hash(state),
+        match self.name {
             Some(v) => v.hash(state),
+            None => "{{anon}}".hash(state),
         }
         self.module_id.hash(state);
         self.arguments.hash(state);
         self.return_type.hash(state);
+        self.context.hash(state);
     }
 }
 
@@ -278,7 +281,7 @@ impl<'ctx> TypeckCtx<'ctx> {
             );
         }
 
-        for (id, &(ref contract, _, module_id)) in functions_reader.entries() {
+        for (id, func) in functions_reader.entries() {
             functions.insert(
                 id,
                 (
@@ -287,17 +290,18 @@ impl<'ctx> TypeckCtx<'ctx> {
                         name: None,
                         arguments: Vec::new(),
                         return_type: default_types::never,
-                        span: contract.span,
-                        module_id,
+                        span: func.contract.span,
+                        module_id: func.parent_module,
                         generics: Vec::new(),
                         comment: DocComment::EMPTY,
+                        context: func.ctx,
                     },
-                    IR::new(std::iter::empty(), contract.span),
+                    IR::new(std::iter::empty(), func.contract.span),
                 ),
             );
         }
 
-        for (id, &(_, _, module_id)) in external_functions_reader.entries() {
+        for (id, ext_fn) in external_functions_reader.entries() {
             external_functions.insert(
                 id,
                 (
@@ -306,9 +310,10 @@ impl<'ctx> TypeckCtx<'ctx> {
                         name: None,
                         arguments: Vec::new(),
                         return_type: default_types::never,
-                        span: external_functions_reader[id].0.span,
-                        module_id,
+                        span: ext_fn.contract.span,
+                        module_id: ext_fn.parent_module,
                         generics: Vec::new(),
+                        context: FunctionContext::Freestanding,
                         comment: DocComment::EMPTY,
                     },
                     None,
@@ -726,26 +731,47 @@ impl<'ctx> TypeckCtx<'ctx> {
             return Err(self.emit_item_not_found(span, name.symbol()));
         }
 
-        if with_generics {
-            thing =
-                self.fill_in_generics(thing, generics, span, current_module, generics_in_context)?
-        }
+        let mut generics = generics;
 
-        let Some((name, generics)) = import.next() else {
-            return Ok(thing);
-        };
-        match thing {
-            ResolvedValue::Module(module) => self.resolve_import_inner(
-                module,
-                import,
-                (name, generics),
-                span,
-                already_included,
-                generics_in_context,
-                with_generics,
-            ),
+        loop {
+            if with_generics {
+                thing = self.fill_in_generics(
+                    thing,
+                    generics,
+                    span,
+                    current_module,
+                    generics_in_context,
+                )?;
+            }
+            let name;
+            (name, generics) = match import.next() {
+                Some(v) => v,
+                None => return Ok(thing),
+            };
 
-            _ => Err(self.emit_item_not_found(name.span(), name.symbol())),
+            match thing {
+                ResolvedValue::Module(module) => {
+                    return self.resolve_import_inner(
+                        module,
+                        import,
+                        (name, generics),
+                        span,
+                        already_included,
+                        generics_in_context,
+                        with_generics,
+                    );
+                }
+                ResolvedValue::Struct(struct_id) => {
+                    let structs = self.structs.read();
+                    let func = structs[struct_id].global_impl.get(name);
+                    match func {
+                        Some(&fn_id) => thing = ResolvedValue::Function(fn_id, EMPTY_TYLIST),
+                        None => return Err(self.emit_item_not_found(name.span(), name.symbol())),
+                    }
+                }
+
+                _ => return Err(self.emit_item_not_found(name.span(), name.symbol())),
+            }
         }
     }
 
@@ -968,35 +994,51 @@ fn resolve_import_inner<'a, 'ctx: 'a>(
         return Err(ctx.emit_item_not_found(span, name.symbol()));
     }
 
-    if with_generics {
-        thing = fill_in_generics(
-            thing,
-            generics,
-            span,
-            context,
-            ctx,
-            current_module,
-            generics_in_context,
-        )?;
-    }
+    let mut generics = generics;
 
-    let Some((name, generics)) = import.next() else {
-        return Ok(thing);
-    };
-    match thing {
-        ResolvedValue::Module(module) => resolve_import_inner(
-            context,
-            ctx,
-            module,
-            import,
-            (name, generics),
-            span,
-            already_included,
-            generics_in_context,
-            with_generics,
-        ),
+    loop {
+        if with_generics {
+            thing = fill_in_generics(
+                thing,
+                generics,
+                span,
+                context,
+                ctx,
+                current_module,
+                generics_in_context,
+            )?;
+        }
+        let name;
+        (name, generics) = match import.next() {
+            Some(v) => v,
+            None => return Ok(thing),
+        };
 
-        _ => Err(ctx.emit_item_not_found(name.span(), name.symbol())),
+        match thing {
+            ResolvedValue::Module(module) => {
+                return resolve_import_inner(
+                    context,
+                    ctx,
+                    module,
+                    import,
+                    (name, generics),
+                    span,
+                    already_included,
+                    generics_in_context,
+                    with_generics,
+                );
+            }
+            ResolvedValue::Struct(struct_id) => {
+                let structs = context.structs.read();
+                let func = structs[struct_id].global_impl.get(name);
+                match func {
+                    Some(&fn_id) => thing = ResolvedValue::Function(fn_id, EMPTY_TYLIST),
+                    None => return Err(ctx.emit_item_not_found(name.span(), name.symbol())),
+                }
+            }
+
+            _ => return Err(ctx.emit_item_not_found(name.span(), name.symbol())),
+        }
     }
 }
 
@@ -1014,7 +1056,7 @@ fn fill_in_generics<'ctx>(
     match thing {
         ResolvedValue::Function(id, ty_list) => {
             assert!(ty_list.is_empty());
-            let required = context.functions.read()[id].0.generics.len();
+            let required = context.functions.read()[id].contract.generics.len();
             if generics.len() != required {
                 return Err(ctx.emit_mismatching_generic_count(span, required, generics.len()));
             }

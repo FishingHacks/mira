@@ -642,6 +642,14 @@ impl<'ctx> Context<'ctx> {
             .map_err(|e| self.ctx.emit_diag(e.to_error()))
     }
 
+    pub fn print_stdout(&self, s: String) {
+        self.data.progress_bar.print_stdout(s);
+    }
+
+    pub fn print_stderr(&self, s: String) {
+        self.data.progress_bar.print_stderr(s);
+    }
+
     #[cfg(feature = "linking")]
     pub fn link(&self, mut opts: LinkOpts<'_>) -> EmitResult<()> {
         use mira_linking::{LinkOptions, LinkerError};

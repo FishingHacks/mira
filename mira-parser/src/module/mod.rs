@@ -42,12 +42,29 @@ pub struct BakedStruct<'arena> {
     pub comment: DocComment,
 }
 
-pub type Function<'arena> = (FunctionContract<'arena>, Statement<'arena>, ModuleId);
-pub type ExternalFunction<'arena> = (
-    FunctionContract<'arena>,
-    Option<Statement<'arena>>,
-    ModuleId,
-);
+#[derive(Debug, Clone, Copy, Hash)]
+pub enum FunctionContext {
+    /// fn meow() / extern fn meow()
+    Freestanding,
+    /// struct ... {; fn meow() }
+    StructFn(StructId),
+}
+
+#[derive(Debug)]
+pub struct Function<'arena> {
+    pub ctx: FunctionContext,
+    pub contract: FunctionContract<'arena>,
+    pub stmt: Statement<'arena>,
+    pub parent_module: ModuleId,
+}
+
+#[derive(Debug)]
+pub struct ExternalFunction<'arena> {
+    pub contract: FunctionContract<'arena>,
+    pub stmt: Option<Statement<'arena>>,
+    pub parent_module: ModuleId,
+}
+
 #[derive(Debug)]
 pub struct Static<'arena> {
     pub ty: TypeRef<'arena>,
@@ -63,13 +80,6 @@ pub type DependencyMap = HashMap<Arc<str>, ModuleId>;
 
 pub struct ModuleContext<'arena> {
     pub ctx: SharedCtx<'arena>,
-    // pub dependencies: AssociatedStore<DependencyMap<'arena>, Module<'arena>>,
-    // pub modules: RwLock<Store<Module<'arena>>>,
-    // pub functions: RwLock<Store<Function<'arena>>>,
-    // pub external_functions: RwLock<Store<ExternalFunction<'arena>>>,
-    // pub statics: RwLock<Store<Static<'arena>>>, // TODO: const-eval for statics
-    // pub structs: RwLock<Store<BakedStruct<'arena>>>,
-    // pub traits: RwLock<Store<Trait<'arena>>>,
     pub dependencies: IndexMap<ModuleId, DependencyMap>,
     pub modules: RwLock<IndexStore<ModuleId, Module<'arena>>>,
     pub functions: RwLock<IndexVec<FunctionId, Function<'arena>>>,
@@ -119,11 +129,6 @@ impl Debug for ModuleContext<'_> {
 }
 
 pub type Import<'arena> = PathWithoutGenerics<'arena>;
-// #[derive(Debug)]
-// pub enum Import<'arena> {
-//     Unresolved(PathWithoutGenerics<'arena>),
-//     Resolved(ModuleScopeValue<'arena>),
-// }
 
 pub struct Module<'arena> {
     pub scope: HashMap<Ident<'arena>, ModuleScopeValue>,
@@ -189,12 +194,15 @@ impl<'arena> Module<'arena> {
         module: ModuleId,
         context: &ModuleContext<'arena>,
     ) -> FunctionId {
-        let key = context
-            .functions
-            .write()
-            .add((contract, Statement::None, module));
+        let func = Function {
+            contract,
+            stmt: Statement::None,
+            parent_module: module,
+            ctx: FunctionContext::Freestanding,
+        };
+        let key = context.functions.write().add(func);
         body.bake_functions(self, module, context);
-        context.functions.write()[key].1 = body;
+        context.functions.write()[key].stmt = body;
 
         key
     }
@@ -326,10 +334,20 @@ impl<'arena> Module<'arena> {
                     comment,
                 };
 
-                let mut writer = context.structs.write();
-                let key = writer.add(baked_struct);
+                let mut struct_writer = context.structs.write();
+                let key = struct_writer.add(baked_struct);
                 self.scope.insert(name, ModuleScopeValue::Struct(key));
                 self.maybe_add_export(public, name);
+                let mut function_writer = context.functions.write();
+                let structure = &struct_writer[key];
+                for &func in structure.global_impl.values() {
+                    function_writer[func].ctx = FunctionContext::StructFn(key);
+                }
+                for (_, funcs, _) in structure.impls.iter() {
+                    for &func in funcs.values() {
+                        function_writer[func].ctx = FunctionContext::StructFn(key);
+                    }
+                }
             }
             Statement::Static {
                 var,
@@ -382,7 +400,12 @@ impl<'arena> Module<'arena> {
                     body.bake_functions(self, module_id, context);
                 }
                 let mut writer = context.external_functions.write();
-                let key = writer.add((contract, body.map(|v| *v), module_id));
+                let func = ExternalFunction {
+                    contract,
+                    stmt: body.map(|v| *v),
+                    parent_module: module_id,
+                };
+                let key = writer.add(func);
                 self.scope
                     .insert(name, ModuleScopeValue::ExternalFunction(key));
                 self.maybe_add_export(public, name);

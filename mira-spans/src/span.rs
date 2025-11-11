@@ -263,7 +263,6 @@ impl Sub for BytePos {
 pub struct FileId(u32);
 
 impl FileId {
-    #[cfg(test)]
     pub const ZERO: FileId = FileId(0);
 
     pub fn to_inner(self) -> u32 {

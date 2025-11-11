@@ -1,6 +1,4 @@
-use mira_parser::module::{
-    ExternalFunctionId, FunctionId, ModuleId, ModuleScopeValue, StaticId, StructId,
-};
+use mira_parser::module::{ExternalFunctionId, FunctionContext, ModuleId, StaticId, StructId};
 use mira_parser::std_annotations::alias::ExternAliasAnnotation;
 use mira_spans::TypeArena;
 use mira_typeck::queries::Providers;
@@ -45,24 +43,6 @@ fn path_len(p: &str) -> usize {
         .sum()
 }
 
-pub fn mangle_function(ctx: &TypeckCtx<'_>, id: FunctionId) -> String {
-    let fn_reader = ctx.functions.read();
-    let mut mangled_name = "_ZN".to_string();
-    mangled_name.push_str(ctx.mangle_module(fn_reader[id].0.module_id));
-
-    match fn_reader[id].0.name {
-        None => mangled_name.push_str(MANGLED_ANON_FN_NAME),
-        Some(ref v) => mangle_path_segment(v.symbol().to_str(), &mut mangled_name),
-    }
-    mangled_name.push_str("17h"); // hash
-    let mut hasher = DefaultHasher::new();
-    fn_reader[id].0.hash(&mut hasher);
-    write!(mangled_name, "{:x}", hasher.finish()).expect("writing to a string should never fail");
-
-    mangled_name.push('E');
-    mangled_name
-}
-
 pub fn mangle_external_function(ctx: &TypeckCtx<'_>, id: ExternalFunctionId) -> String {
     let reader = &ctx.external_functions.read()[id].0;
     if let Some(v) = reader
@@ -76,20 +56,6 @@ pub fn mangle_external_function(ctx: &TypeckCtx<'_>, id: ExternalFunctionId) -> 
         .as_ref()
         .expect("external functions need a name")
         .to_string()
-}
-
-pub fn mangle_struct(ctx: &TypeckCtx<'_>, id: StructId) -> String {
-    let struct_reader = ctx.structs.read();
-    let structure = &struct_reader[id];
-    let mut name = String::new();
-    name.push_str(ctx.get_module_path(structure.module_id));
-    name.push_str("::");
-    name.push_str(&structure.name);
-    name.push_str("::");
-    let mut hasher = DefaultHasher::new();
-    structure.hash(&mut hasher);
-    write!(name, "{:x}", hasher.finish()).expect("writing to a string should never fail");
-    name
 }
 
 pub fn mangle_static(ctx: &TypeckCtx<'_>, id: StaticId) -> String {
@@ -106,22 +72,14 @@ pub fn mangle_static(ctx: &TypeckCtx<'_>, id: StaticId) -> String {
     mangled
 }
 
-pub fn mangle_name(ctx: &TypeckCtx<'_>, item: ModuleScopeValue) -> String {
-    match item {
-        ModuleScopeValue::Function(id) => mangle_function(ctx, id),
-        ModuleScopeValue::ExternalFunction(id) => mangle_external_function(ctx, id),
-        ModuleScopeValue::Struct(id) => mangle_struct(ctx, id),
-        ModuleScopeValue::Static(id) => mangle_static(ctx, id),
-        ModuleScopeValue::Module(_) | ModuleScopeValue::Trait(_) => {
-            unreachable!("does not have to be mangled")
-        }
-    }
-}
-
 pub fn mangle_function_instance<'ctx>(ctx: &TypeckCtx<'ctx>, instance: FnInstance<'ctx>) -> String {
     let fn_reader = ctx.functions.read();
     let mut mangled_name = "_ZN".to_string();
-    mangled_name.push_str(ctx.mangle_module(fn_reader[instance.fn_id].0.module_id));
+
+    mangled_name.push_str(match fn_reader[instance.fn_id].0.context {
+        FunctionContext::Freestanding => ctx.mangle_module(fn_reader[instance.fn_id].0.module_id),
+        FunctionContext::StructFn(struct_id) => ctx.mangle_struct_segment(struct_id),
+    });
 
     match fn_reader[instance.fn_id].0.name {
         None => mangle_generic_segment(ANON_FN_NAME, &instance.generics, &mut mangled_name),
@@ -287,6 +245,19 @@ pub fn get_module_path<'ctx>(
     arena.allocate_str(&path)
 }
 
+pub fn mangle_struct(ctx: &TypeckCtx<'_>, id: StructId) -> String {
+    let struct_reader = ctx.structs.read();
+    let structure = &struct_reader[id];
+    let mut name = ctx.get_module_path(structure.module_id).to_string();
+    name.push_str("::");
+    name.push_str(&structure.name);
+    name.push_str("::");
+    let mut hasher = DefaultHasher::new();
+    structure.hash(&mut hasher);
+    write!(name, "{:x}", hasher.finish()).unwrap();
+    name
+}
+
 pub fn mangle_module<'ctx>(
     ctx: &TypeckCtx<'ctx>,
     mut cur_mod: ModuleId,
@@ -308,7 +279,21 @@ pub fn mangle_module<'ctx>(
     arena.allocate_str(&path)
 }
 
+pub fn mangle_struct_segment<'ctx>(
+    ctx: &TypeckCtx<'ctx>,
+    id: StructId,
+    arena: &'ctx TypeArena<u8>,
+) -> &'ctx str {
+    let struct_reader = ctx.structs.read();
+    let structure = &struct_reader[id];
+    let mut name = String::new();
+    name.push_str(ctx.mangle_module(structure.module_id));
+    mangle_path_segment(&structure.name, &mut name);
+    arena.allocate_str(&name)
+}
+
 pub fn provide(providers: &mut Providers<'_>) {
     providers.mangle_module = mangle_module;
+    providers.mangle_struct_segment = mangle_struct_segment;
     providers.get_module_path = get_module_path;
 }

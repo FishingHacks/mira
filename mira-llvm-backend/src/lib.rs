@@ -46,9 +46,12 @@ use mira_typeck::{
 
 use debug_builder::DebugContext;
 pub use error::CodegenError;
-use mangling::{mangle_function_instance, mangle_static, mangle_struct};
+use mangling::{mangle_function_instance, mangle_static};
 
-use crate::abi::{ArgumentType, argument, has_special_encoding, return_ty};
+use crate::{
+    abi::{ArgumentType, argument, has_special_encoding, return_ty},
+    mangling::mangle_struct,
+};
 
 mod abi;
 mod builder;

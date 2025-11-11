@@ -6,7 +6,9 @@ use mira_spans::{ArenaList, Span, interner::symbols};
 
 use mira_parser::{
     TypeRef,
-    module::{ExternalFunctionId, FunctionId, ModuleContext, StaticId, StructId, TraitId},
+    module::{
+        ExternalFunctionId, FunctionContext, FunctionId, ModuleContext, StaticId, StructId, TraitId,
+    },
     std_annotations::lang_item::LangItemAnnotation,
 };
 
@@ -450,14 +452,12 @@ impl<'arena> TypeckCtx<'arena> {
 
     fn resolve_function(&self, function_id: FunctionId, context: &ModuleContext<'arena>) {
         let mut writer = context.functions.write();
-        let module_id = writer[function_id].2;
-        let arguments = std::mem::take(&mut writer[function_id].0.arguments);
-        let span = writer[function_id].0.return_type.span();
-        let return_type = std::mem::replace(
-            &mut writer[function_id].0.return_type,
-            TypeRef::Void(span, 0),
-        );
-        let untyped_generics = std::mem::take(&mut writer[function_id].0.generics);
+        let func = &mut writer[function_id];
+        let module_id = func.parent_module;
+        let arguments = std::mem::take(&mut func.contract.arguments);
+        let span = func.contract.return_type.span();
+        let return_type = std::mem::replace(&mut func.contract.return_type, TypeRef::Void(span, 0));
+        let untyped_generics = std::mem::take(&mut func.contract.generics);
         let mut generics = Vec::with_capacity(untyped_generics.len());
         for generic in untyped_generics {
             let mut bounds = Vec::with_capacity(generic.bounds.len());
@@ -487,13 +487,14 @@ impl<'arena> TypeckCtx<'arena> {
         }
         let mut resolved_function_contract = TypedFunctionContract {
             module_id,
-            name: writer[function_id].0.name,
-            span: writer[function_id].0.span,
-            annotations: std::mem::take(&mut writer[function_id].0.annotations),
+            name: func.contract.name,
+            span: func.contract.span,
+            annotations: std::mem::take(&mut func.contract.annotations),
             arguments: Vec::new(),
             return_type: default_types::never,
             generics,
-            comment: writer[function_id].0.comment,
+            comment: func.contract.comment,
+            context: func.ctx,
         };
         drop(writer);
 
@@ -525,23 +526,22 @@ impl<'arena> TypeckCtx<'arena> {
         context: &ModuleContext<'arena>,
     ) {
         let mut writer = context.external_functions.write();
-        let comment = writer[ext_function_id].0.comment;
-        let module_id = writer[ext_function_id].2;
-        let arguments = std::mem::take(&mut writer[ext_function_id].0.arguments);
-        let span = writer[ext_function_id].0.return_type.span();
-        let return_type = std::mem::replace(
-            &mut writer[ext_function_id].0.return_type,
-            TypeRef::Void(span, 0),
-        );
+        let arguments = std::mem::take(&mut writer[ext_function_id].contract.arguments);
+        let void = TypeRef::Void(writer[ext_function_id].contract.return_type.span(), 0);
+        let return_type =
+            std::mem::replace(&mut writer[ext_function_id].contract.return_type, void);
+        let func = &writer[ext_function_id];
+        let module_id = func.parent_module;
         let mut resolved_function_contract = TypedFunctionContract {
             module_id,
-            name: writer[ext_function_id].0.name,
-            span: writer[ext_function_id].0.span,
-            annotations: std::mem::take(&mut writer[ext_function_id].0.annotations),
+            name: func.contract.name,
+            span: func.contract.span,
+            comment: func.contract.comment,
+            annotations: std::mem::take(&mut writer[ext_function_id].contract.annotations),
             arguments: Vec::new(),
             return_type: default_types::never,
             generics: Vec::new(),
-            comment,
+            context: FunctionContext::Freestanding,
         };
         drop(writer);
 

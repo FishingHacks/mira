@@ -14,8 +14,15 @@ use std::{
 };
 
 use mira_argparse::{EditorMode, ReplArgs};
-use mira_driver::{find_library, EmitMethod, LibraryTree};
+use mira_driver::{
+    find_library, ContextData, DiagEmitter, EmitMethod, LibraryTree, ProgressBarStyle,
+};
+use mira_errors::Diagnostics;
+use mira_lexer::Lexer;
 use mira_llvm_backend::CodegenConfig;
+use mira_parser::module::ModuleId;
+use mira_parser::Parser;
+use mira_spans::{Arena, FileId, SourceFile};
 use mira_target::{Target, NATIVE_TARGET};
 
 use super::about::print_about;
@@ -78,6 +85,7 @@ pub(crate) fn repl_main(args: ReplArgs) -> Result<(), Box<dyn Error>> {
                     println!("No editor found")
                 }
             }),
+            ("ast", |_, repl| display_ast(repl)),
             ("check", |_, repl| compile_run("", repl, false)),
             ("run", |args, repl| compile_run(args, repl, true)),
             ("build", |args, repl| compile_run(args, repl, false)),
@@ -206,6 +214,58 @@ fn parse_opts(args: &str) -> Vec<String> {
         opts.push(buf);
     }
     opts
+}
+
+fn display_ast(repl: &Repl<Data>) {
+    let arena = Arena::new();
+    let (ctx, data) = ContextData::new(&arena, Some(ProgressBarStyle::Normal), DiagEmitter::Stdout);
+    let s_ctx = ctx.ctx();
+    let ctx = data.to_context(ctx.ty_ctx());
+    let source_file = Arc::new(SourceFile::new(
+        FileId::ZERO,
+        Path::new("stdin_buffer").into(),
+        Path::new("/").into(),
+        repl.buf.clone().into(),
+    ));
+    let mut lexer = Lexer::new(s_ctx, source_file.clone());
+    if let Err(e) = lexer.scan_tokens() {
+        for e in e {
+            let _ = s_ctx.emit_diag(e.to_error());
+        }
+        return;
+    }
+
+    let tokens = {
+        let mut diagnostics = Diagnostics::new();
+        match mira_parser::expand_tokens(
+            s_ctx,
+            source_file.clone(),
+            lexer.into_tokens(),
+            &mut diagnostics,
+        ) {
+            Some(v) => v,
+            None => {
+                for e in diagnostics {
+                    let _ = s_ctx.emit_diag(e);
+                }
+                return;
+            }
+        }
+    };
+
+    let mut parser = Parser::from_tokens(s_ctx, &tokens, source_file, ModuleId::ZERO);
+    let (stmts, errs) = parser.parse_all();
+    for err in errs {
+        let _ = s_ctx.emit_diag(err.to_error());
+    }
+    for stmt in stmts {
+        use std::fmt::Write;
+
+        let mut s = String::new();
+        writeln!(s, "{stmt}").unwrap();
+
+        ctx.print_stdout(s);
+    }
 }
 
 fn compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {

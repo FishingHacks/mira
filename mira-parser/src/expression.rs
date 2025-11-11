@@ -112,6 +112,7 @@ impl<'ctx> Path<'ctx> {
         loop {
             let subpath = parser.expect_identifier()?;
             if !parser.match_tok(TokenType::NamespaceAccess) {
+                path.push(subpath, Vec::new());
                 break;
             }
             if parser.match_tok(TokenType::LessThan) {
@@ -119,6 +120,8 @@ impl<'ctx> Path<'ctx> {
                 if !parser.match_tok(TokenType::NamespaceAccess) {
                     break;
                 }
+            } else {
+                path.push(subpath, Vec::new());
             }
         }
         path.readjust_self_span(parser.ctx.span_interner);

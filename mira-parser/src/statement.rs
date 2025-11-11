@@ -418,9 +418,11 @@ impl Display for Statement<'_> {
             )),
             Self::Struct {
                 name,
-                elements: arguments,
+                elements,
                 span: _,
                 generics,
+                global_impl,
+                impls,
                 ..
             } => {
                 f.write_str("struct ")?;
@@ -445,12 +447,37 @@ impl Display for Statement<'_> {
                 }
                 f.write_str(" {\n")?;
 
-                for arg_name in arguments {
+                for arg_name in elements {
                     f.write_str("    ")?;
                     Display::fmt(&arg_name.0, f)?;
                     f.write_str(": ")?;
                     Display::fmt(&arg_name.1, f)?;
                     f.write_str(",\n")?;
+                }
+
+                if !global_impl.is_empty() || !impls.is_empty() {
+                    f.write_str("\n")?;
+                    for (contract, body) in global_impl.values() {
+                        f.write_str("    ")?;
+                        display_contract(f, contract, false)?;
+                        f.write_char(' ')?;
+                        Display::fmt(body, f)?;
+                        f.write_str(")\n")?;
+                    }
+
+                    for (trait_name, impls, _) in impls {
+                        f.write_str("    impl ")?;
+                        f.write_str(trait_name)?;
+                        f.write_str(" {\n")?;
+                        for (contract, body) in impls.values() {
+                            f.write_str("        ")?;
+                            display_contract(f, contract, false)?;
+                            f.write_char(' ')?;
+                            Display::fmt(body, f)?;
+                            f.write_str(")\n")?;
+                        }
+                        f.write_str("    }\n")?;
+                    }
                 }
 
                 f.write_str("}")

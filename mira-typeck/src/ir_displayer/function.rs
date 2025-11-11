@@ -23,6 +23,12 @@ impl FuncDisplay<'_> {
         if is_external {
             f.write_str("external fn ext_fn_")?;
         } else {
+            match self.0.context {
+                mira_parser::module::FunctionContext::Freestanding => {}
+                mira_parser::module::FunctionContext::StructFn(struct_id) => f.write_fmt(
+                    format_args!("@child_of(struct({}))\n", struct_id.to_usize()),
+                )?,
+            }
             f.write_str("fn fn_")?;
         }
         f.write_value(&id)?;
