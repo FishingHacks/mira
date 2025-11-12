@@ -28,10 +28,11 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                     }
                     ArgumentType::SRet(_) => {
                         let ptrsize = self.ctx.default_types.isize.get_bit_width() / 8;
-                        let (size, alignment) = self
-                            .ir
-                            .get_ty(id)
-                            .size_and_alignment(ptrsize as u64, &self.structs_reader);
+                        let (size, alignment) = self.ir.get_ty(id).size_and_alignment(
+                            ptrsize as u64,
+                            &self.structs_reader,
+                            self.ty_cx(),
+                        );
                         let size = self.ctx.default_types.i32.const_int(size, false);
                         self.build_memcpy(self.return_val, alignment, ptr, alignment, size)?;
                         self.build_return(None).map(|_| ())
@@ -89,7 +90,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             | TypedExpression::Literal(_, dst, val)
             | TypedExpression::Pos(_, dst, val) => {
                 if self.is_stack_allocated(*dst) {
-                    let alloca = self.build_alloca(self.basic_type(&self.get_ty(*dst)), "")?;
+                    let alloca = self.build_alloca(self.basic_ty(&self.get_ty(*dst)), "")?;
                     self.basic_value_ptr(val, alloca, true)?;
                     self.push_value_raw(*dst, alloca);
                 } else {

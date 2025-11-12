@@ -133,7 +133,7 @@ fn _main() -> EmitResult<()> {
                         .map_err(|e| IoWriteError(v.0.to_path_buf(), e).to_error())
                 );
             }
-            ResolvedValue::Struct(key) => {
+            ResolvedValue::Struct(key, _) => {
                 let s = context.generate_struct(&v, key);
                 tri!(err_fs::create_dir_all(v.0.parent().unwrap().to_path_buf()));
                 tri!(

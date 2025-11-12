@@ -153,7 +153,7 @@ pub fn walk_lit<'ctx, W: Visitor<'ctx> + ?Sized>(
     match lit {
         TypedLiteral::ArrayInit(_, lit, _) => visitor.visit_lit_super(lit, ir, tcx),
         TypedLiteral::Array(_, lits)
-        | TypedLiteral::Struct(_, lits)
+        | TypedLiteral::Struct(_, _, lits)
         | TypedLiteral::Tuple(lits) => {
             for lit in lits {
                 visitor.visit_lit_super(lit, ir, tcx);
@@ -364,7 +364,7 @@ pub fn walk_mut_lit<'ctx, W: MutVisitor<'ctx> + ?Sized>(
     match lit {
         TypedLiteral::ArrayInit(_, lit, _) => visitor.visit_lit_super(lit, scope, tcx),
         TypedLiteral::Array(_, lits)
-        | TypedLiteral::Struct(_, lits)
+        | TypedLiteral::Struct(_, _, lits)
         | TypedLiteral::Tuple(lits) => {
             for lit in lits {
                 visitor.visit_lit_super(lit, scope, tcx);

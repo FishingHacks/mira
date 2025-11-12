@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use crate::{
-    CommonFunction, ResolvedValue, ScopeKind, TypedFunctionContract,
+    CommonFunction, ResolvedValue, ScopeKind, Substitute, SubstitutionCtx, TypedFunctionContract,
     ir::{BlockId, ScopedIR},
     types::EMPTY_TYLIST,
 };
@@ -794,11 +794,11 @@ macro_rules! tc_res {
     }};
 }
 
-fn signed_number_to_literal<'arena>(
+fn signed_number_to_literal<'ctx>(
     v: i64,
     number_type: NumberType,
-    expected: TypeSuggestion,
-) -> (Ty<'arena>, TypedLiteral<'arena>) {
+    expected: TypeSuggestion<'ctx>,
+) -> (Ty<'ctx>, TypedLiteral<'ctx>) {
     match number_type {
         NumberType::I8 => (default_types::i8, TypedLiteral::I8(v as i8)),
         NumberType::I16 => (default_types::i16, TypedLiteral::I16(v as i16)),
@@ -821,11 +821,11 @@ fn signed_number_to_literal<'arena>(
     }
 }
 
-fn unsigned_number_to_literal<'arena>(
+fn unsigned_number_to_literal<'ctx>(
     v: u64,
     number_type: NumberType,
-    expected: TypeSuggestion,
-) -> (Ty<'arena>, TypedLiteral<'arena>) {
+    expected: TypeSuggestion<'ctx>,
+) -> (Ty<'ctx>, TypedLiteral<'ctx>) {
     match number_type {
         NumberType::U8 => (default_types::u8, TypedLiteral::U8(v as u8)),
         NumberType::U16 => (default_types::u16, TypedLiteral::U16(v as u16)),
@@ -851,11 +851,11 @@ fn unsigned_number_to_literal<'arena>(
     }
 }
 
-fn float_number_to_literal<'arena>(
+fn float_number_to_literal<'ctx>(
     v: f64,
     number_type: NumberType,
-    expected: TypeSuggestion,
-) -> (Ty<'arena>, TypedLiteral<'arena>) {
+    expected: TypeSuggestion<'ctx>,
+) -> (Ty<'ctx>, TypedLiteral<'ctx>) {
     match number_type {
         NumberType::F32 => (default_types::f32, TypedLiteral::F32(v as f32)),
         NumberType::F64 => (default_types::f64, TypedLiteral::F64(v)),
@@ -872,7 +872,7 @@ fn float_number_to_literal<'arena>(
 fn typecheck_expression<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
-    type_suggestion: TypeSuggestion,
+    type_suggestion: TypeSuggestion<'ctx>,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     match expression {
         &Expression::Literal(ref literal_value, span) => match literal_value {
@@ -949,9 +949,7 @@ fn typecheck_expression<'ctx>(
                 ))
             }
             LiteralValue::AnonymousStruct(values) => {
-                let struct_id = if let TypeSuggestion::Struct(id) = type_suggestion {
-                    id
-                } else {
+                let TypeSuggestion::Struct(struct_id, generics) = type_suggestion else {
                     return Err(ctx.emit_cannot_infer_anon_struct_type(span));
                 };
 
@@ -965,13 +963,14 @@ fn typecheck_expression<'ctx>(
 
                 let mut elements = Vec::with_capacity(structure.elements.len());
                 for (key, ty, _) in structure.elements.iter() {
+                    let ty = ctx.substitute(&*generics, *ty);
                     let Some(&(span, ref expr)) = values.get(key) else {
                         return Err(ctx.emit_missing_field(span, key.symbol()));
                     };
                     let (expr_typ, expr_lit) =
-                        typecheck_expression(ctx, expr, TypeSuggestion::from_type(*ty))?;
-                    if *ty != expr_typ {
-                        return Err(ctx.emit_mismatching_type(span, expr_typ, *ty));
+                        typecheck_expression(ctx, expr, TypeSuggestion::from_type(ty))?;
+                    if ty != expr_typ {
+                        return Err(ctx.emit_mismatching_type(span, expr_typ, ty));
                     }
                     elements.push(expr_lit);
                 }
@@ -979,13 +978,14 @@ fn typecheck_expression<'ctx>(
                     ctx.intern_ty(TyKind::Struct {
                         struct_id,
                         name: structure.name,
+                        generics,
                     }),
-                    TypedLiteral::Struct(struct_id, elements.into_boxed_slice()),
+                    TypedLiteral::Struct(struct_id, generics, elements.into_boxed_slice()),
                 ))
             }
             LiteralValue::Struct(values, path) => {
                 let value = ctx.resolve_import(ctx.contract.module_id, path.iter(), span)?;
-                let ResolvedValue::Struct(struct_id) = value else {
+                let ResolvedValue::Struct(struct_id, generics) = value else {
                     return Err(ctx.emit_mismatching_scope_type(
                         span,
                         ScopeKind::Struct,
@@ -1002,13 +1002,14 @@ fn typecheck_expression<'ctx>(
 
                 let mut elements = Vec::with_capacity(structure.elements.len());
                 for (key, ty, _) in structure.elements.iter() {
+                    let ty = ctx.substitute(&*generics, *ty);
                     let Some(&(span, ref expr)) = values.get(key) else {
                         return Err(ctx.emit_missing_field(span, key.symbol()));
                     };
                     let (expr_typ, expr_lit) =
-                        typecheck_expression(ctx, expr, TypeSuggestion::from_type(*ty))?;
-                    if *ty != expr_typ {
-                        return Err(ctx.emit_mismatching_type(span, *ty, expr_typ));
+                        typecheck_expression(ctx, expr, TypeSuggestion::from_type(ty))?;
+                    if ty != expr_typ {
+                        return Err(ctx.emit_mismatching_type(span, ty, expr_typ));
                     }
                     elements.push(expr_lit);
                 }
@@ -1016,8 +1017,9 @@ fn typecheck_expression<'ctx>(
                     ctx.intern_ty(TyKind::Struct {
                         struct_id,
                         name: structure.name,
+                        generics,
                     }),
-                    TypedLiteral::Struct(struct_id, elements.into_boxed_slice()),
+                    TypedLiteral::Struct(struct_id, generics, elements.into_boxed_slice()),
                 ))
             }
             LiteralValue::Float(v, number_type) => {
@@ -1431,8 +1433,9 @@ fn typecheck_expression<'ctx>(
             fn_name: identifier,
             lhs,
             arguments,
+            generics,
             ..
-        } => typecheck_membercall(ctx, lhs, identifier, arguments),
+        } => typecheck_membercall(ctx, lhs, identifier, arguments, generics),
         Expression::Assignment {
             left_side,
             right_side,
@@ -1829,6 +1832,7 @@ fn typecheck_membercall<'ctx>(
     lhs: &Expression<'ctx>,
     ident: &Ident<'ctx>,
     args: &[Expression<'ctx>],
+    generics: &[TypeRef<'ctx>],
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     let (mut typ_lhs, mut typed_literal_lhs) = new_index(ctx, lhs, TypeSuggestion::Unknown)?;
 
@@ -1853,7 +1857,9 @@ fn typecheck_membercall<'ctx>(
     let struct_reader = ctx.fn_ctx.tcx.structs.read();
 
     let struct_id = match **typ_lhs.without_ref() {
-        TyKind::Ref(_) | TyKind::Generic { .. } | TyKind::PrimitiveSelf => unreachable!(),
+        ref ty @ (TyKind::Ref(_) | TyKind::Generic { .. } | TyKind::PrimitiveSelf) => {
+            unreachable!("{ty:?}")
+        }
         TyKind::UnsizedArray { .. }
         | TyKind::SizedArray { .. }
         | TyKind::Tuple { .. }
@@ -1878,6 +1884,35 @@ fn typecheck_membercall<'ctx>(
         TyKind::PrimitiveBool => langitem_reader.bool,
     };
     drop(langitem_reader);
+
+    let self_ty = typ_lhs.without_ref();
+    let self_ty = match *self_ty {
+        TyKind::DynType(_) => unreachable!(),
+        &TyKind::Struct {
+            struct_id, name, ..
+        } => {
+            let generics = struct_reader[struct_id]
+                .generics
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    ctx.intern_ty(TyKind::Generic {
+                        name: v.name,
+                        generic_id: u8::try_from(i).expect("too many generics (>255) :<"),
+                        bounds: v.bounds,
+                        sized: v.sized,
+                    })
+                })
+                .collect::<Vec<_>>();
+            ctx.intern_ty(TyKind::Struct {
+                struct_id,
+                generics: ctx.intern_tylist(&generics),
+                name,
+            })
+        }
+        _ => self_ty,
+    };
+
     let structure = struct_id.map(|v| &struct_reader[v]);
     let function_id = structure
         .and_then(|v| v.global_impl.get(ident))
@@ -1903,8 +1938,8 @@ fn typecheck_membercall<'ctx>(
         return Err(ctx.emit_cannot_find_function_on_type(lhs.span(), ident.symbol(), typ_lhs));
     };
 
-    let function: &(_, _) = &function_reader[function_id];
-    if function.0.arguments.first().map(|v| v.1.without_ref()) != Some(typ_lhs.without_ref()) {
+    let function = &function_reader[function_id];
+    if function.0.arguments.first().map(|v| v.1.without_ref()) != Some(self_ty) {
         return Err(ctx.emit_non_member_function(function.0.span, ident.symbol(), typ_lhs));
     }
     let arg_refcount = function.0.arguments[0].1.refcount();
@@ -1926,6 +1961,46 @@ fn typecheck_membercall<'ctx>(
         }
     }
 
+    let self_generics = match **typ_lhs.without_ref() {
+        TyKind::Struct { generics, .. } => generics,
+        _ => EMPTY_TYLIST,
+    };
+
+    if generics.len() != function.0.generics.len() {
+        return Err(ctx.emit_mismatching_generic_count(
+            ident.span(),
+            function.0.generics.len(),
+            generics.len(),
+        ));
+    }
+
+    let function_generics = if function.0.generics.is_empty() {
+        self_generics
+    } else {
+        let mut typed_generics = self_generics.to_vec();
+        typed_generics.reserve_exact(function.0.generics.len());
+
+        let required = &function.0.generics;
+
+        for (i, generic) in generics.iter().enumerate() {
+            let ty = ctx.resolve_type(ctx.contract.module_id, generic)?;
+            if required[i].sized && !ty.is_sized() {
+                return Err(ctx.emit_unsized_for_sized_generic(generic.span(), ty));
+            }
+            if !ty.implements(&required[i].bounds, ctx) {
+                return Err(ctx.emit_ty_does_not_implement_bounds(
+                    generic.span(),
+                    required[i].name.span(),
+                    ty,
+                ));
+            }
+            typed_generics.push(ty);
+        }
+
+        ctx.intern_tylist(&typed_generics)
+    };
+    let subst_ctx = SubstitutionCtx::new(ctx.ctx, &function_generics);
+
     let mut typed_arguments = Vec::with_capacity(function.0.arguments.len() + 1);
     typed_arguments.push(typed_literal_lhs);
     if args.len() < function.0.arguments.len() - 1 {
@@ -1934,18 +2009,12 @@ fn typecheck_membercall<'ctx>(
     if args.len() > function.0.arguments.len() - 1 {
         return Err(ctx.emit_too_many_arguments(args[function.0.arguments.len() - 1].span()));
     }
-    for (i, (_, arg)) in function.0.arguments.iter().skip(1).enumerate() {
-        let (ty, expr) = typecheck_expression(
-            ctx,
-            &args[i + 1], // skip one argument for the `self` argument
-            TypeSuggestion::from_type(*arg),
-        )?;
-        if ty != function.0.arguments[i + 1].1 {
-            return Err(ctx.emit_mismatching_type(
-                args[i].span(),
-                function.0.arguments[i + 1].1,
-                ty,
-            ));
+    for (i, (_, ty)) in function.0.arguments.iter().skip(1).enumerate() {
+        let expected_ty = ty.substitute(&subst_ctx);
+        let (ty, expr) =
+            typecheck_expression(ctx, &args[i], TypeSuggestion::from_type(expected_ty))?;
+        if ty != expected_ty {
+            return Err(ctx.emit_mismatching_type(args[i].span(), expected_ty, ty));
         }
         typed_arguments.push(expr);
     }
@@ -1956,16 +2025,19 @@ fn typecheck_membercall<'ctx>(
         call_id,
         function_id,
         typed_arguments.into_boxed_slice(),
-        EMPTY_TYLIST,
+        function_generics,
     ));
 
-    Ok((function.0.return_type, TypedLiteral::Dynamic(call_id)))
+    Ok((
+        function.0.return_type.substitute(&subst_ctx),
+        TypedLiteral::Dynamic(call_id),
+    ))
 }
 
 fn typecheck_take_ref<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
-    type_suggestion: TypeSuggestion,
+    type_suggestion: TypeSuggestion<'ctx>,
     span: Span<'ctx>,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     match expression {
@@ -2033,7 +2105,7 @@ fn make_reference<'ctx>(
 fn new_index<'ctx>(
     ctx: &mut TcCtx<'ctx, '_>,
     expression: &Expression<'ctx>,
-    type_suggestion: TypeSuggestion,
+    type_suggestion: TypeSuggestion<'ctx>,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     match expression {
         Expression::Indexing {
@@ -2098,14 +2170,18 @@ fn new_index<'ctx>(
             let (mut ty_lhs, mut lit) = new_index(ctx, left_side, TypeSuggestion::Unknown)?;
             for field_name in index {
                 let (offset, new_ty) = match **ty_lhs.without_ref() {
-                    TyKind::Struct { struct_id, .. } => {
+                    TyKind::Struct {
+                        struct_id,
+                        generics,
+                        ..
+                    } => {
                         let structure = &ctx.structs.read()[struct_id];
                         match structure
                             .elements
                             .iter()
                             .enumerate()
                             .find(|(_, (v, _, _))| v == field_name)
-                            .map(|(idx, (_, ty, _))| (idx, ty))
+                            .map(|(idx, (_, ty, _))| (idx, generics.subst(ctx.ctx, *ty)))
                         {
                             Some((idx, ty)) => (idx, ty.take_ref(ctx.ctx)),
                             None => {

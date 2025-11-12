@@ -63,13 +63,13 @@ pub enum TypecheckingError<'arena> {
         #[primary_label("Cannot find trait")] Span<'arena>,
         PathWithoutGenerics<'arena>,
     ),
-    #[error("Expected {_1} generics, but found {_2}")]
-    MismatchingGenericCount(
-        #[primary_label("expected {} generics", if _2 < _1 { "more" } else { "less" })]
-        Span<'arena>,
-        usize,
-        usize,
-    ),
+    #[error("Expected {expected} generics, but found {found}")]
+    MismatchingGenericCount {
+        #[primary_label("expected {} generics", if expected < found { "more" } else { "less" })]
+        span: Span<'arena>,
+        expected: usize,
+        found: usize,
+    },
     #[error("The size of {_1} needs to be known at compiletime")]
     #[note("Try using `&{_1}`")]
     NonSizedType(
@@ -108,7 +108,7 @@ pub enum TypecheckingError<'arena> {
         "Function {} of type `{_2}` is not a method as it doesn't have the signature (Self, ...) or (&Self, ...)", IdentDisplay(*_1)
     )]
     NonMemberFunction(
-        #[primary_label("Cannot find method {}", IdentDisplay(*_1))] Span<'arena>,
+        #[primary_label("The first parameter should be `Self` or `&Self`")] Span<'arena>,
         Symbol<'arena>,
         Ty<'arena>,
     ),

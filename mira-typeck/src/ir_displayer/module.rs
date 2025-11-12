@@ -84,9 +84,20 @@ fn fmt_module_scope_value(
             f.write_str("external fn_")?;
             f.write_value(&id.to_usize())
         }
-        ResolvedValue::Struct(id) => {
+        ResolvedValue::Struct(id, generics) => {
             f.write_str("struct_")?;
-            f.write_value(&id.to_usize())
+            f.write_value(&id.to_usize())?;
+            if !generics.is_empty() {
+                f.write_char('<')?;
+                for (i, ty) in generics.iter().enumerate() {
+                    if i != 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_value(ty)?;
+                }
+                f.write_char('>')?;
+            }
+            Ok(())
         }
         ResolvedValue::Static(id) => {
             f.write_str("static_")?;

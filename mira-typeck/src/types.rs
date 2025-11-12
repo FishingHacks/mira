@@ -67,8 +67,8 @@ extra_traits!(for TyList impl debug);
 impl<'ctx> TyList<'ctx> {
     pub const EMPTY: Self = EMPTY_TYLIST;
 
-    pub fn subst<T: Substitute<'ctx>>(self, tc_ctx: &TypeckCtx<'ctx>, v: T) -> T {
-        v.substitute(&SubstitutionCtx::new(tc_ctx, &self))
+    pub fn subst<T: Substitute<'ctx>>(self, ctx: TypeCtx<'ctx>, v: T) -> T {
+        v.substitute(&SubstitutionCtx::new(ctx, &self))
     }
 }
 interner!(
@@ -95,19 +95,20 @@ impl<'a> AsRef<TyKind<'a>> for &TyKind<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum TyKind<'arena> {
-    DynType(ArenaList<'arena, (TraitId, Ident<'arena>)>),
+pub enum TyKind<'ctx> {
+    DynType(ArenaList<'ctx, (TraitId, Ident<'ctx>)>),
     Struct {
         struct_id: StructId,
-        name: Ident<'arena>,
+        generics: TyList<'ctx>,
+        name: Ident<'ctx>,
     },
-    UnsizedArray(Ty<'arena>),
+    UnsizedArray(Ty<'ctx>),
     SizedArray {
-        ty: Ty<'arena>,
+        ty: Ty<'ctx>,
         number_elements: usize,
     },
-    Tuple(TyList<'arena>),
-    Function(FunctionType<'arena>),
+    Tuple(TyList<'ctx>),
+    Function(FunctionType<'ctx>),
 
     PrimitiveVoid,
     PrimitiveNever,
@@ -131,12 +132,12 @@ pub enum TyKind<'arena> {
     PrimitiveBool,
     PrimitiveSelf,
 
-    Ref(Ty<'arena>),
+    Ref(Ty<'ctx>),
 
     Generic {
-        name: Ident<'arena>,
+        name: Ident<'ctx>,
         generic_id: u8,
-        bounds: ArenaList<'arena, TraitId>,
+        bounds: ArenaList<'ctx, TraitId>,
         sized: bool,
     },
 }
@@ -272,7 +273,7 @@ impl<'arena> Ty<'arena> {
         self == default_types::void || self == default_types::never
     }
 }
-impl<'arena> TyKind<'arena> {
+impl<'ctx> TyKind<'ctx> {
     pub fn implements(&self, traits: &[TraitId], tc_ctx: &TypeckCtx<'_>) -> bool {
         let langitem_reader = tc_ctx.lang_items.read();
 
@@ -323,31 +324,103 @@ impl<'arena> TyKind<'arena> {
     pub fn struct_offset(
         &self,
         ptr_size: u64,
-        structs: &IndexMap<StructId, TypedStruct<'arena>>,
+        structs: &IndexMap<StructId, TypedStruct<'ctx>>,
         element: usize,
+        ctx: TypeCtx<'ctx>,
     ) -> u64 {
-        let struct_id = match self {
-            Self::Struct { struct_id, .. } => *struct_id,
-            _ => unreachable!(),
+        let &Self::Struct {
+            struct_id,
+            generics,
+            ..
+        } = self
+        else {
+            unreachable!()
         };
+        let subst_ctx = SubstitutionCtx::new(ctx, &generics);
         let structure = &structs[struct_id];
+
         assert!(element < structure.elements.len());
         let mut offset = 0;
         for (_, ty, _) in &structure.elements[0..element] {
-            let (size, alignment) = ty.size_and_alignment(ptr_size, structs);
+            let (size, alignment) = ty
+                .substitute(&subst_ctx)
+                .size_and_alignment(ptr_size, structs, ctx);
             offset = align_up(offset, alignment) + size;
         }
         offset = align_up(
             offset,
-            structure.elements[element].1.alignment(ptr_size, structs),
+            structure.elements[element]
+                .1
+                .substitute(&subst_ctx)
+                .alignment(ptr_size, structs, ctx),
         );
         offset
+    }
+
+    pub fn size(
+        &self,
+        ptr_size: u64,
+        structs: &IndexMap<StructId, TypedStruct<'ctx>>,
+        ctx: TypeCtx<'ctx>,
+    ) -> u64 {
+        match self {
+            TyKind::Generic { .. }
+            | TyKind::PrimitiveSelf
+            | TyKind::PrimitiveStr
+            | TyKind::DynType { .. }
+            | TyKind::UnsizedArray { .. } => {
+                unreachable!("generics, self and unsized types don't have an alignment")
+            }
+            TyKind::Ref(v) if v.is_sized() => ptr_size,
+            TyKind::Ref(_) => ptr_size * 2,
+            &TyKind::Struct {
+                struct_id,
+                generics,
+                ..
+            } => {
+                let mut size = 0;
+                let mut alignment = 1;
+                for &(_, element, _) in structs[struct_id].elements.iter() {
+                    let (typ_size, typ_alignment) = generics
+                        .subst(ctx, element)
+                        .size_and_alignment(ptr_size, structs, ctx);
+                    alignment = alignment.max(typ_alignment);
+                    size = align_up(size, typ_alignment) + typ_size;
+                }
+                align_up(size, alignment)
+            }
+            &TyKind::SizedArray {
+                ty,
+                number_elements,
+            } => {
+                let size = ty.size(ptr_size, structs, ctx);
+                size * number_elements as u64
+            }
+            TyKind::Tuple(elements) => {
+                let mut size = 0;
+                let mut alignment = 1;
+                for element in elements.iter() {
+                    let (typ_size, typ_alignment) =
+                        element.size_and_alignment(ptr_size, structs, ctx);
+                    alignment = alignment.max(typ_alignment);
+                    size = align_up(size, typ_alignment) + typ_size;
+                }
+                align_up(size, alignment)
+            }
+            TyKind::PrimitiveVoid | TyKind::PrimitiveNever => 0,
+            TyKind::PrimitiveBool | TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => 1,
+            TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => 2,
+            TyKind::PrimitiveF32 | TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => 4,
+            TyKind::PrimitiveF64 | TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => 8,
+            TyKind::Function(_) | TyKind::PrimitiveUSize | TyKind::PrimitiveISize => ptr_size,
+        }
     }
 
     pub fn alignment(
         &self,
         ptr_size: u64,
-        structs: &IndexMap<StructId, TypedStruct<'arena>>,
+        structs: &IndexMap<StructId, TypedStruct<'ctx>>,
+        ctx: TypeCtx<'ctx>,
     ) -> u32 {
         match self {
             TyKind::Ref(_) => ptr_size as u32,
@@ -358,16 +431,23 @@ impl<'arena> TyKind<'arena> {
             | TyKind::UnsizedArray { .. } => {
                 unreachable!("generics, self and unsized types don't have an alignment")
             }
-            &TyKind::Struct { struct_id, .. } => structs[struct_id]
-                .elements
-                .iter()
-                .map(|v| v.1.alignment(ptr_size, structs))
-                .max()
-                .unwrap_or(1),
-            TyKind::SizedArray { ty, .. } => ty.alignment(ptr_size, structs),
+            &TyKind::Struct {
+                struct_id,
+                generics,
+                ..
+            } => {
+                let subst_ctx = SubstitutionCtx::new(ctx, &generics);
+                structs[struct_id]
+                    .elements
+                    .iter()
+                    .map(|v| v.1.substitute(&subst_ctx).alignment(ptr_size, structs, ctx))
+                    .max()
+                    .unwrap_or(1)
+            }
+            TyKind::SizedArray { ty, .. } => ty.alignment(ptr_size, structs, ctx),
             TyKind::Tuple(elements) => elements
                 .iter()
-                .map(|v| v.alignment(ptr_size, structs))
+                .map(|v| v.alignment(ptr_size, structs, ctx))
                 .max()
                 .unwrap_or(1),
             TyKind::PrimitiveVoid
@@ -387,7 +467,8 @@ impl<'arena> TyKind<'arena> {
     pub fn size_and_alignment(
         &self,
         ptr_size: u64,
-        structs: &IndexMap<StructId, TypedStruct<'arena>>,
+        structs: &IndexMap<StructId, TypedStruct<'ctx>>,
+        ctx: TypeCtx<'ctx>,
     ) -> (u64, u32) {
         match self {
             TyKind::Generic { .. }
@@ -404,11 +485,17 @@ impl<'arena> TyKind<'arena> {
                     (ptr_size * 2, ptr_size as u32)
                 }
             }
-            &TyKind::Struct { struct_id, .. } => {
+            &TyKind::Struct {
+                struct_id,
+                generics,
+                ..
+            } => {
                 let mut size = 0;
                 let mut alignment = 1;
-                for (_, element, _) in structs[struct_id].elements.iter() {
-                    let (typ_size, typ_alignment) = element.size_and_alignment(ptr_size, structs);
+                for &(_, element, _) in structs[struct_id].elements.iter() {
+                    let (typ_size, typ_alignment) = generics
+                        .subst(ctx, element)
+                        .size_and_alignment(ptr_size, structs, ctx);
                     alignment = alignment.max(typ_alignment);
                     size = align_up(size, typ_alignment) + typ_size;
                 }
@@ -418,14 +505,15 @@ impl<'arena> TyKind<'arena> {
                 ty,
                 number_elements,
             } => {
-                let (size, alignment) = ty.size_and_alignment(ptr_size, structs);
+                let (size, alignment) = ty.size_and_alignment(ptr_size, structs, ctx);
                 (size * *number_elements as u64, alignment)
             }
             TyKind::Tuple(elements) => {
                 let mut size = 0;
                 let mut alignment = 1;
                 for element in elements.iter() {
-                    let (typ_size, typ_alignment) = element.size_and_alignment(ptr_size, structs);
+                    let (typ_size, typ_alignment) =
+                        element.size_and_alignment(ptr_size, structs, ctx);
                     alignment = alignment.max(typ_alignment);
                     size = align_up(size, typ_alignment) + typ_size;
                 }
@@ -473,7 +561,7 @@ impl<'arena> TyKind<'arena> {
         count
     }
 
-    pub fn is_zst(&self, structs: &IndexMap<StructId, TypedStruct<'arena>>) -> bool {
+    pub fn is_zst(&self, structs: &IndexMap<StructId, TypedStruct<'ctx>>) -> bool {
         match self {
             &TyKind::Struct { struct_id, .. } => structs[struct_id]
                 .elements
@@ -664,7 +752,20 @@ impl<'arena> TyKind<'arena> {
 impl Display for TyKind<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TyKind::Struct { name, .. } => Display::fmt(name, f),
+            TyKind::Struct { name, generics, .. } => {
+                Display::fmt(name, f)?;
+                if !generics.is_empty() {
+                    f.write_str("<")?;
+                    for (i, ty) in generics.iter().enumerate() {
+                        if i != 0 {
+                            f.write_str(", ")?;
+                        }
+                        Display::fmt(ty, f)?;
+                    }
+                    f.write_str(">")?;
+                }
+                Ok(())
+            }
             TyKind::DynType(trait_refs) => {
                 f.write_str("dyn ")?;
                 for (i, (_, trait_ref)) in trait_refs.iter().enumerate() {
@@ -768,21 +869,27 @@ impl Display for TyKind<'_> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) enum TypeSuggestion {
-    Struct(StructId),
-    Array(Box<TypeSuggestion>),
-    UnsizedArray(Box<TypeSuggestion>),
+pub(crate) enum TypeSuggestion<'ctx> {
+    Struct(StructId, TyList<'ctx>),
+    Array(Box<TypeSuggestion<'ctx>>),
+    UnsizedArray(Box<TypeSuggestion<'ctx>>),
     Number(NumberType),
-    Tuple(Vec<TypeSuggestion>),
+    Tuple(Vec<TypeSuggestion<'ctx>>),
     Bool,
     #[default]
     Unknown,
 }
 
-impl Display for TypeSuggestion {
+impl Display for TypeSuggestion<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TypeSuggestion::Struct(id) => f.write_fmt(format_args!("<struct {}>", id.to_usize())),
+            TypeSuggestion::Struct(id, generics) => {
+                f.write_fmt(format_args!("<struct {}", id.to_usize()))?;
+                for &generic in **generics {
+                    f.write_fmt(format_args!(", {}", generic))?;
+                }
+                f.write_char('>')
+            }
             TypeSuggestion::Array(v) | TypeSuggestion::UnsizedArray(v) => {
                 f.write_fmt(format_args!("[{v}]"))
             }
@@ -803,13 +910,16 @@ impl Display for TypeSuggestion {
     }
 }
 
-impl TypeSuggestion {
-    pub(crate) fn to_type<'ctx>(&self, ctx: &TypeckCtx<'ctx>) -> Option<Ty<'ctx>> {
+impl<'ctx> TypeSuggestion<'ctx> {
+    pub(crate) fn to_type(&self, ctx: &TypeckCtx<'ctx>) -> Option<Ty<'ctx>> {
         match self {
-            TypeSuggestion::Struct(id) => Some(ctx.ctx.intern_ty(TyKind::Struct {
-                struct_id: *id,
-                name: ctx.structs.read()[*id].name,
-            })),
+            &TypeSuggestion::Struct(struct_id, generics) => {
+                Some(ctx.ctx.intern_ty(TyKind::Struct {
+                    struct_id,
+                    generics,
+                    name: ctx.structs.read()[struct_id].name,
+                }))
+            }
             TypeSuggestion::Array(type_suggestion)
             | TypeSuggestion::UnsizedArray(type_suggestion) => type_suggestion
                 .to_type(ctx)
@@ -845,7 +955,7 @@ impl TypeSuggestion {
         }
     }
 
-    pub(crate) fn from_type(ty: Ty<'_>) -> Self {
+    pub(crate) fn from_type(ty: Ty<'ctx>) -> Self {
         match &**ty {
             TyKind::PrimitiveStr
             | TyKind::PrimitiveSelf
@@ -854,7 +964,11 @@ impl TypeSuggestion {
             | TyKind::PrimitiveVoid
             | TyKind::PrimitiveNever
             | TyKind::DynType { .. } => Self::Unknown,
-            TyKind::Struct { struct_id, .. } => Self::Struct(*struct_id),
+            &TyKind::Struct {
+                struct_id,
+                generics,
+                ..
+            } => Self::Struct(struct_id, generics),
             TyKind::SizedArray { ty, .. } => Self::Array(Box::new(Self::from_type(*ty))),
             TyKind::UnsizedArray(ty) => Self::UnsizedArray(Box::new(Self::from_type(*ty))),
             TyKind::PrimitiveI8 => Self::Number(NumberType::I8),

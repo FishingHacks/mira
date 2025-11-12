@@ -30,7 +30,7 @@ use inkwell::{
 use mira_common::index::IndexMap;
 use mira_errors::{ErrorEmitted, FatalError};
 use mira_parser::{
-    module::{ExternalFunctionId, FunctionId, StaticId, StructId, TraitId},
+    module::{ExternalFunctionId, FunctionContext, FunctionId, StaticId, StructId, TraitId},
     std_annotations::{
         alias::ExternAliasAnnotation, callconv::CallConvAnnotation, ext_vararg::ExternVarArg,
         intrinsic::IntrinsicAnnotation, llvm_intrinsic::LLVMIntrinsicAnnotation,
@@ -40,7 +40,7 @@ use mira_parser::{
 use mira_spans::interner::Symbol;
 use mira_target::{NATIVE_TARGET, Target};
 use mira_typeck::{
-    Substitute, SubstitutionCtx, Ty, TyKind, TyList, TypeckCtx, default_types, ir::TypedLiteral,
+    Substitute, SubstitutionCtx, Ty, TyKind, TyList, TypeckCtx, ir::TypedLiteral,
     queries::Providers,
 };
 
@@ -59,57 +59,112 @@ mod debug_builder;
 mod error;
 pub mod mangling;
 
-fn llvm_basic_ty<'ctx>(
-    ty: &TyKind<'_>,
-    default_types: &DefaultTypes<'ctx>,
-    structs: &StructsStore<'ctx>,
-    ctx: &'ctx Context,
-) -> BasicTypeEnum<'ctx> {
-    match ty {
-        TyKind::Ref(t) => {
-            if t.is_sized() {
-                default_types.ptr.into()
-            } else {
-                default_types.fat_ptr.into()
-            }
+impl<'ctx, 'tycx> CodegenContext<'ctx, 'tycx, '_> {
+    fn basic_ty(&self, ty: &TyKind<'tycx>) -> BasicTypeEnum<'ctx> {
+        match ty {
+            TyKind::Generic { .. } => unreachable!("generics should be resolved by now"),
+            TyKind::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
+            TyKind::PrimitiveStr => panic!("llvm types must be sized, `str` is not"),
+            TyKind::PrimitiveSelf => unreachable!("Self must be resolved at this point"),
+            TyKind::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
+
+            TyKind::Ref(t) if t.is_sized() => self.default_types.ptr.into(),
+            TyKind::Ref(_) => self.default_types.fat_ptr.into(),
+            &TyKind::Struct {
+                struct_id,
+                generics,
+                ..
+            } => self.structs.struct_ty(struct_id, generics, self).into(),
+            TyKind::Tuple(elements) => self
+                .context
+                .struct_type(
+                    &elements
+                        .iter()
+                        .map(|ty| self.basic_ty(ty))
+                        .collect::<Vec<_>>(),
+                    false,
+                )
+                .into(),
+            TyKind::SizedArray {
+                ty,
+                number_elements,
+                ..
+            } => self.basic_ty(ty).array_type(*number_elements as u32).into(),
+            // our function types are always pointers because all function types are pointers in llvm
+            TyKind::Function(..) => self.default_types.ptr.into(),
+            TyKind::PrimitiveNever | TyKind::PrimitiveVoid => panic!(
+                "void and never should be ignored as llvm types outside of function return values"
+            ),
+            TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => self.default_types.i8.into(),
+            TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => self.default_types.i16.into(),
+            TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => self.default_types.i32.into(),
+            TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => self.default_types.i64.into(),
+            TyKind::PrimitiveUSize | TyKind::PrimitiveISize => self.default_types.isize.into(),
+            TyKind::PrimitiveF32 => self.default_types.f32.into(),
+            TyKind::PrimitiveF64 => self.default_types.f64.into(),
+            TyKind::PrimitiveBool => self.default_types.bool.into(),
         }
-        TyKind::Generic { .. } => unreachable!("generics should be resolved by now"),
-        TyKind::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
-        TyKind::PrimitiveStr => panic!("llvm types must be sized, `str` is not"),
-        TyKind::PrimitiveSelf => unreachable!("Self must be resolved at this point"),
-        TyKind::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
-        TyKind::Struct { struct_id, .. } => structs[*struct_id].into(),
-        TyKind::Tuple(elements) => ctx
-            .struct_type(
-                &elements
-                    .iter()
-                    .map(|v| llvm_basic_ty(v, default_types, structs, ctx))
-                    .collect::<Vec<_>>(),
-                false,
-            )
-            .into(),
-        TyKind::SizedArray {
-            ty,
-            number_elements,
-            ..
-        } => llvm_basic_ty(ty, default_types, structs, ctx)
-            .array_type(*number_elements as u32)
-            .into(),
-        // our function types are always pointers because all function types are pointers in llvm
-        TyKind::Function(..) => default_types.ptr.into(),
-        TyKind::PrimitiveNever | TyKind::PrimitiveVoid => panic!(
-            "void and never should be ignored as llvm types outside of function return values"
-        ),
-        TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => default_types.i8.into(),
-        TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => default_types.i16.into(),
-        TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => default_types.i32.into(),
-        TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => default_types.i64.into(),
-        TyKind::PrimitiveUSize | TyKind::PrimitiveISize => default_types.isize.into(),
-        TyKind::PrimitiveF32 => default_types.f32.into(),
-        TyKind::PrimitiveF64 => default_types.f64.into(),
-        TyKind::PrimitiveBool => default_types.bool.into(),
     }
 }
+
+// fn llvm_basic_ty<'ctx, 'tycx>(
+//     tc_ctx: &TypeckCtx<'tycx>,
+//     ty: &TyKind<'tycx>,
+//     default_types: &DefaultTypes<'ctx>,
+//     structs: &StructStore<'ctx, 'tycx>,
+//     ctx: &'ctx Context,
+// ) -> BasicTypeEnum<'ctx> {
+//     match ty {
+//         TyKind::Ref(t) => {
+//             if t.is_sized() {
+//                 default_types.ptr.into()
+//             } else {
+//                 default_types.fat_ptr.into()
+//             }
+//         }
+//         TyKind::Generic { .. } => unreachable!("generics should be resolved by now"),
+//         TyKind::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
+//         TyKind::PrimitiveStr => panic!("llvm types must be sized, `str` is not"),
+//         TyKind::PrimitiveSelf => unreachable!("Self must be resolved at this point"),
+//         TyKind::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
+//         &TyKind::Struct {
+//             struct_id,
+//             generics,
+//             ..
+//         } => structs
+//             .struct_ty(struct_id, generics, ctx, tc_ctx, default_types)
+//             .into(),
+//         TyKind::Tuple(elements) => ctx
+//             .struct_type(
+//                 &elements
+//                     .iter()
+//                     .map(|v| llvm_basic_ty(tc_ctx, v, default_types, structs, ctx))
+//                     .collect::<Vec<_>>(),
+//                 false,
+//             )
+//             .into(),
+//         TyKind::SizedArray {
+//             ty,
+//             number_elements,
+//             ..
+//         } => llvm_basic_ty(tc_ctx, ty, default_types, structs, ctx)
+//             .array_type(*number_elements as u32)
+//             .into(),
+//         // our function types are always pointers because all function types are pointers in llvm
+//         TyKind::Function(..) => default_types.ptr.into(),
+//         TyKind::PrimitiveNever | TyKind::PrimitiveVoid => panic!(
+//             "void and never should be ignored as llvm types outside of function return values"
+//         ),
+//         TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => default_types.i8.into(),
+//         TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => default_types.i16.into(),
+//         TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => default_types.i32.into(),
+//         TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => default_types.i64.into(),
+//         TyKind::PrimitiveUSize | TyKind::PrimitiveISize => default_types.isize.into(),
+//         TyKind::PrimitiveF32 => default_types.f32.into(),
+//         TyKind::PrimitiveF64 => default_types.f64.into(),
+//         TyKind::PrimitiveBool => default_types.bool.into(),
+//     }
+// }
 
 fn is_value_const(v: &BasicValueEnum<'_>) -> bool {
     match v {
@@ -189,12 +244,7 @@ fn basic_val<'ctx, 'arena>(
                 .into()
         }
 
-        TypedLiteral::ArrayInit(ty, _, 0) => {
-            llvm_basic_ty(ty, &ctx.default_types, &ctx.structs, ctx.context)
-                .array_type(0)
-                .const_zero()
-                .into()
-        }
+        TypedLiteral::ArrayInit(ty, _, 0) => ctx.basic_ty(ty).array_type(0).const_zero().into(),
         TypedLiteral::ArrayInit(_, elem, amount) => {
             let elem = basic_val(elem, ctx);
             let mut array_value = elem.get_type().array_type(*amount as u32).const_zero();
@@ -210,10 +260,7 @@ fn basic_val<'ctx, 'arena>(
         }
         TypedLiteral::Array(ty, elements) => {
             if elements.is_empty() {
-                return llvm_basic_ty(ty, &ctx.default_types, &ctx.structs, ctx.context)
-                    .array_type(0)
-                    .const_zero()
-                    .into();
+                return ctx.basic_ty(ty).array_type(0).const_zero().into();
             }
             let mut insert_value_vec: Vec<(usize, BasicValueEnum<'ctx>)> = Vec::new();
 
@@ -232,27 +279,26 @@ fn basic_val<'ctx, 'arena>(
                     $ty.const_array(&const_elements)
                 }};
             }
-            let mut const_value =
-                match llvm_basic_ty(ty, &ctx.default_types, &ctx.structs, ctx.context) {
-                    BasicTypeEnum::ArrayType(array_type) => {
-                        array_const_value!(array_type, into_array_value)
-                    }
-                    BasicTypeEnum::FloatType(float_type) => {
-                        array_const_value!(float_type, into_float_value)
-                    }
-                    BasicTypeEnum::IntType(int_type) => {
-                        array_const_value!(int_type, into_int_value)
-                    }
-                    BasicTypeEnum::PointerType(pointer_type) => {
-                        array_const_value!(pointer_type, into_pointer_value)
-                    }
-                    BasicTypeEnum::StructType(struct_type) => {
-                        array_const_value!(struct_type, into_struct_value)
-                    }
-                    BasicTypeEnum::VectorType(..) | BasicTypeEnum::ScalableVectorType(..) => {
-                        unreachable!("vector types arent supported")
-                    }
-                };
+            let mut const_value = match ctx.basic_ty(ty) {
+                BasicTypeEnum::ArrayType(array_type) => {
+                    array_const_value!(array_type, into_array_value)
+                }
+                BasicTypeEnum::FloatType(float_type) => {
+                    array_const_value!(float_type, into_float_value)
+                }
+                BasicTypeEnum::IntType(int_type) => {
+                    array_const_value!(int_type, into_int_value)
+                }
+                BasicTypeEnum::PointerType(pointer_type) => {
+                    array_const_value!(pointer_type, into_pointer_value)
+                }
+                BasicTypeEnum::StructType(struct_type) => {
+                    array_const_value!(struct_type, into_struct_value)
+                }
+                BasicTypeEnum::VectorType(..) | BasicTypeEnum::ScalableVectorType(..) => {
+                    unreachable!("vector types arent supported")
+                }
+            };
 
             for v in insert_value_vec.drain(..) {
                 const_value = ctx
@@ -263,26 +309,27 @@ fn basic_val<'ctx, 'arena>(
             }
             const_value.into()
         }
-        TypedLiteral::Struct(struct_id, vec) => {
-            if vec.is_empty() {
-                return ctx.structs[*struct_id].const_named_struct(&[]).into();
+        &TypedLiteral::Struct(struct_id, generics, ref elems) => {
+            let struct_ty = ctx.structs.struct_ty(struct_id, generics, ctx);
+            if elems.is_empty() {
+                return struct_ty.const_named_struct(&[]).into();
             }
             let mut non_const_value = Vec::new();
-            let mut const_value = ctx.structs[*struct_id].const_named_struct(
-                &vec.iter()
-                    .enumerate()
-                    .map(|(i, v)| {
-                        let val = basic_val(v, ctx);
-                        if is_value_const(&val) {
-                            val
-                        } else {
-                            let poison_val = poison_val(val.get_type());
-                            non_const_value.push((i, val));
-                            poison_val
-                        }
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            let const_elems = elems
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let val = basic_val(v, ctx);
+                    if is_value_const(&val) {
+                        val
+                    } else {
+                        let poison_val = poison_val(val.get_type());
+                        non_const_value.push((i, val));
+                        poison_val
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut const_value = struct_ty.const_named_struct(&const_elems);
             for v in non_const_value.drain(..) {
                 const_value = ctx
                     .builder
@@ -367,7 +414,6 @@ impl<'ctx> CodegenFunction<'ctx> {
 }
 
 pub(crate) type ExternalFunctionsStore<'ctx> = IndexMap<ExternalFunctionId, CodegenFunction<'ctx>>;
-pub(crate) type StructsStore<'ctx> = IndexMap<StructId, StructType<'ctx>>;
 pub(crate) type StaticsStore<'ctx> = IndexMap<StaticId, GlobalValue<'ctx>>;
 
 pub struct CodegenContextBuilder(Context);
@@ -421,6 +467,37 @@ pub struct FnStore<'ctx, 'arena> {
     missing: HashSet<FnInstance<'arena>>,
 }
 
+#[derive(Default)]
+pub struct StructStore<'ctx, 'ty_cx>(
+    RefCell<HashMap<(StructId, TyList<'ty_cx>), StructType<'ctx>>>,
+);
+
+impl<'ctx, 'ty_cx> StructStore<'ctx, 'ty_cx> {
+    pub fn struct_ty(
+        &self,
+        id: StructId,
+        generics: TyList<'ty_cx>,
+        ctx: &CodegenContext<'ctx, 'ty_cx, '_>,
+    ) -> StructType<'ctx> {
+        if let Some(v) = self.0.borrow().get(&(id, generics)) {
+            return *v;
+        }
+        let name = mangle_struct(ctx.tc_ctx, id, generics);
+        self.0
+            .borrow_mut()
+            .insert((id, generics), ctx.context.opaque_struct_type(&name));
+        let subst_ctx = SubstitutionCtx::new(ctx.tc_ctx.ctx, *generics);
+        let elems = ctx.tc_ctx.structs.read_recursive()[id]
+            .elements
+            .iter()
+            .map(|(_, ty, _)| ctx.basic_ty(*ty.substitute(&subst_ctx)))
+            .collect::<Vec<_>>();
+        let struct_ty = self.0.borrow()[&(id, generics)];
+        struct_ty.set_body(&elems, false);
+        struct_ty
+    }
+}
+
 pub struct CodegenContext<'ctx, 'arena, 'a> {
     pub tc_ctx: &'a TypeckCtx<'arena>,
     builder: Builder<'ctx>,
@@ -430,7 +507,7 @@ pub struct CodegenContext<'ctx, 'arena, 'a> {
     pub machine: TargetMachine,
     pub triple: TargetTriple,
     external_functions: ExternalFunctionsStore<'ctx>,
-    structs: StructsStore<'ctx>,
+    structs: StructStore<'ctx, 'arena>,
     statics: StaticsStore<'ctx>,
     debug_ctx: DebugContext<'ctx, 'arena>,
     config: CodegenConfig<'ctx>,
@@ -600,7 +677,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             builder,
             default_types,
             external_functions: IndexMap::new(),
-            structs: IndexMap::new(),
+            structs: StructStore::default(),
             statics: IndexMap::new(),
             string_map: RefCell::new(HashMap::new()),
             machine,
@@ -613,29 +690,6 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             function_store: RefCell::default(),
         };
 
-        let struct_reader = ctx.structs.read();
-        for k in struct_reader.keys() {
-            me.structs
-                .insert(k, context.opaque_struct_type(&mangle_struct(ctx, k)));
-        }
-        for (key, structure) in struct_reader.entries() {
-            let fields = structure
-                .elements
-                .iter()
-                .map(|(_, t, _)| {
-                    if *t == default_types::void || *t == default_types::never {
-                        me.default_types.i8.array_type(0).into()
-                    } else {
-                        llvm_basic_ty(t, &me.default_types, &me.structs, me.context)
-                    }
-                })
-                .collect::<Vec<_>>();
-            assert!(
-                me.structs[key].set_body(&fields, false),
-                "struct should not yet be initialized"
-            );
-        }
-
         // attributes:
         let inline =
             context.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
@@ -643,9 +697,11 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         let noinline =
             context.create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
 
+        let struct_reader = me.tc_ctx.structs.read_recursive();
         let ptrsize = (default_types.isize.get_bit_width() / 8) as u8;
         // external functions
         let ext_function_reader = ctx.external_functions.read();
+        let ty_cx = me.tc_ctx.ctx;
         for (key, (contract, body)) in ext_function_reader.entries() {
             let mut ret_args_types = Vec::with_capacity(contract.arguments.len() + 1);
 
@@ -654,14 +710,20 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                 &contract.return_type,
                 ptrsize,
                 &struct_reader,
-                |t| llvm_basic_ty(t, &default_types, &me.structs, context),
+                |t| me.basic_ty(t),
+                ty_cx,
             );
             ret_args_types.push(ret_ty);
 
             for (_, ty) in &contract.arguments {
-                let arg_ty = argument(context, ty, ptrsize, &struct_reader, |t| {
-                    llvm_basic_ty(t, &default_types, &me.structs, context)
-                });
+                let arg_ty = argument(
+                    context,
+                    ty,
+                    ptrsize,
+                    &struct_reader,
+                    |t| me.basic_ty(t),
+                    ty_cx,
+                );
                 ret_args_types.push(arg_ty);
             }
 
@@ -738,7 +800,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         let mut statics = IndexMap::new();
         for (key, static_element) in static_reader.entries() {
             let global = me.module.add_global(
-                llvm_basic_ty(&static_element.ty, &default_types, &me.structs, context),
+                me.basic_ty(&static_element.ty),
                 None,
                 &mangle_static(ctx, key),
             );
@@ -771,13 +833,23 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                 "tried to instantiate an intrinsic. This should be impossible and have been sorted out by typechecking."
             );
         }
+        let required = match contract.context {
+            FunctionContext::Freestanding => contract.generics.len(),
+            FunctionContext::StructFn(struct_id) => {
+                contract.generics.len()
+                    + self.tc_ctx.structs.read_recursive()[struct_id]
+                        .generics
+                        .len()
+            }
+        };
+
         assert_eq!(
-            contract.generics.len(),
+            required,
             instance.generics.len(),
             "Mismatching generics between contract and instantiation of function {:?}",
             contract.name
         );
-        let subst_ctx = SubstitutionCtx::new(self.tc_ctx, &instance.generics);
+        let subst_ctx = SubstitutionCtx::new(self.tc_ctx.ctx, &instance.generics);
 
         let mut ret_args_types = Vec::with_capacity(contract.arguments.len() + 1);
         let ptrsize = (self.default_types.isize.get_bit_width() / 8) as u8;
@@ -788,7 +860,8 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             &contract.return_type.substitute(&subst_ctx),
             ptrsize,
             &struct_reader,
-            |t| llvm_basic_ty(t, &self.default_types, &self.structs, self.context),
+            |t| self.basic_ty(t),
+            self.tc_ctx.ctx,
         );
         ret_args_types.push(ret_ty);
 
@@ -798,7 +871,8 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                 &ty.substitute(&subst_ctx),
                 ptrsize,
                 &struct_reader,
-                |t| llvm_basic_ty(t, &self.default_types, &self.structs, self.context),
+                |t| self.basic_ty(t),
+                self.tc_ctx.ctx,
             );
             ret_args_types.push(arg_ty);
         }
@@ -944,7 +1018,10 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         ));
 
         let vtable_ty = self.context.struct_type(&typs, false);
-        let ty_size = vtable.0.size_and_alignment(ptr_width, &struct_reader).0;
+        let ty_size = vtable
+            .0
+            .size_and_alignment(ptr_width, &struct_reader, self.tc_ctx.ctx)
+            .0;
         let mut field_values = vec![self.default_types.isize.const_int(ty_size, false).into()];
 
         for &trait_id in vtable.1.iter() {
@@ -982,13 +1059,12 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
 
         let params = types
             .inspect(|ty| assert!(!has_special_encoding(ty)))
-            .map(|ty| llvm_basic_ty(*ty, &self.default_types, &self.structs, self.context).into())
+            .map(|ty| self.basic_ty(*ty).into())
             .collect::<Vec<_>>();
         let fn_ty = if ret_ty.is_voidlike() {
             self.context.void_type().fn_type(&params, false)
         } else {
-            llvm_basic_ty(*ret_ty, &self.default_types, &self.structs, self.context)
-                .fn_type(&params, false)
+            self.basic_ty(*ret_ty).fn_type(&params, false)
         };
         let function = self.module.add_function(sym.to_str(), fn_ty, None);
         self.intrinsics.borrow_mut().insert(sym, function);
@@ -1135,11 +1211,6 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                 .has_annotation::<LLVMIntrinsicAnnotation>(),
             "fn instance with llvm intrinsic annotations"
         );
-        assert_eq!(
-            contract.generics.len(),
-            instance.generics.len(),
-            "fn instance with llvm intrinsic annotations"
-        );
 
         let func = self
             .get_fn_instance_if_generated(&instance)
@@ -1216,7 +1287,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                 ptr,
                 scope,
                 contract.span,
-                ir.get_ty(value),
+                function_ctx.substitute(ir.get_ty(value)),
                 item.name.symbol(),
                 function_ctx.current_block,
                 contract.module_id,

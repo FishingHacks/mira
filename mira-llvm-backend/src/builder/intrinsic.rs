@@ -36,7 +36,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
             Intrinsic::SizeOf => {
                 let ty = self.substitute(generics[0]);
                 let size = ty
-                    .size_and_alignment(self.pointer_size, &self.structs_reader)
+                    .size_and_alignment(self.pointer_size, &self.structs_reader, self.ty_cx())
                     .0;
                 self.push_value(
                     dst,
@@ -99,7 +99,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
 
                 if ty.is_sized() {
                     let size = ty
-                        .size_and_alignment(self.pointer_size, &self.structs_reader)
+                        .size_and_alignment(self.pointer_size, &self.structs_reader, self.ty_cx())
                         .0;
                     self.push_value(
                         dst,
@@ -124,7 +124,11 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
                             let fat_ptr = self.basic_value(&args[0]).into_struct_value();
                             let len = self.build_extract_value(fat_ptr, 1, "")?.into_int_value();
                             let size_single = ty
-                                .size_and_alignment(self.pointer_size, &self.structs_reader)
+                                .size_and_alignment(
+                                    self.pointer_size,
+                                    &self.structs_reader,
+                                    self.ty_cx(),
+                                )
                                 .0;
                             let total_size = self.build_int_nuw_mul(
                                 len,

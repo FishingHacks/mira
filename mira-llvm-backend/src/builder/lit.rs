@@ -57,7 +57,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             &TypedLiteral::Dynamic(value) if self.is_stack_allocated(value) => {
                 let src = self.get_value_ptr(value);
                 let ty = self.get_ty(value);
-                let (size, align) = ty.size_and_alignment(self.pointer_size, &self.structs_reader);
+                let (size, align) =
+                    ty.size_and_alignment(self.pointer_size, &self.structs_reader, self.ty_cx());
                 let size = self.ctx.default_types.isize.const_int(size, false);
                 if distinct {
                     self.build_memcpy(ptr, align, src, align, size)?;
@@ -83,7 +84,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             &TypedLiteral::Static(static_id) => {
                 let value = self.ctx.statics[static_id].as_pointer_value();
                 let ty = self.ctx.tc_ctx.statics.read()[static_id].ty;
-                let (size, align) = ty.size_and_alignment(self.pointer_size, &self.structs_reader);
+                let (size, align) =
+                    ty.size_and_alignment(self.pointer_size, &self.structs_reader, self.ty_cx());
                 let size = self.ctx.default_types.isize.const_int(size, false);
                 if distinct {
                     self.build_memcpy(ptr, align, value, align, size)?;
@@ -112,7 +114,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             }
             TypedLiteral::Array(_, lits) if lits.is_empty() => Ok(()),
             TypedLiteral::Array(ty, lits) => {
-                let basic_ty = self.basic_type(ty);
+                let basic_ty = self.basic_ty(ty);
                 for (idx, lit) in lits.iter().enumerate() {
                     let idx_int = self.ctx.default_types.isize.const_int(idx as u64, false);
                     let ptr = unsafe { self.build_in_bounds_gep(basic_ty, ptr, &[idx_int], "") }?;
@@ -163,7 +165,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 self.build_conditional_branch(is_in_loop, body, end)?;
 
                 self.goto(body);
-                let ty = self.basic_type(ty);
+                let ty = self.basic_ty(ty);
                 let ptr = unsafe { self.build_in_bounds_gep(ty, ptr, &[idx_int], "") }?;
 
                 self.basic_value_ptr(lit, ptr, distinct)?;
@@ -183,7 +185,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                     for lit in lits {
                         let (size, align) = lit
                             .to_type(self.ir.scope(), self.ctx.tc_ctx)
-                            .size_and_alignment(ptrsize, &self.structs_reader);
+                            .size_and_alignment(ptrsize, &self.structs_reader, self.ty_cx());
                         offset = align_up(offset, align);
                         let idx_int = self.ctx.default_types.isize.const_int(offset, false);
                         offset += size;
@@ -195,7 +197,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 }
                 Ok(())
             }
-            TypedLiteral::Struct(_, lits) => {
+            TypedLiteral::Struct(_, _, lits) => {
                 if !lits.is_empty() {
                     let mut offset = 0;
                     let ptrsize = self.pointer_size;
@@ -203,7 +205,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                     for lit in lits {
                         let (size, align) = lit
                             .to_type(self.ir.scope(), self.ctx.tc_ctx)
-                            .size_and_alignment(ptrsize, &self.structs_reader);
+                            .size_and_alignment(ptrsize, &self.structs_reader, self.ty_cx());
                         offset = align_up(offset, align);
                         let idx_int = self.ctx.default_types.isize.const_int(offset, false);
                         offset += size;
@@ -273,7 +275,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             }
 
             TypedLiteral::ArrayInit(ty, _, 0) => self
-                .basic_type(*self.substitute(*ty))
+                .basic_ty(*self.substitute(*ty))
                 .array_type(0)
                 .const_zero()
                 .into(),
@@ -291,7 +293,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             }
             TypedLiteral::Array(ty, elements) => {
                 if elements.is_empty() {
-                    let ty = self.basic_type(*self.substitute(*ty));
+                    let ty = self.basic_ty(*self.substitute(*ty));
                     return ty.array_type(0).const_zero().into();
                 }
                 let mut insert_value_vec: Vec<(usize, BasicValueEnum<'ctx>)> = Vec::new();
@@ -311,7 +313,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                         $ty.const_array(&const_elements)
                     }};
                 }
-                let mut const_value = match self.basic_type(*self.substitute(*ty)) {
+                let mut const_value = match self.basic_ty(*self.substitute(*ty)) {
                     BasicTypeEnum::ArrayType(array_type) => {
                         array_const_value!(array_type, into_array_value)
                     }
@@ -340,34 +342,37 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 }
                 const_value.into()
             }
-            TypedLiteral::Struct(struct_id, values) => {
-                if values.is_empty() {
-                    return self.ctx.structs[*struct_id].const_named_struct(&[]).into();
-                }
-                let mut non_const_value = Vec::new();
-                let mut const_value = self.ctx.structs[*struct_id].const_named_struct(
-                    &values
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| {
-                            let val = self.basic_value(v);
-                            if Self::is_const(&val) {
-                                val
-                            } else {
-                                let poison_val = Self::poison_val(val.get_type());
-                                non_const_value.push((i, val));
-                                poison_val
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                );
-                for v in non_const_value.drain(..) {
-                    const_value = self
-                        .build_insert_value(const_value, v.1, v.0 as u32, "")
-                        .expect("integer should never be out of range")
-                        .into_struct_value();
-                }
-                const_value.into()
+            TypedLiteral::Struct(_, _, _) => {
+                // TODO: UNREACHABLE >:c
+                unreachable!();
+
+                // if values.is_empty() {
+                //     return self.ctx.structs[struct_id].const_named_struct(&[]).into();
+                // }
+                // let mut non_const_value = Vec::new();
+                // let mut const_value = self.ctx.structs[*struct_id].const_named_struct(
+                //     &values
+                //         .iter()
+                //         .enumerate()
+                //         .map(|(i, v)| {
+                //             let val = self.basic_value(v);
+                //             if Self::is_const(&val) {
+                //                 val
+                //             } else {
+                //                 let poison_val = Self::poison_val(val.get_type());
+                //                 non_const_value.push((i, val));
+                //                 poison_val
+                //             }
+                //         })
+                //         .collect::<Vec<_>>(),
+                // );
+                // for v in non_const_value.drain(..) {
+                //     const_value = self
+                //         .build_insert_value(const_value, v.1, v.0 as u32, "")
+                //         .expect("integer should never be out of range")
+                //         .into_struct_value();
+                // }
+                // const_value.into()
             }
             TypedLiteral::Tuple(values) => {
                 let mut elems = Vec::with_capacity(values.len());

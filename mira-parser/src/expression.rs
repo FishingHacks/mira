@@ -94,6 +94,32 @@ impl<'ctx> Path<'ctx> {
             .combine_with(self.entries[1..].iter().map(|v| v.0.span()), span_interner);
     }
 
+    /// Parses a path where the generics are delimited with < ... >
+    pub fn parse_ty(parser: &mut Parser<'_, 'ctx>) -> Result<Self, ParsingError<'ctx>> {
+        let name = parser.expect_identifier()?;
+        let mut path = if parser.match_tok(TokenType::LessThan) {
+            Self::new(name, Self::parse_generics(parser)?)
+        } else {
+            Self::new(name, Vec::new())
+        };
+
+        loop {
+            if !parser.match_tok(TokenType::NamespaceAccess) {
+                break;
+            }
+            let subpath = parser.expect_identifier()?;
+            if parser.match_tok(TokenType::LessThan) {
+                path.push(subpath, Self::parse_generics(parser)?);
+            } else {
+                path.push(subpath, Vec::new());
+            }
+        }
+        path.readjust_self_span(parser.ctx.span_interner);
+
+        Ok(path)
+    }
+
+    /// Parses a path where the generics are delimited with ::< ... >
     pub fn parse(parser: &mut Parser<'_, 'ctx>) -> Result<Self, ParsingError<'ctx>> {
         let name = parser.expect_identifier()?;
         if !parser.match_tok(TokenType::NamespaceAccess) {
@@ -1326,7 +1352,7 @@ impl<'ctx> Parser<'_, 'ctx> {
         let mut arguments = Vec::new();
 
         while !self.match_tok(TokenType::ParenRight) {
-            if !generics.is_empty() {
+            if !arguments.is_empty() {
                 self.expect(TokenType::Comma)?;
                 if self.match_tok(TokenType::ParenRight) {
                     break;

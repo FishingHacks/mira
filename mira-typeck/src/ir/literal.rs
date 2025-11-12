@@ -14,18 +14,18 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Default)]
-pub enum TypedLiteral<'arena> {
+pub enum TypedLiteral<'ctx> {
     #[default]
     Void,
     Dynamic(ValueId),
-    Function(FunctionId, TyList<'arena>),
+    Function(FunctionId, TyList<'ctx>),
     ExternalFunction(ExternalFunctionId),
     Static(StaticId),
-    String(Symbol<'arena>),
-    Array(Ty<'arena>, Box<[TypedLiteral<'arena>]>),
-    ArrayInit(Ty<'arena>, Box<TypedLiteral<'arena>>, usize),
-    Struct(StructId, Box<[TypedLiteral<'arena>]>),
-    Tuple(Box<[TypedLiteral<'arena>]>),
+    String(Symbol<'ctx>),
+    Array(Ty<'ctx>, Box<[TypedLiteral<'ctx>]>),
+    ArrayInit(Ty<'ctx>, Box<TypedLiteral<'ctx>>, usize),
+    Struct(StructId, TyList<'ctx>, Box<[TypedLiteral<'ctx>]>),
+    Tuple(Box<[TypedLiteral<'ctx>]>),
     F64(f64),
     F32(f32),
     U8(u8),
@@ -39,8 +39,8 @@ pub enum TypedLiteral<'arena> {
     I64(i64),
     ISize(isize),
     Bool(bool),
-    Intrinsic(Intrinsic, TyList<'arena>),
-    LLVMIntrinsic(Symbol<'arena>),
+    Intrinsic(Intrinsic, TyList<'ctx>),
+    LLVMIntrinsic(Symbol<'ctx>),
 }
 
 impl<'ctx> TypedLiteral<'ctx> {
@@ -50,7 +50,7 @@ impl<'ctx> TypedLiteral<'ctx> {
             TypedLiteral::Dynamic(id) => scope[*id].ty,
             TypedLiteral::Function(id, generics) => {
                 let contract = &ctx.functions.read()[*id].0;
-                let subst_ctx = SubstitutionCtx::new(ctx, generics);
+                let subst_ctx = SubstitutionCtx::new(**ctx, generics);
                 let fn_type = FunctionType {
                     return_type: contract.return_type.substitute(&subst_ctx),
                     arguments: ctx.ctx.intern_tylist(
@@ -63,8 +63,8 @@ impl<'ctx> TypedLiteral<'ctx> {
                 };
                 ctx.ctx.intern_ty(TyKind::Function(fn_type))
             }
-            TypedLiteral::ExternalFunction(id) => {
-                let contract = &ctx.external_functions.read()[*id].0;
+            &TypedLiteral::ExternalFunction(id) => {
+                let contract = &ctx.external_functions.read()[id].0;
                 let fn_type = FunctionType {
                     return_type: contract.return_type,
                     arguments: ctx
@@ -73,19 +73,22 @@ impl<'ctx> TypedLiteral<'ctx> {
                 };
                 ctx.ctx.intern_ty(TyKind::Function(fn_type))
             }
-            TypedLiteral::Static(id) => ctx.statics.read()[*id].ty,
+            &TypedLiteral::Static(id) => ctx.statics.read()[id].ty,
             TypedLiteral::String(_) => default_types::str_ref,
             TypedLiteral::Array(ty, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
                 ty: *ty,
                 number_elements: elems.len(),
             }),
-            TypedLiteral::ArrayInit(ty, _, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
-                ty: *ty,
-                number_elements: *elems,
-            }),
-            TypedLiteral::Struct(struct_id, _) => ctx.ctx.intern_ty(TyKind::Struct {
-                struct_id: *struct_id,
-                name: ctx.structs.read()[*struct_id].name,
+            &TypedLiteral::ArrayInit(ty, _, number_elements) => {
+                ctx.ctx.intern_ty(TyKind::SizedArray {
+                    ty,
+                    number_elements,
+                })
+            }
+            &TypedLiteral::Struct(struct_id, generics, _) => ctx.ctx.intern_ty(TyKind::Struct {
+                struct_id,
+                generics,
+                name: ctx.structs.read()[struct_id].name,
             }),
             TypedLiteral::Tuple(elems) => ctx.ctx.intern_ty(TyKind::Tuple(
                 ctx.ctx.intern_tylist(
@@ -156,7 +159,7 @@ impl<'ctx> TypedLiteral<'ctx> {
     pub fn is_entirely_literal(&self) -> bool {
         match self {
             TypedLiteral::Array(_, vec)
-            | TypedLiteral::Struct(_, vec)
+            | TypedLiteral::Struct(_, _, vec)
             | TypedLiteral::Tuple(vec) => vec
                 .iter()
                 .map(TypedLiteral::is_entirely_literal)

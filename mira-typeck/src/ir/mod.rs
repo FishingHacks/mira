@@ -368,7 +368,7 @@ impl DerefMut for ScopedIR<'_> {
 }
 
 impl<'ctx> Substitute<'ctx> for Scope<'ctx> {
-    fn substitute(mut self, ctx: &crate::monomorphisation::SubstitutionCtx<'ctx, '_, '_>) -> Self {
+    fn substitute(mut self, ctx: &crate::monomorphisation::SubstitutionCtx<'ctx, '_>) -> Self {
         self.0.iter_mut().for_each(|v| v.ty = v.ty.substitute(ctx));
         self
     }

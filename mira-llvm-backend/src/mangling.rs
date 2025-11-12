@@ -2,7 +2,7 @@ use mira_parser::module::{ExternalFunctionId, FunctionContext, ModuleId, StaticI
 use mira_parser::std_annotations::alias::ExternAliasAnnotation;
 use mira_spans::TypeArena;
 use mira_typeck::queries::Providers;
-use mira_typeck::{Ty, TyKind, TypeckCtx, default_types};
+use mira_typeck::{Ty, TyKind, TyList, TypeckCtx, default_types};
 use std::fmt::Write;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -245,16 +245,24 @@ pub fn get_module_path<'ctx>(
     arena.allocate_str(&path)
 }
 
-pub fn mangle_struct(ctx: &TypeckCtx<'_>, id: StructId) -> String {
+pub fn mangle_struct(ctx: &TypeckCtx<'_>, id: StructId, generics: TyList<'_>) -> String {
     let struct_reader = ctx.structs.read();
     let structure = &struct_reader[id];
     let mut name = ctx.get_module_path(structure.module_id).to_string();
     name.push_str("::");
     name.push_str(&structure.name);
-    name.push_str("::");
-    let mut hasher = DefaultHasher::new();
-    structure.hash(&mut hasher);
-    write!(name, "{:x}", hasher.finish()).unwrap();
+
+    if !generics.is_empty() {
+        name.push('<');
+        for (i, ty) in generics.iter().enumerate() {
+            if i != 0 {
+                name.push_str(", ");
+            }
+            write!(name, "{ty}").unwrap();
+        }
+        name.push('>');
+    }
+
     name
 }
 

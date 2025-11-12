@@ -16,14 +16,14 @@ impl FunctionCodegenContext<'_, '_, '_, '_, '_> {
             .iter()
             .map(|v| {
                 let ty = self.substitute(self.ir.get_ty(*v));
-                self.basic_type(&ty).into()
+                self.basic_ty(&ty).into()
             })
             .collect::<Vec<_>>();
         let ret_ty = self.substitute(self.ir.get_ty(dst));
         let fn_ty = if ret_ty.is_voidlike() {
             self.ctx.context.void_type().fn_type(&input_types, false)
         } else {
-            self.basic_type(&ret_ty).fn_type(&input_types, false)
+            self.basic_ty(&ret_ty).fn_type(&input_types, false)
         };
         let mut constraints = registers.to_string();
 

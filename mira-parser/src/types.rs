@@ -207,7 +207,7 @@ impl<'arena> TypeRef<'arena> {
                 } else {
                     Ok(Self::Reference {
                         num_references,
-                        type_name: Path::parse(parser)?,
+                        type_name: Path::parse_ty(parser)?,
                         span: parser.span_from(span),
                     })
                 };

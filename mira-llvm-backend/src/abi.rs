@@ -7,7 +7,7 @@ use inkwell::{
 };
 use mira_common::index::IndexMap;
 use mira_parser::module::StructId;
-use mira_typeck::{TyKind, TypedStruct};
+use mira_typeck::{TyKind, TypeCtx, TypedStruct};
 
 use crate::DefaultTypes;
 
@@ -136,14 +136,15 @@ impl Class {
     }
 }
 
-pub(crate) fn argument<'ctx>(
+pub(crate) fn argument<'ctx, 'tycx>(
     ctx: &'ctx Context,
-    ty: &TyKind<'_>,
+    ty: &TyKind<'tycx>,
     ptrsize: u8,
-    structs: &IndexMap<StructId, TypedStruct<'_>>,
-    make_ty: impl FnOnce(&TyKind<'_>) -> BasicTypeEnum<'ctx>,
+    structs: &IndexMap<StructId, TypedStruct<'tycx>>,
+    make_ty: impl FnOnce(&TyKind<'tycx>) -> BasicTypeEnum<'ctx>,
+    ty_cx: TypeCtx<'tycx>,
 ) -> ArgumentType<'ctx> {
-    let (size, align) = ty.size_and_alignment(ptrsize as u64, structs);
+    let (size, align) = ty.size_and_alignment(ptrsize as u64, structs, ty_cx);
 
     if size == 0 {
         ArgumentType::None
@@ -164,14 +165,15 @@ pub(crate) fn argument<'ctx>(
     }
 }
 
-pub(crate) fn return_ty<'ctx>(
+pub(crate) fn return_ty<'ctx, 'tycx>(
     ctx: &'ctx Context,
-    ty: &TyKind<'_>,
+    ty: &TyKind<'tycx>,
     ptrsize: u8,
-    structs: &IndexMap<StructId, TypedStruct<'_>>,
-    make_ty: impl FnOnce(&TyKind<'_>) -> BasicTypeEnum<'ctx>,
+    structs: &IndexMap<StructId, TypedStruct<'tycx>>,
+    make_ty: impl FnOnce(&TyKind<'tycx>) -> BasicTypeEnum<'ctx>,
+    ty_cx: TypeCtx<'tycx>,
 ) -> ArgumentType<'ctx> {
-    let (size, align) = ty.size_and_alignment(ptrsize as u64, structs);
+    let (size, align) = ty.size_and_alignment(ptrsize as u64, structs, ty_cx);
 
     if size == 0 {
         ArgumentType::None

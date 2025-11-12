@@ -1,35 +1,35 @@
 use std::ops::Deref;
 
-use crate::{Ty, TyKind, TyList, TypeckCtx};
+use crate::{Ty, TyKind, TyList, TypeCtx};
 
-pub struct SubstitutionCtx<'ctx, 'a, 'tc> {
-    tc_ctx: &'tc TypeckCtx<'ctx>,
+pub struct SubstitutionCtx<'ctx, 'a> {
+    ctx: TypeCtx<'ctx>,
     type_args: &'a [Ty<'ctx>],
 }
 
-impl<'ctx, 'a, 'tc> SubstitutionCtx<'ctx, 'a, 'tc> {
-    pub fn new(tc_ctx: &'tc TypeckCtx<'ctx>, type_args: &'a [Ty<'ctx>]) -> Self {
-        Self { tc_ctx, type_args }
+impl<'ctx, 'a> SubstitutionCtx<'ctx, 'a> {
+    pub fn new(ctx: TypeCtx<'ctx>, type_args: &'a [Ty<'ctx>]) -> Self {
+        Self { ctx, type_args }
     }
 }
 
-impl<'ctx> Deref for SubstitutionCtx<'ctx, '_, '_> {
-    type Target = TypeckCtx<'ctx>;
+impl<'ctx> Deref for SubstitutionCtx<'ctx, '_> {
+    type Target = TypeCtx<'ctx>;
 
     fn deref(&self) -> &Self::Target {
-        self.tc_ctx
+        &self.ctx
     }
 }
 
 pub trait Substitute<'ctx>: 'ctx {
-    fn substitute(self, ctx: &SubstitutionCtx<'ctx, '_, '_>) -> Self;
+    fn substitute(self, ctx: &SubstitutionCtx<'ctx, '_>) -> Self;
     fn would_substitute(&self) -> bool;
 }
 
 impl<'ctx> Substitute<'ctx> for Ty<'ctx> {
-    fn substitute(self, ctx: &SubstitutionCtx<'ctx, '_, '_>) -> Self {
+    fn substitute(self, ctx: &SubstitutionCtx<'ctx, '_>) -> Self {
         match **self {
-            TyKind::UnsizedArray(ty) => ctx.ctx.intern_ty(TyKind::UnsizedArray(ty.substitute(ctx))),
+            TyKind::UnsizedArray(ty) => ctx.intern_ty(TyKind::UnsizedArray(ty.substitute(ctx))),
             TyKind::SizedArray {
                 ty,
                 number_elements,
@@ -40,9 +40,18 @@ impl<'ctx> Substitute<'ctx> for Ty<'ctx> {
                     number_elements,
                 })
             }
-            TyKind::Tuple(ty_list) => ctx.ctx.intern_ty(TyKind::Tuple(ty_list.substitute(ctx))),
-            TyKind::Ref(ty) => ctx.ctx.intern_ty(TyKind::Ref(ty.substitute(ctx))),
+            TyKind::Tuple(ty_list) => ctx.intern_ty(TyKind::Tuple(ty_list.substitute(ctx))),
+            TyKind::Ref(ty) => ctx.intern_ty(TyKind::Ref(ty.substitute(ctx))),
             TyKind::Generic { generic_id, .. } => ctx.type_args[generic_id as usize],
+            TyKind::Struct {
+                struct_id,
+                generics,
+                name,
+            } => ctx.intern_ty(TyKind::Struct {
+                struct_id,
+                generics: generics.substitute(ctx),
+                name,
+            }),
             _ => self,
         }
     }
@@ -54,13 +63,14 @@ impl<'ctx> Substitute<'ctx> for Ty<'ctx> {
             }
             TyKind::Tuple(ty_list) => ty_list.would_substitute(),
             TyKind::Generic { .. } => true,
+            TyKind::Struct { generics, .. } => generics.would_substitute(),
             _ => false,
         }
     }
 }
 
 impl<'ctx> Substitute<'ctx> for TyList<'ctx> {
-    fn substitute(self, ctx: &SubstitutionCtx<'ctx, '_, '_>) -> Self {
+    fn substitute(self, ctx: &SubstitutionCtx<'ctx, '_>) -> Self {
         let mut types = Vec::new();
         let mut modified = false;
         for (i, &ty) in self.iter().enumerate() {
@@ -86,7 +96,7 @@ impl<'ctx> Substitute<'ctx> for TyList<'ctx> {
 }
 
 impl<'ctx, T: Substitute<'ctx> + Default> Substitute<'ctx> for Box<[T]> {
-    fn substitute(mut self, ctx: &SubstitutionCtx<'ctx, '_, '_>) -> Self {
+    fn substitute(mut self, ctx: &SubstitutionCtx<'ctx, '_>) -> Self {
         let mut tmp = T::default();
         if self.would_substitute() {
             for v in &mut self {
@@ -104,7 +114,7 @@ impl<'ctx, T: Substitute<'ctx> + Default> Substitute<'ctx> for Box<[T]> {
 }
 
 impl<'ctx, T: Substitute<'ctx>> Substitute<'ctx> for Vec<T> {
-    fn substitute(mut self, ctx: &SubstitutionCtx<'ctx, '_, '_>) -> Self {
+    fn substitute(mut self, ctx: &SubstitutionCtx<'ctx, '_>) -> Self {
         if self.would_substitute() {
             for i in 0..self.len() {
                 let v = self.remove(i).substitute(ctx);

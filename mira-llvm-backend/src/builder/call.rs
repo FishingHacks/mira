@@ -55,10 +55,10 @@ impl<'tyctx> DirectCallTarget<'tyctx> {
     }
 }
 
-fn classify<'ctx, 'a>(
-    ret_ty: &TyKind<'_>,
-    args: impl Iterator<Item = &'a TyKind<'a>>,
-    ctx: &FunctionCodegenContext<'ctx, '_, '_, '_, '_>,
+fn classify<'ctx, 'a, 'tycx: 'a>(
+    ret_ty: &TyKind<'tycx>,
+    args: impl Iterator<Item = &'a TyKind<'tycx>>,
+    ctx: &FunctionCodegenContext<'ctx, 'tycx, '_, '_, '_>,
 ) -> Box<[ArgumentType<'ctx>]> {
     let mut ret_args_types = Vec::new();
     let ty = return_ty(
@@ -66,7 +66,8 @@ fn classify<'ctx, 'a>(
         ret_ty,
         ctx.pointer_size as u8,
         &ctx.structs_reader,
-        |t| ctx.basic_type(t),
+        |t| ctx.basic_ty(t),
+        ctx.ty_cx(),
     );
     ret_args_types.push(ty);
 
@@ -76,7 +77,8 @@ fn classify<'ctx, 'a>(
             arg,
             ctx.pointer_size as u8,
             &ctx.structs_reader,
-            |t| ctx.basic_type(t),
+            |t| ctx.basic_ty(t),
+            ctx.ty_cx(),
         );
         ret_args_types.push(ty);
     }
@@ -132,7 +134,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         let mut arg_vals = Vec::new();
         match &ret_args_ty[0] {
             ArgumentType::SRet(_) => {
-                let ty = self.basic_type(&self.get_ty(dst));
+                let ty = self.basic_ty(&self.get_ty(dst));
                 let alloca = self.build_alloca(ty, "")?;
                 // set the alloca as the destination.
                 self.push_value_raw(dst, alloca);
@@ -189,7 +191,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
             let actual_ty = self.get_ty(dst);
             if has_special_encoding(&actual_ty) {
                 assert!(self.is_stack_allocated(dst));
-                let alloca = self.build_alloca(self.basic_type(&actual_ty), "")?;
+                let alloca = self.build_alloca(self.basic_ty(&actual_ty), "")?;
                 self.build_store(alloca, value)?;
                 self.push_value_raw(dst, alloca);
             } else {
@@ -210,7 +212,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         let mut arg_vals = Vec::new();
         match return_ty {
             ArgumentType::SRet(_) => {
-                let ty = self.basic_type(&self.get_ty(dst));
+                let ty = self.basic_ty(&self.get_ty(dst));
                 let alloca = self.build_alloca(ty, "")?;
                 // set the alloca as the destination.
                 self.push_value_raw(dst, alloca);
@@ -268,7 +270,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
             let actual_ty = self.get_ty(dst);
             if has_special_encoding(&actual_ty) {
                 assert!(self.is_stack_allocated(dst));
-                let alloca = self.build_alloca(self.basic_type(&actual_ty), "")?;
+                let alloca = self.build_alloca(self.basic_ty(&actual_ty), "")?;
                 self.build_store(alloca, value)?;
                 self.push_value_raw(dst, alloca);
             } else {
@@ -284,7 +286,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         intrinsic: Symbol<'arena>,
         args: &[TypedLiteral<'arena>],
     ) -> Result<(), BuilderError> {
-        let subst_ctx = SubstitutionCtx::new(self.ctx.tc_ctx, &self.generics);
+        let subst_ctx = SubstitutionCtx::new(self.ty_cx(), &self.generics);
         let func = self.ctx.get_intrinsic(
             intrinsic,
             args.iter().map(|v| {
@@ -366,7 +368,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         let mut arg_vals = Vec::new();
         match &ret_args_ty[0] {
             ArgumentType::SRet(_) => {
-                let ty = self.basic_type(&self.get_ty(dst));
+                let ty = self.basic_ty(&self.get_ty(dst));
                 let alloca = self.build_alloca(ty, "")?;
                 // set the alloca as the destination.
                 self.push_value_raw(dst, alloca);
@@ -425,7 +427,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
             let actual_ty = self.get_ty(dst);
             if has_special_encoding(&actual_ty) {
                 assert!(self.is_stack_allocated(dst));
-                let alloca = self.build_alloca(self.basic_type(&actual_ty), "")?;
+                let alloca = self.build_alloca(self.basic_ty(&actual_ty), "")?;
                 self.build_store(alloca, value)?;
                 self.push_value_raw(dst, alloca);
             } else {

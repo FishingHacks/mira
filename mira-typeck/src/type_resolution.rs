@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use mira_common::index::IndexMap;
 use mira_errors::ErrorEmitted;
@@ -37,8 +37,6 @@ impl<'arena> TypeckCtx<'arena> {
     /// such a deadlock should never happen but.. uhh... :3c :3
     /// meow
     pub fn resolve_types(&self, context: Arc<ModuleContext<'arena>>) -> Result<(), ErrorEmitted> {
-        let mut lang_items_writer = self.lang_items.write();
-        let lang_items_writer = &mut *lang_items_writer;
         let tracker = self.track_errors();
 
         let mut structs_left = IndexMap::new();
@@ -70,7 +68,7 @@ impl<'arena> TypeckCtx<'arena> {
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
-                if let Err(e) = lang_items_writer.push_struct(
+                if let Err(e) = self.lang_items.write().push_struct(
                     key,
                     annotation.get_langitem(),
                     struct_reader[key].span,
@@ -96,7 +94,7 @@ impl<'arena> TypeckCtx<'arena> {
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
-                if let Err(e) = lang_items_writer.push_function(
+                if let Err(e) = self.lang_items.write().push_function(
                     function_key,
                     annotation.get_langitem(),
                     function_reader[function_key].0.span,
@@ -122,7 +120,7 @@ impl<'arena> TypeckCtx<'arena> {
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
-                if let Err(e) = lang_items_writer.push_external_function(
+                if let Err(e) = self.lang_items.write().push_external_function(
                     ext_function_key,
                     annotation.get_langitem(),
                     ext_function_reader[ext_function_key].0.span,
@@ -147,7 +145,7 @@ impl<'arena> TypeckCtx<'arena> {
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
-                if let Err(e) = lang_items_writer.push_static(
+                if let Err(e) = self.lang_items.write().push_static(
                     static_key,
                     annotation.get_langitem(),
                     static_reader[static_key].span,
@@ -172,7 +170,7 @@ impl<'arena> TypeckCtx<'arena> {
                 .annotations
                 .get_annotations::<LangItemAnnotation>()
             {
-                if let Err(e) = lang_items_writer.push_trait(
+                if let Err(e) = self.lang_items.write().push_trait(
                     trait_key,
                     annotation.get_langitem(),
                     trait_reader[trait_key].span,
@@ -216,7 +214,7 @@ impl<'arena> TypeckCtx<'arena> {
         }
         drop(struct_reader);
 
-        lang_items_writer.check(self)?;
+        self.lang_items.write().check(self)?;
         self.errors_happened_res(tracker)
     }
 
@@ -328,9 +326,24 @@ impl<'arena> TypeckCtx<'arena> {
                     .copied(),
             )
         {
+            let struct_generics = &struct_reader[struct_key].generics;
+            let mut generics = Vec::with_capacity(struct_generics.len());
+            for (generic_id, generic) in struct_generics.iter().enumerate() {
+                generics.push(
+                    self.intern_ty(TyKind::Generic {
+                        name: generic.name,
+                        generic_id: u8::try_from(generic_id)
+                            .expect("why tf do u have more than 255 generics :sob:"),
+                        bounds: generic.bounds,
+                        sized: generic.sized,
+                    }),
+                );
+            }
+
             let self_ty = self.intern_ty(TyKind::Struct {
                 struct_id: struct_key,
                 name: struct_reader[struct_key].name,
+                generics: self.intern_tylist(&generics),
             });
 
             let contract = &mut function_writer[fn_id].0;
@@ -458,6 +471,7 @@ impl<'arena> TypeckCtx<'arena> {
         let span = func.contract.return_type.span();
         let return_type = std::mem::replace(&mut func.contract.return_type, TypeRef::Void(span, 0));
         let untyped_generics = std::mem::take(&mut func.contract.generics);
+
         let mut generics = Vec::with_capacity(untyped_generics.len());
         for generic in untyped_generics {
             let mut bounds = Vec::with_capacity(generic.bounds.len());
@@ -507,10 +521,21 @@ impl<'arena> TypeckCtx<'arena> {
             resolved_function_contract.return_type = v
         }
 
+        let generics = match resolved_function_contract.context {
+            FunctionContext::Freestanding => Cow::Borrowed(&resolved_function_contract.generics),
+            FunctionContext::StructFn(struct_id) => {
+                let mut generics = self.structs.read_recursive()[struct_id].generics.clone();
+                if generics.is_empty() {
+                    Cow::Borrowed(&resolved_function_contract.generics)
+                } else {
+                    generics.extend_from_slice(&resolved_function_contract.generics);
+                    Cow::Owned(generics)
+                }
+            }
+        };
+
         for arg in arguments {
-            if let Ok(v) =
-                self.resolve_type(module_id, &arg.ty, &resolved_function_contract.generics)
-            {
+            if let Ok(v) = self.resolve_type(module_id, &arg.ty, &generics) {
                 resolved_function_contract.arguments.push((arg.name, v))
             }
         }

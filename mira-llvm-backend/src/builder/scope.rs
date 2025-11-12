@@ -18,7 +18,7 @@ impl<'ctx> FunctionCodegenContext<'ctx, '_, '_, '_, '_> {
         }
         let ty = self.substitute(self.get_ty(id));
         let allocated_value = self
-            .build_alloca(self.basic_type(&ty), "")
+            .build_alloca(self.basic_ty(*ty), "")
             .expect("failed to build alloca for a stack allocated value");
         self.build_ptr_store(allocated_value, value, ty, false)
             .expect("failed to build store to store a basic value into a stack allocated value");

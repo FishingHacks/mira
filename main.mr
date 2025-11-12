@@ -1,6 +1,8 @@
-struct meow { me: &meow }
-
+struct Meow<T> {
+    v: T;
+    fn println(self: &Self) = (&self.v as &void as &u32).println();
+}
 pub fn main() {
-    let v = meow { me: &void as &meow };
-    let v1 = meow { me: &v };
+    let v = Meow::<u32> { v: 12 };
+    v.println();
 }

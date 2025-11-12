@@ -3,13 +3,13 @@ use std::ops::Deref;
 use inkwell::{
     basic_block::BasicBlock,
     builder::{Builder, BuilderError},
-    types::{BasicType, BasicTypeEnum},
+    types::BasicTypeEnum,
     values::{BasicValueEnum, PointerValue},
 };
 use mira_common::index::IndexMap;
 use mira_parser::module::{ModuleId, StructId};
 use mira_typeck::{
-    Substitute, Ty, TyKind, TyList, TypedStruct,
+    Substitute, Ty, TyKind, TyList, TypeCtx, TypedStruct,
     ir::{IR, ValueId},
 };
 use parking_lot::RwLockReadGuard;
@@ -57,6 +57,12 @@ impl<'ctx> Deref for FunctionCodegenContext<'ctx, '_, '_, '_, '_> {
     }
 }
 
+impl<'ctx> FunctionCodegenContext<'_, 'ctx, '_, '_, '_> {
+    pub(crate) fn ty_cx(&self) -> TypeCtx<'ctx> {
+        self.ctx.tc_ctx.ctx
+    }
+}
+
 impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
     /// If return_ty is not ArgumentType::SRet, return_ty should be a null pointer.
     pub(crate) fn make_function_codegen_context<'me, 'ir>(
@@ -88,88 +94,16 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
         self.ctx.tc_ctx.substitute(&*self.generics, v)
     }
 
+    pub(crate) fn basic_ty(&self, ty: &TyKind<'arena>) -> BasicTypeEnum<'ctx> {
+        self.ctx.basic_ty(ty)
+    }
+
     pub(crate) fn is_stack_allocated(&self, value: ValueId) -> bool {
         self.ir.scope().get(value).stack_allocated || has_special_encoding(&self.get_ty(value))
     }
 
     pub(crate) fn get_ty(&self, value: ValueId) -> Ty<'arena> {
         self.ir.get_ty(value)
-    }
-
-    fn is_const(val: &BasicValueEnum<'_>) -> bool {
-        match val {
-            BasicValueEnum::ArrayValue(v) => v.is_const(),
-            BasicValueEnum::IntValue(v) => v.is_const(),
-            BasicValueEnum::FloatValue(v) => v.is_const(),
-            BasicValueEnum::PointerValue(v) => v.is_const(),
-            BasicValueEnum::StructValue(v) => v.is_const(),
-            BasicValueEnum::VectorValue(..) | BasicValueEnum::ScalableVectorValue(..) => {
-                unreachable!("vector types arent supported")
-            }
-        }
-    }
-
-    fn poison_val(v: BasicTypeEnum<'_>) -> BasicValueEnum<'_> {
-        match v {
-            BasicTypeEnum::ArrayType(v) => v.get_poison().into(),
-            BasicTypeEnum::FloatType(v) => v.get_poison().into(),
-            BasicTypeEnum::IntType(v) => v.get_poison().into(),
-            BasicTypeEnum::PointerType(v) => v.get_poison().into(),
-            BasicTypeEnum::StructType(v) => v.get_poison().into(),
-            BasicTypeEnum::VectorType(..) | BasicTypeEnum::ScalableVectorType(..) => {
-                unreachable!("vector types arent supported")
-            }
-        }
-    }
-
-    fn basic_type(&self, ty: &TyKind<'_>) -> BasicTypeEnum<'ctx> {
-        match ty {
-            TyKind::Ref(t) => {
-                if t.is_sized() {
-                    self.ctx.default_types.ptr.into()
-                } else {
-                    self.ctx.default_types.fat_ptr.into()
-                }
-            }
-            TyKind::Generic { .. } => unreachable!("generics should be resolved by now"),
-            TyKind::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
-            TyKind::PrimitiveStr => panic!("llvm types must be sized, `str` is not"),
-            TyKind::PrimitiveSelf => unreachable!("Self must be resolved at this point"),
-            TyKind::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
-            &TyKind::Struct { struct_id, .. } => self.ctx.structs[struct_id].into(),
-            TyKind::Tuple(elements) => self
-                .ctx
-                .context
-                .struct_type(
-                    &elements
-                        .iter()
-                        .map(|ty| self.basic_type(ty))
-                        .collect::<Vec<_>>(),
-                    false,
-                )
-                .into(),
-            TyKind::SizedArray {
-                ty,
-                number_elements,
-                ..
-            } => self
-                .basic_type(ty)
-                .array_type(*number_elements as u32)
-                .into(),
-            // our function types are always pointers because all function types are pointers in llvm
-            TyKind::Function(..) => self.ctx.default_types.ptr.into(),
-            TyKind::PrimitiveNever | TyKind::PrimitiveVoid => panic!(
-                "void and never should be ignored as llvm types outside of function return values"
-            ),
-            TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => self.ctx.default_types.i8.into(),
-            TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => self.ctx.default_types.i16.into(),
-            TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => self.ctx.default_types.i32.into(),
-            TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => self.ctx.default_types.i64.into(),
-            TyKind::PrimitiveUSize | TyKind::PrimitiveISize => self.ctx.default_types.isize.into(),
-            TyKind::PrimitiveF32 => self.ctx.default_types.f32.into(),
-            TyKind::PrimitiveF64 => self.ctx.default_types.f64.into(),
-            TyKind::PrimitiveBool => self.ctx.default_types.bool.into(),
-        }
     }
 
     pub(crate) fn goto(&mut self, bb: BasicBlock<'ctx>) {

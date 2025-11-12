@@ -103,7 +103,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                     // extern fn can't be anonymous
                     (res.0.name.unwrap().symbol(), res.0.module_id)
                 }
-                ResolvedValue::Struct(key) => {
+                ResolvedValue::Struct(key, _) => {
                     let res = &self.tc_ctx.structs.read()[key];
                     (res.name.symbol(), res.module_id)
                 }
@@ -515,7 +515,11 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let mut s = self.generate_file_start(curfile, structure.name.symbol().to_str());
         let module = structure.module_id;
 
-        self.generate_header(&mut s, fully_qualified_path, ResolvedValue::Struct(key));
+        self.generate_header(
+            &mut s,
+            fully_qualified_path,
+            ResolvedValue::Struct(key, EMPTY_TYLIST),
+        );
         // <pre class="item-decl code"><code>fn type_name&lt;unsized T&gt;() -&gt; &amp;str { .. }</code></pre>
         s.push_str(r#"<pre class="item-decl code"><code>"#);
         Self::generate_annotations(&structure.annotations, &mut s);
@@ -596,6 +600,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let selfty = self.tc_ctx.ctx.intern_ty(TyKind::Struct {
             struct_id: key,
             name: structure.name,
+            generics: EMPTY_TYLIST,
         });
         // <span id="function.len" class="anchorable member-function"><code>fn <a class="function" href="#function.len">len</a>(self: &amp;<span class="struct">Self</span>) -&gt; <span class="struct">usize</span></code><a href="#function.len" class="anchor">§</a></span>
         self.generate_struct_impl(
@@ -725,7 +730,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 ResolvedValue::ExternalFunction(key) => {
                     functions.push(CommonFunction::External(key))
                 }
-                ResolvedValue::Struct(key) => structs.push(key),
+                ResolvedValue::Struct(key, _) => structs.push(key),
                 ResolvedValue::Static(key) => statics.push(key),
                 ResolvedValue::Module(key) => modules.push(key),
                 ResolvedValue::Trait(key) => traits.push(key),
@@ -763,7 +768,12 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
             s.push_str(r##"<h2 id="structs" class="anchorable header">Structs<a class="anchor" href="#structs">§</a></h2><dl class="item-list">"##);
         }
         for key in structs {
-            self.write_reference(ResolvedValue::Struct(key), &mut s, curfile, module_id);
+            self.write_reference(
+                ResolvedValue::Struct(key, EMPTY_TYLIST),
+                &mut s,
+                curfile,
+                module_id,
+            );
         }
         if has_structs {
             s.push_str("</dl>");
@@ -828,7 +838,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 let v = &reader[store_key].0;
                 (v.name.unwrap().symbol(), v.comment)
             }
-            ResolvedValue::Struct(store_key) => {
+            ResolvedValue::Struct(store_key, _) => {
                 let reader = self.tc_ctx.structs.read();
                 let v = &reader[store_key];
                 (v.name.symbol(), v.comment)
@@ -854,7 +864,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     fn write_ty(&self, s: &mut String, ty: Ty<'_>, curfile: &Path) {
         use mira_typeck::TyKind as T;
 
-        match &*ty {
+        match *ty {
             T::DynType(bounds) => {
                 s.push_str("dyn ");
                 for (i, &(trait_, trait_name)) in bounds.iter().enumerate() {
@@ -869,9 +879,12 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                     s.push_str("</a>");
                 }
             }
-            &&T::Struct { struct_id, name } => {
+            &T::Struct {
+                struct_id, name, ..
+            } => {
                 s.push_str("<a class=\"struct\" href=\"");
-                let path = self.get_item_path(ResolvedValue::Struct(struct_id), curfile);
+                let path =
+                    self.get_item_path(ResolvedValue::Struct(struct_id, EMPTY_TYLIST), curfile);
                 s.push_fmt(format_args!("{}", urlencode(&path)));
                 s.push_str("\">");
                 s.escaped().push_str(name.symbol().to_str());
@@ -935,22 +948,6 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 "<a class=\"struct\" href=\"{link}\">{ty}</a>",
                 link = crate::default_ty_links::primitive_ty_to_link(&ty),
             )),
-            // T::PrimitiveNever => s.push('!'),
-            // T::PrimitiveVoid => s.push_str("<span class=\"struct\">void</span>"),
-            // T::PrimitiveI8 => s.push_str("<span class=\"struct\">i8</span>"),
-            // T::PrimitiveI16 => s.push_str("<span class=\"struct\">i16</span>"),
-            // T::PrimitiveI32 => s.push_str("<span class=\"struct\">i32</span>"),
-            // T::PrimitiveI64 => s.push_str("<span class=\"struct\">i64</span>"),
-            // T::PrimitiveISize => s.push_str("<span class=\"struct\">isize</span>"),
-            // T::PrimitiveU8 => s.push_str("<span class=\"struct\">u8</span>"),
-            // T::PrimitiveU16 => s.push_str("<span class=\"struct\">u16</span>"),
-            // T::PrimitiveU32 => s.push_str("<span class=\"struct\">u32</span>"),
-            // T::PrimitiveU64 => s.push_str("<span class=\"struct\">u64</span>"),
-            // T::PrimitiveUSize => s.push_str("<span class=\"struct\">usize</span>"),
-            // T::PrimitiveF32 => s.push_str("<span class=\"struct\">f32</span>"),
-            // T::PrimitiveF64 => s.push_str("<span class=\"struct\">f64</span>"),
-            // T::PrimitiveStr => s.push_str("<span class=\"struct\">str</span>"),
-            // T::PrimitiveBool => s.push_str("<span class=\"struct\">bool</span>"),
             T::PrimitiveSelf => s.push_str("<span class=\"struct\">Self</span>"),
             T::Ref(ty) => {
                 s.push_str("&amp;");
@@ -1090,7 +1087,7 @@ impl HTMLEscapeExt for String {
 fn item_ty(v: ResolvedValue<'_>) -> &'static str {
     match v {
         ResolvedValue::Function(_, _) | ResolvedValue::ExternalFunction(_) => "function",
-        ResolvedValue::Struct(_) => "struct",
+        ResolvedValue::Struct(_, _) => "struct",
         ResolvedValue::Static(_) => "static",
         ResolvedValue::Module(_) => "module",
         ResolvedValue::Trait(_) => "trait",

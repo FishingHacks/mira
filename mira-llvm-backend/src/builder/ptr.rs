@@ -62,7 +62,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 panic!("cannot dereference unsized type {ty:?}")
             }
             TyKind::Struct { struct_id, .. } => {
-                let llvm_structure = self.basic_type(&ty).into_struct_type();
+                let llvm_structure = self.basic_ty(&ty).into_struct_type();
                 let structure = &self.structs_reader[*struct_id];
                 let mut value = llvm_structure.get_poison();
                 for i in 0..structure.elements.len() {
@@ -77,7 +77,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 Ok(value.into())
             }
             TyKind::Tuple(elements) => {
-                let llvm_structure = self.basic_type(&ty).into_struct_type();
+                let llvm_structure = self.basic_ty(&ty).into_struct_type();
                 let mut value = llvm_structure.get_poison();
                 for (i, elem) in elements.iter().enumerate() {
                     let offset_val =
@@ -94,7 +94,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 number_elements,
                 ..
             } => {
-                let llvm_element_ty = self.basic_type(ty);
+                let llvm_element_ty = self.basic_ty(ty);
                 let mut value = llvm_element_ty
                     .array_type(*number_elements as u32)
                     .get_poison();
@@ -128,7 +128,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             | TyKind::PrimitiveF32
             | TyKind::PrimitiveF64
             | TyKind::PrimitiveBool => Ok(make_volatile(
-                self.build_load(self.basic_type(&ty), left_side, "")?,
+                self.build_load(self.basic_ty(&ty), left_side, "")?,
                 volatile,
             )),
         }
@@ -173,7 +173,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             TyKind::PrimitiveNever | TyKind::PrimitiveVoid => (),
             TyKind::Struct { struct_id, .. } => {
                 let structure = &self.structs_reader[*struct_id];
-                let llvm_ty = self.basic_type(&ty);
+                let llvm_ty = self.basic_ty(&ty);
                 for (idx, ty) in structure.elements.iter().map(|v| &v.1).enumerate() {
                     let val =
                         self.build_extract_value(right_side.into_struct_value(), idx as u32, "")?;
@@ -182,7 +182,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 }
             }
             TyKind::Tuple(elements) => {
-                let llvm_ty = self.basic_type(&ty);
+                let llvm_ty = self.basic_ty(&ty);
                 for (idx, ty) in elements.iter().enumerate() {
                     let val =
                         self.build_extract_value(right_side.into_struct_value(), idx as u32, "")?;
@@ -195,7 +195,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 number_elements,
                 ..
             } => {
-                let llvm_ty = self.basic_type(ty);
+                let llvm_ty = self.basic_ty(ty);
                 for i in 0..*number_elements {
                     let val =
                         self.build_extract_value(right_side.into_array_value(), i as u32, "")?;
@@ -240,8 +240,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
         match *value {
             TypedLiteral::Dynamic(id) if self.is_stack_allocated(id) => {
                 let ty = self.substitute(self.get_ty(id));
-                let llvm_ty = self.basic_type(*ty);
-                let alignment = ty.alignment(self.pointer_size, &self.structs_reader);
+                let llvm_ty = self.basic_ty(*ty);
+                let alignment = ty.alignment(self.pointer_size, &self.structs_reader, self.ty_cx());
                 self.build_memmove(
                     self.basic_value(ptr).into_pointer_value(),
                     alignment,
@@ -253,8 +253,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             }
             TypedLiteral::Static(id) => {
                 let ty = self.ctx.tc_ctx.statics.read()[id].ty;
-                let llvm_ty = self.basic_type(&ty);
-                let alignment = ty.alignment(self.pointer_size, &self.structs_reader);
+                let llvm_ty = self.basic_ty(&ty);
+                let alignment = ty.alignment(self.pointer_size, &self.structs_reader, self.ty_cx());
                 self.build_memmove(
                     self.basic_value(ptr).into_pointer_value(),
                     alignment,
@@ -308,8 +308,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
     ) -> Result {
         let ty = self.substitute(self.get_ty(dst));
         if self.is_stack_allocated(dst) {
-            let alignment = ty.alignment(self.pointer_size, &self.structs_reader);
-            let ty = self.basic_type(&ty);
+            let alignment = ty.alignment(self.pointer_size, &self.structs_reader, self.ty_cx());
+            let ty = self.basic_ty(&ty);
             let lhs_ptr = self.build_alloca(ty, "")?;
             self.build_memmove(
                 lhs_ptr, // dest (dst = *rhs), in this case *dst =
@@ -346,15 +346,19 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             .deref()
             .expect("non-pointer values cannot be offset");
         let ty = self.substitute(ty);
-        match **ty {
-            TyKind::Struct { struct_id, .. } => {
+        match *ty {
+            &TyKind::Struct {
+                struct_id,
+                generics,
+                ..
+            } => {
                 let offset = match offset {
                     OffsetValue::Dynamic(_) => unreachable!("dynamic struct offset"),
                     OffsetValue::Static(v) => self.ctx.default_types.i32.const_int(v as u64, false),
                 };
                 let value = unsafe {
                     self.build_in_bounds_gep(
-                        self.ctx.structs[struct_id],
+                        self.ctx.structs.struct_ty(struct_id, generics, self.ctx),
                         self.basic_value(ptr).into_pointer_value(),
                         &[self.ctx.default_types.isize.const_int(0, false), offset],
                         "",
@@ -370,7 +374,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 };
                 let value = unsafe {
                     self.build_in_bounds_gep(
-                        self.basic_type(&ty),
+                        self.basic_ty(&ty),
                         self.basic_value(ptr).into_pointer_value(),
                         &[self.ctx.default_types.isize.const_int(0, false), offset],
                         "",
@@ -386,7 +390,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 };
                 let value = unsafe {
                     self.build_in_bounds_gep(
-                        self.basic_type(&ty),
+                        self.basic_ty(ty),
                         self.basic_value(ptr).into_pointer_value(),
                         &[offset],
                         "",
@@ -404,7 +408,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                     .build_extract_value(self.basic_value(ptr).into_struct_value(), 0, "")?
                     .into_pointer_value();
                 let value = unsafe {
-                    self.build_in_bounds_gep(self.basic_type(&ty), actual_ptr, &[offset], "")
+                    self.build_in_bounds_gep(self.basic_ty(ty), actual_ptr, &[offset], "")
                 }?;
                 self.push_value(dst, value.into());
                 Ok(())

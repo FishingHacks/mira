@@ -12,8 +12,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         let old_typ = self.substitute(value.to_type(self.ir.scope(), self.ctx.tc_ctx));
         assert!(!new_ty.has_refs() || new_ty.is_thin_ptr());
         assert!(!old_typ.has_refs() || old_typ.is_thin_ptr());
-        let new_value =
-            self.build_bit_cast(self.basic_value(value), self.basic_type(&new_ty), "")?;
+        let new_value = self.build_bit_cast(self.basic_value(value), self.basic_ty(&new_ty), "")?;
         self.push_value(dst, new_value);
         Ok(())
     }
@@ -30,7 +29,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
     }
     pub(super) fn build_ptrtoint(&mut self, dst: ValueId, value: &TypedLiteral<'arena>) -> Result {
         let ty = self.substitute(self.get_ty(dst));
-        let ty = self.basic_type(&ty).into_int_type();
+        let ty = self.basic_ty(&ty).into_int_type();
         let value = self.basic_value(value).into_pointer_value();
         if value.is_const() {
             value.const_to_int(ty)

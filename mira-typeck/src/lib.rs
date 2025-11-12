@@ -205,7 +205,7 @@ impl<'ctx> TypeckCtx<'ctx> {
         tys: &T,
         v: V,
     ) -> V {
-        v.substitute(&SubstitutionCtx::new(self, tys))
+        v.substitute(&SubstitutionCtx::new(**self, tys))
     }
 
     pub fn validate_main_function(
@@ -494,11 +494,12 @@ impl<'ctx> TypeckCtx<'ctx> {
                 }
 
                 match self.resolve_import(module_id, type_name.iter(), *span, generics, true)? {
-                    ResolvedValue::Struct(struct_id) => Ok(with_refcount(
+                    ResolvedValue::Struct(struct_id, generics) => Ok(with_refcount(
                         self.ctx,
                         self.intern_ty(TyKind::Struct {
                             struct_id,
                             name: self.structs.read()[struct_id].name,
+                            generics,
                         }),
                         *num_references,
                     )),
@@ -731,6 +732,7 @@ impl<'ctx> TypeckCtx<'ctx> {
             return Err(self.emit_item_not_found(span, name.symbol()));
         }
 
+        thing.purge_generics();
         let mut generics = generics;
 
         loop {
@@ -761,11 +763,11 @@ impl<'ctx> TypeckCtx<'ctx> {
                         with_generics,
                     );
                 }
-                ResolvedValue::Struct(struct_id) => {
+                ResolvedValue::Struct(struct_id, generics) => {
                     let structs = self.structs.read();
                     let func = structs[struct_id].global_impl.get(name);
                     match func {
-                        Some(&fn_id) => thing = ResolvedValue::Function(fn_id, EMPTY_TYLIST),
+                        Some(&fn_id) => thing = ResolvedValue::Function(fn_id, generics),
                         None => return Err(self.emit_item_not_found(name.span(), name.symbol())),
                     }
                 }
@@ -787,7 +789,6 @@ impl<'ctx> TypeckCtx<'ctx> {
     ) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
         match thing {
             ResolvedValue::Function(id, ty_list) => {
-                assert!(ty_list.is_empty());
                 let fn_reader = self.functions.read();
                 let required = &fn_reader[id].0.generics;
                 if generics.len() != required.len() {
@@ -797,7 +798,16 @@ impl<'ctx> TypeckCtx<'ctx> {
                         generics.len(),
                     ));
                 }
-                let mut list = Vec::with_capacity(generics.len());
+
+                let mut list;
+                if let FunctionContext::StructFn(_) = fn_reader[id].0.context {
+                    list = ty_list.to_vec();
+                } else {
+                    assert!(ty_list.is_empty());
+                    list = Vec::new();
+                }
+
+                list.reserve(generics.len());
                 for (i, generic) in generics.iter().enumerate() {
                     let ty = self.resolve_type(module, generic, generics_in_context)?;
                     if required[i].sized && !ty.is_sized() {
@@ -812,10 +822,42 @@ impl<'ctx> TypeckCtx<'ctx> {
                     }
                     list.push(ty);
                 }
+                drop(fn_reader);
                 Ok(ResolvedValue::Function(id, self.intern_tylist(&list)))
             }
+            ResolvedValue::Struct(id, ty_list) => {
+                assert!(ty_list.is_empty());
+
+                let struct_reader = self.structs.read();
+                let required = &struct_reader[id].generics;
+                if generics.len() != required.len() {
+                    return Err(self.emit_mismatching_generic_count(
+                        span,
+                        required.len(),
+                        generics.len(),
+                    ));
+                }
+
+                let mut list = Vec::with_capacity(generics.len());
+
+                for (i, generic) in generics.iter().enumerate() {
+                    let ty = self.resolve_type(module, generic, generics_in_context)?;
+                    if required[i].sized && !ty.is_sized() {
+                        return Err(self.emit_unsized_for_sized_generic(generic.span(), ty));
+                    }
+                    if !ty.implements(&required[i].bounds, self) {
+                        return Err(self.emit_ty_does_not_implement_bounds(
+                            generic.span(),
+                            required[i].name.span(),
+                            ty,
+                        ));
+                    }
+                    list.push(ty);
+                }
+                drop(struct_reader);
+                Ok(ResolvedValue::Struct(id, self.intern_tylist(&list)))
+            }
             ResolvedValue::ExternalFunction(_)
-            | ResolvedValue::Struct(_)
             | ResolvedValue::Static(_)
             | ResolvedValue::Module(_)
             | ResolvedValue::Trait(_) => {
@@ -995,6 +1037,7 @@ fn resolve_import_inner<'a, 'ctx: 'a>(
     }
 
     let mut generics = generics;
+    thing.purge_generics();
 
     loop {
         if with_generics {
@@ -1028,11 +1071,11 @@ fn resolve_import_inner<'a, 'ctx: 'a>(
                     with_generics,
                 );
             }
-            ResolvedValue::Struct(struct_id) => {
+            ResolvedValue::Struct(struct_id, generics) => {
                 let structs = context.structs.read();
                 let func = structs[struct_id].global_impl.get(name);
                 match func {
-                    Some(&fn_id) => thing = ResolvedValue::Function(fn_id, EMPTY_TYLIST),
+                    Some(&fn_id) => thing = ResolvedValue::Function(fn_id, generics),
                     None => return Err(ctx.emit_item_not_found(name.span(), name.symbol())),
                 }
             }
@@ -1055,12 +1098,21 @@ fn fill_in_generics<'ctx>(
 ) -> Result<ResolvedValue<'ctx>, ErrorEmitted> {
     match thing {
         ResolvedValue::Function(id, ty_list) => {
-            assert!(ty_list.is_empty());
-            let required = context.functions.read()[id].contract.generics.len();
+            let fn_reader = context.functions.read();
+            let required = fn_reader[id].contract.generics.len();
             if generics.len() != required {
                 return Err(ctx.emit_mismatching_generic_count(span, required, generics.len()));
             }
-            let mut list = Vec::with_capacity(generics.len());
+
+            let mut list;
+            if let FunctionContext::StructFn(_) = fn_reader[id].ctx {
+                list = ty_list.to_vec();
+            } else {
+                assert!(ty_list.is_empty());
+                list = Vec::new();
+            }
+            drop(fn_reader);
+
             for generic in generics {
                 list.push(type_resolution_resolve_type(
                     ctx,
@@ -1072,8 +1124,28 @@ fn fill_in_generics<'ctx>(
             }
             Ok(ResolvedValue::Function(id, ctx.intern_tylist(&list)))
         }
+        ResolvedValue::Struct(id, ty_list) => {
+            assert!(ty_list.is_empty());
+            let struct_reader = context.structs.read();
+            let required = struct_reader[id].generics.len();
+            if generics.len() != required {
+                return Err(ctx.emit_mismatching_generic_count(span, required, generics.len()));
+            }
+
+            let mut list = Vec::with_capacity(generics.len());
+
+            for generic in generics {
+                list.push(type_resolution_resolve_type(
+                    ctx,
+                    generic,
+                    generics_in_context,
+                    module,
+                    context,
+                )?);
+            }
+            Ok(ResolvedValue::Struct(id, ctx.intern_tylist(&list)))
+        }
         ResolvedValue::ExternalFunction(_)
-        | ResolvedValue::Struct(_)
         | ResolvedValue::Static(_)
         | ResolvedValue::Module(_)
         | ResolvedValue::Trait(_) => {
@@ -1184,12 +1256,16 @@ fn type_resolution_resolve_type<'ctx>(
                 true,
             )?;
 
-            let ResolvedValue::Struct(struct_id) = value else {
+            let ResolvedValue::Struct(struct_id, generics) = value else {
                 return Err(ctx.emit_mismatching_scope_type(*span, ScopeKind::Type, value.into()));
             };
 
             let name = context.structs.read()[struct_id].name;
-            let ty = ctx.intern_ty(TyKind::Struct { struct_id, name });
+            let ty = ctx.intern_ty(TyKind::Struct {
+                struct_id,
+                name,
+                generics,
+            });
             Ok(with_refcount(ctx, ty, *num_references))
         }
         &TypeRef::Void(_, refs) => Ok(with_refcount(ctx, default_types::void, refs)),
@@ -1239,7 +1315,7 @@ impl From<ResolvedValue<'_>> for ScopeKind {
     fn from(value: ResolvedValue<'_>) -> Self {
         match value {
             ResolvedValue::Trait(_) => Self::Trait,
-            ResolvedValue::Struct(_) => Self::Struct,
+            ResolvedValue::Struct(_, _) => Self::Struct,
             ResolvedValue::Static(_) => Self::Static,
             ResolvedValue::Module(_) => Self::Module,
             ResolvedValue::Function(_, _) | ResolvedValue::ExternalFunction(_) => Self::Function,
@@ -1253,7 +1329,7 @@ impl From<ModuleScopeValue> for ResolvedValue<'static> {
         match value {
             MSV::Function(v) => Self::Function(v, EMPTY_TYLIST),
             MSV::ExternalFunction(v) => Self::ExternalFunction(v),
-            MSV::Struct(v) => Self::Struct(v),
+            MSV::Struct(v) => Self::Struct(v, EMPTY_TYLIST),
             MSV::Static(v) => Self::Static(v),
             MSV::Module(v) => Self::Module(v),
             MSV::Trait(v) => Self::Trait(v),
@@ -1265,10 +1341,19 @@ impl From<ModuleScopeValue> for ResolvedValue<'static> {
 pub enum ResolvedValue<'ctx> {
     Function(FunctionId, TyList<'ctx>),
     ExternalFunction(ExternalFunctionId),
-    Struct(StructId),
+    Struct(StructId, TyList<'ctx>),
     Static(StaticId),
     Module(ModuleId),
     Trait(TraitId),
+}
+
+impl ResolvedValue<'_> {
+    pub(crate) fn purge_generics(&mut self) {
+        match self {
+            Self::Struct(_, ty_list) | Self::Function(_, ty_list) => *ty_list = EMPTY_TYLIST,
+            Self::ExternalFunction(_) | Self::Static(_) | Self::Module(_) | Self::Trait(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Display)]

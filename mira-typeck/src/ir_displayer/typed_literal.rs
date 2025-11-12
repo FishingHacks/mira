@@ -50,11 +50,21 @@ impl Tld<'_> {
                 f.write_value(amount)?;
                 f.write_char(']')
             }
-            TypedLiteral::Struct(id, children) => {
+            TypedLiteral::Struct(id, generics, children) => {
                 f.write_str("@name(")?;
                 f.write_value(&IdentDisplay(f.ctx.structs[*id].name.symbol()))?;
                 f.write_str(") struct_")?;
                 f.write_value(&id.to_usize())?;
+                if !generics.is_empty() {
+                    f.write_char('<')?;
+                    for (i, generic) in generics.iter().enumerate() {
+                        if i != 0 {
+                            f.write_str(", ")?;
+                        }
+                        f.write_value(generic)?;
+                    }
+                    f.write_char('>')?;
+                }
                 f.write_str(" {")?;
                 f.push_indent();
                 for (idx, val) in children.iter().enumerate() {

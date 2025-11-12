@@ -26,11 +26,11 @@ impl IntrinsicExt for Intrinsic {
     ) -> Result<(), TypecheckingError<'arena>> {
         let required_generics = generic_count(*self);
         if generics.len() != required_generics {
-            return Err(TypecheckingError::MismatchingGenericCount(
+            return Err(TypecheckingError::MismatchingGenericCount {
                 span,
-                generics.len(),
-                required_generics,
-            ));
+                found: generics.len(),
+                expected: required_generics,
+            });
         }
 
         match self {

@@ -20,7 +20,9 @@ use inkwell::{
 use mira_common::index::IndexMap;
 use mira_parser::module::{ExternalFunctionId, ModuleId, StructId};
 use mira_spans::{Span, interner::Symbol};
-use mira_typeck::{Ty, TyKind, TypeCtx, TypeckCtx, TypedStruct, default_types};
+use mira_typeck::{
+    Substitute, SubstitutionCtx, Ty, TyKind, TypeCtx, TypeckCtx, TypedStruct, default_types,
+};
 
 use crate::mangling::{ANON_FN_NAME, mangle_external_function};
 use crate::{DefaultTypes, get_mira_version};
@@ -97,6 +99,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
         let alignment = ty.alignment(
             (self.default_types.isize.get_bit_width() / 8) as u64,
             structs,
+            self.ctx,
         ) * 8;
         let ty = self.get_type(ty, structs);
         let info = self.builder.create_auto_variable(
@@ -446,15 +449,20 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                 TyKind::PrimitiveStr | TyKind::UnsizedArray { .. } | TyKind::DynType { .. } => {
                     unreachable!("cannot turn unsized type into a dwarf type")
                 }
-                TyKind::Struct { struct_id, .. } => {
+                TyKind::Struct {
+                    struct_id,
+                    generics,
+                    ..
+                } => {
                     let tmp_ty =
                         unsafe { self.builder.create_placeholder_derived_type(self.context) };
                     self.type_store.borrow_mut().insert(ty, tmp_ty.as_type());
+                    let subst_ctx = SubstitutionCtx::new(self.ctx, generics);
 
                     let structure = &structs[*struct_id];
                     let elements = &structure.elements;
                     let ptr_size = (self.default_types.isize.get_bit_width() / 8) as u64;
-                    let (size, alignment) = ty.size_and_alignment(ptr_size, structs);
+                    let (size, alignment) = ty.size_and_alignment(ptr_size, structs, self.ctx);
                     let line = structure
                         .span
                         .with_source_file(self.ctx.source_map())
@@ -464,9 +472,11 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                         .iter()
                         .enumerate()
                         .map(|(i, (name, v, _))| {
-                            let offset = ty.struct_offset(ptr_size, structs, i);
-                            let (size, alignment) = v.size_and_alignment(ptr_size, structs);
-                            let ty = self.get_type(*v, structs);
+                            let v = v.substitute(&subst_ctx);
+                            let offset = ty.struct_offset(ptr_size, structs, i, self.ctx);
+                            let (size, alignment) =
+                                v.size_and_alignment(ptr_size, structs, self.ctx);
+                            let ty = self.get_type(v, structs);
                             self.builder
                                 .create_member_type(
                                     self.modules[structure.module_id].0.as_debug_info_scope(),
@@ -512,6 +522,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                     let (size, alignment) = ty.size_and_alignment(
                         (self.default_types.isize.get_bit_width() / 8) as u64,
                         structs,
+                        self.ctx,
                     );
                     let inner_ty = self.get_type(*child, structs);
                     self.builder
@@ -528,6 +539,7 @@ impl<'ctx, 'arena> DebugContext<'ctx, 'arena> {
                     let (size, alignment) = ty.size_and_alignment(
                         (self.default_types.isize.get_bit_width() / 8) as u64,
                         structs,
+                        self.ctx,
                     );
                     let fields = elements
                         .iter()
