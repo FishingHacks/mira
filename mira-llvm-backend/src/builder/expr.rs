@@ -90,7 +90,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             | TypedExpression::Literal(_, dst, val)
             | TypedExpression::Pos(_, dst, val) => {
                 if self.is_stack_allocated(*dst) {
-                    let alloca = self.build_alloca(self.basic_ty(&self.get_ty(*dst)), "")?;
+                    let alloca =
+                        self.build_alloca(self.basic_ty(*self.substitute(self.get_ty(*dst))), "")?;
                     self.basic_value_ptr(val, alloca, true)?;
                     self.push_value_raw(*dst, alloca);
                 } else {

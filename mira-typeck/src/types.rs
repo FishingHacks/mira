@@ -82,7 +82,7 @@ extra_traits!(for Ty impl debug, display);
 owned_intern!(TypeInterner, Ty, TyKind<'arena>, |arena, ty| arena
     .alloc(ty));
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FunctionType<'arena> {
     pub arguments: TyList<'arena>,
     pub return_type: Ty<'arena>,

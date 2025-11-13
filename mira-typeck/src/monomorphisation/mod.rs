@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use crate::{Ty, TyKind, TyList, TypeCtx};
+use crate::{FunctionType, Ty, TyKind, TyList, TypeCtx};
 
 pub struct SubstitutionCtx<'ctx, 'a> {
     ctx: TypeCtx<'ctx>,
@@ -24,6 +24,19 @@ impl<'ctx> Deref for SubstitutionCtx<'ctx, '_> {
 pub trait Substitute<'ctx>: 'ctx {
     fn substitute(self, ctx: &SubstitutionCtx<'ctx, '_>) -> Self;
     fn would_substitute(&self) -> bool;
+}
+
+impl<'ctx> Substitute<'ctx> for FunctionType<'ctx> {
+    fn substitute(self, ctx: &SubstitutionCtx<'ctx, '_>) -> Self {
+        Self {
+            arguments: self.arguments.substitute(ctx),
+            return_type: self.return_type.substitute(ctx),
+        }
+    }
+
+    fn would_substitute(&self) -> bool {
+        self.arguments.would_substitute() || self.return_type.would_substitute()
+    }
 }
 
 impl<'ctx> Substitute<'ctx> for Ty<'ctx> {
@@ -52,6 +65,7 @@ impl<'ctx> Substitute<'ctx> for Ty<'ctx> {
                 generics: generics.substitute(ctx),
                 name,
             }),
+            TyKind::Function(fn_ty) => ctx.intern_ty(TyKind::Function(fn_ty.substitute(ctx))),
             _ => self,
         }
     }

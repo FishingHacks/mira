@@ -59,3 +59,8 @@ pub fn volatile_read<T>(ptr: &T) -> T = *ptr;
 @intrinsic("volatile_write")
 /// Stores v in ptr in a volatile way. This causes the compiler to not reorder or remove writes.
 pub fn volatile_write<T>(ptr: &T, v: T) = *ptr = v;
+
+@llvm_intrinsic("ctlz.i64")
+fn leading_zeros64(v: u64, zero_is_poison: bool) -> u64 = 0;
+extern fn malloc(size: usize) -> &void;
+extern fn free(ptr: &void);

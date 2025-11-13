@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    LiteralValue,
     annotations::{AnnotationReceiver, Annotations},
     error::ParsingError,
     module::{
@@ -694,7 +695,6 @@ impl<'ctx> Parser<'_, 'ctx> {
 
         let maybe_statement = match self.peek().ty {
             TokenType::Extern if !is_global => invalid_kw!("external value/function"),
-            TokenType::Fn if !is_global => invalid_kw!("function"),
             TokenType::Struct if !is_global => invalid_kw!("struct definition"),
             TokenType::Use if !is_global => invalid_kw!("use"),
             TokenType::Mod if !is_global => invalid_kw!("mod"),
@@ -718,6 +718,23 @@ impl<'ctx> Parser<'_, 'ctx> {
             TokenType::While => self.parse_while().map(Statement::While).map(Some),
             TokenType::For => self.parse_for().map(Statement::For).map(Some),
             TokenType::Struct => self.parse_struct(false).map(Some),
+            TokenType::Fn if !is_global => {
+                let (Callable { contract, span, .. }, body) = self.parse_callable(false, false)?;
+                contract
+                    .annotations
+                    .are_annotations_valid_for(AnnotationReceiver::Function)?;
+                let name = contract.name.unwrap();
+                let func = LiteralValue::AnonymousFunction(contract, Box::new(body));
+                let value = Expression::Literal(func, span);
+                let var = Variable {
+                    name,
+                    value,
+                    ty: None,
+                    span,
+                    annotations: Annotations::new(),
+                };
+                Ok(Some(Statement::Var(var)))
+            }
             TokenType::Fn => self
                 .parse_callable(false, false)
                 .and_then(|(callable, body)| {

@@ -102,6 +102,8 @@ pub struct u64_t {;
     fn print(self: u64) = print_u64(self);
     /// Prints the number as well as a newline to stdout
     fn println(self: u64) { print_u64(self); print_newline(); }
+    /// Returns the number of leading zeros in the binary representation of self.
+    fn leading_zeros(self: u64) -> u32 = pkg::intrinsics::leading_zeros64(self, false) as u32;
 }
 @lang("usize")
 /// Struct that implements functions for `usize`
@@ -110,6 +112,15 @@ pub struct usize_t {;
     fn print(self: usize) = print_u64(self as u64);
     /// Prints the number as well as a newline to stdout
     fn println(self: usize) { print_u64(self as u64); print_newline(); }
+    /// Returns the number of leading zeros in the binary representation of self.
+    fn leading_zeros(self: usize) -> u32 = (self as u64).leading_zeros();
+    /// Returns the next power of 2
+    fn next_power_of_two(self: usize) -> usize {
+        if (self < 2) return 1;
+        let max = -1isize as usize;
+        let leading_zeros = (self - 1).leading_zeros();
+        return (max >> leading_zeros as u64) + 1;
+    }
 }
 
 @lang("i8")

@@ -1,0 +1,5 @@
+use pkg::intrinsics::get_metadata;
+use pkg::intrinsics::with_metadata;
+
+pub fn len<T>(self: &[T]) -> usize = get_metadata::<[T]>(self);
+pub fn from_raw_parts<T>(v: &T, len: usize) -> &[T] = with_metadata::<T, [T]>(v, len);

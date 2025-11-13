@@ -1,0 +1,5 @@
+@llvm_intrinsic("memcpy.p0.p0.i64")
+fn llvm_memcpy(dest: &void, src: &void, len: u64, _v: bool) = void;
+
+pub fn memcpy(dst: &void, src: &void, len: usize) = llvm_memcpy(dst, src, len as u64, false);
+pub fn copy<T>(dst: &T, src: &T, amount: usize) = llvm_memcpy(dst as &void, src as &void, (amount * pkg::intrinsics::size_of::<T>()) as u64, false);

@@ -1237,12 +1237,13 @@ fn type_resolution_resolve_type<'ctx>(
                 if let Some((generic_id, generic)) =
                     generics.iter().enumerate().find(|(_, v)| v.name == name)
                 {
-                    return Ok(ctx.intern_ty(TyKind::Generic {
+                    let ty = ctx.intern_ty(TyKind::Generic {
                         name: generic.name,
                         generic_id: generic_id as u8,
                         sized: generic.sized,
                         bounds: generic.bounds,
-                    }));
+                    });
+                    return Ok(with_refcount(ctx, ty, *num_references));
                 }
             }
 

@@ -148,7 +148,7 @@ pub(crate) fn argument<'ctx, 'tycx>(
 
     if size == 0 {
         ArgumentType::None
-    } else if size <= 8 && matches!(ty, TyKind::Ref(_)) {
+    } else if size <= 8 && matches!(ty, TyKind::Ref(_) | TyKind::Function(_)) {
         ArgumentType::Regular(ctx.ptr_type(AddressSpace::default()).as_basic_type_enum())
     } else if size <= 8 {
         let int = ctx.custom_width_int_type(size as u32 * 8);
@@ -177,7 +177,7 @@ pub(crate) fn return_ty<'ctx, 'tycx>(
 
     if size == 0 {
         ArgumentType::None
-    } else if size <= 8 && matches!(ty, TyKind::Ref(_)) {
+    } else if size <= 8 && matches!(ty, TyKind::Ref(_) | TyKind::Function(_)) {
         ArgumentType::Regular(ctx.ptr_type(AddressSpace::default()).as_basic_type_enum())
     } else if size <= 8 {
         let int = ctx.custom_width_int_type(size as u32 * 8);

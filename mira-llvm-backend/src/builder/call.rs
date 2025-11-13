@@ -149,7 +149,9 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         for (arg_ty, arg) in ret_args_ty[1..].iter().zip(args) {
             match arg_ty {
                 &ArgumentType::Regular(ty) => {
-                    if has_special_encoding(&arg.to_type(self.ir.scope(), self.ctx.tc_ctx)) {
+                    if has_special_encoding(
+                        *self.substitute(arg.to_type(self.ir.scope(), self.ctx.tc_ctx)),
+                    ) {
                         match arg {
                             // can never be void, because void is a zst and as such
                             // ArgumentType::None.

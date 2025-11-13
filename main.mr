@@ -1,8 +1,12 @@
-struct Meow<T> {
-    v: T;
-    fn println(self: &Self) = (&self.v as &void as &u32).println();
-}
+use std::Vec;
+
 pub fn main() {
-    let v = Meow::<u32> { v: 12 };
-    v.println();
+    let vec = Vec::<u32>::new();
+    vec.push(12);
+    vec.push(14);
+    vec.push(17);
+    vec.get(0).println();
+    vec.get(1).println();
+    vec.get(2).println();
+    vec.drop(fn(_: u32) = void);
 }

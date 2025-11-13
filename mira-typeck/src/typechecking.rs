@@ -29,6 +29,7 @@ use super::{
 
 mod private {
     use super::*;
+    use crate::TypedGeneric;
     use crate::ir::ValueId;
 
     pub(super) struct TcCtx<'ctx, 'tcx> {
@@ -37,22 +38,78 @@ mod private {
         pub rev_deferred_exprs: Vec<TypedExpression<'ctx>>,
         deferred_always_return: bool,
         is_deferred: bool,
-        pub fn_ctx: FnContext<'ctx, 'tcx>,
+        pub tcx: &'tcx TypeckCtx<'ctx>,
+        contract: &'tcx TypedFunctionContract<'ctx>,
+        generics: Box<[TypedGeneric<'ctx>]>,
     }
 
     impl<'ctx, 'tcx> TcCtx<'ctx, 'tcx> {
-        pub(super) fn new(ir: ScopedIR<'ctx>, fn_ctx: FnContext<'ctx, 'tcx>) -> Self {
+        pub(super) fn new(
+            ir: ScopedIR<'ctx>,
+            tcx: &'tcx TypeckCtx<'ctx>,
+            contract: &'tcx TypedFunctionContract<'ctx>,
+        ) -> Self {
+            let mut generics = contract.generics.clone();
+            match contract.context {
+                FunctionContext::Freestanding => {}
+                FunctionContext::StructFn(struct_id) => {
+                    generics.extend_from_slice(&tcx.structs.read_recursive()[struct_id].generics)
+                }
+            }
             Self {
                 ir,
                 rev_deferred_exprs: Vec::new(),
-                fn_ctx,
                 is_deferred: false,
                 deferred_always_return: false,
+                tcx,
+                contract,
+                generics: generics.into_boxed_slice(),
             }
         }
     }
 
     impl<'ctx> TcCtx<'ctx, '_> {
+        pub(super) fn return_ty(&self) -> Ty<'ctx> {
+            self.contract.return_type
+        }
+        fn module(&self) -> ModuleId {
+            self.contract.module_id
+        }
+
+        pub(super) fn resolve_type(
+            &self,
+            // module_id: ModuleId,
+            ty: &TypeRef<'ctx>,
+        ) -> Result<Ty<'ctx>, ErrorEmitted> {
+            self.tcx.resolve_type(self.module(), ty, &self.generics)
+        }
+
+        pub(super) fn resolve_import<'a>(
+            &self,
+            // current_module: ModuleId,
+            import: impl Iterator<Item = (&'a Ident<'ctx>, &'a [TypeRef<'ctx>])>,
+            span: Span<'ctx>,
+        ) -> Result<ResolvedValue<'ctx>, ErrorEmitted>
+        where
+            'ctx: 'a,
+        {
+            self.tcx
+                .resolve_import(self.module(), import, span, &self.generics, true)
+        }
+
+        pub(super) fn resolve_import_simple<'a>(
+            &self,
+            // current_module: ModuleId,
+            import: impl Iterator<Item = &'a Ident<'ctx>>,
+            span: Span<'ctx>,
+        ) -> Result<ResolvedValue<'ctx>, ErrorEmitted>
+        where
+            'ctx: 'a,
+        {
+            self.tcx
+                .resolve_import_simple(self.module(), import, span, &self.generics, true)
+        }
+
         pub(super) fn into_ir(self) -> ScopedIR<'ctx> {
             self.ir
         }
@@ -286,10 +343,10 @@ mod private {
     }
 
     impl<'ctx, 'tcx> Deref for TcCtx<'ctx, 'tcx> {
-        type Target = FnContext<'ctx, 'tcx>;
+        type Target = TypeckCtx<'ctx>;
 
-        fn deref(&self) -> &Self::Target {
-            &self.fn_ctx
+        fn deref(&self) -> &'tcx Self::Target {
+            self.tcx
         }
     }
 }
@@ -322,13 +379,7 @@ pub fn typecheck_static<'arena>(
         context: FunctionContext::Freestanding,
     };
 
-    // TODO: Rename
-    let fn_ctx = FnContext {
-        tcx: ctx,
-        contract: &contract,
-    };
-
-    let mut ctx = TcCtx::new(ScopedIR::new(std::iter::empty(), span), fn_ctx);
+    let mut ctx = TcCtx::new(ScopedIR::new(std::iter::empty(), span), ctx, &contract);
 
     match typecheck_expression(
         &mut ctx,
@@ -359,57 +410,6 @@ pub fn typecheck_external_function<'arena>(
     function_id: ExternalFunctionId,
 ) -> Result<(), ErrorEmitted> {
     inner_typecheck_function(ctx, module_context, CommonFunction::External(function_id))
-}
-
-#[derive(Clone, Copy)]
-struct FnContext<'ctx, 'tcx> {
-    tcx: &'tcx TypeckCtx<'ctx>,
-    contract: &'tcx TypedFunctionContract<'ctx>,
-}
-
-impl<'ctx> FnContext<'ctx, '_> {
-    fn resolve_type(
-        &self,
-        module_id: ModuleId,
-        ty: &TypeRef<'ctx>,
-    ) -> Result<Ty<'ctx>, ErrorEmitted> {
-        self.tcx
-            .resolve_type(module_id, ty, &self.contract.generics)
-    }
-
-    fn resolve_import<'a>(
-        &self,
-        current_module: ModuleId,
-        import: impl Iterator<Item = (&'a Ident<'ctx>, &'a [TypeRef<'ctx>])>,
-        span: Span<'ctx>,
-    ) -> Result<ResolvedValue<'ctx>, ErrorEmitted>
-    where
-        'ctx: 'a,
-    {
-        self.tcx
-            .resolve_import(current_module, import, span, &self.contract.generics, true)
-    }
-
-    fn resolve_import_simple<'a>(
-        &self,
-        current_module: ModuleId,
-        import: impl Iterator<Item = &'a Ident<'ctx>>,
-        span: Span<'ctx>,
-    ) -> Result<ResolvedValue<'ctx>, ErrorEmitted>
-    where
-        'ctx: 'a,
-    {
-        self.tcx
-            .resolve_import_simple(current_module, import, span, &self.contract.generics, true)
-    }
-}
-
-impl<'ctx, 'tcx> Deref for FnContext<'ctx, 'tcx> {
-    type Target = TypeckCtx<'ctx>;
-
-    fn deref(&self) -> &'tcx Self::Target {
-        self.tcx
-    }
 }
 
 #[allow(clippy::result_unit_err)]
@@ -465,35 +465,27 @@ fn inner_typecheck_function<'arena>(
         }
     };
 
-    let fn_ctx = FnContext {
-        tcx: tc_ctx,
-        contract,
-    };
-    let tracker = fn_ctx.track_errors();
+    let tracker = tc_ctx.track_errors();
     if !contract.return_type.is_sized() {
-        _ = fn_ctx
-            .ctx
-            .emit_unsized_return_type(contract.span, contract.return_type);
+        _ = tc_ctx.emit_unsized_return_type(contract.span, contract.return_type);
     }
     for (_, arg) in contract.arguments.iter().filter(|v| !v.1.is_sized()) {
-        _ = fn_ctx.emit_unsized_argument(contract.span, *arg);
+        _ = tc_ctx.emit_unsized_argument(contract.span, *arg);
     }
-    fn_ctx.errors_happened_res(tracker)?;
+    tc_ctx.errors_happened_res(tracker)?;
 
     let ir = ScopedIR::new(
         contract
             .arguments
             .iter()
             .map(|&(name, ty)| (name, name.span(), ty)),
-        fn_ctx.combine_spans([contract.span, statement.span()]),
+        tc_ctx.combine_spans([contract.span, statement.span()]),
     );
-    let mut ctx = TcCtx::new(ir, fn_ctx);
+    let mut ctx = TcCtx::new(ir, tc_ctx, contract);
 
     let always_returns = typecheck_block_inline(&mut ctx, statement)?;
     if contract.return_type != default_types::void && !always_returns {
-        return Err(fn_ctx
-            .ctx
-            .emit_body_does_not_always_return(statement.span()));
+        return Err(tc_ctx.emit_body_does_not_always_return(statement.span()));
     }
     // add an implicit `return;` at the end of the function
     if !always_returns {
@@ -657,32 +649,23 @@ fn typecheck_statement<'ctx>(
         Statement::For { .. } => todo!("iterator (requires generics)"),
         Statement::Return(None, span) => match ctx.put_all_deferred() {
             true => Ok(true),
-            false if ctx.contract.return_type == default_types::void => {
+            false if ctx.return_ty() == default_types::void => {
                 ctx.append(TypedExpression::Return(*span, None));
                 Ok(true)
             }
-            false => {
-                Err(ctx.emit_mismatching_type(*span, ctx.contract.return_type, default_types::void))
-            }
+            false => Err(ctx.emit_mismatching_type(*span, ctx.return_ty(), default_types::void)),
         },
         Statement::Return(Some(expression), span) => {
-            let (ty, typed_expression) = typecheck_expression(
-                ctx,
-                expression,
-                TypeSuggestion::from_type(ctx.contract.return_type),
-            )?;
+            let (ty, typed_expression) =
+                typecheck_expression(ctx, expression, TypeSuggestion::from_type(ctx.return_ty()))?;
 
             if ty == default_types::never {
                 ctx.append(TypedExpression::Unreachable(*span));
                 return Ok(true);
             }
 
-            if ty != ctx.contract.return_type {
-                return Err(ctx.emit_mismatching_type(
-                    expression.span(),
-                    ctx.contract.return_type,
-                    ty,
-                ));
+            if ty != ctx.return_ty() {
+                return Err(ctx.emit_mismatching_type(expression.span(), ctx.return_ty(), ty));
             }
 
             if ctx.put_all_deferred() {
@@ -715,11 +698,7 @@ fn typecheck_statement<'ctx>(
             Ok(always_returns)
         }
         Statement::Var(var) => {
-            let expected_typ = var
-                .ty
-                .as_ref()
-                .map(|v| ctx.resolve_type(ctx.contract.module_id, v))
-                .transpose()?;
+            let expected_typ = var.ty.as_ref().map(|v| ctx.resolve_type(v)).transpose()?;
 
             let (ty, expr) = typecheck_expression(
                 ctx,
@@ -953,7 +932,7 @@ fn typecheck_expression<'ctx>(
                     return Err(ctx.emit_cannot_infer_anon_struct_type(span));
                 };
 
-                let structure = &ctx.fn_ctx.tcx.structs.read()[struct_id];
+                let structure = &ctx.tcx.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
@@ -984,7 +963,7 @@ fn typecheck_expression<'ctx>(
                 ))
             }
             LiteralValue::Struct(values, path) => {
-                let value = ctx.resolve_import(ctx.contract.module_id, path.iter(), span)?;
+                let value = ctx.resolve_import(path.iter(), span)?;
                 let ResolvedValue::Struct(struct_id, generics) = value else {
                     return Err(ctx.emit_mismatching_scope_type(
                         span,
@@ -992,7 +971,7 @@ fn typecheck_expression<'ctx>(
                         value.into(),
                     ));
                 };
-                let structure = &ctx.fn_ctx.tcx.structs.read()[struct_id];
+                let structure = &ctx.tcx.structs.read()[struct_id];
                 // ensure there are no excessive values in the struct initialization
                 for k in values.keys() {
                     if !structure.elements.iter().any(|v| v.0 == *k) {
@@ -1043,7 +1022,7 @@ fn typecheck_expression<'ctx>(
                     }
                     return Ok((ctx.get_ty(id), TypedLiteral::Dynamic(id)));
                 }
-                let value = ctx.resolve_import(ctx.contract.module_id, path.iter(), span)?;
+                let value = ctx.resolve_import(path.iter(), span)?;
 
                 match value {
                     ResolvedValue::Function(id, generics) => {
@@ -1129,7 +1108,7 @@ fn typecheck_expression<'ctx>(
             };
             // this should never fail unless this is an incompatible type (non-primitive)
             let output = ctx
-                .resolve_type(ctx.contract.module_id, output)
+                .resolve_type(output)
                 .ok()
                 .filter(|v| (*v == default_types::void && name.is_none()) || v.is_asm_primitive())
                 .ok_or_else(|| ctx.emit_asm_non_numeric_type(*span, name.unwrap().symbol()))?;
@@ -1498,7 +1477,7 @@ fn typecheck_expression<'ctx>(
             span,
         } => {
             let (ty, lhs) = typecheck_expression(ctx, left_side, type_suggestion)?;
-            let new_ty = ctx.resolve_type(ctx.contract.module_id, new_ty)?;
+            let new_ty = ctx.resolve_type(new_ty)?;
             typecheck_cast(ctx, ty, new_ty, lhs, *span).map_err(|diag| ctx.emit_diag(diag))
         }
         Expression::TraitFunctionCall {
@@ -1508,16 +1487,12 @@ fn typecheck_expression<'ctx>(
             arguments,
             span,
         } => {
-            let ty = ctx.resolve_type(ctx.contract.module_id, ty)?;
-            let import = ctx.resolve_import_simple(
-                ctx.contract.module_id,
-                trait_path.iter(),
-                trait_path.span,
-            )?;
+            let ty = ctx.resolve_type(ty)?;
+            let import = ctx.resolve_import_simple(trait_path.iter(), trait_path.span)?;
             let ResolvedValue::Trait(trait_id) = import else {
                 return Err(ctx.emit_cannot_find_value(*span, trait_path.to_normal_path()));
             };
-            let trait_value = &ctx.fn_ctx.tcx.traits.read()[trait_id];
+            let trait_value = &ctx.tcx.traits.read()[trait_id];
 
             if !ty.implements(&[trait_id], ctx) {
                 return Err(ctx.emit_mismatching_traits(
@@ -1852,9 +1827,9 @@ fn typecheck_membercall<'ctx>(
         _ => (),
     }
 
-    let function_reader = ctx.fn_ctx.tcx.functions.read();
-    let langitem_reader = ctx.fn_ctx.tcx.lang_items.read();
-    let struct_reader = ctx.fn_ctx.tcx.structs.read();
+    let function_reader = ctx.tcx.functions.read();
+    let langitem_reader = ctx.tcx.lang_items.read();
+    let struct_reader = ctx.tcx.structs.read();
 
     let struct_id = match **typ_lhs.without_ref() {
         ref ty @ (TyKind::Ref(_) | TyKind::Generic { .. } | TyKind::PrimitiveSelf) => {
@@ -1983,7 +1958,7 @@ fn typecheck_membercall<'ctx>(
         let required = &function.0.generics;
 
         for (i, generic) in generics.iter().enumerate() {
-            let ty = ctx.resolve_type(ctx.contract.module_id, generic)?;
+            let ty = ctx.resolve_type(generic)?;
             if required[i].sized && !ty.is_sized() {
                 return Err(ctx.emit_unsized_for_sized_generic(generic.span(), ty));
             }
@@ -2019,7 +1994,8 @@ fn typecheck_membercall<'ctx>(
         typed_arguments.push(expr);
     }
 
-    let call_id = ctx.add_value(function.0.return_type);
+    let ret_ty = function.0.return_type.substitute(&subst_ctx);
+    let call_id = ctx.add_value(ret_ty);
     ctx.append(TypedExpression::DirectCall(
         lhs.span(),
         call_id,
@@ -2028,10 +2004,7 @@ fn typecheck_membercall<'ctx>(
         function_generics,
     ));
 
-    Ok((
-        function.0.return_type.substitute(&subst_ctx),
-        TypedLiteral::Dynamic(call_id),
-    ))
+    Ok((ret_ty, TypedLiteral::Dynamic(call_id)))
 }
 
 fn typecheck_take_ref<'ctx>(
@@ -2120,7 +2093,7 @@ fn new_index<'ctx>(
                 TypeSuggestion::Array(Box::new(type_suggestion)),
             )?;
             let single_ref_lit = make_single_ref(ctx, ty, lhs, *span);
-            if !ty.is_indexable() {
+            if !ty.without_ref().is_indexable() {
                 return Err(ctx.emit_index_non_array_elem(expression.span(), ty));
             }
             let elem_ty = match **ty.without_ref() {

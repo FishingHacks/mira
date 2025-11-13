@@ -403,7 +403,7 @@ fn _compile_run(rest: &str, repl: &mut Repl<Data>, run: bool) {
 
     let Ok(()) = compile(
         &libtree,
-        CodegenConfig::new_release_safe(),
+        CodegenConfig::new_debug(),
         llvm_ir_writer,
         llvm_bc_writer,
         asm_writer,

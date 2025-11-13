@@ -70,6 +70,8 @@ impl<'ctx, 'tycx> CodegenContext<'ctx, 'tycx, '_> {
 
             TyKind::Ref(t) if t.is_sized() => self.default_types.ptr.into(),
             TyKind::Ref(_) => self.default_types.fat_ptr.into(),
+            // function types are always pointers because all function types are pointers in llvm
+            TyKind::Function(..) => self.default_types.ptr.into(),
             &TyKind::Struct {
                 struct_id,
                 generics,
@@ -90,8 +92,6 @@ impl<'ctx, 'tycx> CodegenContext<'ctx, 'tycx, '_> {
                 number_elements,
                 ..
             } => self.basic_ty(ty).array_type(*number_elements as u32).into(),
-            // our function types are always pointers because all function types are pointers in llvm
-            TyKind::Function(..) => self.default_types.ptr.into(),
             TyKind::PrimitiveNever | TyKind::PrimitiveVoid => panic!(
                 "void and never should be ignored as llvm types outside of function return values"
             ),
@@ -833,6 +833,14 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                 "tried to instantiate an intrinsic. This should be impossible and have been sorted out by typechecking."
             );
         }
+        if contract
+            .annotations
+            .has_annotation::<LLVMIntrinsicAnnotation>()
+        {
+            unreachable!(
+                "tried to instantiate an llvm intrinsic. This should be impossible and have been sorted out by typechecking."
+            );
+        }
         let required = match contract.context {
             FunctionContext::Freestanding => contract.generics.len(),
             FunctionContext::StructFn(struct_id) => {
@@ -1052,6 +1060,9 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         types: impl Iterator<Item = Ty<'arena>>,
         ret_ty: Ty<'arena>,
     ) -> FunctionValue<'ctx> {
+        if let Some(func) = self.module.get_function(&sym) {
+            return func;
+        }
         if let Some(&func) = self.intrinsics.borrow().get(&sym) {
             return func;
         }

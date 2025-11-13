@@ -513,13 +513,6 @@ impl<'arena> TypeckCtx<'arena> {
         drop(writer);
 
         let error_tracker = self.track_errors();
-        if let Ok(v) = self.resolve_type(
-            module_id,
-            &return_type,
-            &resolved_function_contract.generics,
-        ) {
-            resolved_function_contract.return_type = v
-        }
 
         let generics = match resolved_function_contract.context {
             FunctionContext::Freestanding => Cow::Borrowed(&resolved_function_contract.generics),
@@ -533,6 +526,10 @@ impl<'arena> TypeckCtx<'arena> {
                 }
             }
         };
+
+        if let Ok(v) = self.resolve_type(module_id, &return_type, &generics) {
+            resolved_function_contract.return_type = v
+        }
 
         for arg in arguments {
             if let Ok(v) = self.resolve_type(module_id, &arg.ty, &generics) {

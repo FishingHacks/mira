@@ -99,7 +99,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
     }
 
     pub(crate) fn is_stack_allocated(&self, value: ValueId) -> bool {
-        self.ir.scope().get(value).stack_allocated || has_special_encoding(&self.get_ty(value))
+        self.ir.scope().get(value).stack_allocated
+            || has_special_encoding(*self.substitute(self.get_ty(value)))
     }
 
     pub(crate) fn get_ty(&self, value: ValueId) -> Ty<'arena> {

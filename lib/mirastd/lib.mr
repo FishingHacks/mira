@@ -2,17 +2,21 @@
 //!
 //! Standard library for mira. Here is where all the intrinsics and lang items live too. (compiler internals yippieeee)
 
-pub mod allocate;
+pub mod alloc;
 pub mod intrinsics;
 pub mod langitems;
 pub mod os;
 pub mod panicking;
+pub mod slice;
+pub mod ptr;
+pub mod vec;
 mod start;
 
 use os::write;
 pub use langitems::print_u64;
 pub use langitems::print_i64;
 pub use panicking::panic;
+pub use vec::Vec;
 
 /// Prints `string` to stdout
 pub fn print_str(string: &str) = write(1, string as &u8, string.len());

@@ -14,11 +14,22 @@ pub trait Allocator {
 /// The standard libc allocator (currently only returns a null pointer.)
 pub struct CAlloc {;
     impl Allocator {
-        fn alloc(self: &Self, size: usize) -> &void = &void;
-        fn realloc(self: &Self, ptr: &void, size: usize) -> &void = &void;
-        fn free(self: &Self, ptr: &void) = void;
+        fn alloc(self: &Self, size: usize) -> &void = c_alloc(size);
+        fn realloc(self: &Self, ptr: &void, size: usize) -> &void = c_realloc(ptr, size);
+        fn free(self: &Self, ptr: &void) = c_free(ptr);
     }
 }
 @lang("allocator")
 /// The global allocator.
 pub let allocator: CAlloc = .{};
+
+pub fn alloc(size: usize) -> &void = c_alloc(size); 
+pub fn free(ptr: &void) = c_free(ptr);
+pub fn realloc(ptr: &void, new_size: usize) -> &void = c_realloc(ptr, new_size);
+
+@alias("malloc")
+extern fn c_alloc(size: usize) -> &void; 
+@alias("free")
+extern fn c_free(ptr: &void);
+@alias("realloc")
+extern fn c_realloc(ptr: &void, new_size: usize) -> &void;

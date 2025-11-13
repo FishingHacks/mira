@@ -1,0 +1,48 @@
+use pkg::alloc;
+
+struct Vec<T> {
+    ptr: &T, len: usize, capacity: usize;
+
+    fn new() -> Self = .{ ptr: &void as &T, len: 0, capacity: 0 };
+    fn as_slice(self: &Self) -> &[T] = pkg::slice::from_raw_parts::<T>(self.ptr, self.len);
+
+    fn reserve(self: &Self, cap: usize) {
+        let zero_cap = cap == 0;
+        let elem_size = pkg::intrinsics::size_of::<T>();
+        let zero_ty = elem_size == 0;
+        if (zero_cap || zero_ty) { return; }
+        cap = cap.next_power_of_two();
+        if (cap < 2) cap = 2;
+        let ptr = alloc::alloc(cap * elem_size);
+        if (self.capacity != 0) {
+            pkg::ptr::copy::<T>(ptr as &T, self.ptr, self.len);
+            alloc::free(self.ptr as &void);
+        }
+        self.capacity = cap;
+        self.ptr = ptr as &T;
+    }
+
+    fn push(self: &Self, v: T) {
+        self.reserve(self.capacity + 1);
+        let len = self.len;
+        self.len += 1;
+        self.as_slice()[len] = v;
+    }
+
+    fn pop(self: &Self) -> T {
+        self.len -= 1;
+        return self.as_slice()[self.len];
+    }
+
+    fn get(self: &Self, index: usize) -> T = self.as_slice()[index];
+
+    fn drop(self: Self, dropper: fn(T)) {
+        if (self.capacity == 0) return;
+        let slice = self.as_slice();
+        while (self.len > 0) {
+            self.len -= 1;
+            dropper(slice[self.len]);
+        }
+        alloc::free(self.ptr as &void);
+    }
+}
