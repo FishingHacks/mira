@@ -31,7 +31,7 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         let ty = self.substitute(self.get_ty(dst));
         let ty = self.basic_ty(&ty).into_int_type();
         let value = self.basic_value(value).into_pointer_value();
-        if value.is_const() {
+        let value = if value.is_const() {
             value.const_to_int(ty)
         } else {
             self.build_ptr_to_int(value, ty, "")?

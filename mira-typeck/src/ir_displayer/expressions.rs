@@ -261,7 +261,7 @@ impl ExpressionDisplay<'_> {
             | TypedExpression::IntCast(_, lhs, rhs) => {
                 fmt!("{lhs} = ")?;
                 Tld(rhs).fmt(f)?;
-                fmt!(" as {}", ir.get_ty(*lhs))
+                fmt!(" as {} ({:?})", ir.get_ty(*lhs), self.0)
             }
             TypedExpression::Literal(_, lhs, rhs) => {
                 fmt!("{lhs} = ")?;

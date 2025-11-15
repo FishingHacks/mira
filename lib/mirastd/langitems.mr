@@ -180,4 +180,6 @@ pub struct str_t {;
     fn println(self: &str) { print_str(self); print_newline(); }
     /// Gets the length of the string
     fn len(self: &str) -> usize = get_metadata::<str>(self);
+
+    fn substr(self: &str, start: usize, len: usize) -> &str = pkg::intrinsics::with_metadata::<u8, str>(((self as &u8 as &void as usize) + start) as &void as &u8, len);
 }
