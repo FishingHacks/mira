@@ -5,8 +5,10 @@ pub fn main() {
     vec.push(12);
     vec.push(14);
     vec.push(17);
+    vec.push(20);
     vec.get(0).println();
     vec.get(1).println();
     vec.get(2).println();
+    vec.get(3).println();
     vec.drop(fn(_: u32) = void);
 }

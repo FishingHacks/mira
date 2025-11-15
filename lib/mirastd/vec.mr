@@ -1,6 +1,6 @@
 use pkg::alloc;
 
-struct Vec<T> {
+pub struct Vec<T> {
     ptr: &T, len: usize, capacity: usize;
 
     fn new() -> Self = .{ ptr: &void as &T, len: 0, capacity: 0 };
