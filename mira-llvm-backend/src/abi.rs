@@ -136,6 +136,30 @@ impl Class {
     }
 }
 
+pub(crate) fn classify_intrinsic<'ctx>(
+    ty: &TyKind<'_>,
+    ctx: &'ctx Context,
+    ptrsize_bits: u32,
+) -> Option<ArgumentType<'ctx>> {
+    use ArgumentType::Regular as reg;
+    Some(match ty {
+        TyKind::Function(_) => reg(ctx.ptr_type(AddressSpace::default()).into()),
+        TyKind::PrimitiveVoid | TyKind::PrimitiveNever => ArgumentType::None,
+        TyKind::Ref(inner) if inner.is_sized() => reg(ctx.ptr_type(AddressSpace::default()).into()),
+        TyKind::PrimitiveI8 | TyKind::PrimitiveU8 => reg(ctx.i8_type().into()),
+        TyKind::PrimitiveI16 | TyKind::PrimitiveU16 => reg(ctx.i16_type().into()),
+        TyKind::PrimitiveI32 | TyKind::PrimitiveU32 => reg(ctx.i32_type().into()),
+        TyKind::PrimitiveI64 | TyKind::PrimitiveU64 => reg(ctx.i64_type().into()),
+        TyKind::PrimitiveISize | TyKind::PrimitiveUSize => {
+            reg(ctx.custom_width_int_type(ptrsize_bits).into())
+        }
+        TyKind::PrimitiveF32 => reg(ctx.f32_type().into()),
+        TyKind::PrimitiveF64 => reg(ctx.f64_type().into()),
+        TyKind::PrimitiveBool => reg(ctx.bool_type().into()),
+        _ => return None,
+    })
+}
+
 pub(crate) fn argument<'ctx, 'tycx>(
     ctx: &'ctx Context,
     ty: &TyKind<'tycx>,
@@ -146,6 +170,9 @@ pub(crate) fn argument<'ctx, 'tycx>(
 ) -> ArgumentType<'ctx> {
     let (size, align) = ty.size_and_alignment(ptrsize as u64, structs, ty_cx);
 
+    if let Some(v) = classify_intrinsic(ty, ctx, ptrsize as u32 * 8) {
+        return v;
+    }
     if size == 0 {
         ArgumentType::None
     } else if size <= 8 && matches!(ty, TyKind::Ref(_) | TyKind::Function(_)) {
@@ -175,6 +202,9 @@ pub(crate) fn return_ty<'ctx, 'tycx>(
 ) -> ArgumentType<'ctx> {
     let (size, align) = ty.size_and_alignment(ptrsize as u64, structs, ty_cx);
 
+    if let Some(v) = classify_intrinsic(ty, ctx, ptrsize as u32 * 8) {
+        return v;
+    }
     if size == 0 {
         ArgumentType::None
     } else if size <= 8 && matches!(ty, TyKind::Ref(_) | TyKind::Function(_)) {

@@ -107,65 +107,6 @@ impl<'ctx, 'tycx> CodegenContext<'ctx, 'tycx, '_> {
     }
 }
 
-// fn llvm_basic_ty<'ctx, 'tycx>(
-//     tc_ctx: &TypeckCtx<'tycx>,
-//     ty: &TyKind<'tycx>,
-//     default_types: &DefaultTypes<'ctx>,
-//     structs: &StructStore<'ctx, 'tycx>,
-//     ctx: &'ctx Context,
-// ) -> BasicTypeEnum<'ctx> {
-//     match ty {
-//         TyKind::Ref(t) => {
-//             if t.is_sized() {
-//                 default_types.ptr.into()
-//             } else {
-//                 default_types.fat_ptr.into()
-//             }
-//         }
-//         TyKind::Generic { .. } => unreachable!("generics should be resolved by now"),
-//         TyKind::UnsizedArray { .. } => panic!("llvm types must be sized, `[_]` is not"),
-//         TyKind::PrimitiveStr => panic!("llvm types must be sized, `str` is not"),
-//         TyKind::PrimitiveSelf => unreachable!("Self must be resolved at this point"),
-//         TyKind::DynType { .. } => panic!("llvm types must be sized, `dyn _` is not"),
-//         &TyKind::Struct {
-//             struct_id,
-//             generics,
-//             ..
-//         } => structs
-//             .struct_ty(struct_id, generics, ctx, tc_ctx, default_types)
-//             .into(),
-//         TyKind::Tuple(elements) => ctx
-//             .struct_type(
-//                 &elements
-//                     .iter()
-//                     .map(|v| llvm_basic_ty(tc_ctx, v, default_types, structs, ctx))
-//                     .collect::<Vec<_>>(),
-//                 false,
-//             )
-//             .into(),
-//         TyKind::SizedArray {
-//             ty,
-//             number_elements,
-//             ..
-//         } => llvm_basic_ty(tc_ctx, ty, default_types, structs, ctx)
-//             .array_type(*number_elements as u32)
-//             .into(),
-//         // our function types are always pointers because all function types are pointers in llvm
-//         TyKind::Function(..) => default_types.ptr.into(),
-//         TyKind::PrimitiveNever | TyKind::PrimitiveVoid => panic!(
-//             "void and never should be ignored as llvm types outside of function return values"
-//         ),
-//         TyKind::PrimitiveU8 | TyKind::PrimitiveI8 => default_types.i8.into(),
-//         TyKind::PrimitiveU16 | TyKind::PrimitiveI16 => default_types.i16.into(),
-//         TyKind::PrimitiveU32 | TyKind::PrimitiveI32 => default_types.i32.into(),
-//         TyKind::PrimitiveU64 | TyKind::PrimitiveI64 => default_types.i64.into(),
-//         TyKind::PrimitiveUSize | TyKind::PrimitiveISize => default_types.isize.into(),
-//         TyKind::PrimitiveF32 => default_types.f32.into(),
-//         TyKind::PrimitiveF64 => default_types.f64.into(),
-//         TyKind::PrimitiveBool => default_types.bool.into(),
-//     }
-// }
-
 fn is_value_const(v: &BasicValueEnum<'_>) -> bool {
     match v {
         BasicValueEnum::ArrayValue(v) => v.is_const(),
@@ -912,6 +853,9 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         let noinline = self
             .context
             .create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
+        let nomerge = self
+            .context
+            .create_enum_attribute(Attribute::get_named_enum_kind_id("nomerge"), 0);
 
         if let Some(callconv) = contract
             .annotations
@@ -933,6 +877,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         }
         if contract.annotations.has_annotation::<Noinline>() {
             func.add_attribute(AttributeLoc::Function, noinline);
+            func.add_attribute(AttributeLoc::Function, nomerge);
         }
         let (_, line) = contract
             .span

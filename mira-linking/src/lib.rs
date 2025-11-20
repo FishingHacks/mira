@@ -88,7 +88,7 @@ impl Linker for LdLikeLinker {
         let mut command = Command::new(opts.linker_path);
         #[allow(clippy::single_match)]
         match opts.target.abi {
-            Abi::Gnu => _ = command.arg("-lc"),
+            Abi::Gnu => _ = command.args(["-lc", "-lm"]),
             _ => (),
         }
         #[allow(clippy::single_match)]
@@ -146,7 +146,7 @@ impl Linker for CcLikeLinker {
 
         #[allow(clippy::single_match)]
         match opts.target.abi {
-            Abi::Gnu => _ = command.arg("-lc"),
+            Abi::Gnu => _ = command.args(["-lc", "-lm"]),
             _ => (),
         }
 

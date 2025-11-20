@@ -1,7 +1,7 @@
 use super::compile::compile;
+use crate::VERSION;
 use crate::editor::{get_path, run_editor};
 use crate::repl::Repl;
-use crate::VERSION;
 
 use std::str::FromStr;
 use std::time::Instant;
@@ -15,15 +15,15 @@ use std::{
 
 use mira_argparse::{EditorMode, ReplArgs};
 use mira_driver::{
-    find_library, ContextData, DiagEmitter, EmitMethod, LibraryTree, ProgressBarStyle,
+    ContextData, DiagEmitter, EmitMethod, LibraryTree, ProgressBarStyle, find_library,
 };
 use mira_errors::Diagnostics;
 use mira_lexer::Lexer;
 use mira_llvm_backend::CodegenConfig;
-use mira_parser::module::ModuleId;
 use mira_parser::Parser;
+use mira_parser::module::ModuleId;
 use mira_spans::{Arena, FileId, SourceFile};
-use mira_target::{Target, NATIVE_TARGET};
+use mira_target::{NATIVE_TARGET, Target};
 
 use super::about::print_about;
 

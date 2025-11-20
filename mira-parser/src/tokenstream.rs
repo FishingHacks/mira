@@ -111,9 +111,9 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
         let mut toks = self.tokens();
         let token = toks.next();
         match token {
-            _ if toks.next().is_some() => false,
-            Some(v) if v.ty != TokenType::Eof => false,
-            _ => true,
+            None => true,
+            Some(_) if toks.next().is_some() => false,
+            Some(v) => v.ty == TokenType::Eof,
         }
     }
 
@@ -271,10 +271,10 @@ impl<'arena, Holder: TokenHolder<'arena>> TokenStream<'arena, Holder> {
     pub fn finish(&mut self) -> Result<(), ParsingError<'arena>> {
         self.is_at_end()
             .then_some(())
-            .ok_or(ParsingError::Expected {
-                span: self.tokens.get(0).unwrap().span,
+            .ok_or_else(|| ParsingError::Expected {
+                span: self.tokens.as_ref()[0].span,
                 expected: TokenType::Eof,
-                found: *self.tokens.get(0).unwrap(),
+                found: self.tokens.as_ref()[0],
             })
     }
 }

@@ -2,7 +2,7 @@ use inkwell::{builder::BuilderError, types::BasicMetadataTypeEnum, values::Funct
 use mira_parser::module::ExternalFunctionId;
 use mira_spans::Symbol;
 use mira_typeck::{
-    Substitute, SubstitutionCtx, TyKind,
+    Substitute, SubstitutionCtx, Ty, TyKind, TypeCtx,
     ir::{TypedLiteral, ValueId},
 };
 
@@ -289,14 +289,23 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         args: &[TypedLiteral<'arena>],
     ) -> Result<(), BuilderError> {
         let subst_ctx = SubstitutionCtx::new(self.ty_cx(), &self.generics);
-        let func = self.ctx.get_intrinsic(
-            intrinsic,
-            args.iter().map(|v| {
+        let args_tys = args
+            .iter()
+            .map(|v| {
                 v.to_type(self.ir.scope(), self.ctx.tc_ctx)
                     .substitute(&subst_ctx)
-            }),
-            self.ir.get_ty(dst),
+            })
+            .collect::<Vec<_>>();
+        let intrinsic = llvm_intrinsic_to_real_intrinsic(
+            self.ty_cx(),
+            intrinsic,
+            &args_tys,
+            self.get_ty(dst).substitute(&subst_ctx),
+            self.pointer_size as u8,
         );
+        let func = self
+            .ctx
+            .get_intrinsic(intrinsic, args_tys.into_iter(), self.ir.get_ty(dst));
         let val = self.build_direct_call(
             func,
             &args
@@ -438,5 +447,85 @@ impl<'arena> FunctionCodegenContext<'_, 'arena, '_, '_, '_> {
         }
 
         Ok(())
+    }
+}
+
+// parses $N (where n is a base-10 number) and $- for the argument name and return type
+// respectively.
+fn llvm_intrinsic_to_real_intrinsic<'ctx>(
+    ctx: TypeCtx<'ctx>,
+    name: Symbol<'ctx>,
+    args: &[Ty<'_>],
+    ret: Ty<'_>,
+    ptrsize: u8,
+) -> Symbol<'ctx> {
+    if !name.contains('$') {
+        return name;
+    }
+    let mut new_name = String::with_capacity(name.len());
+    let mut is_parsing = false;
+    let mut parse_buffer = String::new();
+    for c in name.chars() {
+        if is_parsing {
+            if parse_buffer.is_empty() && c == '-' {
+                is_parsing = false;
+                new_name.push_str(ty_to_llvm_name(&ret, ptrsize));
+            } else if c.is_ascii_digit() {
+                parse_buffer.push(c);
+            } else {
+                is_parsing = false;
+                let mut argnum = 0;
+                for c in parse_buffer.drain(..) {
+                    argnum = argnum * 10 + (c as u8 - b'0') as usize;
+                }
+                new_name.push_str(ty_to_llvm_name(&args[argnum], ptrsize));
+                new_name.push(c);
+            }
+        } else if c == '$' {
+            is_parsing = true;
+        } else {
+            new_name.push(c);
+        }
+    }
+    if is_parsing {
+        let mut argnum = 0;
+        for c in parse_buffer.drain(..) {
+            argnum = argnum * 10 + (c as u8 - b'0') as usize;
+        }
+        new_name.push_str(ty_to_llvm_name(&args[argnum], ptrsize));
+    }
+    ctx.intern_str(&new_name)
+}
+
+fn ty_to_llvm_name(ty: &TyKind<'_>, ptrsize: u8) -> &'static str {
+    match ty {
+        TyKind::Function(_) => "ptr",
+        TyKind::PrimitiveI8 | TyKind::PrimitiveU8 => "i8",
+        TyKind::PrimitiveI16 | TyKind::PrimitiveU16 => "i16",
+        TyKind::PrimitiveI32 | TyKind::PrimitiveU32 => "i32",
+        TyKind::PrimitiveI64 | TyKind::PrimitiveU64 => "i64",
+        TyKind::PrimitiveISize | TyKind::PrimitiveUSize => match ptrsize {
+            4 => "i32",
+            8 => "i64",
+            _ => unreachable!("Illegal ptrsize: {ptrsize}"),
+        },
+        TyKind::PrimitiveF32 => "f32",
+        TyKind::PrimitiveF64 => "f64",
+        TyKind::PrimitiveBool => "i1",
+        TyKind::Ref(inner) if inner.is_sized() => "ptr",
+
+        TyKind::UnsizedArray(_)
+        | TyKind::SizedArray { .. }
+        | TyKind::Tuple(_)
+        | TyKind::PrimitiveVoid
+        | TyKind::PrimitiveNever
+        | TyKind::PrimitiveStr
+        | TyKind::PrimitiveSelf
+        | TyKind::Ref(_)
+        | TyKind::Generic { .. }
+        | TyKind::DynType(_)
+        | TyKind::Struct { .. } => {
+            unreachable!("only llvm primitive types are allowed in llvm intrinsics.")
+        }
     }
 }
