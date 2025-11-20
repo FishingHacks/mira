@@ -181,9 +181,6 @@ impl MultiThreaded {
             if self.jobs.lock().is_empty() {
                 return;
             }
-            if self.sender.is_empty() {
-                unreachable!("empty sender but uncompleted jobs??");
-            }
         }
     }
 }
