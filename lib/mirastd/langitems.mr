@@ -182,4 +182,15 @@ pub struct str_t {;
     fn len(self: &str) -> usize = get_metadata::<str>(self);
 
     fn substr(self: &str, start: usize, len: usize) -> &str = pkg::intrinsics::with_metadata::<u8, str>(((self as &u8 as &void as usize) + start) as &void as &u8, len);
+    fn eq(self: &str, other: &str) -> bool {
+        if(self.len() != other.len()) return false;
+        let bself = self as &[u8];
+        let bother = other as &[u8];
+        let i = 0usize;
+        while(i < self.len()) {
+            if(bself[i] != bother[i]) return false;
+            i += 1;
+        }
+        return true;
+    }
 }

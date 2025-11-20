@@ -1,5 +1,3 @@
-@llvm_intrinsic("sin.f32")
-fn sqrt(v: f32) -> f32 = v;
-@noinline()
-extern fn meow() -> f32 = 9f32;
-pub fn main() = (sqrt(meow()) as i32).println();
+use std::panic;
+
+pub fn main() = panic("meow :<");

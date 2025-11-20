@@ -644,6 +644,18 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
         let ext_function_reader = ctx.external_functions.read();
         let ty_cx = me.tc_ctx.ctx;
         for (key, (contract, body)) in ext_function_reader.entries() {
+            let name = if let Some(name) = contract
+                .annotations
+                .get_first_annotation::<ExternAliasAnnotation>()
+                .map(|v| &v.0)
+            {
+                name.as_str()
+            } else {
+                &contract
+                    .name
+                    .expect("external functions should always have a name")
+            };
+
             let mut ret_args_types = Vec::with_capacity(contract.arguments.len() + 1);
 
             let ret_ty = return_ty(
@@ -668,6 +680,25 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
                 ret_args_types.push(arg_ty);
             }
 
+            if let Some(value) = me.module.get_function(name) {
+                // override the debug location if this instance will generate the body, as
+                // otherwise the body would be pointing to a different debug function definition.
+                // This is a feature because a system-specific package might define `__run_unwind`,
+                // and declare `__clear_unwind_info`, and a system-agnostic define
+                // `__clear_unwind_info` and declare `__run_unwind`. This would end up in the same
+                // compile unit and cause them to make `__clear_unwind_info.1` and
+                // `_clear_unwind_info.2`, as well as `__run_unwind.1` and `__run_unwind.2`.
+                if body.is_some() {
+                    value.set_subprogram(me.debug_ctx.ext_funcs[key]);
+                }
+                let func = CodegenFunction {
+                    ret_args_types: ret_args_types.into_boxed_slice(),
+                    value,
+                };
+                me.external_functions.insert(key, func);
+                continue;
+            }
+
             let param_types = ret_args_types[1..]
                 .iter()
                 .filter_map(|v| v.as_arg_ty(&default_types).map(Into::into))
@@ -677,18 +708,6 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
 
             let fn_ty =
                 ret_args_types[0].func_ty(param_types, has_var_args, &default_types, context);
-
-            let name = if let Some(name) = contract
-                .annotations
-                .get_first_annotation::<ExternAliasAnnotation>()
-                .map(|v| &v.0)
-            {
-                name.as_str()
-            } else {
-                &contract
-                    .name
-                    .expect("external functions should always have a name")
-            };
 
             let func = me.module.add_function(name, fn_ty, None);
             ArgumentType::add_ret_attribute_args(&ret_args_types, func, context);
@@ -750,6 +769,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             statics.insert(key, global);
         }
         drop(static_reader);
+        me.statics = statics;
 
         let module_reader = ctx.modules.read();
         for tc_module in module_reader.iter() {
