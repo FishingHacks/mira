@@ -94,6 +94,7 @@ impl HTMLGenerateContext<'_> {
     ) {
         self.tc_ctx.ctx.with_doc_comment(comment, |v| {
             let Some(line) = v.lines().find(|l| !l.is_empty()) else {
+                output.push_str(r#"<dd class="description"></dd>"#);
                 return;
             };
             output.push_str(r#"<dd class="description">"#);

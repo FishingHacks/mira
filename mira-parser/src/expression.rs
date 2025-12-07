@@ -974,7 +974,30 @@ impl<'ctx> Parser<'_, 'ctx> {
         if self.peek().ty == TokenType::Asm {
             return self.parse_asm();
         }
-        self.comparison()
+        self.binary_op()
+    }
+
+    fn binary_op(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
+        let mut expr = self.comparison()?;
+
+        loop {
+            let op = match self.peek().ty {
+                TokenType::LogicalAnd => BinaryOp::LogicalAnd,
+                TokenType::LogicalOr => BinaryOp::LogicalAnd,
+                _ => break,
+            };
+            self.dismiss();
+            let right = self.comparison()?;
+            expr = Expression::binary(
+                op,
+                expr.span()
+                    .combine_with([right.span()], self.ctx.span_interner),
+                expr,
+                right,
+            )
+        }
+
+        Ok(expr)
     }
 
     fn comparison(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
@@ -986,8 +1009,6 @@ impl<'ctx> Parser<'_, 'ctx> {
             let op = match self.peek().ty {
                 TokenType::EqualEqual => BinaryOp::Equals,
                 TokenType::NotEquals => BinaryOp::NotEquals,
-                TokenType::LogicalAnd => BinaryOp::LogicalAnd,
-                TokenType::LogicalOr => BinaryOp::LogicalOr,
                 TokenType::LessThan if self.peek2().ty == TokenType::Equal => BinaryOp::LessThanEq,
                 TokenType::LessThan => BinaryOp::LessThan,
                 TokenType::GreaterThan if self.peek2().ty == TokenType::Equal => {

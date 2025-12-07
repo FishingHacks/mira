@@ -2,22 +2,22 @@
     --bg: #262626;
     --color: #ffffff;
     --color-breadcrumb-delimiter: #d4d4d4;
-    --color-breadcrumb-element: #a855f7;
+    --color-breadcrumb-element: #B469F7; /* TBD */
     --code-background: #151515;
     --blockquote-background: #1c1c1c;
     --code-color: #ffffff;
     --radio-select: #3b82f6;
     --radio-border: #737373;
     --settings-button-filter: invert(0.75);
-    --sidebar-hover-bg: #525252;
+    --sidebar-hover-bg: #424242;
     --link: #06b6d4;
     --desc-toggle-filter: invert(0.55);
 
     /* item colors */
     --color-function: #4ade80;
     --color-struct: #2dd4bf;
-    --color-static: #6366f1;
-    --color-trait: #8b5cf6;
+    --color-static: #649df2;
+    --color-trait: #a884f5;
     --color-module: #f43f5e;
 }
 
@@ -83,7 +83,7 @@ a:hover {
     flex: 1;
 }
 
-.search-input:focus {
+.search-input:focus, .search-input:focus-visible {
     border: 1px #3b82f6 solid;
 }
 
@@ -419,16 +419,17 @@ blockquote.markdown-alert-note {
     --bg: #f5f5f5;
     --color: #000000;
     --color-breadcrumb-delimiter: #525252;
-    --color-breadcrumb-element: #7e22ce;
+    --color-breadcrumb-element: #601aa3;
     --code-background: #404040;
     --blockquote-background: #606060;
     --settings-button-filter: none;
     --link: #0891b2;
     --desc-toggle-filter: invert(0.45);
+    --sidebar-hover-bg: #b8b8b8;
 
     /* item colors */
-    --color-function: #16a34a;
-    --color-struct: #0284c7;
+    --color-function: #0b602b;
+    --color-struct: #015684;
     --color-static: #4338ca;
     --color-trait: #7e22ce;
     --color-module: #f43f5e;

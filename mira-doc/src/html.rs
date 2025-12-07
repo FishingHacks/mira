@@ -245,12 +245,29 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         output.push_str("></script>");
     }
 
-    pub(crate) fn generate_file_start(&self, curfile: &Path, item_name: &str) -> String {
+    pub(crate) fn generate_file_start(
+        &self,
+        curfile: &Path,
+        item_name: &str,
+        description: DocComment,
+    ) -> String {
         let mut s = HTML_HEAD.to_string();
         s.push_str("<title>");
         s.escaped().push_str(item_name);
         s.push_str(" - mira");
         s.push_str("</title>");
+        s.push_str("<meta name=\"description\" content=");
+        self.tc_ctx.ctx.with_doc_comment(description, |desc| {
+            let line = desc.lines().map(str::trim).find(|v| !v.is_empty());
+            match line {
+                Some(desc) => s.push_fmt(format_args!("{desc:?}")),
+                None => s.push_fmt(format_args!(
+                    "\"Documentation for {}\"",
+                    item_name.escape_debug()
+                )),
+            }
+        });
+        s.push('>');
         self.generate_css_js_links(&mut s, curfile);
         s.push_str(HTML_PREAMBLE1);
         let reader = self.tc_ctx.modules.read();
@@ -317,7 +334,11 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let curfile = &fully_qualified_path.0;
         let contract = &self.tc_ctx.functions.read()[key].0;
         let trait_reader = self.tc_ctx.traits.read();
-        let mut s = self.generate_file_start(curfile, contract.name.unwrap().symbol().to_str());
+        let mut s = self.generate_file_start(
+            curfile,
+            contract.name.unwrap().symbol().to_str(),
+            contract.comment,
+        );
 
         self.generate_header(
             &mut s,
@@ -387,7 +408,11 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     ) -> String {
         let curfile = &fully_qualified_path.0;
         let contract = &self.tc_ctx.external_functions.read()[key].0;
-        let mut s = self.generate_file_start(curfile, contract.name.unwrap().symbol().to_str());
+        let mut s = self.generate_file_start(
+            curfile,
+            contract.name.unwrap().symbol().to_str(),
+            contract.comment,
+        );
 
         self.generate_header(
             &mut s,
@@ -428,7 +453,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     ) -> String {
         let curfile = &fully_qualified_path.0;
         let v = &self.tc_ctx.statics.read()[key];
-        let mut s = self.generate_file_start(curfile, v.name.symbol().to_str());
+        let mut s = self.generate_file_start(curfile, v.name.symbol().to_str(), v.comment);
 
         self.generate_header(&mut s, fully_qualified_path, ResolvedValue::Static(key));
         // <pre class="item-decl code"><code>fn type_name&lt;unsized T&gt;() -&gt; &amp;str { .. }</code></pre>
@@ -452,7 +477,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     ) -> String {
         let curfile = &fully_qualified_path.0;
         let trait_ = &self.tc_ctx.traits.read()[key];
-        let mut s = self.generate_file_start(curfile, trait_.name.symbol().to_str());
+        let mut s =
+            self.generate_file_start(curfile, trait_.name.symbol().to_str(), trait_.comment);
         let module = trait_.module_id;
 
         self.generate_header(&mut s, fully_qualified_path, ResolvedValue::Trait(key));
@@ -512,7 +538,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         let curfile = &fully_qualified_path.0;
         let structure = &self.tc_ctx.structs.read()[key];
         let trait_reader = self.tc_ctx.traits.read();
-        let mut s = self.generate_file_start(curfile, structure.name.symbol().to_str());
+        let mut s =
+            self.generate_file_start(curfile, structure.name.symbol().to_str(), structure.comment);
         let module = structure.module_id;
 
         self.generate_header(
@@ -708,7 +735,7 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     ) -> String {
         let curfile = &fully_qualified_path.0;
         let module = &self.tc_ctx.modules.read()[module_id];
-        let mut s = self.generate_file_start(curfile, module.name.to_str());
+        let mut s = self.generate_file_start(curfile, module.name.to_str(), module.comment);
 
         self.generate_header(
             &mut s,
@@ -1098,6 +1125,9 @@ fn item_ty(v: ResolvedValue<'_>) -> &'static str {
 <!DOCTYPE html>
 <html lang="en" color-scheme="preference">
     <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="generator" content="miradoc">
 -------------------------------------------- ^- HTML_HEAD
 has to  |<link rel="stylesheet" href="./index.css">
 be gene-|<noscript><link rel="stylesheet" href="./noscript.css"></noscript>
@@ -1115,9 +1145,8 @@ rated   |<script>const root = "./"</script>
         </div>
         <div class="content">
             <div class="search-header">
-                <input class="search-input" placeholder="press s or / to start searching" />
-                <a class="settings-button">Settings</a>
-                <a class="expand-button open">Summary</a>
+                <input class="search-input" placeholder="press s or / to start searching" type="search" aria-label="Run search in the documentation" name="search" spellcheck="false" autocomplete="off" aria-keyshortcuts="s" />
+                <a class="settings-button" href="#">Settings</a>
 
                 <div class="settings-popup hidden">
                     <div>Theme</div>
@@ -1138,6 +1167,8 @@ rated   |<script>const root = "./"</script>
                         <span>system preference</span>
                     </label>
                 </div>
+
+                <a class="expand-button open" href="#">Summary</a>
             </div>
             <div class="search-results hidden">
             </div>
@@ -1150,7 +1181,7 @@ rated   |<script>const root = "./"</script>
     </body>
 </html>
 */
-static HTML_HEAD: &str = r#"<!DOCTYPE html><html lang="en" color-scheme="preference"><head>"#;
+static HTML_HEAD: &str = r#"<!DOCTYPE html><html lang="en" color-scheme="preference"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="miradoc">"#;
 static HTML_PREAMBLE1: &str = r#"</head><body><div class="sidebar"><h2>Packages</h2>"#;
-static HTML_PREAMBLE2: &str = r#"</div><div class="content"><div class="search-header"><input class="search-input" placeholder="press s or / to start searching" /><a class="settings-button">Settings</a><a class="expand-button open">Summary</a><div class="settings-popup hidden"><div>Theme</div><label for="theme-light" class="setting-radio"><input type="radio" name="theme" id="theme-light" value="light"><span>light</span></label><label for="theme-dark" class="setting-radio"><input type="radio" name="theme" id="theme-dark" value="dark"><span>dark</span></label><label for="theme-ayu" class="setting-radio"><input type="radio" name="theme" id="theme-ayu" value="ayu"><span>ayu</span></label><label for="theme-preference" class="setting-radio"><input type="radio" name="theme" id="theme-preference" value="preference"><span>system preference</span></label></div></div><div class="search-results hidden"></div><div class="main-content">"#;
+static HTML_PREAMBLE2: &str = r##"</div><div class="content"><div class="search-header"><input class="search-input" placeholder="press s or / to start searching" type="search" aria-label="Run search in the documentation" name="search" spellcheck="false" autocomplete="off" aria-keyshortcuts="s" /><a class="settings-button" href="#">Settings</a><div class="settings-popup hidden"><div>Theme</div><label for="theme-light" class="setting-radio"><input type="radio" name="theme" id="theme-light" value="light"><span>light</span></label><label for="theme-dark" class="setting-radio"><input type="radio" name="theme" id="theme-dark" value="dark"><span>dark</span></label><label for="theme-ayu" class="setting-radio"><input type="radio" name="theme" id="theme-ayu" value="ayu"><span>ayu</span></label><label for="theme-preference" class="setting-radio"><input type="radio" name="theme" id="theme-preference" value="preference"><span>system preference</span></label></div><a class="expand-button open" href="#">Summary</a></div><div class="search-results hidden"></div><div class="main-content">"##;
 static HTML_POSTAMBLE: &str = "</div></div></body></html>";

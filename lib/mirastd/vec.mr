@@ -7,10 +7,8 @@ pub struct Vec<T> {
     fn as_slice(self: &Self) -> &[T] = pkg::slice::from_raw_parts::<T>(self.ptr, self.len);
 
     fn reserve(self: &Self, cap: usize) {
-        let zero_cap = cap == 0;
         let elem_size = pkg::intrinsics::size_of::<T>();
-        let zero_ty = elem_size == 0;
-        if (zero_cap || zero_ty) { return; }
+        if (cap == 0 || elem_size == 0) { return; }
         cap = cap.next_power_of_two();
         if (cap < 2) cap = 2;
         let ptr = alloc::alloc(cap * elem_size);

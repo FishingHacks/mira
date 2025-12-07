@@ -54,6 +54,60 @@ macro! print_impl {
     };
 }
 
+macro! uint_impl {
+    ($self:ident $signed:ident) => { uint_impl!($self $signed concat_idents!($self, _t)) };
+
+    ($self:ident $signed:ident $self_t:ident) => {
+        /// Returns the number of leading zeros in the binary representation of self.
+        fn leading_zeros(self: $self) -> u32 = pkg::intrinsics::leading_zeros::<$self>(self, false) as u32;
+
+        /// Returns the number of trailing zeros in the binary representation of self.
+        fn trailing_zeros(self: $self) -> u32 = pkg::intrinsics::trailing_zeros::<$self>(self, false) as u32;
+
+        /// Returns the number of cleared bits in the binary representation of self.
+        fn count_zeros(self: $self) -> u32 = (~self).count_ones();
+
+        /// Returns the number of leading ones in the binary representation of self.
+        fn leading_ones(self: $self) -> u32 = (~self).leading_zeros();
+
+        /// Returns the number of trailing ones in the binary representation of self.
+        fn trailing_ones(self: $self) -> u32 = (~self).trailing_zeros();
+
+        /// Returns the number of set bits in the binary representation of self.
+        fn count_ones(self: $self) -> u32 = pkg::intrinsics::count_ones::<$self>(self) as u32;
+
+        fn min() -> $self = 0;
+        fn max() -> $self = ~0;
+        fn bits() -> u32 = $self_t::max().count_ones();
+
+        /// Returns the minimum number of bits required to represent self.
+        ///
+        /// This method returns 0 if self is 0.
+        ///
+        /// # Examples
+        /// ```
+        /// 0b111.bit_width(); // 3
+        /// 0b0.bit_width(); // 0
+        /// 0b11110.bit_width(); // 5
+        /// ```
+        fn bit_width(self: $self) -> u32 = $self_t::bits() - self.leading_zeros();
+
+        fn rotate_left(self: $self, amount: u32) -> $self = pkg::intrinsics::rotate_left::<$self>(self, amount as $self);
+        fn rotate_right(self: $self, amount: u32) -> $self = pkg::intrinsics::rotate_right::<$self>(self, amount as $self);
+
+        fn swap_bytes(self: $self) -> $self = pkg::intrinsics::swap_bytes::<$self>(self);
+        fn reverse_bits(self: $self) -> $self = pkg::intrinsics::reverse_bits::<$self>(self);
+
+        /// Returns the next power of 2
+        fn next_power_of_two(self: $self) -> $self {
+            if (self < 2) return 1;
+            let max = -1 as $signed as $self;
+            let leading_zeros = (self - 1).leading_zeros();
+            return (max >> leading_zeros as u64) + 1;
+        }
+    };
+}
+
 /// Prints a `u64` to stdout
 print_impl!(unsigned u64 20)
 /// Prints a `u32` to stdout
@@ -78,6 +132,7 @@ pub struct u8_t {;
     fn print(self: u8) = print_u8(self);
     /// Prints the number as well as a newline to stdout
     fn println(self: u8) { print_u8(self); print_newline(); }
+    uint_impl!(u8 i8)
 }
 @lang("u16")
 /// Struct that implements functions for `u16`
@@ -86,6 +141,7 @@ pub struct u16_t {;
     fn print(self: u16) = print_u16(self);
     /// Prints the number as well as a newline to stdout
     fn println(self: u16) { print_u16(self); print_newline(); }
+    uint_impl!(u16 i16)
 }
 @lang("u32")
 /// Struct that implements functions for `u32`
@@ -94,6 +150,7 @@ pub struct u32_t {;
     fn print(self: u32) = print_u32(self);
     /// Prints the number as well as a newline to stdout
     fn println(self: u32) { print_u32(self); print_newline(); }
+    uint_impl!(u32 i32)
 }
 @lang("u64")
 /// Struct that implements functions for `u64`
@@ -102,8 +159,7 @@ pub struct u64_t {;
     fn print(self: u64) = print_u64(self);
     /// Prints the number as well as a newline to stdout
     fn println(self: u64) { print_u64(self); print_newline(); }
-    /// Returns the number of leading zeros in the binary representation of self.
-    fn leading_zeros(self: u64) -> u32 = pkg::intrinsics::leading_zeros64(self, false) as u32;
+    uint_impl!(u64 i64)
 }
 @lang("usize")
 /// Struct that implements functions for `usize`
@@ -112,15 +168,7 @@ pub struct usize_t {;
     fn print(self: usize) = print_u64(self as u64);
     /// Prints the number as well as a newline to stdout
     fn println(self: usize) { print_u64(self as u64); print_newline(); }
-    /// Returns the number of leading zeros in the binary representation of self.
-    fn leading_zeros(self: usize) -> u32 = (self as u64).leading_zeros();
-    /// Returns the next power of 2
-    fn next_power_of_two(self: usize) -> usize {
-        if (self < 2) return 1;
-        let max = -1isize as usize;
-        let leading_zeros = (self - 1).leading_zeros();
-        return (max >> leading_zeros as u64) + 1;
-    }
+    uint_impl!(usize isize)
 }
 
 @lang("i8")

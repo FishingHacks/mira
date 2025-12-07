@@ -275,8 +275,12 @@ fn expand_macro<'arena>(
                 break;
             }
             ParseResult::Failure(diagnostic, approx_pos) => match err {
-                Some((_, _, cur_pos)) if cur_pos > approx_pos => {}
-                _ => err = Some((diagnostic, i, approx_pos)),
+                Some((_, _, cur_pos)) if cur_pos > approx_pos => diagnostic.dismiss(),
+                _ => {
+                    if let Some((diag, ..)) = err.replace((diagnostic, i, approx_pos)) {
+                        diag.dismiss();
+                    }
+                }
             },
             ParseResult::Err(diagnostic) => {
                 return Err(diagnostic.with_note(format!(

@@ -60,5 +60,27 @@ pub fn volatile_read<T>(ptr: &T) -> T = *ptr;
 /// Stores v in ptr in a volatile way. This causes the compiler to not reorder or remove writes.
 pub fn volatile_write<T>(ptr: &T, v: T) = *ptr = v;
 
-@llvm_intrinsic("ctlz.i64")
-pub fn leading_zeros64(v: u64, zero_is_poison: bool) -> u64 = 0;
+@llvm_intrinsic("ctlz.$0")
+pub fn leading_zeros<T>(v: T, zero_is_poison: bool) -> T = v;
+
+@llvm_intrinsic("cttz.$0")
+pub fn trailing_zeros<T>(v: T, zero_is_poison: bool) -> T = v;
+
+@llvm_intrinsic("ctpop.$0")
+pub fn count_ones<T>(v: T) -> T = v;
+
+@llvm_intrinsic("fshl.$0")
+pub fn shuffle_left<T>(a: T, b: T, c: T) -> T = a;
+
+@llvm_intrinsic("fshr.$0")
+pub fn shuffle_right<T>(a: T, b: T, c: T) -> T = a;
+
+pub fn rotate_left<T>(v: T, amount: T) -> T = shuffle_left::<T>(v, v, amount);
+
+pub fn rotate_right<T>(v: T, amount: T) -> T = shuffle_right::<T>(v, v, amount);
+
+@llvm_intrinsic("bswap.$0")
+pub fn swap_bytes<T>(v: T) -> T = v;
+
+@llvm_intrinsic("bitreverse.$0")
+pub fn reverse_bits<T>(v: T) -> T = v;

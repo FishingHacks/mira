@@ -1,6 +1,9 @@
 <!DOCTYPE html>
 <html lang="en" color-scheme="preference">
     <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="generator" content="miradoc">
         <title>meow - mira</title>
         <link rel="stylesheet" href="./index.css">
         <noscript><link rel="stylesheet" href="./noscript.css"></noscript>
@@ -15,9 +18,8 @@
         </div>
         <div class="content">
             <div class="search-header">
-                <input class="search-input" placeholder="press s or / to start searching" />
-                <a class="settings-button">Settings</a>
-                <a class="expand-button open">Summary</a>
+                <input class="search-input" placeholder="press s or / to start searching" type="search" aria-label="Run search in the documentation" name="search" spellcheck="false" autocomplete="off" aria-keyshortcuts="s" />
+                <a class="settings-button" href="#">Settings</a>
 
                 <div class="settings-popup hidden">
                     <div>Theme</div>
@@ -38,6 +40,8 @@
                         <span>system preference</span>
                     </label>
                 </div>
+
+                <a class="expand-button open" href="#">Summary</a>
             </div>
             <div class="search-results hidden">
             </div>
