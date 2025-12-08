@@ -2,8 +2,8 @@ mod commands;
 mod editor;
 mod repl;
 use commands::{about::print_about, compile::compile_main, expand::expand_main, repl::repl_main};
-use mira_argparse::{parse_args, print_help, Action};
-use mira_target::{Target, NATIVE_TARGET};
+use mira_argparse::{Action, parse_args, print_help};
+use mira_target::{NATIVE_TARGET, Target};
 use std::error::Error;
 
 const VERSION: &str = const {
