@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    cmp::Ordering,
     collections::HashMap,
     fmt::{Arguments, Display, Write},
     path::{Component, Path, PathBuf},
@@ -493,7 +494,11 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
 
         s.push_str(r##"<h2 id="functions" class="anchorable header">Functions<a class="anchor" href="#functions">§</a></h2>"##);
         // <span id="function.allocate" class="anchorable member-function"><code>fn <a class="function" href="#function.allocate">allocate</a>(self: &amp;<span class="struct">Self</span>, size: <span class="struct">usize</span>, align: <span class="struct">usize</span>) -&gt; &amp;<span class="struct">void</span></code><a href="#function.allocate" class="anchor">§</a></span>
-        for (name, args, ret_ty, _, _, comment) in &trait_.functions {
+        let mut function_indices = (0..trait_.functions.len()).collect::<Vec<_>>();
+        function_indices
+            .sort_unstable_by(|&a, &b| trait_.functions[a].0.cmp(&trait_.functions[b].0));
+        for idx in function_indices {
+            let (name, args, ret_ty, _, _, comment) = &trait_.functions[idx];
             s.push_str("<span id=\"function.");
             s.escaped().push_str(name.symbol().to_str());
             s.push_str(
@@ -647,7 +652,10 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         }
 
         let traits = self.tc_ctx.traits.read();
-        for (trait_id, implementation) in structure.trait_impl.entries() {
+        let mut trait_impls = structure.trait_impl.keys().collect::<Vec<_>>();
+        trait_impls.sort_unstable_by(|&a, &b| traits[a].name.cmp(&traits[b].name));
+        for trait_id in trait_impls {
+            let implementation = &structure.trait_impl[trait_id];
             let trait_ = &traits[trait_id];
             s.push_str("<h3 id=\"traits.");
             s.escaped().push_str(trait_.name.symbol().to_str());
@@ -688,7 +696,12 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         module: ModuleId,
     ) {
         let funcs = self.tc_ctx.functions.read();
-        for id in implementation {
+        let mut impls = implementation.collect::<Vec<_>>();
+        impls.sort_unstable_by(|&a, &b| match (&funcs[a].0.name, &funcs[b].0.name) {
+            (Some(a), Some(b)) => a.cmp(b),
+            _ => Ordering::Equal,
+        });
+        for id in impls {
             let contract = &funcs[id].0;
             let name = contract.name.unwrap().symbol().to_str();
             s.push_str("<span id=\"");
@@ -734,7 +747,8 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
         module_id: ModuleId,
     ) -> String {
         let curfile = &fully_qualified_path.0;
-        let module = &self.tc_ctx.modules.read()[module_id];
+        let module_reader = self.tc_ctx.modules.read();
+        let module = &module_reader[module_id];
         let mut s = self.generate_file_start(curfile, module.name.to_str(), module.comment);
 
         self.generate_header(
@@ -763,6 +777,36 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
                 ResolvedValue::Trait(key) => traits.push(key),
             }
         }
+
+        {
+            let fns_reader = self.tc_ctx.functions.read();
+            let extfns_reader = self.tc_ctx.external_functions.read();
+            let structs_reader = self.tc_ctx.structs.read();
+            let traits_reader = self.tc_ctx.traits.read();
+            let statics_reader = self.tc_ctx.statics.read();
+
+            modules.sort_unstable_by(|&a, &b| module_reader[a].name.cmp(&module_reader[b].name));
+            functions.sort_unstable_by(|&a, &b| {
+                let name_a = match a {
+                    CommonFunction::Normal(id) => &fns_reader[id].0.name,
+                    CommonFunction::External(id) => &extfns_reader[id].0.name,
+                };
+
+                let name_b = match b {
+                    CommonFunction::Normal(id) => &fns_reader[id].0.name,
+                    CommonFunction::External(id) => &extfns_reader[id].0.name,
+                };
+
+                match (name_a, name_b) {
+                    (Some(a), Some(b)) => a.cmp(b),
+                    _ => Ordering::Equal,
+                }
+            });
+            structs.sort_unstable_by(|&a, &b| structs_reader[a].name.cmp(&structs_reader[b].name));
+            traits.sort_unstable_by(|&a, &b| traits_reader[a].name.cmp(&traits_reader[b].name));
+            statics.sort_unstable_by(|&a, &b| statics_reader[a].name.cmp(&statics_reader[b].name));
+        }
+        drop(module_reader);
 
         let has_modules = !modules.is_empty();
         if has_modules {
@@ -987,15 +1031,26 @@ impl<'ctx> HTMLGenerateContext<'ctx> {
     /// generates the search index of all generated and queued values.
     pub(crate) fn generate_search_index(&self) -> String {
         let mut s = "window.search_index = [".to_string();
-        for (i, qualified_path) in self.generated.borrow().values().enumerate() {
+        let generated = self.generated.borrow();
+        let mut value_sorted = generated.keys().collect::<Vec<_>>();
+        value_sorted.sort_unstable_by(|&a, &b| {
+            let a = generated[a].0.strip_prefix(&self.path);
+            let b = generated[b].0.strip_prefix(&self.path);
+            match (a, b) {
+                (Ok(a), Ok(b)) => a.cmp(b),
+                _ => Ordering::Equal,
+            }
+        });
+        for (i, key) in value_sorted.into_iter().enumerate() {
+            let (file_path, symbol_path, _) = &*generated[key];
             if i != 0 {
                 s.push(',');
             }
-            let path = qualified_path.0.strip_prefix(&self.path).unwrap();
+            let path = file_path.strip_prefix(&self.path).unwrap();
             s.push('[');
             s.push_fmt(format_args!("{path:?}"));
             s.push_str(",[");
-            for (i, sym) in qualified_path.1.iter().enumerate() {
+            for (i, sym) in symbol_path.iter().enumerate() {
                 if i != 0 {
                     s.push(',');
                 }
