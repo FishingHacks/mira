@@ -1,0 +1,45 @@
+name: Package linux x86-64 build of mira
+
+on:
+  release:
+    types: [published]
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM
+        run: wget -O ./llvm.sh https://apt.llvm.org/llvm.sh
+      - run: chmod +x ./llvm.sh
+      - run: sudo env DPKG_FORCE=overwrite ./llvm.sh
+      - name: Build mirac and miradoc
+        run: |
+          cargo build --release
+          cargo build --release -p mira-doc
+      - name: Creating output directory
+        run: mkdir -p release/mira
+      - name: Copy artifacts
+        run: |
+          cp ./target/release/mirac ./release/mira/mirac
+          cp ./target/release/mirac ./release/mira/mirac
+          cp -r ./lib/ ./release/mira/lib
+      - name: Compress
+        run: tar czf ./release/mira-x86_64.tar.gz -C ./release ./mira
+      - name: Upload Release
+        uses: "actions/github-script@v6"
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          script: |
+            const fs = require('fs').promises;
+            await github.rest.repos.uploadReleaseAsset({
+              name: 'mira-x86_64.tar.gz',
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ env.RELEASE_ID }},
+              data: await fs.readFile('./release/mira-x86_64.tar.gz')  # The file to upload.
+            });
