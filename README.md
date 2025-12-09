@@ -3,6 +3,8 @@
 Mira is a general purpose programming language designed to make interoperability with c very easy through features such as bindgen at compiletime.
 
 > Note however that it is *still* work-in-progress and a lot of features such as closures, generics, c bindgen, ranges, for loops, iterators and others don't work yet.
+>
+> Note 2 electric boogaloo: This is still an experimental compiler and breaking changes whenever yippieeee
 
 # Documentation
 
