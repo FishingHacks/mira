@@ -1,7 +1,9 @@
 [package]
 name = "mira-typeck"
-version = "0.2.1"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
