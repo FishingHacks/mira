@@ -72,10 +72,8 @@ pub fn walk_expr<'ctx, W: Visitor<'ctx> + ?Sized>(
             visitor.visit_block_super(*body, ir, tcx);
         }
         TypedExpression::AttachVtable(_, _, lit, _)
-        | TypedExpression::Pos(_, _, lit)
         | TypedExpression::Neg(_, _, lit)
-        | TypedExpression::LNot(_, _, lit)
-        | TypedExpression::BNot(_, _, lit)
+        | TypedExpression::Not(_, _, lit)
         | TypedExpression::Reference(_, _, lit)
         | TypedExpression::Dereference(_, _, lit)
         | TypedExpression::Literal(_, _, lit)
@@ -270,10 +268,8 @@ pub fn walk_mut_expr_block<'ctx, W: MutVisitor<'ctx> + ?Sized>(
             visitor.visit_block_super(body, ir, tcx);
         }
         TypedExpression::AttachVtable(_, _, lit, _)
-        | TypedExpression::Pos(_, _, lit)
         | TypedExpression::Neg(_, _, lit)
-        | TypedExpression::LNot(_, _, lit)
-        | TypedExpression::BNot(_, _, lit)
+        | TypedExpression::Not(_, _, lit)
         | TypedExpression::Reference(_, _, lit)
         | TypedExpression::Dereference(_, _, lit)
         | TypedExpression::Literal(_, _, lit)

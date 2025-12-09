@@ -207,15 +207,8 @@ pub enum TypecheckingError<'arena> {
     ),
     #[error("Cannot negate a `{_1}`")]
     CannotNeg(#[primary_label("cannot negate")] Span<'arena>, Ty<'arena>),
-    #[error("Cannot use unary `+` on a `{_1}`")]
-    CannotPos(
-        #[primary_label("cannot use unary `+`")] Span<'arena>,
-        Ty<'arena>,
-    ),
     #[error("Cannot not a `{_1}`")]
-    CannotLNot(#[primary_label("cannot not")] Span<'arena>, Ty<'arena>),
-    #[error("Cannot invert a `{_1}`")]
-    CannotBNot(#[primary_label("cannot invert")] Span<'arena>, Ty<'arena>),
+    CannotNot(#[primary_label("cannot not")] Span<'arena>, Ty<'arena>),
     #[error("cannot dereference a `{_1}`")]
     CannotDeref(
         #[primary_label("cannot dereference")] Span<'arena>,

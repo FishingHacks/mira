@@ -90,14 +90,10 @@ pub enum TypedExpression<'arena> {
         Symbol<'arena>,
         Box<[TypedLiteral<'arena>]>,
     ),
-    // _1 = +_2
-    Pos(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // _1 = -_2
     Neg(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // _1 = !_2
-    LNot(Span<'arena>, ValueId, TypedLiteral<'arena>),
-    // _1 = ~_2
-    BNot(Span<'arena>, ValueId, TypedLiteral<'arena>),
+    Not(Span<'arena>, ValueId, TypedLiteral<'arena>),
     // _1 = _2 + _3
     Add(
         Span<'arena>,
@@ -312,10 +308,8 @@ impl<'arena> TypedExpression<'arena> {
             | TypedExpression::Offset(span, ..)
             | TypedExpression::Literal(span, ..)
             | TypedExpression::Call(span, ..)
-            | TypedExpression::Pos(span, ..)
             | TypedExpression::Neg(span, ..)
-            | TypedExpression::LNot(span, ..)
-            | TypedExpression::BNot(span, ..)
+            | TypedExpression::Not(span, ..)
             | TypedExpression::Add(span, ..)
             | TypedExpression::Sub(span, ..)
             | TypedExpression::Mul(span, ..)

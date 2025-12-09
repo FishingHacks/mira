@@ -65,19 +65,19 @@ macro! uint_impl {
         fn trailing_zeros(self: $self) -> u32 = pkg::intrinsics::trailing_zeros::<$self>(self, false) as u32;
 
         /// Returns the number of cleared bits in the binary representation of self.
-        fn count_zeros(self: $self) -> u32 = (~self).count_ones();
+        fn count_zeros(self: $self) -> u32 = (!self).count_ones();
 
         /// Returns the number of leading ones in the binary representation of self.
-        fn leading_ones(self: $self) -> u32 = (~self).leading_zeros();
+        fn leading_ones(self: $self) -> u32 = (!self).leading_zeros();
 
         /// Returns the number of trailing ones in the binary representation of self.
-        fn trailing_ones(self: $self) -> u32 = (~self).trailing_zeros();
+        fn trailing_ones(self: $self) -> u32 = (!self).trailing_zeros();
 
         /// Returns the number of set bits in the binary representation of self.
         fn count_ones(self: $self) -> u32 = pkg::intrinsics::count_ones::<$self>(self) as u32;
 
         fn min() -> $self = 0;
-        fn max() -> $self = ~0;
+        fn max() -> $self = !0;
         fn bits() -> u32 = $self_t::max().count_ones();
 
         /// Returns the minimum number of bits required to represent self.

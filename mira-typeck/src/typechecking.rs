@@ -1153,22 +1153,14 @@ fn typecheck_expression<'ctx>(
         } => {
             let (ty, right_side) = typecheck_expression(ctx, right_side, type_suggestion)?;
             match operator {
-                UnaryOp::Plus if ty.is_int_like() => {
-                    tc_res!(unary ctx; Pos(*span, right_side, ty))
-                }
-                UnaryOp::Plus => Err(ctx.emit_cannot_pos(*span, ty)),
                 UnaryOp::Minus if (ty.is_int_like() && !ty.is_unsigned()) || ty.is_float() => {
                     tc_res!(unary ctx; Neg(*span, right_side, ty))
                 }
                 UnaryOp::Minus => Err(ctx.emit_cannot_neg(*span, ty)),
-                UnaryOp::LogicalNot if ty == default_types::bool => {
-                    tc_res!(unary ctx; LNot(*span, right_side, ty))
+                UnaryOp::Not if ty.is_int_like() || ty == default_types::bool => {
+                    tc_res!(unary ctx; Not(*span, right_side, ty))
                 }
-                UnaryOp::LogicalNot => Err(ctx.emit_cannot_l_not(*span, ty)),
-                UnaryOp::BitwiseNot if ty.is_int_like() || ty == default_types::bool => {
-                    tc_res!(unary ctx; BNot(*span, right_side, ty))
-                }
-                UnaryOp::BitwiseNot => Err(ctx.emit_cannot_b_not(*span, ty)),
+                UnaryOp::Not => Err(ctx.emit_cannot_not(*span, ty)),
                 UnaryOp::Dereference => match ty.deref() {
                     Some(ty) => tc_res!(unary ctx; Dereference(*span, right_side, ty)),
                     None => Err(ctx.emit_cannot_deref(*span, ty)),

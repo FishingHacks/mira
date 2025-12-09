@@ -408,10 +408,8 @@ pub enum BinaryOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOp {
-    Plus,
     Minus,
-    BitwiseNot,
-    LogicalNot,
+    Not,
     Reference,
     Dereference,
 }
@@ -1150,17 +1148,10 @@ impl<'ctx> Parser<'_, 'ctx> {
     }
 
     fn unary(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        if self.matches(&[
-            TokenType::Plus,
-            TokenType::Minus,
-            TokenType::BitwiseNot,
-            TokenType::LogicalNot,
-        ]) {
+        if self.matches(&[TokenType::Minus, TokenType::LogicalNot]) {
             let operator = match self.current().ty {
-                TokenType::Plus => UnaryOp::Plus,
                 TokenType::Minus => UnaryOp::Minus,
-                TokenType::BitwiseNot => UnaryOp::BitwiseNot,
-                TokenType::LogicalNot => UnaryOp::LogicalNot,
+                TokenType::LogicalNot => UnaryOp::Not,
                 _ => unreachable!(),
             };
             let span = self.current().span;

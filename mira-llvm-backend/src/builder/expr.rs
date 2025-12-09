@@ -86,9 +86,20 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
             }
 
             // Reassignment
-            TypedExpression::Alias(_, dst, val)
-            | TypedExpression::Literal(_, dst, val)
-            | TypedExpression::Pos(_, dst, val) => {
+            // NOTE: Currently, `let a = b as c`, this would be compiled as:
+            // ```rs
+            // _0 = b
+            // _1 = Alias(_0)
+            // _2 = Literal(_1)
+            // ```
+            // This is inefficient, because, if sizeof(b) > 16, it would be stored as an alloca. I
+            // believe LLVM would get rid of that but it's kinda silly regardless.
+            // I believe we can just copy the *raw* value at `val` in that case, should neither
+            // require intentional stack allocation. This should get rid of the unneeded alloca,
+            // and still do a seperate alloca in cases of `meow(&(a as b))`.
+            // Note: Maybe `*(&(a as b)) = 12;` *should* modify a, but i am not sure and it feels a
+            // little weird..
+            TypedExpression::Alias(_, dst, val) | TypedExpression::Literal(_, dst, val) => {
                 if self.is_stack_allocated(*dst) {
                     let alloca =
                         self.build_alloca(self.basic_ty(*self.substitute(self.get_ty(*dst))), "")?;
@@ -118,7 +129,7 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 self.push_value(*dst, value);
                 Ok(())
             }
-            TypedExpression::LNot(_, dst, val) | TypedExpression::BNot(_, dst, val) => {
+            TypedExpression::Not(_, dst, val) => {
                 let src = self.basic_value(val).into_int_value();
                 let v = if src.is_constant_int() {
                     src.const_not().as_basic_value_enum()

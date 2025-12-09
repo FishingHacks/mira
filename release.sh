@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 ./cargo.sh build --release $@
+cargo build --release -p mira-doc $@
 
 if [[ -e ./release ]]; then
     printf "directory 'release' already exists. do you want to delete it? [Y/n] "
@@ -17,6 +18,7 @@ mkdir -p release/mira
 cd release/mira
 echo "copying mirac"
 cp ../../target/release/mirac .
+cp ../../target/release/mira-doc .
 echo "copying libs"
 cp -r ../../lib .
 cd ..

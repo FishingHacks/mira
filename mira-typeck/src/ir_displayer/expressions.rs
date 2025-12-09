@@ -189,10 +189,8 @@ impl ExpressionDisplay<'_> {
                 }
                 f.write_char(')')
             }
-            TypedExpression::Pos(_, lhs, rhs) => expr!(unary f, lhs, rhs, "+"),
             TypedExpression::Neg(_, lhs, rhs) => expr!(unary f, lhs, rhs, "-"),
-            TypedExpression::LNot(_, lhs, rhs) => expr!(unary f, lhs, rhs, "!"),
-            TypedExpression::BNot(_, lhs, rhs) => expr!(unary f, lhs, rhs, "~"),
+            TypedExpression::Not(_, lhs, rhs) => expr!(unary f, lhs, rhs, "!"),
             TypedExpression::Add(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "+"),
             TypedExpression::Sub(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "-"),
             TypedExpression::Mul(_, dst, lhs, rhs) => expr!(binary f, dst, lhs, rhs, "*"),
