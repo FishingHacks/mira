@@ -14,9 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install LLVM
-        run: wget -O ./llvm.sh https://apt.llvm.org/llvm.sh
-      - run: chmod +x ./llvm.sh
-      - run: sudo env DPKG_FORCE=overwrite ./llvm.sh
+        run: |
+          wget -O ./llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x ./llvm.sh
+          sudo env DPKG_FORCE=overwrite ./llvm.sh
+          sudo apt install libpolly-20-dev
       - name: Build mirac and miradoc
         run: |
           cargo build --release
