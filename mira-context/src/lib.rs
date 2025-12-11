@@ -109,6 +109,13 @@ impl<'arena> SharedCtx<'arena> {
         f(&self.doc_comment_store.lock()[comment])
     }
 
+    pub fn with_all_doc_comments(&self, mut f: impl FnMut(usize, &str)) {
+        let store = self.doc_comment_store.lock();
+        for (idx, s) in store.0.iter().enumerate() {
+            f(idx, s)
+        }
+    }
+
     /// merges 2 doc comments, appending the second one to the first one.
     pub fn merge_doc_comments(&self, a: DocComment, b: DocComment) {
         self.doc_comment_store.lock().merge_doc_comments(a, b);

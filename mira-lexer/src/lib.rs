@@ -1,12 +1,14 @@
 use mira_context::SharedCtx;
 use mira_spans::{BytePos, SourceFile, Span, SpanData};
-use std::str::FromStr;
+use std::str::{Chars, FromStr};
 use std::sync::Arc;
 
 mod error;
 pub mod token;
 pub use error::{LexingError, LexingErrorDiagnosticsExt, LexingErrorEmitterExt};
 pub use token::{Literal, NumberType, Token, TokenType};
+
+use crate::token::{Delimiter, TokenTree};
 #[macro_use]
 mod quote;
 
@@ -15,154 +17,238 @@ pub fn dummy_token(tokens: &mut Vec<Token<'static>>, ty: TokenType) {
     tokens.push(Token::new(ty, None, Span::DUMMY));
 }
 
-pub struct Lexer<'arena> {
-    source: Vec<char>,
-    pub file: Arc<SourceFile>,
-    tokens: Vec<Token<'arena>>,
-    start: usize,
-    current: usize,
-    ctx: SharedCtx<'arena>,
+pub struct Cursor<'src> {
+    chars: Chars<'src>,
+    peeks: [Option<char>; 3],
+    pos: usize,
 }
 
-impl<'arena> Lexer<'arena> {
-    pub fn new(ctx: SharedCtx<'arena>, file: Arc<SourceFile>) -> Self {
+impl<'src> Cursor<'src> {
+    fn amount_peeks(&self) -> u8 {
+        match self.peeks {
+            [Some(_), Some(_), Some(_)] => 3,
+            [Some(_), Some(_), None] => 2,
+            [Some(_), None, _] => 1,
+            [None, _, _] => 0,
+        }
+    }
+    /// Returns the return value of amount_peeks after this function ran.
+    fn _peek(&mut self, amount: u8) -> Option<u8> {
+        assert!(amount <= 3);
+        let mut amount_peeks = self.amount_peeks();
+        if amount_peeks >= amount {
+            return Some(amount_peeks);
+        }
+        while amount_peeks < amount {
+            let c = self.chars.next()?;
+            self.peeks[amount_peeks as usize] = Some(c);
+            amount_peeks += 1;
+        }
+        Some(amount_peeks)
+    }
+    pub fn new(chars: Chars<'src>) -> Self {
         Self {
-            source: file.source.chars().collect(),
-            file,
-            start: 0,
-            current: 0,
-            tokens: vec![],
-            ctx,
+            chars,
+            peeks: [None; 3],
+            pos: 0,
         }
     }
-
-    pub fn into_tokens(self) -> Vec<Token<'arena>> {
-        self.tokens
+    pub fn peek(&mut self) -> Option<char> {
+        let amount_peeks = self._peek(1)?;
+        assert!(amount_peeks >= 1);
+        self.peeks[0]
     }
-
-    pub fn scan_tokens(&mut self) -> Result<(), Vec<LexingError<'arena>>> {
-        let mut errors = vec![];
-        while !self.is_at_end() {
-            self.start = self.current;
-            if let Err(e) = self.scan_token() {
-                errors.push(e);
-            }
-        }
-
-        self.tokens.push(Token {
-            ty: TokenType::Eof,
-            literal: None,
-            span: self
-                .ctx
-                .intern_span(SpanData::new(self.file.source_len + 1, 1, self.file.id)),
-        });
-
-        if !errors.is_empty() {
-            Err(errors)
+    pub fn peek2(&mut self) -> Option<char> {
+        let amount_peeks = self._peek(2)?;
+        assert!(amount_peeks >= 2);
+        self.peeks[1]
+    }
+    pub fn peek3(&mut self) -> Option<char> {
+        let amount_peeks = self._peek(3)?;
+        assert_eq!(amount_peeks, 3);
+        self.peeks[2]
+    }
+    pub fn next_char(&mut self) -> Option<char> {
+        let amount_peeks = self.amount_peeks();
+        let c = if amount_peeks > 0 {
+            let c = self.peeks[0].take();
+            self.peeks.swap(0, 1);
+            self.peeks.swap(1, 2);
+            c
         } else {
-            Ok(())
+            self.chars.next()
+        };
+        if let Some(c) = c {
+            self.pos += c.len_utf8();
+        }
+        c
+    }
+    /// Returns the position of the next character
+    pub fn next_pos(&self) -> usize {
+        self.pos
+    }
+}
+
+pub struct Lexer<'arena, 'src> {
+    pub file: Arc<SourceFile>,
+    cursor: Cursor<'src>,
+    ctx: SharedCtx<'arena>,
+    delimiters: usize,
+    is_mod_doc_comment_allowed: bool,
+}
+
+impl<'ctx, 'src> Lexer<'ctx, 'src> {
+    pub fn new(ctx: SharedCtx<'ctx>, file: &'src Arc<SourceFile>) -> Self {
+        Self {
+            cursor: Cursor::new(file.source.chars()),
+            file: file.clone(),
+            ctx,
+            delimiters: 0,
+            is_mod_doc_comment_allowed: true,
         }
     }
 
-    fn is_at_end(&self) -> bool {
-        self.current >= self.source.len()
+    fn is_at_end(&mut self) -> bool {
+        self.cursor.peek().is_none()
     }
 
-    fn advance(&mut self) -> char {
-        if self.is_at_end() {
-            return '\0';
-        }
-        self.current += 1;
-        self.source[self.current - 1]
+    fn advance(&mut self) -> Option<char> {
+        self.cursor.next_char()
     }
 
-    fn cur_char(&self) -> char {
-        self.source[self.current.saturating_sub(1)]
+    fn dismiss(&mut self) {
+        self.cursor.next_char();
     }
 
-    fn peek(&self) -> char {
-        self.source.get(self.current).copied().unwrap_or('\0')
+    /// Returns the position of the next character
+    fn next_pos(&self) -> usize {
+        self.cursor.next_pos()
     }
 
-    fn peek2(&self) -> char {
-        self.source.get(self.current + 1).copied().unwrap_or('\0')
+    fn span(&self, pos: usize, len: usize) -> Span<'ctx> {
+        assert!(len < u32::MAX as usize);
+        assert!(pos < u32::MAX as usize);
+        self.ctx.intern_span(SpanData {
+            pos: BytePos::from_u32(pos as u32),
+            len: len as u32,
+            file: self.file.id,
+        })
     }
 
-    fn peek3(&self) -> char {
-        self.source.get(self.current + 2).copied().unwrap_or('\0')
+    fn peek(&mut self) -> Option<char> {
+        self.cursor.peek()
+    }
+
+    fn peek2(&mut self) -> Option<char> {
+        self.cursor.peek2()
+    }
+
+    fn peek3(&mut self) -> Option<char> {
+        self.cursor.peek3()
     }
 
     fn if_char_advance(&mut self, character: char) -> bool {
-        if self.peek() != character {
+        if self.peek() != Some(character) {
             return false;
         }
 
-        self.advance();
+        self.dismiss();
         true
     }
 
-    pub fn push_token(&mut self, tok: Token<'arena>) {
-        self.tokens.push(tok);
+    pub fn scan_tokens(&mut self) -> Result<Box<[TokenTree<'ctx>]>, Vec<LexingError<'ctx>>> {
+        let mut errs = Vec::new();
+        match self.scan_tt(&mut errs) {
+            Ok(v) if errs.is_empty() => Ok(v),
+            _ => Err(errs),
+        }
     }
 
-    fn scan_token(&mut self) -> Result<(), LexingError<'arena>> {
-        let tok = self.int_scan_token()?;
-        let Some(tok) = tok else { return Ok(()) };
-        match tok.ty {
-            TokenType::IdentifierLiteral if self.if_char_advance('!') => match &tok.literal {
-                Some(Literal::String(sym)) => {
-                    let span = self
-                        .current_span()
-                        .combine_with([tok.span], self.ctx.span_interner);
-                    if **sym == "macro" {
-                        self.tokens
-                            .push(Token::new(TokenType::MacroDef, None, span));
-                    } else {
-                        self.tokens
-                            .push(Token::new(TokenType::MacroInvocation, tok.literal, span));
+    fn scan_tt(&mut self, errs: &mut Vec<LexingError<'ctx>>) -> Result<Box<[TokenTree<'ctx>]>, ()> {
+        let mut toks = Vec::new();
+        while let Some(c) = self.peek() {
+            if matches!(c, ')' | ']' | '}') {
+                if self.delimiters == 0 {
+                    let span = self.span(self.next_pos(), 1);
+                    self.dismiss();
+                    toks = Vec::new();
+                    errs.push(LexingError::UnopenedDelimiter { span });
+                    continue;
+                }
+                break;
+            } else if matches!(c, '(' | '[' | '{') {
+                let delimiter = match c {
+                    '(' => Delimiter::Parenthesis,
+                    '[' => Delimiter::Brackets,
+                    '{' => Delimiter::Curlies,
+                    _ => unreachable!(),
+                };
+                let open_span = self.span(self.next_pos(), 1);
+                self.delimiters += 1;
+                self.dismiss();
+                let children = self.scan_tt(errs).unwrap_or_default();
+                let close_span = self.span(self.next_pos(), 1);
+                match (self.advance(), delimiter) {
+                    (Some(')'), Delimiter::Parenthesis)
+                    | (Some(']'), Delimiter::Brackets)
+                    | (Some('}'), Delimiter::Curlies) => {}
+                    _ => errs.push(LexingError::UnclosedDelimiter {
+                        open_span,
+                        close_span,
+                    }),
+                }
+                if !errs.is_empty() {
+                    toks = Vec::new();
+                } else {
+                    toks.push(TokenTree::Delimited {
+                        open_span,
+                        close_span,
+                        delimiter,
+                        children,
+                    });
+                }
+            } else {
+                match self.int_scan_token() {
+                    Ok(Some(v)) if errs.is_empty() => toks.push(TokenTree::Token(v)),
+                    Ok(_) => {}
+                    Err(e) => {
+                        errs.push(e);
+                        toks = Vec::new();
                     }
                 }
-                _ => unreachable!(
-                    "Token::IdentifierLiteral should always have a string literal value"
-                ),
-            },
-            _ => self.tokens.push(tok),
+            }
         }
-        Ok(())
+        Ok(toks.into_boxed_slice())
     }
 
-    fn int_scan_token(&mut self) -> Result<Option<Token<'arena>>, LexingError<'arena>> {
-        let c = self.advance();
+    fn int_scan_token(&mut self) -> Result<Option<Token<'ctx>>, LexingError<'ctx>> {
+        let pos_start = self.next_pos();
+        let c = self.advance().unwrap();
 
         macro_rules! token {
             ($token: ident) => {
-                Ok(self.get_token(TokenType::$token))
+                Ok(self.get_token(TokenType::$token, pos_start))
             };
 
             ($tokena: ident, $tokenb: ident, $char: expr) => {{
                 if self.if_char_advance($char) {
-                    Ok(self.get_token(TokenType::$tokenb))
+                    Ok(self.get_token(TokenType::$tokenb, pos_start))
                 } else {
-                    Ok(self.get_token(TokenType::$tokena))
+                    Ok(self.get_token(TokenType::$tokena, pos_start))
                 }
             }};
         }
 
+        let p = self.peek().unwrap_or('\0');
         match c {
-            '(' => token!(ParenLeft),
-            ')' => token!(ParenRight),
-            '{' => token!(CurlyLeft),
-            '}' => token!(CurlyRight),
-            '[' => token!(BracketLeft),
-            ']' => token!(BracketRight),
             ',' => token!(Comma),
             '$' => token!(Dollar),
             '?' => token!(QuestionMark),
             '.' if self.if_char_advance('.') => token!(Range, RangeInclusive, '='),
-            '.' if self.peek().is_ascii_digit() => self.parse_number('.'),
+            '.' if p.is_ascii_digit() => self.parse_number('.', pos_start),
             '.' => token!(Dot),
             '+' => token!(Plus, PlusAssign, '='),
-            '-' if self.peek().is_ascii_digit() || self.peek() == '.' => self.parse_number('-'),
+            '-' if p.is_ascii_digit() || p == '.' => self.parse_number('-', pos_start),
             '-' if self.if_char_advance('=') => token!(MinusAssign),
             '-' if self.if_char_advance('>') => token!(ReturnType),
             '-' => token!(Minus),
@@ -172,14 +258,13 @@ impl<'arena> Lexer<'arena> {
             //  * meow
             //  */
             // gets parsed as "meow\nmeow"
-            '/' if self.peek() == self.peek2() && matches!(self.peek(), '/' | '*') => {
-                let now = self.current;
-                let single_line = self.advance() == '/';
-                self.advance();
+            '/' if self.peek() == self.peek2() && matches!(self.peek(), Some('/' | '*')) => {
+                let single_line = self.advance() == Some('/');
+                self.dismiss();
 
                 let mut s = String::new();
                 self.parse_doc_comments(&mut s, single_line, false);
-                let span = self.span_from(now);
+                let span = self.span_from(pos_start);
                 let comment = self.ctx.add_doc_comment(s.into_boxed_str());
                 Ok(Token::new(
                     TokenType::DocComment,
@@ -194,24 +279,21 @@ impl<'arena> Lexer<'arena> {
             //  * meow
             //  */
             // gets parsed as "meow\nmeow"
-            '/' if matches!(self.peek(), '/' | '*') && self.peek2() == '!' => {
-                if self.tokens.len() > 1
-                    || (!self.tokens.is_empty() && self.tokens[0].ty != TokenType::Eof)
-                {
-                    let now = self.current;
-                    let single_line = self.advance() == '/';
-                    self.advance();
+            '/' if matches!(self.peek(), Some('/' | '*')) && self.peek2() == Some('!') => {
+                let single_line = self.advance() == Some('/');
+                self.dismiss();
+
+                if !self.is_mod_doc_comment_allowed {
                     self.parse_doc_comments(&mut String::new(), single_line, true);
 
-                    return Err(LexingError::InvalidModuleDocComment(self.span_from(now)));
+                    return Err(LexingError::InvalidModuleDocComment(
+                        self.span_from(pos_start),
+                    ));
                 }
-                let single_line = self.advance() == '/';
-                self.advance();
 
-                let now = self.current;
                 let mut s = String::new();
                 self.parse_doc_comments(&mut s, single_line, true);
-                let span = self.span_from(now);
+                let span = self.span_from(pos_start);
                 let comment = self.ctx.add_doc_comment(s.into_boxed_str());
                 Ok(Token::new(
                     TokenType::ModuleDocComment,
@@ -219,7 +301,7 @@ impl<'arena> Lexer<'arena> {
                     span,
                 ))
             }
-            '/' if self.peek() != '/' && self.peek() != '*' => token!(Divide),
+            '/' if p != '/' && p != '*' => token!(Divide),
             '%' => token!(Modulo),
             '*' => token!(Asterix),
             '=' => token!(Equal, EqualEqual, '='),
@@ -228,14 +310,13 @@ impl<'arena> Lexer<'arena> {
             ':' => token!(Colon, NamespaceAccess, ':'),
             ';' => token!(Semicolon),
             '!' => token!(LogicalNot, NotEquals, '='),
-            '~' => token!(BitwiseNot),
             '&' => token!(Ampersand, LogicalAnd, '&'),
             '|' if self.if_char_advance('|') => token!(LogicalOr),
             '|' if self.if_char_advance('>') => token!(PipeOperator),
             '|' => token!(BitwiseOr),
             '^' => token!(BitwiseXor),
             ' ' | '\n' | '\r' | '\t' => {
-                while matches!(self.peek(), ' ' | '\n' | '\r' | '\t') {
+                while matches!(self.peek(), Some(' ' | '\n' | '\r' | '\t')) {
                     self.advance();
                 }
                 return Ok(None);
@@ -249,19 +330,19 @@ impl<'arena> Lexer<'arena> {
                 return Ok(None);
             }
             '@' => token!(AnnotationIntroducer),
-            ('0'..='9') => self.parse_number(c),
-            '"' => self.parse_string('"'),
+            ('0'..='9') => self.parse_number(c, pos_start),
+            '"' => self.parse_string('"', pos_start),
             '`' => {
-                let mut tok = self.parse_string('`')?;
+                let mut tok = self.parse_string('`', pos_start)?;
                 tok.ty = TokenType::IdentifierLiteral;
                 Ok(tok)
             }
             _ if Self::is_valid_identifier_char(c) && !c.is_ascii_digit() => {
-                self.parse_identifier(c)
+                self.parse_identifier(c, pos_start)
             }
             _ => {
                 return Err(LexingError::UnknownTokenError {
-                    span: self.current_span(),
+                    span: self.span(pos_start, 1),
                     char: c,
                 });
             }
@@ -270,12 +351,14 @@ impl<'arena> Lexer<'arena> {
     }
 
     fn skip_single_line_comment(&mut self) {
-        while !self.is_at_end() && self.advance() != '\n' {}
+        while !matches!(self.advance(), Some('\n') | None) {}
     }
 
     fn skip_multi_line_comment(&mut self) {
         loop {
-            if self.advance() == '*' && self.advance() == '/' {
+            if matches!(self.advance(), Some('*') | None)
+                && matches!(self.advance(), Some('/') | None)
+            {
                 break;
             }
         }
@@ -283,28 +366,30 @@ impl<'arena> Lexer<'arena> {
 
     fn skip_spaces(&mut self) -> usize {
         let mut i = 0;
-        while matches!(self.peek(), ' ' | '\t' | '\n' | '\r') {
+        while matches!(self.peek(), Some(' ' | '\t' | '\n' | '\r')) {
             i += 1;
-            self.advance();
+            self.dismiss();
         }
         i
     }
 
-    fn skip_spaces_max(&mut self, mut i: usize) {
-        while i > 0 && matches!(self.peek(), ' ' | '\t') {
+    /// returns the position of the last space
+    fn skip_spaces_max(&mut self, mut i: usize) -> usize {
+        while i > 0 && matches!(self.peek(), Some(' ' | '\t')) {
             i -= 1;
-            self.advance();
+            self.dismiss();
         }
+        // ' '.len_utf8() and '\t'.len_utf8() == 1
+        self.next_pos() - 1
     }
 
+    /// Returns the position of the last character of the doc comment.
     fn parse_multi_line_doc_comment(&mut self, s: &mut String) {
         self.skip_spaces();
         // skip the line if it's only `/**`.
-        if self.peek() == '\n' {
-            self.advance();
-        }
+        self.if_char_advance('\n');
         let mut num_spaces = self.skip_spaces();
-        let has_star = self.peek() == '*' && self.peek2() != '/';
+        let has_star = self.peek() == Some('*') && self.peek2() != Some('/');
         if has_star {
             self.advance();
             num_spaces = self.skip_spaces();
@@ -312,21 +397,21 @@ impl<'arena> Lexer<'arena> {
         loop {
             if has_star {
                 self.skip_spaces();
-                if self.peek() == '*' && self.peek2() != '/' {
+                if self.peek() == Some('*') && self.peek2() != Some('/') {
                     self.advance();
                     self.skip_spaces_max(num_spaces);
                 }
             }
             loop {
                 match self.peek() {
-                    '\n' => {
+                    Some('\n') => {
                         self.advance();
                         s.push('\n');
                         break;
                     }
-                    '*' if self.peek2() == '/' => {
-                        self.advance();
-                        self.advance();
+                    Some('*') if self.peek2() == Some('/') => {
+                        self.dismiss();
+                        self.dismiss();
                         // /**
                         //  * meow
                         //  */
@@ -336,8 +421,11 @@ impl<'arena> Lexer<'arena> {
                         }
                         return;
                     }
-                    _ if self.is_at_end() => return,
-                    _ => s.push(self.advance()),
+                    None => return,
+                    Some(c) => {
+                        s.push(c);
+                        self.dismiss();
+                    }
                 }
             }
         }
@@ -345,17 +433,21 @@ impl<'arena> Lexer<'arena> {
 
     fn parse_single_line_doc_comment(&mut self, s: &mut String, max_spaces: usize) {
         self.skip_spaces_max(max_spaces);
-        while !self.is_at_end() && !self.if_char_advance('\n') {
-            s.push(self.advance());
+        loop {
+            match self.advance() {
+                None => return,
+                Some('\n') => {
+                    s.push('\n');
+                    return;
+                }
+                Some(v) => s.push(v),
+            }
         }
-        if self.is_at_end() {
-            return;
-        }
-        s.push('\n');
     }
 
     fn parse_doc_comments(&mut self, s: &mut String, mut single_line: bool, module: bool) {
         let mut max_spaces = None;
+        println!("parsing doc comment");
         loop {
             if single_line {
                 let max_spaces = match max_spaces {
@@ -376,19 +468,19 @@ impl<'arena> Lexer<'arena> {
             // look for /// or /**
             loop {
                 self.skip_spaces();
-                if self.peek() == '/' && self.peek2() == '/' {
+                if self.peek() == Some('/') && self.peek2() == Some('/') {
                     if module {
-                        if self.peek3() == '/' {
+                        if self.peek3() == Some('/') {
                             return;
                         }
-                    } else if self.peek3() == '!' {
+                    } else if self.peek3() == Some('!') {
                         return;
                     }
-                    self.advance();
-                    self.advance();
+                    self.dismiss();
+                    self.dismiss();
                     // /// was found, continue to the start of the loop
-                    if self.peek() == '/' || self.peek() == '!' {
-                        self.advance();
+                    if self.peek() == Some('/') || self.peek() == Some('!') {
+                        self.dismiss();
                         single_line = true;
                         break;
                     }
@@ -397,19 +489,19 @@ impl<'arena> Lexer<'arena> {
                     continue;
                 }
                 // /* was found, skip normal comment
-                if self.peek() == '/' && self.peek2() == '*' {
+                else if self.peek() == Some('/') && self.peek2() == Some('*') {
                     if module {
-                        if self.peek3() == '*' {
+                        if self.peek3() == Some('*') {
                             return;
                         }
-                    } else if self.peek3() == '!' {
+                    } else if self.peek3() == Some('!') {
                         return;
                     }
-                    self.advance();
-                    self.advance();
+                    self.dismiss();
+                    self.dismiss();
 
                     // /** was found, invoke the multiline parsing procedure
-                    if self.peek() == '*' || self.peek() == '!' {
+                    if self.peek() == Some('*') || self.peek() == Some('!') {
                         self.advance();
                         single_line = false;
                         break;
@@ -419,30 +511,30 @@ impl<'arena> Lexer<'arena> {
                     continue;
                 }
                 // if no /// was found, return
-                return;
+                else {
+                    return;
+                }
             }
         }
     }
 
     #[inline(always)]
-    fn get_token(&self, token: TokenType) -> Token<'arena> {
-        Token::new(token, None, self.span(token.char_len().unwrap()))
+    fn get_token(&self, token: TokenType, start: usize) -> Token<'ctx> {
+        Token::new(
+            token,
+            None,
+            token
+                .char_len()
+                .map(|len| self.span(start, len as usize))
+                .unwrap_or_else(|| self.span_from(start)),
+        )
     }
 
     fn skip_to_after_number(&mut self) {
         loop {
             match self.peek() {
-                '0'..='9' => _ = self.advance(),
-                '.' if self
-                    .source
-                    .get(self.current + 1)
-                    .copied()
-                    .unwrap_or('\0')
-                    .is_ascii_digit() =>
-                {
-                    _ = self.advance()
-                }
-                '.' => break,
+                Some('0'..='9') => self.dismiss(),
+                Some('.') if self.peek2().unwrap_or('\0').is_ascii_digit() => self.dismiss(),
                 _ => break,
             }
         }
@@ -450,20 +542,23 @@ impl<'arena> Lexer<'arena> {
 
     fn parse_numtype(
         &mut self,
-        start_bytepos: usize,
+        num_start_bytepos: usize,
+        numtype_start_bytepos: usize,
         first_char: char,
         value: u64,
         is_negative: bool,
         allow_float: bool,
-    ) -> Result<Token<'arena>, LexingError<'arena>> {
+    ) -> Result<Token<'ctx>, LexingError<'ctx>> {
         let mut ty = String::from(first_char);
-        let first_type_char = self.current - 1;
 
         loop {
             match self.peek() {
-                'a'..='z' | '0'..='9' => ty.push(self.advance()),
+                Some(c @ ('a'..='z' | '0'..='9')) => {
+                    ty.push(c);
+                    self.dismiss();
+                }
                 _ => {
-                    let err = LexingError::InvalidNumberType(self.span_from(first_type_char));
+                    let err = LexingError::InvalidNumberType(self.span_from(numtype_start_bytepos));
                     let Ok(number_type) = NumberType::from_str(&ty) else {
                         return Err(err);
                     };
@@ -472,12 +567,12 @@ impl<'arena> Lexer<'arena> {
                         NumberType::F32 | NumberType::F64 if is_negative => Ok(Token::new(
                             TokenType::FloatLiteral,
                             Some(Literal::Float(-(value as f64), number_type)),
-                            self.span_from(start_bytepos),
+                            self.span_from(num_start_bytepos),
                         )),
                         NumberType::F32 | NumberType::F64 => Ok(Token::new(
                             TokenType::FloatLiteral,
                             Some(Literal::Float(value as f64, number_type)),
-                            self.span_from(start_bytepos),
+                            self.span_from(num_start_bytepos),
                         )),
                         NumberType::U8
                         | NumberType::U16
@@ -491,12 +586,12 @@ impl<'arena> Lexer<'arena> {
                         _ if is_negative => Ok(Token::new(
                             TokenType::SIntLiteral,
                             Some(Literal::SInt(-(value as i64), number_type)),
-                            self.span_from(start_bytepos),
+                            self.span_from(num_start_bytepos),
                         )),
                         _ => Ok(Token::new(
                             TokenType::SIntLiteral,
                             Some(Literal::UInt(value, number_type)),
-                            self.span_from(start_bytepos),
+                            self.span_from(num_start_bytepos),
                         )),
                     };
                 }
@@ -508,18 +603,28 @@ impl<'arena> Lexer<'arena> {
         &mut self,
         start_bytepos: usize,
         is_negative: bool,
-    ) -> Result<Token<'arena>, LexingError<'arena>> {
+    ) -> Result<Token<'ctx>, LexingError<'ctx>> {
         let mut value: u64 = 0;
 
         loop {
             match self.peek() {
-                '0'..='9' => value = (value << 4) | (self.advance() as u64 - '0' as u64),
-                'a'..='f' => value = (value << 4) | (self.advance() as u64 - 'a' as u64 + 0xa),
-                'A'..='F' => value = (value << 4) | (self.advance() as u64 - 'A' as u64 + 0xa),
-                '_' => _ = self.advance(),
-                c if Self::is_valid_identifier_char(c) => {
-                    self.advance();
-                    return self.parse_numtype(start_bytepos, c, value, is_negative, false);
+                Some(c @ '0'..='9') => {
+                    self.dismiss();
+                    value = (value << 4) | (c as u64 - '0' as u64)
+                }
+                Some(c @ 'a'..='f') => {
+                    self.dismiss();
+                    value = (value << 4) | (c as u64 - 'a' as u64 + 0xa)
+                }
+                Some(c @ 'A'..='F') => {
+                    self.dismiss();
+                    value = (value << 4) | (c as u64 - 'A' as u64 + 0xa)
+                }
+                Some('_') => self.dismiss(),
+                Some(c) if Self::is_valid_identifier_char(c) => {
+                    let pos = self.next_pos();
+                    self.dismiss();
+                    return self.parse_numtype(start_bytepos, pos, c, value, is_negative, false);
                 }
                 _ if is_negative => {
                     return Ok(Token::new(
@@ -543,22 +648,26 @@ impl<'arena> Lexer<'arena> {
         &mut self,
         start_bytepos: usize,
         is_negative: bool,
-    ) -> Result<Token<'arena>, LexingError<'arena>> {
+    ) -> Result<Token<'ctx>, LexingError<'ctx>> {
         let mut value: u64 = 0;
 
         loop {
             match self.peek() {
-                '0' | '1' => value = (value << 1) | (self.advance() as u64 - '0' as u64),
-                '2'..='9' => {
+                Some(c @ ('0' | '1')) => {
+                    self.dismiss();
+                    value = (value << 1) | (c as u64 - '0' as u64)
+                }
+                Some('2'..='9') => {
                     self.advance();
                     return Err(LexingError::InvalidNumberError(
                         self.span_from(start_bytepos),
                     ));
                 }
-                '_' => _ = self.advance(),
-                c if Self::is_valid_identifier_char(c) => {
-                    self.advance();
-                    return self.parse_numtype(start_bytepos, c, value, is_negative, false);
+                Some('_') => self.dismiss(),
+                Some(c) if Self::is_valid_identifier_char(c) => {
+                    let pos = self.next_pos();
+                    self.dismiss();
+                    return self.parse_numtype(start_bytepos, pos, c, value, is_negative, false);
                 }
                 _ if is_negative => {
                     return Ok(Token::new(
@@ -582,22 +691,26 @@ impl<'arena> Lexer<'arena> {
         &mut self,
         start_bytepos: usize,
         is_negative: bool,
-    ) -> Result<Token<'arena>, LexingError<'arena>> {
+    ) -> Result<Token<'ctx>, LexingError<'ctx>> {
         let mut value: u64 = 0;
 
         loop {
             match self.peek() {
-                '0'..='7' => value = (value << 3) | (self.advance() as u64 - '0' as u64),
-                '8' | '9' => {
-                    self.advance();
+                Some(c @ ('0'..='7')) => {
+                    self.dismiss();
+                    value = (value << 3) | (c as u64 - '0' as u64)
+                }
+                Some('8' | '9') => {
+                    self.dismiss();
                     return Err(LexingError::InvalidNumberError(
                         self.span_from(start_bytepos),
                     ));
                 }
-                '_' => _ = self.advance(),
-                c if Self::is_valid_identifier_char(c) => {
-                    self.advance();
-                    return self.parse_numtype(start_bytepos, c, value, is_negative, false);
+                Some('_') => self.dismiss(),
+                Some(c) if Self::is_valid_identifier_char(c) => {
+                    let pos = self.next_pos();
+                    self.dismiss();
+                    return self.parse_numtype(start_bytepos, pos, c, value, is_negative, false);
                 }
                 _ if is_negative => {
                     return Ok(Token::new(
@@ -633,39 +746,46 @@ impl<'arena> Lexer<'arena> {
         value
     }
 
-    fn parse_number(&mut self, mut first_char: char) -> Result<Token<'arena>, LexingError<'arena>> {
-        let start_byte = self.current - 1;
+    fn parse_number(
+        &mut self,
+        mut first_char: char,
+        start_byte: usize,
+    ) -> Result<Token<'ctx>, LexingError<'ctx>> {
         let is_negative = first_char == '-';
         let mut is_float = false;
         if is_negative {
-            first_char = self.advance();
+            first_char = self
+                .advance()
+                .expect("`-` always needs another character following it.");
         }
 
-        if first_char == '0' && self.peek() == 'x' {
-            self.advance();
-            if !self.peek().is_ascii_hexdigit() {
-                self.advance();
-                return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
+        if first_char == '0' && self.peek() == Some('x') {
+            self.dismiss();
+            if !self.peek().unwrap_or('\0').is_ascii_hexdigit() {
+                let pos = self.next_pos();
+                self.dismiss();
+                return Err(LexingError::ExpectedHexDigit(self.span(pos, 1)));
             }
             return self.parse_hex(start_byte, is_negative);
-        } else if first_char == '0' && self.peek() == 'b' {
-            self.advance();
-            if !matches!(self.peek(), '0' | '1') {
-                self.advance();
-                return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
+        } else if first_char == '0' && self.peek() == Some('b') {
+            self.dismiss();
+            if !matches!(self.peek(), Some('0' | '1')) {
+                let pos = self.next_pos();
+                self.dismiss();
+                return Err(LexingError::ExpectedBinDigit(self.span(pos, 1)));
             }
             return self.parse_bin(start_byte, is_negative);
-        } else if first_char == '0' && self.peek() == 'o' {
-            self.advance();
-            if !matches!(self.peek(), '0'..='7') {
-                self.advance();
-                return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
+        } else if first_char == '0' && self.peek() == Some('o') {
+            self.dismiss();
+            if !matches!(self.peek(), Some('0'..='7')) {
+                let pos = self.next_pos();
+                self.dismiss();
+                return Err(LexingError::ExpectedOctDigit(self.span(pos, 1)));
             }
             return self.parse_oct(start_byte, is_negative);
         }
 
         let mut str = String::new();
-        let mut ty = String::new();
 
         if is_negative {
             str.push('-');
@@ -676,27 +796,43 @@ impl<'arena> Lexer<'arena> {
         }
         str.push(first_char);
 
-        while !self.is_at_end() {
+        if first_char == '.' && !matches!(self.peek(), Some('0'..='9')) {
+            let pos = self.next_pos();
+            self.dismiss();
+            return Err(LexingError::ExpectedDecDigit(self.span(pos, 1)));
+        }
+
+        let mut ty = String::new();
+        while let Some(p) = self.peek() {
             if !ty.is_empty() {
-                if self.peek().is_ascii_alphanumeric() {
-                    ty.push(self.advance());
+                if p.is_ascii_alphanumeric() {
+                    self.dismiss();
+                    ty.push(p);
                     continue;
                 }
                 break;
             }
 
-            match self.peek() {
-                '0'..='9' => str.push(self.advance()),
-                '_' => _ = self.advance(),
-                '.' if self.peek2().is_ascii_digit() => {
+            match p {
+                '0'..='9' => {
+                    self.dismiss();
+                    str.push(p)
+                }
+                '_' => self.dismiss(),
+                '.' if self.peek2().unwrap_or('\0').is_ascii_digit() => {
                     if is_float {
+                        let pos = self.next_pos();
                         self.skip_to_after_number();
-                        return Err(LexingError::InvalidNumberError(self.span_from(start_byte)));
+                        return Err(LexingError::MultipleDecimalPoints(self.span(pos, 1)));
                     }
                     is_float = true;
-                    str.push(self.advance());
+                    str.push(p);
+                    self.dismiss();
                 }
-                c if Self::is_valid_identifier_char(c) => ty.push(self.advance()),
+                _ if Self::is_valid_identifier_char(p) => {
+                    self.dismiss();
+                    ty.push(p)
+                }
                 _ => break,
             }
         }
@@ -738,99 +874,119 @@ impl<'arena> Lexer<'arena> {
     }
 
     // \xHH
-    fn parse_xhh_escape(&mut self, string_char: char) -> Result<char, LexingError<'arena>> {
+    fn parse_xhh_escape(
+        &mut self,
+        string_char: char,
+        backslash_byte: usize,
+    ) -> Result<char, LexingError<'ctx>> {
+        let pos = self.next_pos();
         let part1 = match self.advance() {
-            '\0' => return Err(LexingError::UnclosedString(self.current_span())),
-            c @ '0'..='9' => c as u8 - b'0',
-            c @ 'a'..='f' => c as u8 - b'a' + 0xa,
-            c @ 'A'..='F' => c as u8 - b'A' + 0xa,
-            c if c == string_char => {
-                return Err(LexingError::UnterminatedNumericEscape(self.span(3)));
-            }
-            c => {
-                return Err(LexingError::InvalidNumericEscapeChar(
-                    self.current_span(),
-                    c,
+            None => return Err(LexingError::UnclosedString(self.span(pos, 1))),
+            Some(c @ '0'..='9') => c as u8 - b'0',
+            Some(c @ 'a'..='f') => c as u8 - b'a' + 0xa,
+            Some(c @ 'A'..='F') => c as u8 - b'A' + 0xa,
+            Some(c) if c == string_char => {
+                return Err(LexingError::UnterminatedNumericEscape(
+                    self.span(backslash_byte, 2),
                 ));
+            }
+            Some(c) => {
+                return Err(LexingError::InvalidNumericEscapeChar(self.span(pos, 1), c));
             }
         };
+        let pos = self.next_pos();
         let part2 = match self.advance() {
-            '\0' => return Err(LexingError::UnclosedString(self.current_span())),
-            c @ '0'..='9' => c as u8 - b'0',
-            c @ 'a'..='f' => c as u8 - b'a' + 0xa,
-            c @ 'A'..='F' => c as u8 - b'A' + 0xa,
-            c if c == string_char => {
-                return Err(LexingError::UnterminatedNumericEscape(self.span(3)));
-            }
-            c => {
-                return Err(LexingError::InvalidNumericEscapeChar(
-                    self.current_span(),
-                    c,
+            None => return Err(LexingError::UnclosedString(self.span(pos, 1))),
+            Some(c @ '0'..='9') => c as u8 - b'0',
+            Some(c @ 'a'..='f') => c as u8 - b'a' + 0xa,
+            Some(c @ 'A'..='F') => c as u8 - b'A' + 0xa,
+            Some(c) if c == string_char => {
+                return Err(LexingError::UnterminatedNumericEscape(
+                    self.span(backslash_byte, 3),
                 ));
+            }
+            Some(c) => {
+                return Err(LexingError::InvalidNumericEscapeChar(self.span(pos, 1), c));
             }
         };
         match char::from_u32(((part1 << 4) | part2) as u32) {
             Some(c) if c.is_ascii() => Ok(c),
-            _ => Err(LexingError::OutOfRangeEscape(self.span(4), 0..=0x7f)),
+            _ => Err(LexingError::OutOfRangeEscape(
+                self.span(backslash_byte, 4),
+                0..=0x7f,
+            )),
         }
     }
 
-    fn parse_unicode_escape(&mut self, string_char: char) -> Result<char, LexingError<'arena>> {
-        // the start of the sequence (current character - 1) to include the '\'
-        let start = self.current - 1;
-
+    fn parse_unicode_escape(
+        &mut self,
+        string_char: char,
+        backslash_byte: usize,
+    ) -> Result<char, LexingError<'ctx>> {
+        let pos = self.next_pos();
         match self.advance() {
-            '\0' => return Err(LexingError::UnclosedString(self.current_span())),
-            '{' => {}
-            _ => return Err(LexingError::InvalidUnicodeEscape(self.span_from(start))),
+            None => return Err(LexingError::UnclosedString(self.span(pos, 1))),
+            Some('{') => {}
+            _ => {
+                return Err(LexingError::InvalidUnicodeEscape(
+                    self.span_from(backslash_byte),
+                ));
+            }
         }
         // to track the amount of characters inside { ... }, which cannot be more than 10.
         let mut char_count = 0;
         let mut num = 0;
         loop {
+            let pos = self.next_pos();
             match self.advance() {
-                '}' => break,
-                '\0' => return Err(LexingError::UnclosedString(self.current_span())),
-                c @ '0'..='9' => num = (num << 4) | (c as u8 - b'0') as u32,
-                c @ 'a'..='f' => num = (num << 4) | (c as u8 - b'a' + 0xa) as u32,
-                c @ 'A'..='F' => num = (num << 4) | (c as u8 - b'A' + 0xa) as u32,
-                c if c == string_char => {
+                None => return Err(LexingError::UnclosedString(self.span(pos, 1))),
+                Some('}') => break,
+                Some(c @ '0'..='9') => num = (num << 4) | (c as u8 - b'0') as u32,
+                Some(c @ 'a'..='f') => num = (num << 4) | (c as u8 - b'a' + 0xa) as u32,
+                Some(c @ 'A'..='F') => num = (num << 4) | (c as u8 - b'A' + 0xa) as u32,
+                Some(c) if c == string_char => {
                     return Err(LexingError::UnterminatedUnicodeEscape(
-                        self.span_from(start),
+                        self.span_from(backslash_byte),
                     ));
                 }
-                _ => return Err(LexingError::InvalidUnicodeEscapeChar(self.current_span())),
+                _ => return Err(LexingError::InvalidUnicodeEscapeChar(self.span(pos, 1))),
             }
             char_count += 1;
         }
         if char_count == 0 {
             return Err(LexingError::EmptyUnicodeEscapeSequence(
-                self.span_from(start),
+                self.span_from(backslash_byte),
             ));
         }
         if char_count > 6 {
             return Err(LexingError::TooLongUnicodeEscapeSequence(
-                self.span_from(start),
+                self.span_from(backslash_byte),
             ));
         }
         match char::from_u32(num) {
             Some(c) => Ok(c),
             None => Err(LexingError::OutOfRangeUnicodeEscapeSequence(
-                self.span_from(start),
+                self.span_from(backslash_byte),
             )),
         }
     }
 
-    fn parse_string(&mut self, string_char: char) -> Result<Token<'arena>, LexingError<'arena>> {
+    fn parse_string(
+        &mut self,
+        string_char: char,
+        start: usize,
+    ) -> Result<Token<'ctx>, LexingError<'ctx>> {
         let mut is_backslash = false;
         let mut s = String::new();
-        let start = self.current - 1;
 
-        while !self.is_at_end() {
-            let c = self.advance();
-
+        loop {
+            let Some(c) = self.peek() else {
+                return Err(LexingError::UnclosedString(self.span(self.next_pos(), 1)));
+            };
+            let pos = self.next_pos();
+            self.dismiss();
             if c == '\n' || c == '\r' {
-                return Err(LexingError::UnclosedString(self.current_span()));
+                return Err(LexingError::UnclosedString(self.span(pos, 1)));
             } else if is_backslash {
                 is_backslash = false;
                 match c {
@@ -844,28 +1000,31 @@ impl<'arena> Lexer<'arena> {
                     '\'' => s.push('\''),
                     '"' => s.push('"'),
                     c if string_char == c => s.push(c),
-                    'x' => s.push(self.parse_xhh_escape(string_char)?),
-                    'u' => s.push(self.parse_unicode_escape(string_char)?),
+                    // 'x'.len_utf8() == 1; 'u'.len_utf8() == 1
+                    'x' => s.push(self.parse_xhh_escape(string_char, pos - 1)?),
+                    'u' => s.push(self.parse_unicode_escape(string_char, pos - 1)?),
                     '\n' => loop {
                         match self.peek() {
-                            '\0' => return Err(LexingError::UnclosedString(self.current_span())),
+                            None => {
+                                let pos = self.next_pos();
+                                return Err(LexingError::UnclosedString(self.span(pos, 1)));
+                            }
                             // skip all whitespace characters
-                            ' ' | '\n' | '\r' | '\x09' => _ = self.advance(),
+                            Some(' ' | '\n' | '\r' | '\x09') => _ = self.advance(),
                             _ => break,
                         }
                     },
-                    _ => return Err(LexingError::InvalidEscape(self.current_span(), c)),
+                    _ => return Err(LexingError::InvalidEscape(self.span(pos, 1), c)),
                 }
             } else if c == '\\' {
                 is_backslash = true;
-            } else if c == string_char || c == '\n' {
+            } else if c == string_char {
                 break;
+            } else if c == '\n' {
+                return Err(LexingError::UnclosedString(self.span(pos, 1)));
             } else {
                 s.push(c);
             }
-        }
-        if self.cur_char() != string_char || self.source[self.current - 2] == '\\' {
-            return Err(LexingError::UnclosedString(self.current_span()));
         }
 
         Ok(Token::new(
@@ -878,16 +1037,17 @@ impl<'arena> Lexer<'arena> {
     fn parse_identifier(
         &mut self,
         starting_char: char,
-    ) -> Result<Token<'arena>, LexingError<'arena>> {
+        start: usize,
+    ) -> Result<Token<'ctx>, LexingError<'ctx>> {
         let mut identifier = String::new();
         identifier.push(starting_char);
-        let start = self.current - 1;
 
-        while !self.is_at_end() {
-            if !Self::is_valid_identifier_char(self.peek()) {
+        while let Some(c) = self.peek() {
+            if !Self::is_valid_identifier_char(c) {
                 break;
             }
-            identifier.push(self.advance());
+            self.dismiss();
+            identifier.push(c);
         }
         Ok(match identifier.as_str() {
             "true" => Token::new(
@@ -900,9 +1060,9 @@ impl<'arena> Lexer<'arena> {
                 Some(Literal::Bool(false)),
                 self.span_from(start),
             ),
-            "void" => self.get_token(TokenType::VoidLiteral),
+            "void" => self.get_token(TokenType::VoidLiteral, start),
             ident => Self::try_token_from_keyword(ident)
-                .map(|v| self.get_token(v))
+                .map(|v| self.get_token(v, start))
                 .unwrap_or_else(|| {
                     Token::new(
                         TokenType::IdentifierLiteral,
@@ -913,24 +1073,8 @@ impl<'arena> Lexer<'arena> {
         })
     }
 
-    fn span_from(&self, from: usize) -> Span<'arena> {
-        self.span((self.current - from) as u32)
-    }
-
-    fn span(&self, len: u32) -> Span<'arena> {
-        self.ctx.intern_span(SpanData::new(
-            BytePos::from_u32((self.current as u32).saturating_sub(len)),
-            len,
-            self.file.id,
-        ))
-    }
-
-    fn current_span(&self) -> Span<'arena> {
-        self.ctx.intern_span(SpanData::new(
-            BytePos::from_u32((self.current as u32).saturating_sub(1)),
-            1,
-            self.file.id,
-        ))
+    fn span_from(&self, from: usize) -> Span<'ctx> {
+        self.span(from, self.next_pos() - from)
     }
 
     fn try_token_from_keyword(word: &str) -> Option<TokenType> {
@@ -967,10 +1111,6 @@ impl<'arena> Lexer<'arena> {
             '_' | '$' | '#' | ('a'..='z') | ('A'..='Z') | ('0'..='9')
         )
     }
-
-    pub fn get_tokens(&self) -> &[Token<'arena>] {
-        &self.tokens
-    }
 }
 
 #[cfg(test)]
@@ -1004,14 +1144,23 @@ mod test {
         }
     }
 
+    /// Get the tokens if there's no token tree (no `( ... )`, `[ ... ]` and `{ ... }`)
     fn get_tokens<'arena>(
         ctx: SharedCtx<'arena>,
         src: &str,
-    ) -> (Vec<Token<'arena>>, Vec<LexingError<'arena>>) {
-        let mut tokenizer = Lexer::new(ctx, ctx.source_map.testing_new_file(src.into()));
-        let errs = tokenizer.scan_tokens().err().unwrap_or_default();
-        check_tokens(tokenizer.get_tokens());
-        (tokenizer.tokens, errs)
+    ) -> Result<Vec<Token<'arena>>, Vec<LexingError<'arena>>> {
+        let f = ctx.source_map.testing_new_file(src.into());
+        let mut tokenizer = Lexer::new(ctx, &f);
+        let tts = tokenizer.scan_tokens()?;
+        let mut tokens = Vec::with_capacity(tts.len());
+        for tt in tts {
+            match tt {
+                TokenTree::Token(t) => tokens.push(t),
+                TokenTree::Delimited { .. } => panic!("delimited tokens found"),
+            }
+        }
+        check_tokens(&tokens);
+        Ok(tokens)
     }
 
     fn assert_token_eq(
@@ -1020,10 +1169,32 @@ mod test {
         ctx: SharedCtx<'_>,
     ) {
         let eof_token = (TokenType::Eof, None);
-        let (tokens, errs) = get_tokens(ctx, src);
-        println!("{tokens:?}");
-        assert_eq!(errs.len(), 0, "unexpected errors: {errs:?}");
-        assert_eq!(tokens.len(), expected_tokens.len() + 1 /* eof token */);
+        let tokens = get_tokens(ctx, src).expect("unexpected errors");
+        println!("Doc Comments:");
+        ctx.with_all_doc_comments(|i, s| println!("#{i}: {s:?}"));
+        if tokens.len() < expected_tokens.len() {
+            println!("Missing tokens. Expected ({}):", expected_tokens.len());
+            for t in expected_tokens {
+                println!("{t:?}");
+            }
+            println!("Got ({}):", tokens.len());
+            for t in &tokens {
+                println!("{t:?}");
+            }
+            panic!("Missing tokens")
+        }
+        if tokens.len() > expected_tokens.len() {
+            println!("Excessive tokens. Expected ({}):", expected_tokens.len());
+            for t in expected_tokens {
+                println!("{t:?}");
+            }
+            println!("Got ({}):", tokens.len());
+            for t in &tokens {
+                println!("{t:?}");
+            }
+            panic!("Excessive tokens")
+        }
+        assert_eq!(tokens.len(), expected_tokens.len());
         for (tok, expected) in tokens
             .iter()
             .zip(expected_tokens.iter().chain(std::iter::once(&eof_token)))
@@ -1053,7 +1224,7 @@ mod test {
             let arena = Arena::new();
             let gtx = GlobalCtx::new_test_noemit(&arena);
             let ctx = gtx.share();
-            let (_, errs) = get_tokens(ctx, $str);
+            let Err(errs) = get_tokens(ctx, $str) else { unreachable!("everything parsed correctly") };
             $(
                 if i >= errs.len() {
                     panic!("Expected error matching {:?} ({i})", stringify!($pat));
@@ -1220,10 +1391,12 @@ mod test {
     With spaces
 *   and other stuff
 */
+// ignored
 /// Nya
+// still ignored
 /**
  * Meow
-**/
+*/
 meow
         "#;
 

@@ -5,6 +5,18 @@ use mira_spans::Span;
 
 #[derive(ErrorData, Debug)]
 pub enum LexingError<'arena> {
+    #[error("Unclosed Bracket")]
+    UnclosedDelimiter {
+        #[primary_label("opening bracket")]
+        open_span: Span<'arena>,
+        #[primary_label("expected a closing bracket of the same type")]
+        close_span: Span<'arena>,
+    },
+    #[error("This closing bracket does not have an open bracket")]
+    UnopenedDelimiter {
+        #[primary_label("poor poor lonely closing bracket :< nyo frens found :<<")]
+        span: Span<'arena>,
+    },
     #[error("unknown start of token: {char}")]
     UnknownTokenError {
         #[primary_label("")]
@@ -31,6 +43,16 @@ pub enum LexingError<'arena> {
         span: Span<'arena>,
         character: char,
     },
+    #[error("Expected a hexadecimal digit")]
+    ExpectedHexDigit(#[primary_label("Expected a hex digit (0-9, a-f, A-F)")] Span<'arena>),
+    #[error("Expected a binary digit")]
+    ExpectedBinDigit(#[primary_label("Expected a bin digit (0 or 1)")] Span<'arena>),
+    #[error("Expected an octal digit")]
+    ExpectedOctDigit(#[primary_label("Expected an oct digit (0-7)")] Span<'arena>),
+    #[error("Expected a decimal digit")]
+    ExpectedDecDigit(#[primary_label("Expected a decimal digit (0-9)")] Span<'arena>),
+    #[error("A float can only have a single decimal point")]
+    MultipleDecimalPoints(#[primary_label("Second decimal point")] Span<'arena>),
     #[error("Module-level doc comment have to be the first token in the file.")]
     InvalidModuleDocComment(#[primary_label("")] Span<'arena>),
     #[error("numeric character escape is too short")]

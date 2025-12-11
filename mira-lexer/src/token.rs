@@ -34,10 +34,6 @@ macro_rules! token_type {
     };
 }
 
-// BStr (b"...") => &[u8]
-// CStr (c"...") => &[u8], but the string ends in '\0'
-// BChar (b'...') => u8
-
 token_type! {
     Let = "let",
     EqualEqual = "==",
@@ -59,18 +55,11 @@ token_type! {
     Equal = "=",
     Colon = ":",
     Semicolon = ";",
-    ParenLeft = "(",
-    ParenRight = ")",
-    CurlyLeft = "{",
-    CurlyRight = "}",
-    BracketLeft = "[",
-    BracketRight = "]",
     Plus = "+",
     Minus = "-",
     Asterix = "*",
     Divide = "/",
     Modulo = "%",
-    BitwiseNot = "~",
     Ampersand = "&",
     BitwiseOr = "|",
     BitwiseXor = "^",
@@ -108,6 +97,26 @@ token_type! {
     DocComment = "<doc comment>",
     ModuleDocComment = "<module doc comment>",
     Eof = "",
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Delimiter {
+    /// `( ... )`
+    Parenthesis,
+    /// `[ ... ]`
+    Brackets,
+    /// `{ ... }`
+    Curlies,
+}
+
+pub enum TokenTree<'ctx> {
+    Token(Token<'ctx>),
+    Delimited {
+        open_span: Span<'ctx>,
+        close_span: Span<'ctx>,
+        delimiter: Delimiter,
+        children: Box<[TokenTree<'ctx>]>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
