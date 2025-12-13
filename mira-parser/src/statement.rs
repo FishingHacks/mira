@@ -611,7 +611,7 @@ pub(crate) fn display_contract(
 impl<'ctx> Parser<'_, 'ctx> {
     fn consume_semicolon(&mut self) -> Result<(), ParsingError<'ctx>> {
         self.expect(TokenType::Semicolon)?;
-        while self.match_tok(TokenType::Semicolon) {}
+        while self.match_tok_dismiss(TokenType::Semicolon) {}
         Ok(())
     }
 
@@ -826,10 +826,10 @@ impl<'ctx> Parser<'_, 'ctx> {
         let span = self.eat().span;
         self.expect(TokenType::ParenLeft)?;
         let mut strn = String::new();
-        while !self.match_tok(TokenType::ParenRight) {
+        while !self.match_tok_dismiss(TokenType::ParenRight) {
             if !strn.is_empty() {
                 self.expect_one_of(&[TokenType::Comma, TokenType::ParenRight])?;
-                if self.match_tok(TokenType::ParenRight) {
+                if self.match_tok_dismiss(TokenType::ParenRight) {
                     break;
                 }
             }
@@ -860,7 +860,7 @@ impl<'ctx> Parser<'_, 'ctx> {
     fn parse_use(&mut self, public: bool) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
         let span = self.eat().span;
         let path = PathWithoutGenerics::parse(self)?;
-        if self.match_tok(TokenType::Semicolon) {
+        if self.match_tok_dismiss(TokenType::Semicolon) {
             let span = self
                 .current()
                 .span
@@ -897,9 +897,9 @@ impl<'ctx> Parser<'_, 'ctx> {
 
         self.expect(TokenType::ParenLeft)?;
 
-        while !self.match_tok(TokenType::ParenRight) {
+        while !self.match_tok_dismiss(TokenType::ParenRight) {
             if !args.is_empty() {
-                if !self.match_tok(TokenType::Comma) {
+                if !self.match_tok_dismiss(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
                         span: self.peek().span,
                         found: self.peek(),
@@ -907,7 +907,7 @@ impl<'ctx> Parser<'_, 'ctx> {
                 }
 
                 // for trailing comma
-                if self.match_tok(TokenType::ParenRight) {
+                if self.match_tok_dismiss(TokenType::ParenRight) {
                     break;
                 }
             }
@@ -918,7 +918,7 @@ impl<'ctx> Parser<'_, 'ctx> {
             args.push(Argument::new(TypeRef::parse(self)?, name))
         }
 
-        let return_ty = if self.match_tok(TokenType::ReturnType) {
+        let return_ty = if self.match_tok_dismiss(TokenType::ReturnType) {
             TypeRef::parse(self)?
         } else {
             TypeRef::Void(self.peek().span, 0)
@@ -953,7 +953,7 @@ impl<'ctx> Parser<'_, 'ctx> {
         let mut functions = Vec::new();
 
         let mut func_comment = None;
-        while !self.match_tok(TokenType::CurlyRight) {
+        while !self.match_tok_dismiss(TokenType::CurlyRight) {
             if let Some(comment) = self.eat_doc_comment() {
                 match func_comment {
                     Some(v) => {
@@ -963,7 +963,7 @@ impl<'ctx> Parser<'_, 'ctx> {
                     None => func_comment = Some(comment),
                 }
             }
-            if self.match_tok(TokenType::AnnotationIntroducer) {
+            if self.match_tok_dismiss(TokenType::AnnotationIntroducer) {
                 self.parse_annotation()?;
                 continue;
             }
@@ -1022,7 +1022,7 @@ impl<'ctx> Parser<'_, 'ctx> {
 
         let name = self.expect_identifier()?;
 
-        let ty = if self.match_tok(TokenType::Colon) {
+        let ty = if self.match_tok_dismiss(TokenType::Colon) {
             Some(TypeRef::parse(self)?)
         } else if is_static {
             self.expect(TokenType::Colon)?;
@@ -1059,7 +1059,7 @@ impl<'ctx> Parser<'_, 'ctx> {
         let span = self.eat().span; // skip `{`
         let mut statements = vec![];
 
-        while !self.match_tok(TokenType::CurlyRight) {
+        while !self.match_tok_dismiss(TokenType::CurlyRight) {
             statements.push(self.parse_statement(false)?);
         }
 
@@ -1073,7 +1073,7 @@ impl<'ctx> Parser<'_, 'ctx> {
         // return;
         // return <expr>;
         let span = self.eat().span; // skip `return`
-        if self.match_tok(TokenType::Semicolon) {
+        if self.match_tok_dismiss(TokenType::Semicolon) {
             return Ok(Statement::Return(None, self.span_from(span)));
         }
         let expr = self.parse_expression()?;
@@ -1096,7 +1096,7 @@ impl<'ctx> Parser<'_, 'ctx> {
                 let span = self.eat().span; // skip `{`
                 let mut statements = vec![];
 
-                while !self.match_tok(TokenType::CurlyRight) {
+                while !self.match_tok_dismiss(TokenType::CurlyRight) {
                     statements.push(self.parse_statement(false)?);
                 }
 
@@ -1189,7 +1189,7 @@ impl<'ctx> Parser<'_, 'ctx> {
 
         self.expect(TokenType::ParenRight)?;
         let if_stmt = self.parse_statement(false)?;
-        if self.match_tok(TokenType::Else) {
+        if self.match_tok_dismiss(TokenType::Else) {
             return Ok(If {
                 condition,
                 if_stmt: Box::new(if_stmt),
@@ -1268,12 +1268,12 @@ impl<'ctx> Parser<'_, 'ctx> {
         let name = self.expect_identifier()?;
 
         let mut generics = vec![];
-        if self.match_tok(TokenType::LessThan) {
-            while !self.match_tok(TokenType::GreaterThan) {
+        if self.match_tok_dismiss(TokenType::LessThan) {
+            while !self.match_tok_dismiss(TokenType::GreaterThan) {
                 if generics.len() > 1 {
                     self.expect_one_of(&[TokenType::Comma, TokenType::GreaterThan])?;
 
-                    if self.match_tok(TokenType::GreaterThan) {
+                    if self.match_tok_dismiss(TokenType::GreaterThan) {
                         break;
                     }
                 }
@@ -1286,7 +1286,7 @@ impl<'ctx> Parser<'_, 'ctx> {
 
         self.expect(TokenType::CurlyLeft)?;
 
-        while !self.matches(&[TokenType::CurlyRight, TokenType::Semicolon]) {
+        while !self.matches_dismiss(&[TokenType::CurlyRight, TokenType::Semicolon]) {
             let comment = self.eat_doc_comment().unwrap_or(DocComment::EMPTY);
             if !elements.is_empty() {
                 // needs comma
@@ -1296,7 +1296,7 @@ impl<'ctx> Parser<'_, 'ctx> {
                     TokenType::Semicolon,
                 ])?;
                 // for trailing commas
-                if self.match_tok(TokenType::CurlyRight) {
+                if self.match_tok_dismiss(TokenType::CurlyRight) {
                     break;
                 }
             }
@@ -1314,7 +1314,7 @@ impl<'ctx> Parser<'_, 'ctx> {
             // implementation area. has a list of functions
             // or has impl <TraitName> { <list of functions for the trait> }
 
-            while !self.match_tok(TokenType::CurlyRight) {
+            while !self.match_tok_dismiss(TokenType::CurlyRight) {
                 match self.peek().ty {
                     TokenType::Fn => {
                         if let Some(doc_comment) = self.eat_doc_comment() {
@@ -1349,7 +1349,7 @@ impl<'ctx> Parser<'_, 'ctx> {
                             );
 
                         self.expect(TokenType::CurlyLeft)?;
-                        while !self.match_tok(TokenType::CurlyRight) {
+                        while !self.match_tok_dismiss(TokenType::CurlyRight) {
                             if let Some(doc_comment) = self.eat_doc_comment() {
                                 // overriding here is fine because we don't parse annotations,
                                 // meaning there can only ever be one doc comment.
@@ -1410,7 +1410,7 @@ impl<'ctx> Parser<'_, 'ctx> {
     }
 
     pub fn expect_identifier(&mut self) -> Result<Ident<'ctx>, ParsingError<'ctx>> {
-        if !self.match_tok(TokenType::IdentifierLiteral) {
+        if !self.match_tok_dismiss(TokenType::IdentifierLiteral) {
             return Err(ParsingError::ExpectedIdentifier {
                 span: self.peek().span,
                 found: self.peek().ty,
@@ -1590,7 +1590,7 @@ impl<'arena> Parser<'_, 'arena> {
             Some(self.expect_identifier()?)
         };
 
-        let generics = if can_have_generics && self.match_tok(TokenType::LessThan) {
+        let generics = if can_have_generics && self.match_tok_dismiss(TokenType::LessThan) {
             self.parse_function_generics()?
         } else {
             vec![]
@@ -1600,9 +1600,9 @@ impl<'arena> Parser<'_, 'arena> {
 
         self.expect(TokenType::ParenLeft)?;
 
-        while !self.match_tok(TokenType::ParenRight) {
+        while !self.match_tok_dismiss(TokenType::ParenRight) {
             if !arguments.is_empty() {
-                if !self.match_tok(TokenType::Comma) {
+                if !self.match_tok_dismiss(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
                         span: self.peek().span,
                         found: self.peek(),
@@ -1610,7 +1610,7 @@ impl<'arena> Parser<'_, 'arena> {
                 }
 
                 // for trailing comma
-                if self.match_tok(TokenType::ParenRight) {
+                if self.match_tok_dismiss(TokenType::ParenRight) {
                     break;
                 }
             }
@@ -1621,13 +1621,13 @@ impl<'arena> Parser<'_, 'arena> {
             arguments.push(Argument::new(TypeRef::parse(self)?, name));
         }
 
-        let return_type = if self.match_tok(TokenType::ReturnType) {
+        let return_type = if self.match_tok_dismiss(TokenType::ReturnType) {
             TypeRef::parse(self)?
         } else {
             TypeRef::Void(self.peek().span, 0)
         };
 
-        let body = if !needs_body && self.match_tok(TokenType::Semicolon) {
+        let body = if !needs_body && self.match_tok_dismiss(TokenType::Semicolon) {
             None
         } else {
             Some(match self.peek().ty {
@@ -1676,12 +1676,12 @@ impl<'arena> Parser<'_, 'arena> {
     ) -> Result<Vec<Generic<'arena>>, ParsingError<'arena>> {
         let mut generics = vec![];
 
-        while !self.match_tok(TokenType::GreaterThan) {
+        while !self.match_tok_dismiss(TokenType::GreaterThan) {
             if !generics.is_empty() {
                 self.expect(TokenType::Comma)?;
 
                 // trailing comma
-                if self.match_tok(TokenType::GreaterThan) {
+                if self.match_tok_dismiss(TokenType::GreaterThan) {
                     break;
                 }
             }

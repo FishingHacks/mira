@@ -8,7 +8,7 @@ pub mod token;
 pub use error::{LexingError, LexingErrorDiagnosticsExt, LexingErrorEmitterExt};
 pub use token::{Literal, NumberType, Token, TokenType};
 
-use crate::token::{Delimiter, TokenTree};
+pub use crate::token::{Delimiter, TTDelim, TokenTree};
 #[macro_use]
 mod quote;
 
@@ -200,12 +200,12 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
                 if !errs.is_empty() {
                     toks = Vec::new();
                 } else {
-                    toks.push(TokenTree::Delimited {
+                    toks.push(TokenTree::Delimited(TTDelim {
                         open_span,
                         close_span,
                         delimiter,
                         children,
-                    });
+                    }));
                 }
             } else {
                 match self.int_scan_token() {
@@ -1168,7 +1168,6 @@ mod test {
         expected_tokens: &[(TokenType, Option<Literal<'_>>)],
         ctx: SharedCtx<'_>,
     ) {
-        let eof_token = (TokenType::Eof, None);
         let tokens = get_tokens(ctx, src).expect("unexpected errors");
         println!("Doc Comments:");
         ctx.with_all_doc_comments(|i, s| println!("#{i}: {s:?}"));
@@ -1195,10 +1194,7 @@ mod test {
             panic!("Excessive tokens")
         }
         assert_eq!(tokens.len(), expected_tokens.len());
-        for (tok, expected) in tokens
-            .iter()
-            .zip(expected_tokens.iter().chain(std::iter::once(&eof_token)))
-        {
+        for (tok, expected) in tokens.iter().zip(expected_tokens.iter()) {
             let literals_eq = (tok.literal.is_none() && expected.1.is_none())
                 || (tok
                     .literal

@@ -6,26 +6,26 @@ use std::{
 
 use mira_context::SharedCtx;
 use mira_errors::{Diagnostic, Diagnostics, pluralize};
-use mira_lexer::{Token, TokenType, token::IdentDisplay};
+use mira_lexer::{
+    Delimiter, Literal, TTDelim, Token, TokenTree as TT, TokenType, token::IdentDisplay,
+};
 use mira_macros::ErrorData;
 use mira_spans::{BytePos, Ident, SourceFile, Span, SpanData, Symbol, interner::SpanInterner};
 
-use crate::tokenstream::BorrowedTokenStream;
+use crate::{TokenStream, expand::pat_parser::parse_stream};
 
 use super::{
     ExpandContext, Macro, MacroError, MacroErrorDiagnosticsExt, MacroParser, MatcherLoc,
     NamedMatch, ParseResult, SingleMatch, TokenTree, builtin_macros, compute_locs,
-    pat_parser::parse_token_tree,
-    pat_parser::{ParenType, match_paren},
 };
 
 /// returns None if any errors occurred, which will be put into `diagnostics`.
-pub fn expand_tokens<'arena>(
-    ctx: SharedCtx<'arena>,
+pub fn expand_tokens<'ctx>(
+    ctx: SharedCtx<'ctx>,
     file: Arc<SourceFile>,
-    tokens: Vec<Token<'arena>>,
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Option<Vec<Token<'arena>>> {
+    tokens: Vec<TT<'ctx>>,
+    diagnostics: &mut Diagnostics<'ctx>,
+) -> Option<Vec<TT<'ctx>>> {
     let eof_span = ctx.intern_span(SpanData::new(BytePos::from_u32(file.len()), 1, file.id));
     let mut expander = MacroExpander::new(ctx, file);
     match expander.expand_macros(&tokens, eof_span, diagnostics, true) {
@@ -40,146 +40,145 @@ struct MacroExpander<'arena> {
     ctx: ExpandContext<'arena>,
 }
 
-impl<'arena> MacroExpander<'arena> {
-    fn new(ctx: SharedCtx<'arena>, file: Arc<SourceFile>) -> Self {
+impl<'ctx> MacroExpander<'ctx> {
+    fn new(ctx: SharedCtx<'ctx>, file: Arc<SourceFile>) -> Self {
         Self {
             macros: HashMap::new(),
             ctx: ExpandContext::new(ctx, file),
         }
     }
 
+    pub fn does_expand(tokens: &[TT<'ctx>]) -> bool {
+        tokens.iter().any(|v| match v {
+            TT::Delimited(v) => Self::does_expand(&v.children),
+            TT::Token(t) => matches!(t.ty, TokenType::MacroInvocation | TokenType::MacroDef),
+        })
+    }
+
     fn expand_macros<'a>(
         &mut self,
-        tokens: &'a [Token<'arena>],
-        eof_span: Span<'arena>,
-        diagnostics: &mut Diagnostics<'arena>,
+        tokens: &'a [TT<'ctx>],
+        eof_span: Span<'ctx>,
+        diagnostics: &mut Diagnostics<'ctx>,
         can_define_macros: bool,
-    ) -> Result<Cow<'a, [Token<'arena>]>, ()> {
+    ) -> Result<Cow<'a, [TT<'ctx>]>, ()> {
         macro_rules! err {
             ($v:expr) => {
-                $v.map_err(|v| _ = diagnostics.add_err(v))?
+                $v.map_err(|v| _ = diagnostics.add_err(v))
             };
+        }
+        if !Self::does_expand(tokens) {
+            return Ok(Cow::Borrowed(tokens));
         }
         let mut has_err = false;
 
-        let mut tokens = BorrowedTokenStream::new(tokens, eof_span);
-        let mut is_macro = false;
-        while !tokens.is_at_end() {
-            match tokens.eat_with_doc_comments().ty {
-                TokenType::MacroDef if !can_define_macros => {
-                    diagnostics.add_unexpected_token(tokens.current().span);
-                    has_err = true;
-                    is_macro = true;
-                    break;
-                }
-                TokenType::MacroInvocation | TokenType::MacroDef => {
-                    is_macro = true;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        if !is_macro {
-            return Ok(Cow::Borrowed(tokens.token_holder()));
-        }
+        let mut tokens = TokenStream::new(tokens, eof_span);
         let mut toks = Vec::with_capacity(tokens.pos());
 
-        // push all the tokens up until the macro into the newly created tokens list
-        toks.extend_from_slice(&tokens.token_holder()[..tokens.pos() - 1]);
-
-        while !tokens.is_at_end() {
-            if tokens.current().ty == TokenType::MacroDef {
-                let name = err!(tokens.expect(TokenType::IdentifierLiteral)).string_literal();
-                let name_span = tokens.current().span;
-                let start_span = err!(tokens.expect(TokenType::CurlyLeft)).span;
-                let content = err!(match_paren(&mut tokens, ParenType::Curly).ok_or(
-                    MacroError::UnmatchedParen(start_span, tokens.current().span)
-                ));
+        while let Some(p) = tokens.eat_with_doc_comments() {
+            let t = match p {
+                TT::Delimited(delim) => {
+                    match self.expand_macros(
+                        &delim.children,
+                        delim.close_span,
+                        diagnostics,
+                        can_define_macros,
+                    ) {
+                        Err(()) => has_err = true,
+                        Ok(v) => {
+                            // TODO: this should be able to be done without allocating in the case
+                            // of Cow::Borrowed by reusing the data it got (and, in turn, taking
+                            // ownership of the tt). This however is not possible without drain
+                            // iterator, which would make macro definitions and macro invocations
+                            // kinda painful, remove(0), which is slow, or a custom unsafe data
+                            // structure.
+                            toks.push(TT::Delimited(TTDelim {
+                                children: v.into_owned().into_boxed_slice(),
+                                ..*delim
+                            }));
+                        }
+                    }
+                    continue;
+                }
+                &TT::Token(token) => match token.ty {
+                    TokenType::MacroDef if can_define_macros => token,
+                    TokenType::MacroInvocation => token,
+                    _ => {
+                        toks.push(TT::Token(token));
+                        continue;
+                    }
+                },
+            };
+            if t.ty == TokenType::MacroDef {
+                let name = err!(tokens.expect(TokenType::IdentifierLiteral));
+                let content = err!(tokens.expect_delim(Delimiter::Curlies));
+                let Ok(name) = name else { continue };
+                let Ok(content) = content else { continue };
                 match Self::parse_macro_def(
-                    Ident::new(name, name_span),
-                    BorrowedTokenStream::new(content, tokens.current().span),
+                    Ident::new(name.string_literal(), name.span),
+                    content.into(),
                     diagnostics,
                     self.ctx.ctx.span_interner,
                 ) {
-                    Ok(v) if can_define_macros => drop(self.macros.insert(name, v)),
-                    Ok(_) => {}
+                    Ok(v) => drop(self.macros.insert(name.string_literal(), v)),
                     Err(()) => has_err = true,
                 }
-            } else if tokens.current().ty == TokenType::MacroInvocation {
-                let name = tokens.current().string_literal();
-                let name_span = tokens.current().span;
-                let tok = err!(tokens.expect_one_of(&[
-                    TokenType::ParenLeft,
-                    TokenType::BracketLeft,
-                    TokenType::CurlyLeft
-                ]));
-                let paren = ParenType::from_tt(tok.ty).unwrap();
+            } else {
+                let name = t.string_literal();
+                let p = match tokens.eat() {
+                    Some(TT::Delimited(v)) => v,
+                    _ => {
+                        err!(tokens.expect_one_of(&[
+                            TokenType::ParenOpen,
+                            TokenType::BracketOpen,
+                            TokenType::CurlyOpen
+                        ]));
+                        unreachable!();
+                    }
+                };
+
                 if builtin_macros::get_builtin_macro(&name).is_none()
                     && !self.macros.contains_key(&name)
                 {
-                    diagnostics.add_cannot_find_macro(name_span, name);
+                    diagnostics.add_cannot_find_macro(t.span, name);
                     has_err = true;
                 }
-                let content = err!(
-                    match_paren(&mut tokens, paren)
-                        .ok_or(MacroError::UnmatchedParen(tok.span, tokens.current().span))
-                );
-                if let Ok(content) =
-                    self.expand_macros(content, tokens.current().span, diagnostics, false)
-                {
-                    let output = if let Some(macro_fn) = builtin_macros::get_builtin_macro(&name) {
-                        let res = macro_fn(
-                            self.ctx.ctx,
-                            tokens
-                                .current()
-                                .span
-                                .combine_with([name_span], self.ctx.ctx.span_interner),
-                            &content,
-                            diagnostics,
-                        );
-                        match res {
-                            Ok(v) => v,
-                            Err(()) => {
-                                has_err = true;
-                                vec![]
-                            }
-                        }
-                    } else if let Some(macro_) = self.macros.get(&name) {
-                        let mut output = Vec::new();
-                        if let Err(e) = expand_macro(
-                            macro_,
-                            &content,
-                            tokens.current().span,
-                            &mut output,
-                            &self.ctx,
-                        ) {
-                            diagnostics.add(e);
-                            has_err = true;
-                        }
-                        output
-                    } else {
-                        vec![]
-                    };
-                    match self.expand_macros(&output, tokens.current().span, diagnostics, true) {
-                        Ok(Cow::Owned(v)) => toks.extend(v),
-                        Ok(Cow::Borrowed(v)) => toks.extend_from_slice(v),
-                        Err(()) => has_err = true,
-                    }
-                }
-            } else {
-                unreachable!();
-            }
+                let Ok(content) = self.expand_macros(&p.children, p.close_span, diagnostics, false)
+                else {
+                    has_err = true;
+                    continue;
+                };
 
-            while !tokens.is_at_end() {
-                let tok = tokens.eat_with_doc_comments();
-                match tok.ty {
-                    TokenType::MacroDef if !can_define_macros => {
-                        diagnostics.add_unexpected_token(tok.span);
-                        has_err = true;
-                        break;
+                let output = if let Some(macro_fn) = builtin_macros::get_builtin_macro(&name) {
+                    let span = t
+                        .span
+                        .combine_with([p.close_span], self.ctx.ctx.span_interner);
+                    let res = macro_fn(self.ctx.ctx, span, p.into(), diagnostics);
+                    match res {
+                        Ok(v) => v,
+                        Err(()) => {
+                            has_err = true;
+                            vec![]
+                        }
                     }
-                    TokenType::MacroInvocation | TokenType::MacroDef => break,
-                    _ => toks.push(tok),
+                } else if let Some(macro_) = self.macros.get(&name) {
+                    let mut output = Vec::new();
+                    if let Err(e) =
+                        expand_macro(macro_, &content, p.close_span, &mut output, &self.ctx)
+                    {
+                        diagnostics.add(e);
+                        has_err = true;
+                    }
+                    output
+                } else {
+                    vec![]
+                };
+                // TODO: change this to the span of the closing curly of the applied macro branch
+                // or to a dummy span in the case of builtin macros.
+                match self.expand_macros(&output, p.close_span, diagnostics, true) {
+                    Ok(Cow::Owned(v)) => toks.extend(v),
+                    Ok(Cow::Borrowed(v)) => toks.extend_from_slice(v),
+                    Err(()) => has_err = true,
                 }
             }
         }
@@ -191,12 +190,13 @@ impl<'arena> MacroExpander<'arena> {
     }
 
     fn parse_macro_def(
-        name: Ident<'arena>,
+        name: Ident<'ctx>,
         // (...pat...) => { ...content... }; repeating
-        mut tokens: BorrowedTokenStream<'arena, '_>,
-        diagnostics: &mut Diagnostics<'arena>,
-        span_interner: &SpanInterner<'arena>,
-    ) -> Result<Macro<'arena>, ()> {
+        mut tokens: TokenStream<'_, 'ctx>,
+        diagnostics: &mut Diagnostics<'ctx>,
+        span_interner: &SpanInterner<'ctx>,
+    ) -> Result<Macro<'ctx>, ()> {
+        let s = <&TTDelim<'ctx> as Into<TokenStream<'_, 'ctx>>>::into;
         macro_rules! err {
             ($v:expr) => {
                 $v.map_err(|v| _ = diagnostics.add_err(v))?
@@ -211,17 +211,9 @@ impl<'arena> MacroExpander<'arena> {
         let mut has_err = false;
         let mut cases = Vec::new();
         while !tokens.is_at_end() {
-            err!(tokens.expect(TokenType::ParenLeft));
-            let paren_start_span = tokens.current().span;
-            let def = err!(match_paren(&mut tokens, ParenType::Paren).ok_or(
-                MacroError::UnmatchedParen(paren_start_span, tokens.eof_span())
-            ));
-            let def = parse_token_tree(
-                BorrowedTokenStream::new(def, tokens.current().span),
-                true,
-                diagnostics,
-                span_interner,
-            )?;
+            let param_delim = err!(tokens.expect_delim(Delimiter::Parenthesis));
+
+            let def = parse_stream(&mut s(param_delim), true, diagnostics, span_interner)?;
             let def = compute_locs(&def);
             let mut defined_meta_vars = HashSet::new();
             for loc in &def {
@@ -241,16 +233,10 @@ impl<'arena> MacroExpander<'arena> {
             }
             err!(tokens.expect(TokenType::Equal));
             err!(tokens.expect(TokenType::GreaterThan));
-            err!(tokens.expect(TokenType::CurlyLeft));
-            let body = err!(match_paren(&mut tokens, ParenType::Curly).ok_or(
-                MacroError::UnmatchedParen(paren_start_span, tokens.eof_span())
-            ));
-            let body = parse_token_tree(
-                BorrowedTokenStream::new(body, tokens.current().span),
-                false,
-                diagnostics,
-                span_interner,
-            )?;
+
+            let body_delim = err!(tokens.expect_delim(Delimiter::Curlies));
+
+            let body = parse_stream(&mut s(body_delim), false, diagnostics, span_interner)?;
             err!(tokens.expect(TokenType::Semicolon));
             cases.push((def.into_boxed_slice(), body.into_boxed_slice()));
         }
@@ -260,16 +246,16 @@ impl<'arena> MacroExpander<'arena> {
 
 fn expand_macro<'arena>(
     r#macro: &Macro<'arena>,
-    input: &[Token<'arena>],
+    input: &[TT<'arena>],
     end_span: Span<'arena>,
-    output: &mut Vec<Token<'arena>>,
+    output: &mut Vec<TT<'arena>>,
     ctx: &ExpandContext<'arena>,
 ) -> Result<(), Diagnostic<'arena>> {
     let mut err = None;
     let mut res = None;
     let mut parser = MacroParser::new();
     for (i, (pat, body)) in r#macro.cases.iter().enumerate() {
-        match parser.parse(BorrowedTokenStream::new(input, end_span), pat, ctx) {
+        match parser.parse(input, end_span, pat, ctx) {
             ParseResult::Success(values) => {
                 res = Some((values, body));
                 break;
@@ -306,13 +292,29 @@ fn expand_macro<'arena>(
 fn expand_body<'arena>(
     body: &[TokenTree<'arena>],
     matches: &HashMap<Ident<'arena>, NamedMatch<'arena>>,
-    output: &mut Vec<Token<'arena>>,
+    output: &mut Vec<TT<'arena>>,
     indices: &mut Vec<usize>,
 ) -> Result<(), Diagnostic<'arena>> {
     for part in body {
         match part {
-            TokenTree::Token(token) => output.push(*token),
-            TokenTree::Tokens(tokens) => output.extend(tokens),
+            TokenTree::Delimited {
+                children,
+                delim,
+                open,
+                close,
+            } => {
+                let mut new = Vec::with_capacity(children.len());
+                expand_body(children, matches, &mut new, indices);
+                let v = TTDelim {
+                    open_span: *open,
+                    close_span: *close,
+                    delimiter: *delim,
+                    children: new.into_boxed_slice(),
+                };
+                output.push(TT::Delimited(v));
+            }
+            TokenTree::Token(token) => output.push(TT::Token(*token)),
+            TokenTree::Tokens(tokens) => output.extend(tokens.iter().map(|v| TT::Token(*v))),
             TokenTree::Sequence(repetition) => {
                 let mut amount_of_values = None;
                 part.meta_vars(|var2| {
@@ -340,7 +342,7 @@ fn expand_body<'arena>(
                     if i != 0
                         && let Some(tok) = repetition.separator
                     {
-                        output.push(tok);
+                        output.push(TT::Token(tok));
                     }
                     indices.push(i);
                     let res = expand_body(&repetition.content, matches, output, indices);
@@ -364,7 +366,14 @@ fn expand_body<'arena>(
                         )
                         .to_error());
                     }
-                    NamedMatch::ParsedSingle(SingleMatch::Token(tok)) => output.push(*tok),
+                    NamedMatch::ParsedSingle(v) => match v {
+                        SingleMatch::TokenTree(tt) => output.push(tt.clone()),
+                        SingleMatch::Ident(i) => output.push(TT::Token(Token::new(
+                            TokenType::IdentifierLiteral,
+                            Some(Literal::String(i.symbol())),
+                            i.span(),
+                        ))),
+                    },
                 }
             }
             TokenTree::MetaVarDecl(..) => unreachable!(),

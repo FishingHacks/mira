@@ -14,225 +14,7 @@ use mira_spans::{
     interner::{SpanInterner, Symbol},
 };
 
-use super::{
-    Parser, Statement,
-    statement::{FunctionContract, display_contract},
-    types::TypeRef,
-};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Path<'ctx> {
-    pub entries: Vec<(Ident<'ctx>, Vec<TypeRef<'ctx>>)>,
-    pub span: Span<'ctx>,
-}
-
-impl Display for Path<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for i in 0..self.entries.len() {
-            if i != 0 {
-                f.write_str("::")?;
-            }
-
-            Display::fmt(&self.entries[i].0, f)?;
-            if !self.entries[i].1.is_empty() {
-                f.write_char('<')?;
-                for type_idx in 0..self.entries[i].1.len() {
-                    if type_idx != 0 {
-                        f.write_str(", ")?;
-                    }
-                    Display::fmt(&self.entries[i].1[type_idx], f)?;
-                }
-                f.write_char('>')?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl<'ctx> Path<'ctx> {
-    pub fn iter(&self) -> impl Iterator<Item = (&Ident<'ctx>, &[TypeRef<'ctx>])> {
-        self.entries
-            .iter()
-            .map(|(name, generics)| (name, generics.as_slice()))
-    }
-    pub fn push(&mut self, name: Ident<'ctx>, generics: Vec<TypeRef<'ctx>>) {
-        self.entries.push((name, generics));
-    }
-    pub fn pop(&mut self) -> Option<(Ident<'ctx>, Vec<TypeRef<'ctx>>)> {
-        // ensure this is at least 1 element
-        if self.entries.len() > 1 {
-            self.entries.pop()
-        } else {
-            None
-        }
-    }
-    pub fn new(entry: Ident<'ctx>, generics: Vec<TypeRef<'ctx>>) -> Self {
-        Self {
-            entries: vec![(entry, generics)],
-            span: entry.span(),
-        }
-    }
-
-    fn parse_generics(
-        parser: &mut Parser<'_, 'ctx>,
-    ) -> Result<Vec<TypeRef<'ctx>>, ParsingError<'ctx>> {
-        let mut types = vec![];
-
-        while !parser.match_tok(TokenType::GreaterThan) {
-            if !types.is_empty() {
-                parser.expect(TokenType::Comma)?;
-            }
-
-            types.push(TypeRef::parse(parser)?);
-        }
-        Ok(types)
-    }
-    pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'ctx>) {
-        self.span = self.entries[0]
-            .0
-            .span()
-            .combine_with(self.entries[1..].iter().map(|v| v.0.span()), span_interner);
-    }
-
-    /// Parses a path where the generics are delimited with < ... >
-    pub fn parse_ty(parser: &mut Parser<'_, 'ctx>) -> Result<Self, ParsingError<'ctx>> {
-        let name = parser.expect_identifier()?;
-        let mut path = if parser.match_tok(TokenType::LessThan) {
-            Self::new(name, Self::parse_generics(parser)?)
-        } else {
-            Self::new(name, Vec::new())
-        };
-
-        loop {
-            if !parser.match_tok(TokenType::NamespaceAccess) {
-                break;
-            }
-            let subpath = parser.expect_identifier()?;
-            if parser.match_tok(TokenType::LessThan) {
-                path.push(subpath, Self::parse_generics(parser)?);
-            } else {
-                path.push(subpath, Vec::new());
-            }
-        }
-        path.readjust_self_span(parser.ctx.span_interner);
-
-        Ok(path)
-    }
-
-    /// Parses a path where the generics are delimited with ::< ... >
-    pub fn parse(parser: &mut Parser<'_, 'ctx>) -> Result<Self, ParsingError<'ctx>> {
-        let name = parser.expect_identifier()?;
-        if !parser.match_tok(TokenType::NamespaceAccess) {
-            return Ok(Self::new(name, Vec::new()));
-        }
-        let mut path;
-        if parser.match_tok(TokenType::LessThan) {
-            path = Self::new(name, Self::parse_generics(parser)?);
-            if !parser.match_tok(TokenType::NamespaceAccess) {
-                return Ok(path);
-            }
-        } else {
-            path = Self::new(name, Vec::new());
-        };
-
-        loop {
-            let subpath = parser.expect_identifier()?;
-            if !parser.match_tok(TokenType::NamespaceAccess) {
-                path.push(subpath, Vec::new());
-                break;
-            }
-            if parser.match_tok(TokenType::LessThan) {
-                path.push(subpath, Self::parse_generics(parser)?);
-                if !parser.match_tok(TokenType::NamespaceAccess) {
-                    break;
-                }
-            } else {
-                path.push(subpath, Vec::new());
-            }
-        }
-        path.readjust_self_span(parser.ctx.span_interner);
-
-        Ok(path)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathWithoutGenerics<'ctx> {
-    pub entries: Vec<Ident<'ctx>>,
-    pub span: Span<'ctx>,
-}
-
-impl<'ctx> PathWithoutGenerics<'ctx> {
-    pub fn iter(&self) -> std::slice::Iter<'_, Ident<'ctx>> {
-        self.entries.iter()
-    }
-
-    pub fn iter_with_pathbuf(&self) -> impl Iterator<Item = (&Ident<'ctx>, &[TypeRef<'ctx>])> {
-        #[allow(trivial_casts)]
-        self.entries.iter().map(|v| (v, &[] as &[_]))
-    }
-
-    pub fn to_normal_path(&self) -> Path<'ctx> {
-        Path {
-            entries: self
-                .entries
-                .iter()
-                .map(|&ident| (ident, Vec::new()))
-                .collect(),
-            span: self.span,
-        }
-    }
-
-    pub fn push(&mut self, name: Ident<'ctx>) {
-        self.entries.push(name);
-    }
-    pub fn pop(&mut self) -> Option<Ident<'ctx>> {
-        // ensure this is at least 1 element
-        if self.entries.len() > 1 {
-            self.entries.pop()
-        } else {
-            None
-        }
-    }
-    pub fn new(entry: Ident<'ctx>) -> Self {
-        Self {
-            span: entry.span(),
-            entries: vec![entry],
-        }
-    }
-    pub fn readjust_self_span(&mut self, span_interner: &SpanInterner<'ctx>) {
-        self.span = self.entries[0]
-            .span()
-            .combine_with(self.entries[1..].iter().map(Ident::span), span_interner);
-    }
-    pub fn parse(parser: &mut Parser<'_, 'ctx>) -> Result<Self, ParsingError<'ctx>> {
-        let mut path = Self::new(parser.expect_identifier()?);
-
-        while parser.match_tok(TokenType::NamespaceAccess) {
-            let name = parser.expect_identifier()?;
-            path.push(name);
-        }
-
-        path.readjust_self_span(parser.ctx.span_interner);
-        Ok(path)
-    }
-
-    pub fn as_slice(&self) -> &[Ident<'ctx>] {
-        &self.entries
-    }
-}
-
-impl Display for PathWithoutGenerics<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for i in 0..self.entries.len() {
-            if i != 0 {
-                f.write_str("::")?;
-            }
-            Display::fmt(&self.entries[i], f)?;
-        }
-        Ok(())
-    }
-}
+use super::{FunctionContract, Parser, Statement, display_contract, types::TypeRef};
 
 #[derive(Debug, Clone)]
 pub enum ArrayLiteral<'ctx> {
@@ -831,7 +613,7 @@ impl<'ctx> Parser<'_, 'ctx> {
 
     fn parse_asm(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let span1 = self.eat().span;
-        let volatile = self.match_tok(TokenType::Volatile);
+        let volatile = self.match_tok_dismiss(TokenType::Volatile);
         self.expect(TokenType::ParenLeft)?;
 
         let mut replacers: Vec<(String, String)> = Vec::new();
@@ -839,10 +621,10 @@ impl<'ctx> Parser<'_, 'ctx> {
         let mut inputs = Vec::new();
         let mut output = TypeRef::Void(span1, 0);
         let mut asm = String::new();
-        while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
+        while !self.matches_dismiss(&[TokenType::ParenRight, TokenType::Colon]) {
             if !asm.is_empty() {
                 self.expect(TokenType::Comma)?;
-                if self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
+                if self.matches_dismiss(&[TokenType::ParenRight, TokenType::Colon]) {
                     break;
                 }
             }
@@ -889,15 +671,15 @@ impl<'ctx> Parser<'_, 'ctx> {
                 }
             };
 
-            if !self.match_tok(TokenType::Colon) {
+            if !self.match_tok_dismiss(TokenType::Colon) {
                 break 'out self.expect(TokenType::ParenRight)?.span;
             }
 
             // inputs
-            while !self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
+            while !self.matches_dismiss(&[TokenType::ParenRight, TokenType::Colon]) {
                 if !inputs.is_empty() {
                     self.expect(TokenType::Comma)?;
-                    if self.matches(&[TokenType::ParenRight, TokenType::Colon]) {
+                    if self.matches_dismiss(&[TokenType::ParenRight, TokenType::Colon]) {
                         break;
                     }
                 }
@@ -928,7 +710,7 @@ impl<'ctx> Parser<'_, 'ctx> {
             if self.current().ty != TokenType::Colon {
                 break 'out self.expect(TokenType::ParenRight)?.span;
             }
-            if self.match_tok(TokenType::ParenRight) {
+            if self.match_tok_dismiss(TokenType::ParenRight) {
                 break 'out self.last().span;
             }
             if !registers.is_empty() {
@@ -1040,7 +822,7 @@ impl<'ctx> Parser<'_, 'ctx> {
     fn pipe_operator(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.range()?;
 
-        while self.match_tok(TokenType::PipeOperator) {
+        while self.match_tok_dismiss(TokenType::PipeOperator) {
             let call = self.indexed()?;
             match call {
                 Expression::FunctionCall {
@@ -1066,7 +848,7 @@ impl<'ctx> Parser<'_, 'ctx> {
     fn range(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.term()?;
 
-        while self.matches(&[TokenType::Range, TokenType::RangeInclusive]) {
+        while self.matches_dismiss(&[TokenType::Range, TokenType::RangeInclusive]) {
             let inclusive = self.current().ty == TokenType::RangeInclusive;
             let span = self.current().span;
             let right_side = Box::new(self.parse_expression()?);
@@ -1084,7 +866,7 @@ impl<'ctx> Parser<'_, 'ctx> {
     fn term(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.factor()?;
 
-        while self.matches(&[
+        while self.matches_dismiss(&[
             TokenType::Minus,
             TokenType::Plus,
             TokenType::PlusAssign,
@@ -1137,7 +919,7 @@ impl<'ctx> Parser<'_, 'ctx> {
             let span = expr
                 .span()
                 .combine_with([right.span()], self.ctx.span_interner);
-            if self.match_tok(TokenType::Equal) {
+            if self.match_tok_dismiss(TokenType::Equal) {
                 assign_set!(expr, right, op, span);
             } else {
                 expr = Expression::binary(op, span, expr, right);
@@ -1148,7 +930,7 @@ impl<'ctx> Parser<'_, 'ctx> {
     }
 
     fn unary(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        if self.matches(&[TokenType::Minus, TokenType::LogicalNot]) {
+        if self.matches_dismiss(&[TokenType::Minus, TokenType::LogicalNot]) {
             let operator = match self.current().ty {
                 TokenType::Minus => UnaryOp::Minus,
                 TokenType::LogicalNot => UnaryOp::Not,
@@ -1165,7 +947,7 @@ impl<'ctx> Parser<'_, 'ctx> {
 
     fn assignment(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let expr = self.type_cast()?;
-        if self.match_tok(TokenType::Equal) {
+        if self.match_tok_dismiss(TokenType::Equal) {
             let value = self.parse_expression()?;
             let span = expr
                 .span()
@@ -1182,7 +964,7 @@ impl<'ctx> Parser<'_, 'ctx> {
     fn type_cast(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.references()?;
 
-        while self.match_tok(TokenType::As) {
+        while self.match_tok_dismiss(TokenType::As) {
             let new_type = TypeRef::parse(self)?;
             let span = expr
                 .span()
@@ -1198,7 +980,7 @@ impl<'ctx> Parser<'_, 'ctx> {
     }
 
     fn references(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        if self.match_tok(TokenType::Ampersand) {
+        if self.match_tok_dismiss(TokenType::Ampersand) {
             let right = self.references()?;
             let span = right
                 .span()
@@ -1208,7 +990,7 @@ impl<'ctx> Parser<'_, 'ctx> {
                 span,
                 right_side: Box::new(right),
             })
-        } else if self.match_tok(TokenType::LogicalAnd) {
+        } else if self.match_tok_dismiss(TokenType::LogicalAnd) {
             let right = self.references()?;
             let span = right
                 .span()
@@ -1223,7 +1005,7 @@ impl<'ctx> Parser<'_, 'ctx> {
                 span,
                 right_side: Box::new(expr),
             })
-        } else if self.match_tok(TokenType::Asterix) {
+        } else if self.match_tok_dismiss(TokenType::Asterix) {
             let right = self.references()?;
             let span = right
                 .span()
@@ -1241,7 +1023,8 @@ impl<'ctx> Parser<'_, 'ctx> {
     fn indexed(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut expr = self.primary()?;
 
-        while self.matches(&[TokenType::BracketLeft, TokenType::ParenLeft, TokenType::Dot]) {
+        while self.matches_dismiss(&[TokenType::BracketLeft, TokenType::ParenLeft, TokenType::Dot])
+        {
             if self.current().ty == TokenType::ParenLeft {
                 // function call
                 let mut arguments = vec![];
@@ -1345,12 +1128,12 @@ impl<'ctx> Parser<'_, 'ctx> {
     ) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let mut generics = Vec::new();
         // ::<...>
-        if self.match_tok(TokenType::NamespaceAccess) {
+        if self.match_tok_dismiss(TokenType::NamespaceAccess) {
             self.expect(TokenType::LessThan)?;
-            while !self.match_tok(TokenType::GreaterThan) {
+            while !self.match_tok_dismiss(TokenType::GreaterThan) {
                 if !generics.is_empty() {
                     self.expect(TokenType::Comma)?;
-                    if self.match_tok(TokenType::GreaterThan) {
+                    if self.match_tok_dismiss(TokenType::GreaterThan) {
                         break;
                     }
                 }
@@ -1363,10 +1146,10 @@ impl<'ctx> Parser<'_, 'ctx> {
         }
         let mut arguments = Vec::new();
 
-        while !self.match_tok(TokenType::ParenRight) {
+        while !self.match_tok_dismiss(TokenType::ParenRight) {
             if !arguments.is_empty() {
                 self.expect(TokenType::Comma)?;
-                if self.match_tok(TokenType::ParenRight) {
+                if self.match_tok_dismiss(TokenType::ParenRight) {
                     break;
                 }
             }
@@ -1385,7 +1168,7 @@ impl<'ctx> Parser<'_, 'ctx> {
 
     fn primary(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
         let span1 = self.peek().span;
-        if self.match_tok(TokenType::Dot) {
+        if self.match_tok_dismiss(TokenType::Dot) {
             // .{} / .[] / .()
             let ty = self.peek().ty;
             if ty == TokenType::ParenLeft || ty == TokenType::BracketLeft {
@@ -1396,11 +1179,11 @@ impl<'ctx> Parser<'_, 'ctx> {
                     TokenType::BracketRight
                 };
                 let mut elements = Vec::new();
-                while !self.match_tok(matching_tok) {
+                while !self.match_tok_dismiss(matching_tok) {
                     if !elements.is_empty() {
                         self.expect(TokenType::Comma)?;
 
-                        if self.match_tok(matching_tok) {
+                        if self.match_tok_dismiss(matching_tok) {
                             break;
                         }
                     }
@@ -1472,7 +1255,7 @@ impl<'ctx> Parser<'_, 'ctx> {
             return Ok(Expression::Literal(lit, self.eat().span));
         }
 
-        if self.match_tok(TokenType::ParenLeft) {
+        if self.match_tok_dismiss(TokenType::ParenLeft) {
             let expr = self.parse_expression()?;
             self.expect(TokenType::ParenRight)?;
             return Ok(expr);
@@ -1487,11 +1270,11 @@ impl<'ctx> Parser<'_, 'ctx> {
 
     fn try_array(&mut self) -> Result<Option<Expression<'ctx>>, ParsingError<'ctx>> {
         let span = self.peek().span;
-        if self.match_tok(TokenType::BracketLeft) {
+        if self.match_tok_dismiss(TokenType::BracketLeft) {
             let inner_span = self.current().span;
             let mut arr = vec![];
-            while !self.match_tok(TokenType::BracketRight) {
-                if arr.len() == 1 && self.match_tok(TokenType::Semicolon) {
+            while !self.match_tok_dismiss(TokenType::BracketRight) {
+                if arr.len() == 1 && self.match_tok_dismiss(TokenType::Semicolon) {
                     let amount = self.expect(TokenType::UIntLiteral)?.uint_literal().0 as usize;
                     self.expect(TokenType::BracketRight)?;
                     return Ok(Some(Expression::Literal(
@@ -1504,14 +1287,14 @@ impl<'ctx> Parser<'_, 'ctx> {
                 }
                 if !arr.is_empty() {
                     // expect a comma
-                    if !self.match_tok(TokenType::Comma) {
+                    if !self.match_tok_dismiss(TokenType::Comma) {
                         return Err(ParsingError::ExpectedArrayElement {
                             span: self.peek().span,
                             found: self.peek().ty,
                         });
                     }
                     // in order to allow stuff like [1, 2, 3, ]
-                    if self.match_tok(TokenType::BracketRight) {
+                    if self.match_tok_dismiss(TokenType::BracketRight) {
                         break;
                     }
                 }
@@ -1538,16 +1321,16 @@ impl<'ctx> Parser<'_, 'ctx> {
         &mut self,
     ) -> Option<Result<HashMap<Ident<'ctx>, (Span<'ctx>, Expression<'ctx>)>, ParsingError<'ctx>>>
     {
-        if self.match_tok(TokenType::CurlyLeft) {
+        if self.match_tok_dismiss(TokenType::CurlyLeft) {
             let mut obj = HashMap::new();
-            while !self.match_tok(TokenType::CurlyRight) {
+            while !self.match_tok_dismiss(TokenType::CurlyRight) {
                 if !obj.is_empty() {
                     // expect a comma
                     if let Err(e) = self.expect_one_of(&[TokenType::CurlyRight, TokenType::Comma]) {
                         return Some(Err(e));
                     }
                     // in order to allow stuff like [1, 2, 3, ]
-                    if self.match_tok(TokenType::CurlyRight) {
+                    if self.match_tok_dismiss(TokenType::CurlyRight) {
                         break;
                     }
                 }

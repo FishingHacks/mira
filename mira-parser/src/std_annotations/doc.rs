@@ -45,7 +45,7 @@ pub fn parse<'arena>(
         return Ok(DocAnnotation::DocComment(v));
     }
     tokens.expect_one_of(&[TokenType::StringLiteral, TokenType::IdentifierLiteral])?;
-    if tokens.match_tok(TokenType::StringLiteral) {
+    if tokens.match_tok_dismiss(TokenType::StringLiteral) {
         let v = ctx.add_doc_comment(tokens.current().string_literal().to_str());
         tokens.finish()?;
         Ok(DocAnnotation::DocComment(v))
@@ -55,7 +55,7 @@ pub fn parse<'arena>(
         tokens.eat();
         tokens.finish()?;
         Ok(DocAnnotation::HideItem)
-    } else if tokens.match_tok(TokenType::IdentifierLiteral) {
+    } else if tokens.match_tok_dismiss(TokenType::IdentifierLiteral) {
         Err(ParsingError::ArbitraryError {
             error: "Invalid doc modifier: Expected `hidden`".to_string(),
             label: String::new(),

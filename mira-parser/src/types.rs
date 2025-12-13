@@ -1,10 +1,10 @@
 use std::fmt::{Display, Write};
 
 use crate::error::ParsingError;
-use mira_lexer::TokenType;
+use mira_lexer::{Delimiter, TokenTree, TokenType};
 use mira_spans::{Ident, Span, interner::symbols};
 
-use super::{Parser, Path, expression::PathWithoutGenerics};
+use super::{Parser, Path, PathWithoutGenerics};
 
 pub static RESERVED_TYPE_NAMES: &[&str] = &[
     "str", "bool", "char", "void", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
@@ -152,128 +152,152 @@ impl<'arena> TypeRef<'arena> {
 
     pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
         let mut num_references = 0;
+        let span = parser.peek_span();
 
         while !parser.is_at_end() {
             // <type> = <subtype> | &<type>
             // <subtype> = [<sized-or-unsized>] | <identifier>
             // <sized-or-unsized> = <type>; <number> | <type>
 
-            if parser.match_tok(TokenType::Ampersand) {
+            if parser.match_tok_dismiss(TokenType::Ampersand) {
                 num_references += 1;
                 continue;
             }
-            if parser.match_tok(TokenType::LogicalAnd) {
+            if parser.match_tok_dismiss(TokenType::LogicalAnd) {
                 num_references += 2;
                 continue;
             }
 
-            let span = parser.peek().span;
-            if parser.match_tok(TokenType::BracketLeft) {
-                let child = Box::new(Self::parse(parser)?);
-                if parser.match_tok(TokenType::Semicolon) {
-                    // case [<type>; <amount>]
+            // arrays
+            if let Some(delim) = parser.match_delim(Delimiter::Brackets) {
+                let mut p = parser.subparser(delim.into());
+                let child = Box::new(TypeRef::parse(&mut p)?);
+
+                if p.match_tok_dismiss(TokenType::Semicolon) {
+                    // [<type>; <amount>]
                     let lit = parser.expect(TokenType::UIntLiteral)?.uint_literal().0;
-                    parser.expect(TokenType::BracketRight)?;
+                    parser.finish()?;
 
                     return Ok(Self::SizedArray {
                         num_references,
                         child,
                         number_elements: lit as usize,
-                        span: parser.span_from(span),
-                    });
-                } else {
-                    parser.expect(TokenType::BracketRight)?;
-                    return Ok(Self::UnsizedArray {
-                        num_references,
-                        child,
-                        span: parser.span_from(span),
+                        span: delim.full_span(p.ctx().span_interner),
                     });
                 }
-            } else if parser.match_tok(TokenType::LogicalNot) {
-                return Ok(Self::Reference {
+                parser.finish()?;
+                return Ok(Self::UnsizedArray {
                     num_references,
-                    type_name: Path::new(
-                        Ident::new(symbols::Types::NeverType, parser.current().span),
-                        Vec::new(),
-                    ),
-                    span: parser.span_from(span),
+                    child,
+                    span: delim.full_span(p.ctx().span_interner),
                 });
-            } else if parser.match_tok(TokenType::VoidLiteral) {
-                return Ok(Self::Void(parser.span_from(span), num_references));
-            } else if parser.peek().ty == TokenType::IdentifierLiteral {
-                let name = parser.peek().string_literal();
-                return if *name == "dyn" {
-                    Self::parse_dyn(parser, num_references, span)
-                } else {
-                    Ok(Self::Reference {
-                        num_references,
-                        type_name: Path::parse_ty(parser)?,
-                        span: parser.span_from(span),
-                    })
-                };
-            } else if parser.match_tok(TokenType::Fn) {
-                parser.expect(TokenType::ParenLeft)?;
-                let mut args = Vec::new();
-                while !parser.match_tok(TokenType::ParenRight) {
-                    if !args.is_empty() {
-                        if !parser.match_tok(TokenType::Comma) {
+            }
+
+            // tuples
+            if let Some(delim) = parser.match_delim(Delimiter::Parenthesis) {
+                let mut p = parser.subparser(delim.into());
+                let mut elements = Vec::new();
+                while !p.is_at_end() {
+                    if !elements.is_empty() {
+                        if !p.match_tok_dismiss(TokenType::Comma) {
                             return Err(ParsingError::ExpectedFunctionArgument {
-                                span: parser.peek().span,
-                                found: parser.peek(),
+                                span: p.peek_span(),
+                                found: p.peek_tok(),
                             });
                         }
 
                         // for trailing comma
-                        if parser.match_tok(TokenType::ParenRight) {
+                        if p.is_at_end() {
                             break;
                         }
                     }
 
-                    args.push(TypeRef::parse(parser)?);
+                    elements.push(TypeRef::parse(&mut p)?);
                 }
 
-                let return_ty = Box::new(if parser.match_tok(TokenType::ReturnType) {
-                    TypeRef::parse(parser)?
-                } else {
-                    TypeRef::Void(parser.span_from(span), 0)
-                });
-
-                return Ok(TypeRef::Function {
-                    return_ty,
-                    args,
-                    span: parser.span_from(span),
+                return Ok(Self::Tuple {
                     num_references,
-                });
-            } else if parser.match_tok(TokenType::ParenLeft) {
-                let mut elements = Vec::new();
-                while !parser.match_tok(TokenType::ParenRight) {
-                    if !elements.is_empty() {
-                        parser.expect(TokenType::Comma)?;
-
-                        if parser.match_tok(TokenType::ParenRight) {
-                            break;
-                        }
-                    }
-
-                    elements.push(TypeRef::parse(parser)?);
-                }
-
-                return Ok(TypeRef::Tuple {
-                    num_references,
-                    span: parser.span_from(span),
+                    span: delim.full_span(p.ctx().span_interner),
                     elements,
                 });
-            } else {
-                return Err(ParsingError::ExpectedType {
-                    span: parser.peek().span,
-                    found: parser.peek().ty,
-                });
             }
+
+            return if let Some(t) = parser.match_tok(TokenType::LogicalNot) {
+                let type_name =
+                    Path::new(Ident::new(symbols::Types::NeverType, t.span), Vec::new());
+                let span = span.combine_with([t.span], parser.ctx().span_interner);
+                Ok(Self::Reference {
+                    num_references,
+                    type_name,
+                    span,
+                })
+            } else if let Some(t) = parser.match_tok(TokenType::VoidLiteral) {
+                let span = span.combine_with([t.span], parser.ctx().span_interner);
+                Ok(Self::Void(span, num_references))
+            } else if let Some(TokenTree::Token(t)) = parser.peek() {
+                if *t.string_literal() == "dyn" {
+                    Self::parse_dyn(parser, num_references, span)
+                } else {
+                    let type_name = Path::parse_ty(parser)?;
+                    let span =
+                        span.combine_with([t.span, type_name.span], parser.ctx().span_interner);
+                    Ok(Self::Reference {
+                        num_references,
+                        type_name,
+                        span,
+                    })
+                }
+            } else if let Some(t) = parser.match_tok(TokenType::Fn) {
+                let arg_delim = parser.expect_delim(Delimiter::Parenthesis)?;
+                let mut argp = parser.subparser(arg_delim.into());
+                let mut args = Vec::new();
+                while !argp.is_at_end() {
+                    if !args.is_empty() {
+                        if !argp.match_tok_dismiss(TokenType::Comma) {
+                            return Err(ParsingError::ExpectedFunctionArgument {
+                                span: argp.peek_span(),
+                                found: argp.peek_tok(),
+                            });
+                        }
+
+                        // for trailing comma
+                        if argp.is_at_end() {
+                            break;
+                        }
+                    }
+
+                    args.push(TypeRef::parse(&mut argp)?);
+                }
+
+                let return_ty = Box::new(if parser.match_tok_dismiss(TokenType::ReturnType) {
+                    TypeRef::parse(parser)?
+                } else {
+                    TypeRef::Void(t.span, 0)
+                });
+
+                let span = span.combine_with(
+                    [
+                        t.span,
+                        return_ty.span(),
+                        arg_delim.open_span,
+                        arg_delim.close_span,
+                    ],
+                    parser.ctx().span_interner,
+                );
+                Ok(TypeRef::Function {
+                    return_ty,
+                    args,
+                    span,
+                    num_references,
+                })
+            } else {
+                break;
+            };
         }
 
         Err(ParsingError::ExpectedType {
-            span: parser.peek().span,
-            found: TokenType::Eof,
+            span: parser.peek_span(),
+            found: parser.peek_tok(),
         })
     }
 
@@ -286,14 +310,17 @@ impl<'arena> TypeRef<'arena> {
         let mut traits = vec![];
 
         loop {
-            if !traits.is_empty() && !parser.match_tok(TokenType::Plus) {
+            if !traits.is_empty() && !parser.match_tok_dismiss(TokenType::Plus) {
                 break;
             }
 
-            if parser.peek().ty != TokenType::IdentifierLiteral {
+            if let Some(TokenTree::Token(t)) = parser.peek()
+                && t.ty == TokenType::IdentifierLiteral
+            {
+                traits.push(PathWithoutGenerics::parse(parser)?);
+            } else {
                 break;
             }
-            traits.push(PathWithoutGenerics::parse(parser)?);
         }
 
         Ok(Self::DynReference {
@@ -421,22 +448,18 @@ pub struct Generic<'arena> {
 
 impl<'arena> Generic<'arena> {
     pub fn parse(parser: &mut Parser<'_, 'arena>) -> Result<Self, ParsingError<'arena>> {
-        let sized = !parser.match_tok(TokenType::Unsized);
+        let sized = !parser.match_tok_dismiss(TokenType::Unsized);
         let name = parser.expect_identifier()?;
         let mut bounds = Vec::new();
-        if !parser.match_tok(TokenType::Colon) {
+        if !parser.match_tok_dismiss(TokenType::Colon) {
             return Ok(Self {
                 sized,
                 name,
                 bounds,
             });
         }
-        while parser.peek().ty == TokenType::Plus || bounds.is_empty() {
-            if !bounds.is_empty() {
-                parser.expect(TokenType::Plus)?;
-            }
-
-            let span = parser.peek().span;
+        while parser.match_tok_dismiss(TokenType::Plus) || bounds.is_empty() {
+            let span = parser.peek_span();
             bounds.push((PathWithoutGenerics::parse(parser)?, span));
         }
         Ok(Self {

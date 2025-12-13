@@ -7,7 +7,7 @@ use std::{
 
 use crate::{error::ParsingError, std_annotations, tokenstream::TokenStream};
 use mira_context::SharedCtx;
-use mira_lexer::Token;
+use mira_lexer::TokenTree;
 use mira_spans::Span;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,8 +72,8 @@ impl Clone for Box<dyn ClonableAnnotation> {
 }
 
 pub type AnnotationParser = Box<
-    dyn for<'ctx> Fn(
-            TokenStream<'ctx>,
+    dyn for<'ctx, 'src> Fn(
+            TokenStream<'src, 'ctx>,
             SharedCtx<'ctx>,
         ) -> Result<Box<dyn ClonableAnnotation>, ParsingError<'ctx>>
         + Send
@@ -89,14 +89,15 @@ static ANNOTATIONS_REGISTRY: LazyLock<HashMap<&'static str, AnnotationParser>> =
         hashmap
     });
 
-pub fn parse_annotation<'arena>(
+pub fn parse_annotation<'ctx>(
     name: &str,
-    tokens: Vec<Token<'arena>>,
-    span: Span<'arena>,
-    ctx: SharedCtx<'arena>,
-) -> Result<Box<dyn ClonableAnnotation>, ParsingError<'arena>> {
+    tokens: &[TokenTree<'ctx>],
+    span: Span<'ctx>,
+    eof_span: Span<'ctx>,
+    ctx: SharedCtx<'ctx>,
+) -> Result<Box<dyn ClonableAnnotation>, ParsingError<'ctx>> {
     if let Some(parser) = ANNOTATIONS_REGISTRY.get(name) {
-        parser(TokenStream::new(tokens, span), ctx)
+        parser(TokenStream::new(tokens, eof_span), ctx)
     } else {
         Err(ParsingError::UnknownAnnotation {
             span,
@@ -106,7 +107,7 @@ pub fn parse_annotation<'arena>(
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct Annotations<'arena>(Vec<(Box<dyn ClonableAnnotation>, Span<'arena>)>);
+pub struct Annotations<'ctx>(Vec<(Box<dyn ClonableAnnotation>, Span<'ctx>)>);
 
 impl Display for Annotations<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -118,7 +119,7 @@ impl Display for Annotations<'_> {
     }
 }
 
-impl<'arena> Annotations<'arena> {
+impl<'ctx> Annotations<'ctx> {
     pub const fn new() -> Self {
         Self(Vec::new())
     }
@@ -133,19 +134,20 @@ impl<'arena> Annotations<'arena> {
     pub fn push_annotation(
         &mut self,
         name: &str,
-        tokens: Vec<Token<'arena>>,
-        span: Span<'arena>,
-        ctx: SharedCtx<'arena>,
-    ) -> Result<(), ParsingError<'arena>> {
+        tokens: &[TokenTree<'ctx>],
+        span: Span<'ctx>,
+        eof_span: Span<'ctx>,
+        ctx: SharedCtx<'ctx>,
+    ) -> Result<(), ParsingError<'ctx>> {
         self.0
-            .push((parse_annotation(name, tokens, span, ctx)?, span));
+            .push((parse_annotation(name, tokens, span, eof_span, ctx)?, span));
         Ok(())
     }
 
     pub fn are_annotations_valid_for(
         &self,
         ty: AnnotationReceiver,
-    ) -> Result<(), ParsingError<'arena>> {
+    ) -> Result<(), ParsingError<'ctx>> {
         for (annotation, span) in &self.0 {
             if !annotation.is_valid_for(ty, self) {
                 return Err(ParsingError::AnnotationDoesNotGoOn {
@@ -207,7 +209,7 @@ impl<'arena> Annotations<'arena> {
         }
     }
 
-    pub fn add_annotaion(&mut self, v: Box<dyn ClonableAnnotation>, span: Span<'arena>) {
+    pub fn add_annotaion(&mut self, v: Box<dyn ClonableAnnotation>, span: Span<'ctx>) {
         self.0.push((v, span));
     }
 

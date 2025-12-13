@@ -280,6 +280,7 @@ dependencies = [
 name = "mira-context"
 version = "0.3.0"
 dependencies = [
+ "mira-common",
  "mira-errors",
  "mira-progress-bar",
  "mira-spans",

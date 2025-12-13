@@ -1,17 +1,17 @@
 use mira_context::SharedCtx;
 use mira_errors::{Diagnostics, ErrorData};
-use mira_lexer::{Literal, NumberType, Token, TokenType, token::IdentDisplay};
-use mira_spans::{Span, SpanData, Symbol};
+use mira_lexer::{Literal, NumberType, Token, TokenTree, TokenType, token::IdentDisplay};
+use mira_spans::{Span, Symbol};
 use std::fmt::Write;
 
-use crate::tokenstream::BorrowedTokenStream;
+use crate::tokenstream::TokenStream;
 
-type MacroFn<'arena> = fn(
-    SharedCtx<'arena>,
-    Span<'arena>,
-    &[Token<'arena>],
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<Token<'arena>>, ()>;
+type MacroFn<'ctx> = fn(
+    ctx: SharedCtx<'ctx>,
+    span: Span<'ctx>,
+    stream: TokenStream<'_, 'ctx>,
+    diagnostics: &mut Diagnostics<'ctx>,
+) -> Result<Vec<TokenTree<'ctx>>, ()>;
 
 pub(super) fn get_builtin_macro(name: &str) -> Option<MacroFn<'_>> {
     match name {
@@ -49,61 +49,66 @@ struct NoArgMacro<'arena>(&'static str, #[primary_label("")] Span<'arena>);
 #[error("Environment variable {} is not defined", IdentDisplay(*_0))]
 struct UndefinedEnvVar<'arena>(Symbol<'arena>, #[primary_label("")] Span<'arena>);
 
-fn eof_span<'arena>(ctx: SharedCtx<'arena>, span: Span<'arena>) -> Span<'arena> {
-    let data = span.get_span_data();
-    ctx.intern_span(SpanData::new(data.pos + data.len - 1, 1, data.file))
-}
-
 macro_rules! err {
     ($diags: ident, $err:expr) => {
         $err.map_err(|v| _ = $diags.add_err(v))
     };
 }
 
-fn macro_env<'arena>(
-    ctx: SharedCtx<'arena>,
-    span: Span<'arena>,
-    args: &[Token<'arena>],
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<Token<'arena>>, ()> {
-    let mut stream = BorrowedTokenStream::new(args, eof_span(ctx, span));
-    let name = err!(diagnostics, stream.expect_string())?.0;
+fn t<'ctx>(ty: TokenType, literal: Option<Literal<'ctx>>, span: Span<'ctx>) -> TokenTree<'ctx> {
+    TokenTree::Token(Token::new(ty, literal, span))
+}
+
+fn macro_env<'ctx>(
+    ctx: SharedCtx<'ctx>,
+    span: Span<'ctx>,
+    mut stream: TokenStream<'_, 'ctx>,
+    diagnostics: &mut Diagnostics<'ctx>,
+) -> Result<Vec<TokenTree<'ctx>>, ()> {
+    let (name, name_span) = err!(diagnostics, stream.expect_string())?;
     let err;
-    if stream.match_tok(TokenType::Comma) {
+    if stream.match_tok_dismiss(TokenType::Comma) {
         if stream.is_at_end() {
             err = None;
         } else {
             err = Some(err!(diagnostics, stream.expect_string())?.0);
-            stream.match_tok(TokenType::Comma);
+            stream.match_tok_dismiss(TokenType::Comma);
         }
     } else {
         err = None;
     }
     err!(diagnostics, stream.finish())?;
     match std::env::var(name.to_str()) {
-        Ok(v) => Ok(vec![Token::new(
+        Ok(v) => Ok(vec![t(
             TokenType::StringLiteral,
             Some(Literal::String(ctx.intern_str(&v))),
             span,
         )]),
         Err(_) => {
             match err {
-                Some(v) => _ = diagnostics.add_compile_error(v.to_string(), span),
-                None => _ = diagnostics.add_undefined_env_var(name, span),
+                Some(v) => _ = diagnostics.add_compile_error(v.to_string(), name_span),
+                None => _ = diagnostics.add_undefined_env_var(name, name_span),
             }
             Err(())
         }
     }
 }
 
-fn macro_concat<'arena>(
-    ctx: SharedCtx<'arena>,
-    span: Span<'arena>,
-    args: &[Token<'arena>],
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<Token<'arena>>, ()> {
+fn macro_concat<'ctx>(
+    ctx: SharedCtx<'ctx>,
+    span: Span<'ctx>,
+    stream: TokenStream<'_, 'ctx>,
+    diagnostics: &mut Diagnostics<'ctx>,
+) -> Result<Vec<TokenTree<'ctx>>, ()> {
     let mut concat_str = String::new();
-    for arg in args {
+    for arg in stream.inner() {
+        let arg = match arg {
+            TokenTree::Token(arg) => arg,
+            TokenTree::Delimited(ttdelim) => {
+                diagnostics.add_concat_only_expects_literals(ttdelim.open_span, ttdelim.open_tok());
+                return Err(());
+            }
+        };
         match arg.ty {
             TokenType::IdentifierLiteral
             | TokenType::StringLiteral
@@ -134,21 +139,29 @@ fn macro_concat<'arena>(
             Some(Literal::DocComment(v)) => ctx.with_doc_comment(v, |v| concat_str.push_str(v)),
         }
     }
-    Ok(vec![Token {
-        ty: TokenType::StringLiteral,
-        literal: Some(Literal::String(ctx.intern_str(&concat_str))),
+    Ok(vec![t(
+        TokenType::StringLiteral,
+        Some(Literal::String(ctx.intern_str(&concat_str))),
         span,
-    }])
+    )])
 }
 
-fn macro_concat_idents<'arena>(
-    ctx: SharedCtx<'arena>,
-    span: Span<'arena>,
-    args: &[Token<'arena>],
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<Token<'arena>>, ()> {
+fn macro_concat_idents<'ctx>(
+    ctx: SharedCtx<'ctx>,
+    span: Span<'ctx>,
+    stream: TokenStream<'_, 'ctx>,
+    diagnostics: &mut Diagnostics<'ctx>,
+) -> Result<Vec<TokenTree<'ctx>>, ()> {
     let mut concat_str = String::new();
-    for arg in args {
+    for arg in stream.inner() {
+        let arg = match arg {
+            TokenTree::Token(t) => t,
+            TokenTree::Delimited(ttdelim) => {
+                diagnostics
+                    .add_concat_idents_only_expects_literals(ttdelim.open_span, ttdelim.open_tok());
+                return Err(());
+            }
+        };
         match arg.ty {
             TokenType::IdentifierLiteral | TokenType::Comma => (),
             _ => {
@@ -164,20 +177,20 @@ fn macro_concat_idents<'arena>(
             ),
         }
     }
-    Ok(vec![Token {
-        ty: TokenType::IdentifierLiteral,
-        literal: Some(Literal::String(ctx.intern_str(&concat_str))),
+    Ok(vec![t(
+        TokenType::IdentifierLiteral,
+        Some(Literal::String(ctx.intern_str(&concat_str))),
         span,
-    }])
+    )])
 }
 
-fn macro_line<'arena>(
-    ctx: SharedCtx<'arena>,
-    span: Span<'arena>,
-    args: &[Token<'arena>],
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<Token<'arena>>, ()> {
-    if !args.is_empty() {
+fn macro_line<'ctx>(
+    ctx: SharedCtx<'ctx>,
+    span: Span<'ctx>,
+    stream: TokenStream<'_, 'ctx>,
+    diagnostics: &mut Diagnostics<'ctx>,
+) -> Result<Vec<TokenTree<'ctx>>, ()> {
+    if !stream.is_at_end() {
         diagnostics.add_no_arg_macro("line", span);
         return Err(());
     }
@@ -187,45 +200,45 @@ fn macro_line<'arena>(
         .lookup_line(data.file, data.pos)
         .map(|v| v + 1)
         .unwrap_or_default();
-    Ok(vec![Token {
+    Ok(vec![t(
+        TokenType::UIntLiteral,
+        Some(Literal::UInt(line as u64, NumberType::U32)),
         span,
-        literal: Some(Literal::UInt(line as u64, NumberType::U32)),
-        ty: TokenType::UIntLiteral,
-    }])
+    )])
 }
 
-fn macro_column<'arena>(
-    ctx: SharedCtx<'arena>,
-    span: Span<'arena>,
-    args: &[Token<'arena>],
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<Token<'arena>>, ()> {
-    if !args.is_empty() {
+fn macro_column<'ctx>(
+    ctx: SharedCtx<'ctx>,
+    span: Span<'ctx>,
+    stream: TokenStream<'_, 'ctx>,
+    diagnostics: &mut Diagnostics<'ctx>,
+) -> Result<Vec<TokenTree<'ctx>>, ()> {
+    if !stream.is_at_end() {
         diagnostics.add_no_arg_macro("line", span);
         return Err(());
     }
     let data = span.get_span_data();
     let column = ctx.source_map.lookup_file_pos(data.file, data.pos).1;
-    Ok(vec![Token {
+    Ok(vec![t(
+        TokenType::UIntLiteral,
+        Some(Literal::UInt(column as u64, NumberType::U32)),
         span,
-        literal: Some(Literal::UInt(column as u64, NumberType::U32)),
-        ty: TokenType::UIntLiteral,
-    }])
+    )])
 }
 
-fn macro_file<'arena>(
-    ctx: SharedCtx<'arena>,
-    span: Span<'arena>,
-    args: &[Token<'arena>],
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<Token<'arena>>, ()> {
-    if !args.is_empty() {
+fn macro_file<'ctx>(
+    ctx: SharedCtx<'ctx>,
+    span: Span<'ctx>,
+    stream: TokenStream<'_, 'ctx>,
+    diagnostics: &mut Diagnostics<'ctx>,
+) -> Result<Vec<TokenTree<'ctx>>, ()> {
+    if !stream.is_at_end() {
         diagnostics.add_no_arg_macro("line", span);
         return Err(());
     }
-    Ok(vec![Token {
-        span,
-        literal: Some(Literal::String(
+    Ok(vec![t(
+        TokenType::StringLiteral,
+        Some(Literal::String(
             ctx.intern_str(
                 &ctx.source_map
                     .get_file(span.get_span_data().file)
@@ -235,19 +248,23 @@ fn macro_file<'arena>(
                     .to_string(),
             ),
         )),
-        ty: TokenType::StringLiteral,
-    }])
+        span,
+    )])
 }
 
-fn macro_compile_error<'arena>(
-    ctx: SharedCtx<'arena>,
-    span: Span<'arena>,
-    args: &[Token<'arena>],
-    diagnostics: &mut Diagnostics<'arena>,
-) -> Result<Vec<Token<'arena>>, ()> {
-    if let Some(lit) = args.first().as_ref().and_then(|v| v.literal.as_ref()) {
+fn macro_compile_error<'ctx>(
+    ctx: SharedCtx<'ctx>,
+    span: Span<'ctx>,
+    stream: TokenStream<'_, 'ctx>,
+    diagnostics: &mut Diagnostics<'ctx>,
+) -> Result<Vec<TokenTree<'ctx>>, ()> {
+    let lit = match stream.peek() {
+        Some(&TokenTree::Token(Token { literal, .. })) => literal,
+        _ => None,
+    };
+    if let Some(lit) = lit {
         match lit {
-            &Literal::DocComment(v) => {
+            Literal::DocComment(v) => {
                 _ = diagnostics.add_compile_error(ctx.with_doc_comment(v, str::to_string), span)
             }
             Literal::Float(v, _) => _ = diagnostics.add_compile_error(format!("{v}"), span),
@@ -266,19 +283,33 @@ fn macro_compile_error<'arena>(
 #[error("{_0}")]
 struct CompileError<'arena>(String, #[primary_label("")] Span<'arena>);
 
-fn macro_stringify<'arena>(
-    ctx: SharedCtx<'arena>,
-    span: Span<'arena>,
-    args: &[Token<'arena>],
-    _: &mut Diagnostics<'arena>,
-) -> Result<Vec<Token<'arena>>, ()> {
+fn macro_stringify<'ctx>(
+    ctx: SharedCtx<'ctx>,
+    span: Span<'ctx>,
+    stream: TokenStream<'_, 'ctx>,
+    _: &mut Diagnostics<'ctx>,
+) -> Result<Vec<TokenTree<'ctx>>, ()> {
     let mut strn = String::new();
-    for arg in args {
-        write!(strn, "{arg}").expect("writing to a string should never fail");
+    fn stringify(s: &mut String, tt: &TokenTree<'_>) {
+        match tt {
+            TokenTree::Token(token) => {
+                if token.ty == TokenType::StringLiteral {
+                    s.push_str(token.string_literal().to_str());
+                } else {
+                    write!(s, "{token}").unwrap();
+                }
+            }
+            TokenTree::Delimited(ttdelim) => {
+                s.push('(');
+                ttdelim.children.iter().for_each(|v| stringify(s, v));
+                s.push(')');
+            }
+        }
     }
-    Ok(vec![Token {
+    stream.inner().iter().for_each(|v| stringify(&mut strn, v));
+    Ok(vec![t(
+        TokenType::StringLiteral,
+        Some(Literal::String(ctx.intern_str(&strn))),
         span,
-        literal: Some(Literal::String(ctx.intern_str(&strn))),
-        ty: TokenType::StringLiteral,
-    }])
+    )])
 }

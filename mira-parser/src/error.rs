@@ -26,6 +26,16 @@ impl<T: Display> Display for ExpectedOneOfDisplay<'_, T> {
     }
 }
 
+struct Opt<'ctx, 'a>(&'a Option<Token<'ctx>>);
+impl Display for Opt<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(v) => Display::fmt(v, f),
+            None => f.write_str("nothing"),
+        }
+    }
+}
+
 #[derive(Debug, ErrorData)]
 pub enum ParsingError<'arena> {
     #[error("Unmatched parenthese")]
@@ -39,11 +49,17 @@ pub enum ParsingError<'arena> {
         #[primary_label("invalid meta var type")] Span<'arena>,
         Symbol<'arena>,
     ),
-    #[error("Expected {expected}, but found {found}.")]
+    #[error("Expected {expected}, but found {}.", Opt(found))]
     Expected {
         #[primary_label("Expected {expected}")]
         span: Span<'arena>,
         expected: TokenType,
+        found: Option<Token<'arena>>,
+    },
+    #[error("Expected eof, but found {found}.")]
+    ExpectedEnd {
+        #[primary_label("Expected eof")]
+        span: Span<'arena>,
         found: Token<'arena>,
     },
     #[error("Expected {expected} but found {found}")]
@@ -53,12 +69,21 @@ pub enum ParsingError<'arena> {
         expected: TokenType,
         found: TokenType,
     },
-    #[error("Expected one of {}, but found {found}.", ExpectedOneOfDisplay(valid))]
+    #[error(
+        "Expected one of {}, but found {}.",
+        ExpectedOneOfDisplay(valid),
+        Opt(found)
+    )]
     ExpectedOneOf {
         #[primary_label("Expected one of {}", ExpectedOneOfDisplay(valid))]
         span: Span<'arena>,
         valid: &'static [TokenType],
-        found: Token<'arena>,
+        found: Option<Token<'arena>>,
+    },
+    #[error("Expected kleene op (+, * or ?) or a seperator token")]
+    ExpectedKleeneOpOrSep {
+        #[primary_label("Expected any token but '[', ']', '(', ')', '{{', '}}'")]
+        span: Span<'arena>,
     },
     #[error("unresolved import `{}`", IdentDisplay(*name))]
     CannotResolveModule {
@@ -66,11 +91,14 @@ pub enum ParsingError<'arena> {
         span: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("Expected one of let, fn, extern, struct, use, or trait, but found {tok}")]
+    #[error(
+        "Expected one of let, fn, extern, struct, use, or trait, but found {}",
+        Opt(found)
+    )]
     ExpectedElementForPub {
         #[primary_label("Expected one of let, fn, extern, struct, use, or trait")]
         span: Span<'arena>,
-        tok: Token<'arena>,
+        found: Option<Token<'arena>>,
     },
     #[error("Output register must start with '='")]
     #[note("Try using \"={}\"", output.escape_debug())]
@@ -110,22 +138,22 @@ pub enum ParsingError<'arena> {
         span: Span<'arena>,
         name: Symbol<'arena>,
     },
-    #[error("Expected a type, but found `{found}`")]
+    #[error("Expected a type, but found {}", Opt(found))]
     ExpectedType {
         #[primary_label("expected a type")]
         span: Span<'arena>,
-        found: TokenType,
+        found: Option<Token<'arena>>,
     },
     #[error("Expected a function call")]
     ExpectedFunctionCall {
         #[primary_label("expected a function call")]
         span: Span<'arena>,
     },
-    #[error("Expected one of ',', or ')', but found {found}")]
+    #[error("Expected one of ',', or ')', but found {}", Opt(found))]
     ExpectedFunctionArgument {
         #[primary_label("Expected one of ',', or ')'")]
         span: Span<'arena>,
-        found: Token<'arena>,
+        found: Option<Token<'arena>>,
     },
     #[error("Expected one of ',', or ']', but found {found}")]
     ExpectedArrayElement {
@@ -139,11 +167,11 @@ pub enum ParsingError<'arena> {
         span: Span<'arena>,
         found: TokenType,
     },
-    #[error("Expected one of '=', or '{{', but found {found}")]
+    #[error("Expected one of '=', or '{{', but found {}", Opt(found))]
     ExpectedFunctionBody {
         #[primary_label("Expected one of '=', or {{")]
         span: Span<'arena>,
-        found: TokenType,
+        found: Option<Token<'arena>>,
     },
     #[error("Expected an expression, but found {found}")]
     ExpectedExpression {
@@ -182,11 +210,11 @@ pub enum ParsingError<'arena> {
         #[primary_label("`{name}` was originally defined here")]
         first_func_span: Span<'arena>,
     },
-    #[error("Expected one of {}fn or '}}', but found {found:?}", is_trait_impl.then_some("impl, ").unwrap_or(""))]
+    #[error("Expected one of {}fn or '}}', but found {}", is_trait_impl.then_some("impl, ").unwrap_or(""), Opt(found))]
     StructImplRegionExpect {
         #[primary_label("Expected one of {}fn or '}}'", is_trait_impl.then_some("impl, ").unwrap_or(""))]
         span: Span<'arena>,
-        found: TokenType,
+        found: Option<Token<'arena>>,
         is_trait_impl: bool,
     },
     #[error("Expected a statement")]

@@ -10,6 +10,7 @@ mira-progress-bar.workspace = true
 mira-errors.workspace = true
 mira-spans.workspace = true
 parking_lot.workspace = true
+mira-common.workspace = true
 
 [lints]
 workspace = true

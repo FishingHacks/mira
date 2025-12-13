@@ -1,5 +1,6 @@
 use std::{fmt::Debug, ops::Index, sync::Arc};
 
+use mira_common::newty;
 use mira_errors::{
     Diagnostic, ErrorEmitted, StyledPrinter, Styles, default_printer, default_styles,
 };
@@ -172,18 +173,18 @@ impl DocCommentStore {
 
     pub fn add_doc_comment(&mut self, comment: Box<str>) -> DocComment {
         self.0.push(comment);
-        DocComment(self.0.len() - 1)
+        DocComment::new(self.0.len() - 1)
     }
 
     pub fn merge_doc_comments(&mut self, a: DocComment, b: DocComment) {
-        let mut v = std::mem::take(&mut self.0[a.0]).into_string();
+        let mut v = std::mem::take(&mut self.0[a.to_usize()]).into_string();
         v.push('\n');
-        v.push_str(&self.0[b.0]);
-        self.0[a.0] = v.into_boxed_str();
+        v.push_str(&self.0[b.to_usize()]);
+        self.0[a.to_usize()] = v.into_boxed_str();
     }
 
     pub fn clear_doc_comment(&mut self, v: DocComment) {
-        self.0[v.0] = String::new().into_boxed_str();
+        self.0[v.to_usize()] = String::new().into_boxed_str();
     }
 }
 
@@ -191,7 +192,7 @@ impl Index<DocComment> for DocCommentStore {
     type Output = str;
 
     fn index(&self, index: DocComment) -> &Self::Output {
-        &self.0[index.0]
+        &self.0[index.to_usize()]
     }
 }
 
@@ -201,20 +202,18 @@ impl Default for DocCommentStore {
     }
 }
 
-/// A doc comment index
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DocComment(usize);
-
-impl DocComment {
-    pub const EMPTY: DocComment = DocComment(0);
-
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
+newty! {
+    /// A doc comment index
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    #[display("<doc comment#{}>")]
+    pub struct DocComment {
+        // TODO: Change this so that it's Option<DocComment> everywhere for explicitness.
+        const EMPTY = 0;
     }
 }
 
-impl Debug for DocComment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("<doc comment#{}>", self.0))
+impl DocComment {
+    pub const fn is_empty(self) -> bool {
+        self.to_usize() == 0
     }
 }
