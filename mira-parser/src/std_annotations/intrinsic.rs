@@ -5,41 +5,25 @@ use std::str::FromStr;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct IntrinsicAnnotation(Intrinsic);
 
-impl Display for IntrinsicAnnotation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("@intrinsic(")?;
-        Display::fmt(&self.0, f)?;
-        f.write_char(')')
-    }
-}
-
-impl Annotation for IntrinsicAnnotation {
-    fn get_name(&self) -> &'static str {
-        "intrinsic"
-    }
-
-    fn is_valid_for(&self, thing: AnnotationReceiver, annotations: &Annotations<'_>) -> bool {
+annotation!(IntrinsicAnnotation(self) = "intrinsic" {
+    is_valid_for: |thing, annotations|
         thing == AnnotationReceiver::Function
-            && annotations.get_annotations::<Self>().nth(1).is_none()
-    }
-}
+            && annotations.get_annotations::<Self>().nth(1).is_none(),
+    parse: |tokens| {
+        let (name, span) = tokens.expect_string()?;
+        let v = Intrinsic::from_str(&name)
+            .map(IntrinsicAnnotation)
+            .map_err(|_| ParsingError::InvalidIntrinsic { span, name })?;
+        tokens.finish()?;
+        Ok(v)
+    },
+    display: |f| Display::fmt(&self.0, f),
+});
 
 impl IntrinsicAnnotation {
     pub fn get(&self) -> Intrinsic {
         self.0
     }
-}
-
-pub fn parse<'arena>(
-    mut tokens: TokenStream<'arena>,
-    _: SharedCtx<'arena>,
-) -> Result<IntrinsicAnnotation, ParsingError<'arena>> {
-    let (name, span) = tokens.expect_string()?;
-    let v = Intrinsic::from_str(&name)
-        .map(IntrinsicAnnotation)
-        .map_err(|_| ParsingError::InvalidIntrinsic { span, name })?;
-    tokens.finish()?;
-    Ok(v)
 }
 
 macro_rules! intrinsics {

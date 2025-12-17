@@ -765,10 +765,10 @@ macro_rules! tc_res {
         Ok((ty, TypedLiteral::Dynamic(id)))
     }};
 
-    (binary $ctx:expr; $name:ident ($span:expr, $left_side:expr, $right_side:expr, $ty:expr)) => {{
+    (binary $ctx:expr; $name:ident ($span:expr, $lhs:expr, $right_side:expr, $ty:expr)) => {{
         let ty = $ty;
         let id = $ctx.add_value(ty);
-        $ctx.append(TypedExpression::$name($span, id, $left_side, $right_side));
+        $ctx.append(TypedExpression::$name($span, id, $lhs, $right_side));
         Ok((ty, TypedLiteral::Dynamic(id)))
     }};
 }
@@ -913,7 +913,7 @@ fn typecheck_expression<'ctx>(
                     suggested_element_types = vec;
                 }
 
-                for (i, (_, value)) in values.iter().enumerate() {
+                for (i, value) in values.iter().enumerate() {
                     let (ty, val) = typecheck_expression(
                         ctx,
                         value,
@@ -1141,14 +1141,14 @@ fn typecheck_expression<'ctx>(
         }
         Expression::Unary {
             operator,
-            right_side,
+            rhs: right_side,
             span,
         } if *operator == UnaryOp::Reference => {
             typecheck_take_ref(ctx, right_side, type_suggestion, *span)
         }
         Expression::Unary {
             operator,
-            right_side,
+            rhs: right_side,
             span,
         } => {
             let (ty, right_side) = typecheck_expression(ctx, right_side, type_suggestion)?;
@@ -1170,12 +1170,12 @@ fn typecheck_expression<'ctx>(
         }
         Expression::Binary {
             operator,
-            right_side,
-            left_side,
+            rhs: right_side,
+            lhs,
             span,
         } => {
             if matches!(operator, BinaryOp::LShift | BinaryOp::RShift) {
-                let (ty, left_side) = typecheck_expression(ctx, left_side, type_suggestion)?;
+                let (ty, lhs) = typecheck_expression(ctx, lhs, type_suggestion)?;
                 let (typ_right, right_side) = typecheck_expression(
                     ctx,
                     right_side,
@@ -1187,10 +1187,10 @@ fn typecheck_expression<'ctx>(
 
                 return match operator {
                     BinaryOp::LShift if ty.is_int_like() => {
-                        tc_res!(binary ctx; LShift(*span, left_side, right_side, ty))
+                        tc_res!(binary ctx; LShift(*span, lhs, right_side, ty))
                     }
                     BinaryOp::RShift if ty.is_int_like() => {
-                        tc_res!(binary ctx; RShift(*span, left_side, right_side, ty))
+                        tc_res!(binary ctx; RShift(*span, lhs, right_side, ty))
                     }
 
                     BinaryOp::LShift => Err(ctx.emit_cannot_shl(*span, ty)),
@@ -1199,10 +1199,9 @@ fn typecheck_expression<'ctx>(
                 };
             }
             if matches!(operator, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
-                let span_left = left_side.span();
+                let span_left = lhs.span();
                 let span_right = right_side.span();
-                let (typ_left, left_side) =
-                    typecheck_expression(ctx, left_side, TypeSuggestion::Bool)?;
+                let (typ_left, lhs) = typecheck_expression(ctx, lhs, TypeSuggestion::Bool)?;
                 if typ_left != default_types::bool {
                     return Err(ctx.emit_mismatching_type(
                         span_left,
@@ -1225,17 +1224,17 @@ fn typecheck_expression<'ctx>(
 
                 let id = ctx.add_value(default_types::bool);
                 match operator {
-                    BinaryOp::LogicalAnd => ctx.append(TypedExpression::LAnd(
-                        span, id, left_side, right_side, rhs_block,
-                    )),
-                    BinaryOp::LogicalOr => ctx.append(TypedExpression::LOr(
-                        span, id, left_side, right_side, rhs_block,
-                    )),
+                    BinaryOp::LogicalAnd => {
+                        ctx.append(TypedExpression::LAnd(span, id, lhs, right_side, rhs_block))
+                    }
+                    BinaryOp::LogicalOr => {
+                        ctx.append(TypedExpression::LOr(span, id, lhs, right_side, rhs_block))
+                    }
                     _ => unreachable!(),
                 }
                 return Ok((default_types::bool, TypedLiteral::Dynamic(id)));
             }
-            let (typ_left, left_side) = typecheck_expression(ctx, left_side, type_suggestion)?;
+            let (typ_left, lhs) = typecheck_expression(ctx, lhs, type_suggestion)?;
             let (typ_right, right_side) =
                 typecheck_expression(ctx, right_side, TypeSuggestion::from_type(typ_left))?;
             if typ_left != typ_right {
@@ -1245,46 +1244,46 @@ fn typecheck_expression<'ctx>(
             let span = *span;
             match operator {
                 BinaryOp::Plus if ty.is_int_like() => {
-                    tc_res!(binary ctx; Add(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Add(span, lhs, right_side, ty))
                 }
                 BinaryOp::Minus if ty.is_int_like() => {
-                    tc_res!(binary ctx; Sub(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Sub(span, lhs, right_side, ty))
                 }
                 BinaryOp::Multiply if ty.is_int_like() => {
-                    tc_res!(binary ctx; Mul(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Mul(span, lhs, right_side, ty))
                 }
                 BinaryOp::Divide if ty.is_int_like() => {
-                    tc_res!(binary ctx; Div(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Div(span, lhs, right_side, ty))
                 }
                 BinaryOp::Modulo if ty.is_int_like() => {
-                    tc_res!(binary ctx; Mod(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; Mod(span, lhs, right_side, ty))
                 }
                 BinaryOp::BitwiseAnd if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ctx; BAnd(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; BAnd(span, lhs, right_side, ty))
                 }
                 BinaryOp::BitwiseOr if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ctx; BOr(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; BOr(span, lhs, right_side, ty))
                 }
                 BinaryOp::BitwiseXor if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ctx; BXor(span, left_side, right_side, ty))
+                    tc_res!(binary ctx; BXor(span, lhs, right_side, ty))
                 }
                 BinaryOp::GreaterThan if ty.is_int_like() => {
-                    tc_res!(binary ctx; GreaterThan(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; GreaterThan(span, lhs, right_side, default_types::bool))
                 }
                 BinaryOp::GreaterThanEq if ty.is_int_like() => {
-                    tc_res!(binary ctx; GreaterThanEq(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; GreaterThanEq(span, lhs, right_side, default_types::bool))
                 }
                 BinaryOp::LessThan if ty.is_int_like() => {
-                    tc_res!(binary ctx; LessThan(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; LessThan(span, lhs, right_side, default_types::bool))
                 }
                 BinaryOp::LessThanEq if ty.is_int_like() => {
-                    tc_res!(binary ctx; LessThanEq(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; LessThanEq(span, lhs, right_side, default_types::bool))
                 }
                 BinaryOp::Equals if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ctx; Eq(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; Eq(span, lhs, right_side, default_types::bool))
                 }
                 BinaryOp::NotEquals if ty.is_int_like() || ty.is_bool() => {
-                    tc_res!(binary ctx; Neq(span, left_side, right_side, default_types::bool))
+                    tc_res!(binary ctx; Neq(span, lhs, right_side, default_types::bool))
                 }
 
                 BinaryOp::Plus => Err(ctx.emit_cannot_add(span, ty)),
@@ -1408,14 +1407,14 @@ fn typecheck_expression<'ctx>(
             ..
         } => typecheck_membercall(ctx, lhs, identifier, arguments, generics),
         Expression::Assignment {
-            left_side,
-            right_side,
+            lhs,
+            rhs: right_side,
             span,
         } => {
-            let (ty_lhs, lhs) = match &**left_side {
+            let (ty_lhs, lhs) = match &**lhs {
                 Expression::Unary {
                     operator: UnaryOp::Dereference,
-                    right_side,
+                    rhs: right_side,
                     ..
                 } => {
                     let (ty, lhs) = typecheck_expression(ctx, right_side, TypeSuggestion::Unknown)?;
@@ -1431,7 +1430,7 @@ fn typecheck_expression<'ctx>(
                         &Expression::Unary {
                             operator: UnaryOp::Reference,
                             span: *span,
-                            right_side: left_side.clone(),
+                            rhs: lhs.clone(),
                         },
                         TypeSuggestion::Unknown,
                     )?;
@@ -1450,25 +1449,17 @@ fn typecheck_expression<'ctx>(
             ctx.append(TypedExpression::StoreAssignment(*span, lhs, rhs));
             Ok((default_types::void, TypedLiteral::Void))
         }
-        Expression::Range {
-            left_side,
-            right_side,
-            ..
-        } => {
-            let (ty, _) = typecheck_expression(ctx, left_side, type_suggestion)?;
-            let (ty_rhs, _) = typecheck_expression(ctx, right_side, TypeSuggestion::from_type(ty))?;
+        Expression::Range { lhs, rhs, .. } => {
+            let (ty, _) = typecheck_expression(ctx, lhs, type_suggestion)?;
+            let (ty_rhs, _) = typecheck_expression(ctx, rhs, TypeSuggestion::from_type(ty))?;
             if ty != ty_rhs {
-                return Err(ctx.emit_mismatching_type(right_side.span(), ty, ty_rhs));
+                return Err(ctx.emit_mismatching_type(rhs.span(), ty, ty_rhs));
             }
 
             unimplemented!("lang-items, generics");
         }
-        Expression::TypeCast {
-            left_side,
-            new_ty,
-            span,
-        } => {
-            let (ty, lhs) = typecheck_expression(ctx, left_side, type_suggestion)?;
+        Expression::TypeCast { lhs, new_ty, span } => {
+            let (ty, lhs) = typecheck_expression(ctx, lhs, type_suggestion)?;
             let new_ty = ctx.resolve_type(new_ty)?;
             typecheck_cast(ctx, ty, new_ty, lhs, *span).map_err(|diag| ctx.emit_diag(diag))
         }
@@ -2009,7 +2000,7 @@ fn typecheck_take_ref<'ctx>(
         //&*_1 => _1
         Expression::Unary {
             operator,
-            right_side,
+            rhs: right_side,
             ..
         } if *operator == UnaryOp::Dereference => {
             typecheck_expression(ctx, right_side, type_suggestion)
@@ -2074,16 +2065,12 @@ fn new_index<'ctx>(
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
     match expression {
         Expression::Indexing {
-            left_side,
-            right_side,
+            lhs,
+            rhs: right_side,
             span,
         } => {
             let offset = indexing_resolve_rhs(ctx, right_side)?;
-            let (ty, lhs) = new_index(
-                ctx,
-                left_side,
-                TypeSuggestion::Array(Box::new(type_suggestion)),
-            )?;
+            let (ty, lhs) = new_index(ctx, lhs, TypeSuggestion::Array(Box::new(type_suggestion)))?;
             let single_ref_lit = make_single_ref(ctx, ty, lhs, *span);
             if !ty.without_ref().is_indexable() {
                 return Err(ctx.emit_index_non_array_elem(expression.span(), ty));
@@ -2127,12 +2114,8 @@ fn new_index<'ctx>(
 
             Ok((new_ty, TypedLiteral::Dynamic(dst)))
         }
-        Expression::MemberAccess {
-            left_side,
-            index,
-            span,
-        } => {
-            let (mut ty_lhs, mut lit) = new_index(ctx, left_side, TypeSuggestion::Unknown)?;
+        Expression::MemberAccess { lhs, index, span } => {
+            let (mut ty_lhs, mut lit) = new_index(ctx, lhs, TypeSuggestion::Unknown)?;
             for field_name in index {
                 let (offset, new_ty) = match **ty_lhs.without_ref() {
                     TyKind::Struct {

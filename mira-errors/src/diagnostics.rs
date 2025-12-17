@@ -165,7 +165,6 @@ impl<'arena> Diagnostic<'arena> {
     }
 
     pub fn new<E: ErrorData + 'arena>(err: E, severity: Severity) -> Self {
-        // println!("{}", std::backtrace::Backtrace::force_capture());
         Self {
             diagnostic: Some(Box::new(DiagnosticInner {
                 severity,

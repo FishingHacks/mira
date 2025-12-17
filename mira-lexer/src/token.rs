@@ -44,7 +44,7 @@ token_type! {
     NotEquals = "!=",
     LessThan = "<",
     GreaterThan = ">",
-    LogicalNot = "!",
+    Not = "!",
     LogicalAnd = "&&",
     LogicalOr = "||",
     StringLiteral,
@@ -193,6 +193,13 @@ pub enum TokenTree<'ctx> {
 }
 
 impl<'ctx> TokenTree<'ctx> {
+    pub fn token(&self) -> Option<&Token<'ctx>> {
+        match self {
+            TokenTree::Token(t) => Some(t),
+            TokenTree::Delimited(_) => None,
+        }
+    }
+
     pub fn span(&self) -> Span<'ctx> {
         match self {
             TokenTree::Token(t) => t.span,
@@ -483,6 +490,13 @@ impl<'arena> Token<'arena> {
     pub fn uint_literal(&self) -> (u64, NumberType) {
         match &self.literal {
             Some(Literal::UInt(v, numty)) => (*v, *numty),
+            _ => unreachable!("{self} should only ever contain a void literal"),
+        }
+    }
+
+    pub fn doc_literal(&self) -> DocComment {
+        match &self.literal {
+            Some(Literal::DocComment(v)) => *v,
             _ => unreachable!("{self} should only ever contain a void literal"),
         }
     }

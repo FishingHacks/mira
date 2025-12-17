@@ -15,7 +15,7 @@ use mira_progress_bar::{ProgressItemRef, print_thread::ProgressBarThread};
 use parking_lot::RwLock;
 
 use mira_errors::IoReadError;
-use mira_lexer::{Lexer, LexingError, Literal, TokenType};
+use mira_lexer::{Lexer, LexingError, Literal, TokenTree, TokenType};
 use mira_parser::{
     Parser, ParsingError, ProgramFormingError,
     module::{Module, ModuleContext, ParserQueueEntry},
@@ -42,13 +42,17 @@ fn parse_single<'arena>(
         parsing_item,
         format!("Tokenizing {}", file.path.display()).into_boxed_str(),
     );
-    let mut lexer = Lexer::new(module_context.ctx, file.clone());
+    let mut lexer = Lexer::new(module_context.ctx, &file);
 
-    if let Err(errs) = lexer.scan_tokens() {
-        errors
-            .write()
-            .extend(errs.into_iter().map(LexingError::to_error));
-    }
+    let mut tokens = match lexer.scan_tokens() {
+        Ok(v) => v,
+        Err(errs) => {
+            errors
+                .write()
+                .extend(errs.into_iter().map(LexingError::to_error));
+            Default::default()
+        }
+    };
 
     progress_bar.remove(item);
     {
@@ -59,13 +63,13 @@ fn parse_single<'arena>(
     }
 
     let file = lexer.file.clone();
-    let mut tokens = lexer.into_tokens();
     let mut comment = None;
 
     if let Some(tok) = tokens.first()
-        && tok.ty == TokenType::ModuleDocComment
+        && let TokenTree::Token(t) = tok
+        && t.ty == TokenType::ModuleDocComment
     {
-        let Some(Literal::DocComment(v)) = tok.literal else {
+        let Some(Literal::DocComment(v)) = t.literal else {
             unreachable!()
         };
         comment = Some(v);
@@ -97,7 +101,7 @@ fn parse_single<'arena>(
     // ┌─────────┐
     // │ Parsing │
     // └─────────┘
-    let mut current_parser = Parser::from_tokens(
+    let mut current_parser = Parser::from_token_tree(
         module_context.ctx,
         &tokens,
         file.clone(),
@@ -121,7 +125,7 @@ fn parse_single<'arena>(
     }
 
     let mut module = Module::new(
-        current_parser.file,
+        current_parser.file().clone(),
         cur_entry.package_root,
         cur_entry.parent,
         cur_entry.name,

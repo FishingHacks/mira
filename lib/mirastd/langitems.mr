@@ -9,7 +9,7 @@ use pkg::print_newline;
 use pkg::intrinsics::get_metadata;
 
 macro! print_impl {
-    (unsigned $ty:ident $size:tok) => {
+    (unsigned $ty:ident $size:tt) => {
         pub fn concat_idents!(print_, $ty) (val: $ty) {
             if (val == 0) {
                 return print_str("0");
@@ -30,7 +30,7 @@ macro! print_impl {
         }
     };
 
-    (signed $ty:ident $size:tok) => {
+    (signed $ty:ident $size:tt) => {
         pub fn concat_idents!(print_, $ty) (val: $ty) {
             if (val == 0) {
                 return print_str("0");

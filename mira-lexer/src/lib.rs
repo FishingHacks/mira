@@ -156,7 +156,7 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
         true
     }
 
-    pub fn scan_tokens(&mut self) -> Result<Box<[TokenTree<'ctx>]>, Vec<LexingError<'ctx>>> {
+    pub fn scan_tokens(&mut self) -> Result<Vec<TokenTree<'ctx>>, Vec<LexingError<'ctx>>> {
         let mut errs = Vec::new();
         match self.scan_tt(&mut errs) {
             Ok(v) if errs.is_empty() => Ok(v),
@@ -164,7 +164,7 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
         }
     }
 
-    fn scan_tt(&mut self, errs: &mut Vec<LexingError<'ctx>>) -> Result<Box<[TokenTree<'ctx>]>, ()> {
+    fn scan_tt(&mut self, errs: &mut Vec<LexingError<'ctx>>) -> Result<Vec<TokenTree<'ctx>>, ()> {
         let mut toks = Vec::new();
         while let Some(c) = self.peek() {
             if matches!(c, ')' | ']' | '}') {
@@ -186,7 +186,7 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
                 let open_span = self.span(self.next_pos(), 1);
                 self.delimiters += 1;
                 self.dismiss();
-                let children = self.scan_tt(errs).unwrap_or_default();
+                let children = self.scan_tt(errs).unwrap_or_default().into_boxed_slice();
                 let close_span = self.span(self.next_pos(), 1);
                 match (self.advance(), delimiter) {
                     (Some(')'), Delimiter::Parenthesis)
@@ -218,7 +218,7 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
                 }
             }
         }
-        Ok(toks.into_boxed_slice())
+        Ok(toks)
     }
 
     fn int_scan_token(&mut self) -> Result<Option<Token<'ctx>>, LexingError<'ctx>> {
@@ -309,7 +309,7 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
             '>' => token!(GreaterThan),
             ':' => token!(Colon, NamespaceAccess, ':'),
             ';' => token!(Semicolon),
-            '!' => token!(LogicalNot, NotEquals, '='),
+            '!' => token!(Not, NotEquals, '='),
             '&' => token!(Ampersand, LogicalAnd, '&'),
             '|' if self.if_char_advance('|') => token!(LogicalOr),
             '|' if self.if_char_advance('>') => token!(PipeOperator),
@@ -447,7 +447,6 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
 
     fn parse_doc_comments(&mut self, s: &mut String, mut single_line: bool, module: bool) {
         let mut max_spaces = None;
-        println!("parsing doc comment");
         loop {
             if single_line {
                 let max_spaces = match max_spaces {
@@ -1048,6 +1047,18 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
             }
             self.dismiss();
             identifier.push(c);
+        }
+        if self.peek() == Some('!') {
+            self.dismiss();
+            return Ok(if identifier == "macro" {
+                Token::new(TokenType::MacroDef, None, self.span_from(start))
+            } else {
+                Token::new(
+                    TokenType::MacroInvocation,
+                    Some(Literal::String(self.ctx.intern_str(&identifier))),
+                    self.span_from(start),
+                )
+            });
         }
         Ok(match identifier.as_str() {
             "true" => Token::new(

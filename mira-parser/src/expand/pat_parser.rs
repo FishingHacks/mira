@@ -6,24 +6,6 @@ use crate::{error::ParsingErrorDiagnosticsExt as _, tokenstream::TokenStream};
 
 use super::{KleeneOp, MetaVarType, SequenceRepetition, TokenTree};
 
-// pub(super) fn parse_token_tree<'arena>(
-//     mut input: TokenStream<'arena, '_>,
-//     // if this is the body or the pattern of the macro
-//     parse_def: bool,
-//     diagnostics: &mut Diagnostics<'arena>,
-//     span_interner: &SpanInterner<'arena>,
-// ) -> Result<Vec<TokenTree<'arena>>, ()> {
-//     let mut res = Vec::new();
-//     let mut success = true;
-//     while !input.is_at_end() {
-//         match parse_tree(&mut input, parse_def, diagnostics, span_interner) {
-//             Ok(v) => res.push(v),
-//             Err(()) => success = false,
-//         }
-//     }
-//     success.then_some(res).ok_or(())
-// }
-
 fn count_metavar_decls(matcher: &[TokenTree<'_>]) -> usize {
     matcher
         .iter()
@@ -46,7 +28,7 @@ pub(super) fn parse_stream<'arena>(
     span_interner: &SpanInterner<'arena>,
 ) -> Result<Vec<TokenTree<'arena>>, ()> {
     let mut res = Vec::new();
-    let mut success = false;
+    let mut success = true;
     while !input.is_at_end() {
         match parse_tree(input, parse_def, diagnostics, span_interner) {
             Ok(v) => res.push(v),
@@ -237,54 +219,3 @@ fn parse_tree<'arena>(
     }
     Ok(v)
 }
-
-// #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// pub(super) enum ParenType {
-//     Paren,
-//     Bracket,
-//     Curly,
-// }
-//
-// impl ParenType {
-//     pub(super) fn to_tt(self) -> (TokenType, TokenType) {
-//         match self {
-//             ParenType::Paren => (TokenType::ParenLeft, TokenType::ParenRight),
-//             ParenType::Bracket => (TokenType::BracketLeft, TokenType::BracketRight),
-//             ParenType::Curly => (TokenType::CurlyLeft, TokenType::CurlyRight),
-//         }
-//     }
-//
-//     pub(super) fn from_tt(tt: TokenType) -> Option<Self> {
-//         match tt {
-//             TokenType::ParenLeft => Some(ParenType::Paren),
-//             TokenType::BracketLeft => Some(ParenType::Bracket),
-//             TokenType::CurlyLeft => Some(ParenType::Curly),
-//             _ => None,
-//         }
-//     }
-// }
-//
-// pub(super) fn match_paren<'arena, 'tok>(
-//     tokens: &mut BorrowedTokenStream<'arena, 'tok>,
-//     parens: ParenType,
-// ) -> Option<&'tok [Token<'arena>]> {
-//     let mut paren_count = 0;
-//     let start = tokens.pos();
-//     let (left, right) = parens.to_tt();
-//     loop {
-//         let tok = tokens.eat().ty;
-//         if tok == left {
-//             paren_count += 1;
-//         } else if tok == right {
-//             match paren_count {
-//                 0 => break,
-//                 _ => paren_count -= 1,
-//             }
-//         } else if tok == TokenType::Eof {
-//             tokens.set_pos(start);
-//             return None;
-//         }
-//     }
-//     let inside_tokens = &tokens.token_holder()[start..tokens.pos() - 1];
-//     Some(inside_tokens)
-// }

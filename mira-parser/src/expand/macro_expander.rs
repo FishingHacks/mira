@@ -48,7 +48,7 @@ impl<'ctx> MacroExpander<'ctx> {
         }
     }
 
-    pub fn does_expand(tokens: &[TT<'ctx>]) -> bool {
+    pub(crate) fn does_expand(tokens: &[TT<'ctx>]) -> bool {
         tokens.iter().any(|v| match v {
             TT::Delimited(v) => Self::does_expand(&v.children),
             TT::Token(t) => matches!(t.ty, TokenType::MacroInvocation | TokenType::MacroDef),
@@ -132,7 +132,7 @@ impl<'ctx> MacroExpander<'ctx> {
                             TokenType::ParenOpen,
                             TokenType::BracketOpen,
                             TokenType::CurlyOpen
-                        ]));
+                        ]))?;
                         unreachable!();
                     }
                 };
@@ -196,7 +196,6 @@ impl<'ctx> MacroExpander<'ctx> {
         diagnostics: &mut Diagnostics<'ctx>,
         span_interner: &SpanInterner<'ctx>,
     ) -> Result<Macro<'ctx>, ()> {
-        let s = <&TTDelim<'ctx> as Into<TokenStream<'_, 'ctx>>>::into;
         macro_rules! err {
             ($v:expr) => {
                 $v.map_err(|v| _ = diagnostics.add_err(v))?
@@ -213,7 +212,7 @@ impl<'ctx> MacroExpander<'ctx> {
         while !tokens.is_at_end() {
             let param_delim = err!(tokens.expect_delim(Delimiter::Parenthesis));
 
-            let def = parse_stream(&mut s(param_delim), true, diagnostics, span_interner)?;
+            let def = parse_stream(&mut param_delim.into(), true, diagnostics, span_interner)?;
             let def = compute_locs(&def);
             let mut defined_meta_vars = HashSet::new();
             for loc in &def {
@@ -236,7 +235,7 @@ impl<'ctx> MacroExpander<'ctx> {
 
             let body_delim = err!(tokens.expect_delim(Delimiter::Curlies));
 
-            let body = parse_stream(&mut s(body_delim), false, diagnostics, span_interner)?;
+            let body = parse_stream(&mut body_delim.into(), false, diagnostics, span_interner)?;
             err!(tokens.expect(TokenType::Semicolon));
             cases.push((def.into_boxed_slice(), body.into_boxed_slice()));
         }
@@ -304,7 +303,7 @@ fn expand_body<'arena>(
                 close,
             } => {
                 let mut new = Vec::with_capacity(children.len());
-                expand_body(children, matches, &mut new, indices);
+                expand_body(children, matches, &mut new, indices)?;
                 let v = TTDelim {
                     open_span: *open,
                     close_span: *close,

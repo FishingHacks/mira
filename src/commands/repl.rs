@@ -22,7 +22,7 @@ use mira_lexer::Lexer;
 use mira_llvm_backend::CodegenConfig;
 use mira_parser::Parser;
 use mira_parser::module::ModuleId;
-use mira_spans::{Arena, FileId, SourceFile};
+use mira_spans::Arena;
 use mira_target::{NATIVE_TARGET, Target};
 
 use super::about::print_about;
@@ -221,28 +221,25 @@ fn display_ast(repl: &Repl<Data>) {
     let (ctx, data) = ContextData::new(&arena, Some(ProgressBarStyle::Normal), DiagEmitter::Stdout);
     let s_ctx = ctx.ctx();
     let ctx = data.to_context(ctx.ty_ctx());
-    let source_file = Arc::new(SourceFile::new(
-        FileId::ZERO,
+    let source_file = s_ctx.source_map.new_file(
         Path::new("stdin_buffer").into(),
         Path::new("/").into(),
         repl.buf.clone().into(),
-    ));
-    let mut lexer = Lexer::new(s_ctx, source_file.clone());
-    if let Err(e) = lexer.scan_tokens() {
-        for e in e {
-            let _ = s_ctx.emit_diag(e.to_error());
+    );
+    let mut lexer = Lexer::new(s_ctx, &source_file);
+    let tokens = match lexer.scan_tokens() {
+        Err(e) => {
+            for e in e {
+                let _ = s_ctx.emit_diag(e.to_error());
+            }
+            return;
         }
-        return;
-    }
+        Ok(v) => v,
+    };
 
     let tokens = {
         let mut diagnostics = Diagnostics::new();
-        match mira_parser::expand_tokens(
-            s_ctx,
-            source_file.clone(),
-            lexer.into_tokens(),
-            &mut diagnostics,
-        ) {
+        match mira_parser::expand_tokens(s_ctx, source_file.clone(), tokens, &mut diagnostics) {
             Some(v) => v,
             None => {
                 for e in diagnostics {
@@ -253,7 +250,7 @@ fn display_ast(repl: &Repl<Data>) {
         }
     };
 
-    let mut parser = Parser::from_tokens(s_ctx, &tokens, source_file, ModuleId::ZERO);
+    let mut parser = Parser::from_token_tree(s_ctx, &tokens, source_file, ModuleId::ZERO);
     let (stmts, errs) = parser.parse_all();
     for err in errs {
         let _ = s_ctx.emit_diag(err.to_error());

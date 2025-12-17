@@ -272,9 +272,9 @@ impl<'ctx> MacroParser<'ctx> {
             self.next_pos.clear();
             self.waiting_positions.clear();
 
-            let next = flattened.get(0);
+            let next = flattened.first();
             let approx_pos = flattened_tts.len() - unflattened.len();
-            let last = unflattened.last_mut().unwrap();
+            let last = unflattened.first_mut().unwrap();
 
             if let Some(res) = self.parse_inner(matcher, next, eof_span, approx_pos) {
                 return res;
@@ -337,10 +337,8 @@ impl<'ctx> MacroParser<'ctx> {
                             approx_pos
                         )),
                     };
-                    let remaining: &[TT<'ctx>] = parser.stream.inner();
-                    let consumed = last.0.len() - remaining.len();
-                    let consumed = last.0.split_off(..consumed).unwrap();
-                    flattened.split_off(..TT::flattened_len(consumed));
+                    let consumed = last.0.split_off(..parser.stream.pos()).unwrap();
+                    _ = flattened.split_off(..TT::flattened_len(consumed));
 
                     pos.index += 1;
                     pos.push_match(*next_metavar, *seq_depth, NamedMatch::ParsedSingle(r#match));
@@ -524,7 +522,7 @@ fn compute_locs<'arena>(matcher: &[TokenTree<'arena>]) -> Vec<MatcherLoc<'arena>
                     close,
                 } => {
                     locs.push(MatcherLoc::Token(delim.open_tok(*open)));
-                    inner(&children, locs, next_metavar, seq_depth);
+                    inner(children, locs, next_metavar, seq_depth);
                     locs.push(MatcherLoc::Token(delim.close_tok(*close)));
                 }
                 TokenTree::Sequence(seq) => {

@@ -4,6 +4,8 @@ use mira_context::DiagEmitter as DiagEmitMethod;
 use mira_errors::{
     Diagnostic, Diagnostics, ErrorEmitted, FileOpenError, IoWriteError, StdoutWriteError,
 };
+#[cfg(feature = "macros")]
+use mira_lexer::TokenTree;
 #[cfg(feature = "typeck")]
 use mira_parser::module::FunctionId;
 #[cfg(feature = "typeck")]
@@ -27,9 +29,6 @@ use mira_spans::Arena;
 pub use mira_typeck::ir_displayer::{AllFilter, ChildrenOfModuleFilter, DisplayFilter};
 #[cfg(feature = "typeck")]
 use mira_typeck::{GlobalContext, TypeCtx, TypeckCtx, ir_displayer::Formatter};
-
-#[cfg(feature = "macros")]
-use mira_lexer::Token;
 
 #[cfg(feature = "parsing")]
 use mira_parser::module::ModuleContext;
@@ -214,7 +213,7 @@ pub struct Context<'ctx> {
 
 impl<'ctx> Context<'ctx> {
     #[cfg(feature = "macros")]
-    pub fn expand_macros(&mut self, file: Arc<Path>) -> EmitResult<Vec<Token<'ctx>>> {
+    pub fn expand_macros(&mut self, file: Arc<Path>) -> EmitResult<Vec<TokenTree<'ctx>>> {
         use mira_errors::IoReadError;
         use mira_lexer::{Lexer, LexingError};
 
@@ -231,14 +230,13 @@ impl<'ctx> Context<'ctx> {
                     .emit_diag(IoReadError(file.to_path_buf(), e).to_error()));
             }
         };
-        let mut lexer = Lexer::new(self.ctx.to_shared(), f);
-        _ = lexer.scan_tokens().map_err(|e| {
+        let mut lexer = Lexer::new(self.ctx.to_shared(), &f);
+        let tokens = lexer.scan_tokens().map_err(|e| {
             self.ctx
                 .emit_diags(e.into_iter().map(LexingError::to_error))
-        });
+        })?;
 
         let file = lexer.file.clone();
-        let tokens = lexer.into_tokens();
         let mut diags = Diagnostics::new();
         match mira_parser::expand_tokens(self.ctx.to_shared(), file.clone(), tokens, &mut diags) {
             Some(v) => Ok(v),
@@ -254,10 +252,29 @@ impl<'ctx> Context<'ctx> {
     }
 
     #[cfg(feature = "macros")]
-    pub fn emit_tokens(&self, tokens: &[Token<'ctx>], mut method: EmitMethod) -> EmitResult<()> {
-        for tok in tokens {
-            self.emit(&mut method, format_args!("{tok} "))?;
+    pub fn emit_tokens(
+        &self,
+        tokens: &[TokenTree<'ctx>],
+        mut method: EmitMethod,
+    ) -> EmitResult<()> {
+        fn emit_tokens_inner<'ctx>(
+            me: &Context<'ctx>,
+            tokens: &[TokenTree<'ctx>],
+            method: &mut EmitMethod,
+        ) -> EmitResult<()> {
+            for tok in tokens {
+                match tok {
+                    TokenTree::Token(t) => me.emit(method, format_args!("{t} "))?,
+                    TokenTree::Delimited(ttdelim) => {
+                        me.emit(method, format_args!("( "))?;
+                        emit_tokens_inner(me, &ttdelim.children, method)?;
+                        me.emit(method, format_args!(") "))?;
+                    }
+                }
+            }
+            Ok(())
         }
+        emit_tokens_inner(self, tokens, &mut method)?;
         self.emit(&mut method, format_args!("\n"))
     }
 

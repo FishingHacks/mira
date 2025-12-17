@@ -175,8 +175,8 @@ impl<'arena> TypeRef<'arena> {
 
                 if p.match_tok_dismiss(TokenType::Semicolon) {
                     // [<type>; <amount>]
-                    let lit = parser.expect(TokenType::UIntLiteral)?.uint_literal().0;
-                    parser.finish()?;
+                    let lit = p.expect(TokenType::UIntLiteral)?.uint_literal().0;
+                    p.finish()?;
 
                     return Ok(Self::SizedArray {
                         num_references,
@@ -185,7 +185,7 @@ impl<'arena> TypeRef<'arena> {
                         span: delim.full_span(p.ctx().span_interner),
                     });
                 }
-                parser.finish()?;
+                p.finish()?;
                 return Ok(Self::UnsizedArray {
                     num_references,
                     child,
@@ -222,7 +222,7 @@ impl<'arena> TypeRef<'arena> {
                 });
             }
 
-            return if let Some(t) = parser.match_tok(TokenType::LogicalNot) {
+            return if let Some(t) = parser.match_tok(TokenType::Not) {
                 let type_name =
                     Path::new(Ident::new(symbols::Types::NeverType, t.span), Vec::new());
                 let span = span.combine_with([t.span], parser.ctx().span_interner);
@@ -234,7 +234,9 @@ impl<'arena> TypeRef<'arena> {
             } else if let Some(t) = parser.match_tok(TokenType::VoidLiteral) {
                 let span = span.combine_with([t.span], parser.ctx().span_interner);
                 Ok(Self::Void(span, num_references))
-            } else if let Some(TokenTree::Token(t)) = parser.peek() {
+            } else if let Some(TokenTree::Token(t)) = parser.peek()
+                && t.ty == TokenType::IdentifierLiteral
+            {
                 if *t.string_literal() == "dyn" {
                     Self::parse_dyn(parser, num_references, span)
                 } else {

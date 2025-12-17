@@ -4,17 +4,18 @@ use std::{
 };
 
 use crate::{
+    Path, PathWithoutGenerics,
     annotations::AnnotationReceiver,
     error::ParsingError,
     module::{FunctionId, Module, ModuleContext, ModuleId},
 };
-use mira_lexer::{Literal, NumberType, Token, TokenType};
-use mira_spans::{
-    Ident, Span,
-    interner::{SpanInterner, Symbol},
-};
+use mira_lexer::{Delimiter, Literal, NumberType, Token, TokenTree, TokenType};
+use mira_spans::{Ident, Span, interner::Symbol};
 
-use super::{FunctionContract, Parser, Statement, display_contract, types::TypeRef};
+use super::{FunctionContract, Parser, Statement, statements::display_contract, types::TypeRef};
+
+type StdResult<T, E> = std::result::Result<T, E>;
+type Result<'ctx, V = Expression<'ctx>> = StdResult<V, ParsingError<'ctx>>;
 
 #[derive(Debug, Clone)]
 pub enum ArrayLiteral<'ctx> {
@@ -31,7 +32,7 @@ pub enum LiteralValue<'ctx> {
         Path<'ctx>,
     ),
     AnonymousStruct(HashMap<Ident<'ctx>, (Span<'ctx>, Expression<'ctx>)>),
-    Tuple(Vec<(Span<'ctx>, Expression<'ctx>)>),
+    Tuple(Vec<Expression<'ctx>>),
     Float(f64, NumberType),
     SInt(i64, NumberType),
     UInt(u64, NumberType),
@@ -107,7 +108,7 @@ impl Display for LiteralValue<'_> {
                     if i != 0 {
                         f.write_str(", ")?
                     }
-                    Display::fmt(&v.1, f)?;
+                    Display::fmt(v, f)?;
                 }
 
                 f.write_char(')')
@@ -202,13 +203,13 @@ pub enum Expression<'ctx> {
     Unary {
         operator: UnaryOp,
         span: Span<'ctx>,
-        right_side: Box<Expression<'ctx>>,
+        rhs: Box<Expression<'ctx>>,
     },
     Binary {
         operator: BinaryOp,
         span: Span<'ctx>,
-        right_side: Box<Expression<'ctx>>,
-        left_side: Box<Expression<'ctx>>,
+        rhs: Box<Expression<'ctx>>,
+        lhs: Box<Expression<'ctx>>,
     },
     FunctionCall {
         func: Box<Expression<'ctx>>,
@@ -231,28 +232,28 @@ pub enum Expression<'ctx> {
         span: Span<'ctx>,
     },
     Indexing {
-        left_side: Box<Expression<'ctx>>,
-        right_side: Box<Expression<'ctx>>,
+        lhs: Box<Expression<'ctx>>,
+        rhs: Box<Expression<'ctx>>,
         span: Span<'ctx>,
     },
     MemberAccess {
-        left_side: Box<Expression<'ctx>>,
+        lhs: Box<Expression<'ctx>>,
         index: Vec<Ident<'ctx>>,
         span: Span<'ctx>,
     },
     Assignment {
-        left_side: Box<Expression<'ctx>>,
-        right_side: Box<Expression<'ctx>>,
+        lhs: Box<Expression<'ctx>>,
+        rhs: Box<Expression<'ctx>>,
         span: Span<'ctx>,
     },
     Range {
-        left_side: Box<Expression<'ctx>>,
-        right_side: Box<Expression<'ctx>>,
+        lhs: Box<Expression<'ctx>>,
+        rhs: Box<Expression<'ctx>>,
         inclusive: bool,
         span: Span<'ctx>,
     },
     TypeCast {
-        left_side: Box<Expression<'ctx>>,
+        lhs: Box<Expression<'ctx>>,
         new_ty: TypeRef<'ctx>,
         span: Span<'ctx>,
     },
@@ -271,28 +272,21 @@ impl Display for Expression<'_> {
         match self {
             Expression::Literal(v, ..) => Display::fmt(v, f),
             Expression::Binary {
-                operator,
-                right_side,
-                left_side,
-                ..
+                operator, rhs, lhs, ..
             } => {
                 f.write_char('(')?;
                 operator.fmt(f)?;
                 f.write_char(' ')?;
-                Display::fmt(left_side, f)?;
+                Display::fmt(lhs, f)?;
                 f.write_char(' ')?;
-                Display::fmt(right_side, f)?;
+                Display::fmt(rhs, f)?;
                 f.write_char(')')
             }
-            Expression::Unary {
-                operator,
-                right_side,
-                ..
-            } => {
+            Expression::Unary { operator, rhs, .. } => {
                 f.write_char('(')?;
                 operator.fmt(f)?;
                 f.write_char(' ')?;
-                Display::fmt(right_side, f)?;
+                Display::fmt(rhs, f)?;
                 f.write_char(')')
             }
             Expression::FunctionCall {
@@ -328,24 +322,20 @@ impl Display for Expression<'_> {
                 }
                 f.write_char(')')
             }
-            Expression::Indexing {
-                left_side,
-                right_side,
-                span: _,
-            } => {
+            Expression::Indexing { lhs, rhs, span: _ } => {
                 f.write_str("(index ")?;
-                Display::fmt(left_side, f)?;
+                Display::fmt(lhs, f)?;
                 f.write_char(' ')?;
-                Display::fmt(right_side, f)?;
+                Display::fmt(rhs, f)?;
                 f.write_char(')')
             }
             Expression::MemberAccess {
-                left_side,
+                lhs,
                 index,
                 span: _,
             } => {
                 f.write_str("(member ")?;
-                Display::fmt(left_side, f)?;
+                Display::fmt(lhs, f)?;
                 for value in index {
                     f.write_char(' ')?;
                     Display::fmt(value, f)?;
@@ -353,20 +343,16 @@ impl Display for Expression<'_> {
 
                 f.write_char(')')
             }
-            Expression::Assignment {
-                left_side,
-                right_side,
-                span: _,
-            } => {
+            Expression::Assignment { lhs, rhs, span: _ } => {
                 f.write_str("(assignment ")?;
-                Display::fmt(left_side, f)?;
+                Display::fmt(lhs, f)?;
                 f.write_char(' ')?;
-                Display::fmt(right_side, f)?;
+                Display::fmt(rhs, f)?;
                 f.write_char(')')
             }
             Expression::Range {
-                left_side,
-                right_side,
+                lhs,
+                rhs,
                 inclusive,
                 span: _,
             } => {
@@ -374,18 +360,18 @@ impl Display for Expression<'_> {
                 if *inclusive {
                     f.write_str("inclusive ")?;
                 }
-                Display::fmt(left_side, f)?;
+                Display::fmt(lhs, f)?;
                 f.write_char(' ')?;
-                Display::fmt(right_side, f)?;
+                Display::fmt(rhs, f)?;
                 f.write_char(')')
             }
             Expression::TypeCast {
-                left_side,
+                lhs,
                 new_ty: new_type,
                 span: _,
             } => {
                 f.write_str("(type-cast ")?;
-                Display::fmt(left_side, f)?;
+                Display::fmt(lhs, f)?;
                 f.write_str(" -> ")?;
                 Display::fmt(new_type, f)?;
                 f.write_char(')')
@@ -464,7 +450,7 @@ impl<'ctx> Expression<'ctx> {
         Self::Unary {
             operator,
             span,
-            right_side: Box::new(right),
+            rhs: Box::new(right),
         }
     }
 
@@ -477,8 +463,8 @@ impl<'ctx> Expression<'ctx> {
         Self::Binary {
             operator,
             span,
-            right_side: Box::new(right),
-            left_side: Box::new(left),
+            rhs: Box::new(right),
+            lhs: Box::new(left),
         }
     }
 
@@ -526,28 +512,12 @@ impl<'ctx> Expression<'ctx> {
                     *val = LiteralValue::BakedAnonymousFunction(id)
                 }
             }
-            Self::Binary {
-                right_side,
-                left_side,
-                ..
-            }
-            | Self::Assignment {
-                left_side,
-                right_side,
-                ..
-            }
-            | Self::Indexing {
-                left_side,
-                right_side,
-                ..
-            }
-            | Self::Range {
-                left_side,
-                right_side,
-                ..
-            } => {
-                left_side.bake_functions(module, module_key, context);
-                right_side.bake_functions(module, module_key, context);
+            Self::Binary { rhs, lhs, .. }
+            | Self::Assignment { lhs, rhs, .. }
+            | Self::Indexing { lhs, rhs, .. }
+            | Self::Range { lhs, rhs, .. } => {
+                lhs.bake_functions(module, module_key, context);
+                rhs.bake_functions(module, module_key, context);
             }
             Self::TraitFunctionCall { arguments, .. } => arguments
                 .iter_mut()
@@ -566,25 +536,11 @@ impl<'ctx> Expression<'ctx> {
                     .iter_mut()
                     .for_each(|el| el.bake_functions(module, module_key, context));
             }
-            Self::MemberAccess { left_side, .. }
-            | Self::TypeCast { left_side, .. }
-            | Self::Unary {
-                right_side: left_side,
-                ..
-            } => left_side.bake_functions(module, module_key, context),
+            Self::MemberAccess { lhs, .. }
+            | Self::TypeCast { lhs, .. }
+            | Self::Unary { rhs: lhs, .. } => lhs.bake_functions(module, module_key, context),
         }
     }
-}
-
-macro_rules! assign_set {
-    ($expr: expr, $right: expr, $operator: expr, $span: expr) => {
-        let span = $span;
-        $expr = Expression::Assignment {
-            left_side: Box::new($expr.clone()),
-            right_side: Box::new(Expression::binary($operator, span, $expr, $right)),
-            span,
-        }
-    };
 }
 
 struct AsmBinding<'ctx> {
@@ -593,17 +549,82 @@ struct AsmBinding<'ctx> {
     type_or_name: Ident<'ctx>,
 }
 
-// asm expression
+#[derive(Debug, Clone, Copy)]
+enum InfixOp {
+    Plus,
+    Minus,
+    Divide,
+    Multiply,
+    Modulo,
+    LShift,
+    RShift,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    PlusAssign,
+    MinusAssign,
+    DivideAssign,
+    MultiplyAssign,
+    ModuloAssign,
+    LShiftAssign,
+    RShiftAssign,
+    Assign,
+    BitwiseAndAssign,
+    BitwiseOrAssign,
+    BitwiseXorAssign,
+    LessThan,
+    LessThanEq,
+    GreaterThan,
+    GreaterThanEq,
+    Eq,
+    Neq,
+    LogicalAnd,
+    LogicalOr,
+    Range,
+    RangeInclusive,
+}
+
+fn infix_binding_power(op: InfixOp) -> (u8, u8) {
+    use InfixOp as O;
+
+    match op {
+        O::PlusAssign
+        | O::MinusAssign
+        | O::DivideAssign
+        | O::MultiplyAssign
+        | O::ModuloAssign
+        | O::LShiftAssign
+        | O::RShiftAssign
+        | O::BitwiseAndAssign
+        | O::BitwiseOrAssign
+        | O::BitwiseXorAssign
+        | O::Assign => (2, 1),
+        O::Range | O::RangeInclusive => (3, 4),
+        O::LogicalAnd | O::LogicalOr => (5, 6),
+        O::BitwiseAnd | O::BitwiseOr | O::BitwiseXor => (7, 8),
+        O::Eq | O::Neq => (9, 10),
+        O::LessThan | O::LessThanEq | O::GreaterThan | O::GreaterThanEq => (11, 12),
+        O::LShift | O::RShift => (13, 14),
+        O::Plus | O::Minus => (15, 16),
+        O::Divide | O::Multiply | O::Modulo => (17, 18),
+    }
+}
+
 impl<'ctx> Parser<'_, 'ctx> {
     /// Parses [<.0>] "<.1>" (<.2>)
-    fn parse_asm_binding(&mut self) -> Result<AsmBinding<'ctx>, ParsingError<'ctx>> {
-        self.expect(TokenType::BracketLeft)?;
-        let name = self.expect_identifier()?.symbol();
-        self.expect(TokenType::BracketRight)?;
+    fn parse_asm_binding(&mut self) -> Result<'ctx, AsmBinding<'ctx>> {
+        let name_delim = self.expect_delim_stream(Delimiter::Brackets)?;
+        let mut namep = self.subparser(name_delim);
+        let name = namep.expect_identifier()?.symbol();
+        namep.finish()?;
+
         let bound = self.expect(TokenType::StringLiteral)?.string_literal();
-        self.expect(TokenType::ParenLeft)?;
-        let ty = self.expect_identifier()?;
-        self.expect(TokenType::ParenRight)?;
+
+        let ty_delim = self.expect_delim_stream(Delimiter::Parenthesis)?;
+        let mut typ = self.subparser(ty_delim);
+        let ty = typ.expect_identifier()?;
+        typ.finish()?;
+
         Ok(AsmBinding {
             name,
             bound,
@@ -611,44 +632,46 @@ impl<'ctx> Parser<'_, 'ctx> {
         })
     }
 
-    fn parse_asm(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let span1 = self.eat().span;
+    // TODO: replace with rust-style asm!() macro i think?
+    fn parse_asm(&mut self, span: Span<'ctx>) -> Result<'ctx> {
         let volatile = self.match_tok_dismiss(TokenType::Volatile);
-        self.expect(TokenType::ParenLeft)?;
+
+        let delim = self.expect_delim(Delimiter::Parenthesis)?;
+        let mut p = self.subparser(delim.into());
+        let span = span.combine_with([delim.close_span], self.ctx().span_interner);
 
         let mut replacers: Vec<(String, String)> = Vec::new();
         let mut registers = String::new();
         let mut inputs = Vec::new();
-        let mut output = TypeRef::Void(span1, 0);
+        let mut output = TypeRef::Void(span, 0);
         let mut asm = String::new();
-        while !self.matches_dismiss(&[TokenType::ParenRight, TokenType::Colon]) {
+        while !p.is_at_end() && !p.match_tok_dismiss(TokenType::Colon) {
             if !asm.is_empty() {
-                self.expect(TokenType::Comma)?;
-                if self.matches_dismiss(&[TokenType::ParenRight, TokenType::Colon]) {
+                p.expect(TokenType::Comma)?;
+                if !p.is_at_end() && !p.match_tok_dismiss(TokenType::Colon) {
                     break;
                 }
             }
-            let s = self.expect(TokenType::StringLiteral)?.string_literal();
+            let s = p.expect(TokenType::StringLiteral)?.string_literal();
             if !asm.is_empty() {
                 asm.push('\n');
             }
             asm.push_str(&s);
         }
 
-        let span2 = 'out: {
-            if self.current().ty != TokenType::Colon {
-                break 'out self.last().span;
+        'out: {
+            if p.is_at_end() {
+                break 'out;
             }
 
             // outputs
             'outputs: {
-                if self.peek().ty == TokenType::Colon {
+                if p.peek_tok().unwrap().ty == TokenType::Colon {
                     break 'outputs;
                 }
                 // [v] "=r" (ty)
-                let span = self.peek().span;
-                // let (replacer, register, type_name, span) = self.parse_asm_binding()?;
-                let asm_binding = self.parse_asm_binding()?;
+                let span = p.peek().unwrap().span();
+                let asm_binding = p.parse_asm_binding()?;
                 let replacer_string = format!("%[{}]", asm_binding.name);
                 if replacers.iter().any(|v| v.0 == replacer_string) {
                     return Err(ParsingError::DuplicateAsmReplacer {
@@ -671,21 +694,22 @@ impl<'ctx> Parser<'_, 'ctx> {
                 }
             };
 
-            if !self.match_tok_dismiss(TokenType::Colon) {
-                break 'out self.expect(TokenType::ParenRight)?.span;
+            if p.is_at_end() {
+                break 'out;
             }
+            p.expect(TokenType::Colon)?;
 
             // inputs
-            while !self.matches_dismiss(&[TokenType::ParenRight, TokenType::Colon]) {
+            while !p.is_at_end() && !p.match_tok_dismiss(TokenType::Colon) {
                 if !inputs.is_empty() {
-                    self.expect(TokenType::Comma)?;
-                    if self.matches_dismiss(&[TokenType::ParenRight, TokenType::Colon]) {
+                    p.expect(TokenType::Comma)?;
+                    if p.is_at_end() || p.match_tok_dismiss(TokenType::Colon) {
                         break;
                     }
                 }
 
-                let span = self.peek().span;
-                let asm_binding = self.parse_asm_binding()?;
+                let span = p.peek().unwrap().span();
+                let asm_binding = p.parse_asm_binding()?;
                 let replacer_string = format!("%[{}]", asm_binding.name);
                 if replacers.iter().any(|v| v.0 == replacer_string) {
                     return Err(ParsingError::DuplicateAsmReplacer {
@@ -707,11 +731,8 @@ impl<'ctx> Parser<'_, 'ctx> {
                 inputs.push((span, asm_binding.type_or_name));
             }
 
-            if self.current().ty != TokenType::Colon {
-                break 'out self.expect(TokenType::ParenRight)?.span;
-            }
-            if self.match_tok_dismiss(TokenType::ParenRight) {
-                break 'out self.last().span;
+            if p.is_at_end() {
+                break 'out;
             }
             if !registers.is_empty() {
                 registers.push(',');
@@ -721,13 +742,10 @@ impl<'ctx> Parser<'_, 'ctx> {
             registers.push_str(&register);
             registers.push('}');
 
-            loop {
-                if self.peek().ty == TokenType::ParenRight {
-                    break self.eat().span;
-                }
-                self.expect(TokenType::Comma)?;
+            while !p.is_at_end() {
+                p.expect(TokenType::Comma)?;
                 registers.push_str(",~{");
-                let register = self.expect(TokenType::StringLiteral)?.string_literal();
+                let register = p.expect(TokenType::StringLiteral)?.string_literal();
                 registers.push_str(&register);
                 registers.push('}');
             }
@@ -741,7 +759,7 @@ impl<'ctx> Parser<'_, 'ctx> {
             asm.replace_range(occurence..occurence + to_replace.len(), value);
         }
         Ok(Expression::Asm {
-            span: span1.combine_with([span2], self.ctx.span_interner),
+            span,
             asm,
             volatile,
             output,
@@ -750,611 +768,521 @@ impl<'ctx> Parser<'_, 'ctx> {
         })
     }
 
-    pub fn parse_expression(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        if self.peek().ty == TokenType::Asm {
-            return self.parse_asm();
-        }
-        self.binary_op()
-    }
+    fn peek_infix_op(&mut self) -> Option<(InfixOp, u8)> {
+        use InfixOp as O;
+        use Some as S;
+        use TokenType as T;
 
-    fn binary_op(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let mut expr = self.comparison()?;
+        let peek1 = self.peek().and_then(TokenTree::token)?;
+        let peek2 = self.peek2().and_then(TokenTree::token);
+        let peek3 = self.peek3().and_then(TokenTree::token);
 
-        loop {
-            let op = match self.peek().ty {
-                TokenType::LogicalAnd => BinaryOp::LogicalAnd,
-                TokenType::LogicalOr => BinaryOp::LogicalAnd,
-                _ => break,
-            };
-            self.dismiss();
-            let right = self.comparison()?;
-            expr = Expression::binary(
-                op,
-                expr.span()
-                    .combine_with([right.span()], self.ctx.span_interner),
-                expr,
-                right,
-            )
-        }
+        let ty1 = peek1.ty;
+        let ty2 = peek2.map(|v| v.ty);
+        let ty3 = peek3.map(|v| v.ty);
 
-        Ok(expr)
-    }
-
-    fn comparison(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let mut expr = self.pipe_operator()?;
-        let mut first = false;
-
-        loop {
-            let op_span = self.peek().span;
-            let op = match self.peek().ty {
-                TokenType::EqualEqual => BinaryOp::Equals,
-                TokenType::NotEquals => BinaryOp::NotEquals,
-                TokenType::LessThan if self.peek2().ty == TokenType::Equal => BinaryOp::LessThanEq,
-                TokenType::LessThan => BinaryOp::LessThan,
-                TokenType::GreaterThan if self.peek2().ty == TokenType::Equal => {
-                    BinaryOp::GreaterThanEq
-                }
-                TokenType::GreaterThan => BinaryOp::GreaterThan,
-                _ => break,
-            };
-            self.dismiss();
-            let right = self.pipe_operator()?;
-
-            // error on a < b > _ to use a::<b>
-            if first {
-                let span = expr.span().combine_with([op_span], self.ctx.span_interner);
-                return Err(ParsingError::ChainedGenericLikeComparison(span));
+        // Range,
+        // RangeInclusive,
+        let v = match ty1 {
+            T::Plus => (O::Plus, 1),
+            T::PlusAssign => (O::PlusAssign, 1),
+            T::Minus => (O::Minus, 1),
+            T::MinusAssign => (O::MinusAssign, 1),
+            T::Divide if ty2 == S(T::Equal) => (O::DivideAssign, 2),
+            T::Divide => (O::Divide, 1),
+            T::Asterix if ty2 == S(T::Equal) => (O::MultiplyAssign, 2),
+            T::Asterix => (O::Multiply, 1),
+            T::Modulo if ty2 == S(T::Equal) => (O::ModuloAssign, 2),
+            T::Modulo => (O::Modulo, 1),
+            T::LessThan if ty2 == S(T::LessThan) && ty3 == S(T::Equal) => (O::LShiftAssign, 3),
+            T::LessThan if ty2 == S(T::LessThan) => (O::LShift, 2),
+            T::GreaterThan if ty2 == S(T::GreaterThan) && ty3 == S(T::Equal) => {
+                (O::RShiftAssign, 3)
             }
-            first = true;
-
-            expr = Expression::binary(
-                op,
-                expr.span()
-                    .combine_with([right.span()], self.ctx.span_interner),
-                expr,
-                right,
-            );
-        }
-
-        Ok(expr)
+            T::GreaterThan if ty2 == S(T::GreaterThan) => (O::RShift, 2),
+            T::LessThan if ty2 == S(T::Equal) => (O::LessThanEq, 2),
+            T::LessThan => (O::LessThan, 1),
+            T::GreaterThan if ty2 == S(T::Equal) => (O::GreaterThanEq, 2),
+            T::GreaterThan => (O::GreaterThan, 1),
+            T::EqualEqual => (O::Eq, 1),
+            T::Equal => (O::Assign, 1),
+            T::NotEquals => (O::Neq, 1),
+            T::LogicalAnd => (O::LogicalAnd, 1),
+            T::LogicalOr => (O::LogicalOr, 1),
+            T::Ampersand if ty2 == S(T::Equal) => (O::BitwiseAndAssign, 2),
+            T::BitwiseOr if ty2 == S(T::Equal) => (O::BitwiseOrAssign, 2),
+            T::BitwiseXor if ty2 == S(T::Equal) => (O::BitwiseXorAssign, 2),
+            T::Ampersand => (O::BitwiseAnd, 1),
+            T::BitwiseXor => (O::BitwiseXor, 1),
+            T::BitwiseOr => (O::BitwiseOr, 1),
+            T::Range => (O::Range, 1),
+            T::RangeInclusive => (O::RangeInclusive, 1),
+            _ => return None,
+        };
+        Some(v)
     }
 
-    fn pipe_operator(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let mut expr = self.range()?;
-
-        while self.match_tok_dismiss(TokenType::PipeOperator) {
-            let call = self.indexed()?;
-            match call {
-                Expression::FunctionCall {
-                    func,
-                    mut arguments,
-                    span,
-                } => {
-                    let expr_span = expr.span();
-                    arguments.insert(0, expr);
-                    expr = Expression::FunctionCall {
-                        func,
-                        arguments,
-                        span: span.combine_with([expr_span], self.ctx.span_interner),
-                    };
-                }
-                e => return Err(ParsingError::ExpectedFunctionCall { span: e.span() }),
-            }
+    pub fn parse_expression(&mut self) -> Result<'ctx> {
+        if let Some(t) = self.match_tok(TokenType::Asm) {
+            return self.parse_asm(t.span);
         }
 
-        Ok(expr)
+        self.expr_bp(0)
     }
 
-    fn range(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let mut expr = self.term()?;
-
-        while self.matches_dismiss(&[TokenType::Range, TokenType::RangeInclusive]) {
-            let inclusive = self.current().ty == TokenType::RangeInclusive;
-            let span = self.current().span;
-            let right_side = Box::new(self.parse_expression()?);
-            expr = Expression::Range {
-                left_side: Box::new(expr),
-                right_side,
-                inclusive,
+    fn infix_op_to_expr(
+        op: InfixOp,
+        lhs: Expression<'ctx>,
+        rhs: Expression<'ctx>,
+        span: Span<'ctx>,
+    ) -> Expression<'ctx> {
+        use BinaryOp as B;
+        use Expression as E;
+        fn bin<'ctx>(op: B, lhs: Box<E<'ctx>>, rhs: Box<E<'ctx>>, span: Span<'ctx>) -> E<'ctx> {
+            E::Binary {
+                operator: op,
                 span,
-            };
+                rhs,
+                lhs,
+            }
         }
-
-        Ok(expr)
-    }
-
-    fn term(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let mut expr = self.factor()?;
-
-        while self.matches_dismiss(&[
-            TokenType::Minus,
-            TokenType::Plus,
-            TokenType::PlusAssign,
-            TokenType::MinusAssign,
-        ]) {
-            let mut operator = self.current();
-            let right = self.factor()?;
-            let span = expr
-                .span()
-                .combine_with([right.span()], self.ctx.span_interner);
-
-            match operator.ty {
-                TokenType::PlusAssign => {
-                    operator.ty = TokenType::Plus;
-                    assign_set!(expr, right, BinaryOp::Plus, span);
-                }
-                TokenType::MinusAssign => {
-                    operator.ty = TokenType::Minus;
-                    assign_set!(expr, right, BinaryOp::Minus, span);
-                }
-                TokenType::Plus => expr = Expression::binary(BinaryOp::Plus, span, expr, right),
-                TokenType::Minus => expr = Expression::binary(BinaryOp::Minus, span, expr, right),
-                _ => unreachable!(),
+        fn binass<'ctx>(op: B, lhs: Box<E<'ctx>>, rhs: Box<E<'ctx>>, span: Span<'ctx>) -> E<'ctx> {
+            E::Assignment {
+                rhs: Box::new(bin(op, lhs.clone(), rhs, span)),
+                lhs,
+                span,
             }
         }
 
-        Ok(expr)
+        let lhs = Box::new(lhs);
+        let rhs = Box::new(rhs);
+        match op {
+            InfixOp::Plus => bin(BinaryOp::Plus, lhs, rhs, span),
+            InfixOp::Minus => bin(BinaryOp::Minus, lhs, rhs, span),
+            InfixOp::Divide => bin(BinaryOp::Divide, lhs, rhs, span),
+            InfixOp::Multiply => bin(BinaryOp::Multiply, lhs, rhs, span),
+            InfixOp::Modulo => bin(BinaryOp::Modulo, lhs, rhs, span),
+            InfixOp::LShift => bin(BinaryOp::LShift, lhs, rhs, span),
+            InfixOp::RShift => bin(BinaryOp::RShift, lhs, rhs, span),
+            InfixOp::BitwiseAnd => bin(BinaryOp::BitwiseAnd, lhs, rhs, span),
+            InfixOp::BitwiseOr => bin(BinaryOp::BitwiseOr, lhs, rhs, span),
+            InfixOp::BitwiseXor => bin(BinaryOp::BitwiseXor, lhs, rhs, span),
+            InfixOp::LessThan => bin(BinaryOp::LessThan, lhs, rhs, span),
+            InfixOp::LessThanEq => bin(BinaryOp::LessThanEq, lhs, rhs, span),
+            InfixOp::GreaterThan => bin(BinaryOp::GreaterThan, lhs, rhs, span),
+            InfixOp::GreaterThanEq => bin(BinaryOp::GreaterThanEq, lhs, rhs, span),
+            InfixOp::Eq => bin(BinaryOp::Equals, lhs, rhs, span),
+            InfixOp::Neq => bin(BinaryOp::NotEquals, lhs, rhs, span),
+            InfixOp::LogicalAnd => bin(BinaryOp::LogicalAnd, lhs, rhs, span),
+            InfixOp::LogicalOr => bin(BinaryOp::LogicalOr, lhs, rhs, span),
+            InfixOp::Range => E::Range {
+                lhs,
+                rhs,
+                inclusive: false,
+                span,
+            },
+            InfixOp::RangeInclusive => E::Range {
+                lhs,
+                rhs,
+                inclusive: true,
+                span,
+            },
+
+            InfixOp::PlusAssign => binass(BinaryOp::Plus, lhs, rhs, span),
+            InfixOp::MinusAssign => binass(BinaryOp::Minus, lhs, rhs, span),
+            InfixOp::DivideAssign => binass(BinaryOp::Divide, lhs, rhs, span),
+            InfixOp::MultiplyAssign => binass(BinaryOp::Multiply, lhs, rhs, span),
+            InfixOp::ModuloAssign => binass(BinaryOp::Modulo, lhs, rhs, span),
+            InfixOp::LShiftAssign => binass(BinaryOp::LShift, lhs, rhs, span),
+            InfixOp::RShiftAssign => binass(BinaryOp::RShift, lhs, rhs, span),
+            InfixOp::BitwiseAndAssign => binass(BinaryOp::BitwiseAnd, lhs, rhs, span),
+            InfixOp::BitwiseOrAssign => binass(BinaryOp::BitwiseOr, lhs, rhs, span),
+            InfixOp::BitwiseXorAssign => binass(BinaryOp::BitwiseXor, lhs, rhs, span),
+            InfixOp::Assign => E::Assignment { lhs, rhs, span },
+        }
     }
 
-    fn factor(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let mut expr = self.unary()?;
+    fn expr_bp(&mut self, min_bp: u8) -> Result<'ctx> {
+        let mut lhs = self.parse_typecast()?;
 
         loop {
-            let op = match (self.peek().ty, self.peek2().ty) {
-                (TokenType::Divide, _) => BinaryOp::Divide,
-                (TokenType::Modulo, _) => BinaryOp::Modulo,
-                (TokenType::Asterix, _) => BinaryOp::Multiply,
-                (TokenType::Ampersand, _) => BinaryOp::BitwiseAnd,
-                (TokenType::BitwiseOr, _) => BinaryOp::BitwiseOr,
-                (TokenType::BitwiseXor, _) => BinaryOp::BitwiseXor,
-                (TokenType::LessThan, TokenType::LessThan) => BinaryOp::LShift,
-                (TokenType::GreaterThan, TokenType::GreaterThan) => BinaryOp::RShift,
-                _ => break,
+            if self.is_at_end() {
+                break;
+            }
+            let Some((op, toks)) = self.peek_infix_op() else {
+                break;
             };
-            self.dismiss();
-            if op == BinaryOp::LShift || op == BinaryOp::RShift {
+            let (l_bp, r_bp) = infix_binding_power(op);
+            if l_bp < min_bp {
+                break;
+            }
+            for _ in 0..toks {
                 self.dismiss();
             }
-            let right = self.unary()?;
-            let span = expr
+
+            let rhs = self.expr_bp(r_bp)?;
+            let span = lhs
                 .span()
-                .combine_with([right.span()], self.ctx.span_interner);
-            if self.match_tok_dismiss(TokenType::Equal) {
-                assign_set!(expr, right, op, span);
-            } else {
-                expr = Expression::binary(op, span, expr, right);
-            }
+                .combine_with([rhs.span()], self.ctx().span_interner);
+            lhs = Self::infix_op_to_expr(op, lhs, rhs, span);
         }
 
-        Ok(expr)
+        Ok(lhs)
     }
 
-    fn unary(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        if self.matches_dismiss(&[TokenType::Minus, TokenType::LogicalNot]) {
-            let operator = match self.current().ty {
-                TokenType::Minus => UnaryOp::Minus,
-                TokenType::LogicalNot => UnaryOp::Not,
-                _ => unreachable!(),
-            };
-            let span = self.current().span;
-            let next = self.unary()?;
-            let span = span.combine_with([next.span()], self.ctx.span_interner);
-            return Ok(Expression::unary(operator, span, next));
-        }
-
-        self.assignment()
-    }
-
-    fn assignment(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let expr = self.type_cast()?;
-        if self.match_tok_dismiss(TokenType::Equal) {
-            let value = self.parse_expression()?;
-            let span = expr
-                .span()
-                .combine_with([value.span()], self.ctx.span_interner);
-            return Ok(Expression::Assignment {
-                left_side: Box::new(expr),
-                right_side: Box::new(value),
-                span,
-            });
-        }
-        Ok(expr)
-    }
-
-    fn type_cast(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let mut expr = self.references()?;
+    fn parse_typecast(&mut self) -> Result<'ctx> {
+        let mut expr = self.parse_unary()?;
 
         while self.match_tok_dismiss(TokenType::As) {
-            let new_type = TypeRef::parse(self)?;
+            let ty = TypeRef::parse(self)?;
             let span = expr
                 .span()
-                .combine_with([new_type.span()], self.ctx.span_interner);
+                .combine_with([ty.span()], self.ctx().span_interner);
             expr = Expression::TypeCast {
-                left_side: Box::new(expr),
-                new_ty: new_type,
+                lhs: Box::new(expr),
+                new_ty: ty,
                 span,
             };
         }
-
         Ok(expr)
     }
 
-    fn references(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        if self.match_tok_dismiss(TokenType::Ampersand) {
-            let right = self.references()?;
-            let span = right
-                .span()
-                .combine_with([self.current().span], self.ctx.span_interner);
-            Ok(Expression::Unary {
-                operator: UnaryOp::Reference,
-                span,
-                right_side: Box::new(right),
-            })
-        } else if self.match_tok_dismiss(TokenType::LogicalAnd) {
-            let right = self.references()?;
-            let span = right
-                .span()
-                .combine_with([self.current().span], self.ctx.span_interner);
-            let expr = Expression::Unary {
-                operator: UnaryOp::Reference,
-                span,
-                right_side: Box::new(right),
-            };
-            Ok(Expression::Unary {
-                operator: UnaryOp::Reference,
-                span,
-                right_side: Box::new(expr),
-            })
-        } else if self.match_tok_dismiss(TokenType::Asterix) {
-            let right = self.references()?;
-            let span = right
-                .span()
-                .combine_with([self.current().span], self.ctx.span_interner);
-            Ok(Expression::Unary {
-                operator: UnaryOp::Dereference,
-                span,
-                right_side: Box::new(right),
-            })
-        } else {
-            self.indexed()
+    fn parse_unary(&mut self) -> Result<'ctx> {
+        match self.peek_tok().map(|v| v.ty) {
+            Some(TokenType::Minus) => {
+                let span = self.peek_span();
+                self.dismiss();
+                let e = self.parse_unary()?;
+                let span = span.combine_with([e.span()], self.ctx().span_interner);
+                Ok(Expression::Unary {
+                    operator: UnaryOp::Minus,
+                    span,
+                    rhs: Box::new(e),
+                })
+            }
+            Some(TokenType::Not) => {
+                let span = self.peek_span();
+                self.dismiss();
+                let e = self.parse_unary()?;
+                let span = span.combine_with([e.span()], self.ctx().span_interner);
+                Ok(Expression::Unary {
+                    operator: UnaryOp::Not,
+                    span,
+                    rhs: Box::new(e),
+                })
+            }
+            Some(TokenType::Ampersand) => {
+                let span = self.peek_span();
+                self.dismiss();
+                let e = self.parse_unary()?;
+                let span = span.combine_with([e.span()], self.ctx().span_interner);
+                Ok(Expression::Unary {
+                    operator: UnaryOp::Reference,
+                    span,
+                    rhs: Box::new(e),
+                })
+            }
+            Some(TokenType::LogicalAnd) => {
+                let span = self.peek_span();
+                self.dismiss();
+                let e = self.parse_unary()?;
+                let span = span.combine_with([e.span()], self.ctx().span_interner);
+                let e = Expression::Unary {
+                    operator: UnaryOp::Reference,
+                    span,
+                    rhs: Box::new(e),
+                };
+                Ok(Expression::Unary {
+                    operator: UnaryOp::Reference,
+                    span,
+                    rhs: Box::new(e),
+                })
+            }
+            Some(TokenType::Asterix) => {
+                let span = self.peek_span();
+                self.dismiss();
+                let e = self.parse_unary()?;
+                let span = span.combine_with([e.span()], self.ctx().span_interner);
+                Ok(Expression::Unary {
+                    operator: UnaryOp::Dereference,
+                    span,
+                    rhs: Box::new(e),
+                })
+            }
+            _ => self.parse_index_fncall(),
         }
     }
 
-    fn indexed(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let mut expr = self.primary()?;
+    fn parse_index_fncall(&mut self) -> Result<'ctx> {
+        let mut expr = self.parse_literal()?;
 
-        while self.matches_dismiss(&[TokenType::BracketLeft, TokenType::ParenLeft, TokenType::Dot])
-        {
-            if self.current().ty == TokenType::ParenLeft {
-                // function call
-                let mut arguments = vec![];
-                loop {
-                    if self.peek().ty == TokenType::ParenRight {
-                        self.dismiss();
-                        break;
-                    } else if !arguments.is_empty() {
-                        // , or ), but ) is alr handled by the thing above
-                        if self.eat().ty != TokenType::Comma {
-                            return Err(ParsingError::ExpectedFunctionArgument {
-                                span: self.current().span,
-                                found: self.current(),
-                            });
-                        }
-                    }
-
-                    let next_span = self.peek().span;
-                    let next_typ = self.peek().ty;
-                    if let Ok(expr) = self.parse_expression() {
-                        arguments.push(expr);
-                    } else {
-                        return Err(ParsingError::ExpectedFunctionArgumentExpression {
-                            span: next_span,
-                            found: next_typ,
-                        });
-                    }
-                }
-
-                if self.last().ty == TokenType::ParenRight {
-                    expr = Expression::FunctionCall {
-                        span: self
-                            .current()
-                            .span
-                            .combine_with([expr.span()], self.ctx.span_interner),
-                        func: Box::new(expr),
-                        arguments,
-                    };
-                } else if let Expression::MemberAccess { .. } = expr {
-                    unreachable!();
-                } else {
-                    expr = Expression::FunctionCall {
-                        span: self
-                            .current()
-                            .span
-                            .combine_with([expr.span()], self.ctx.span_interner),
-                        func: Box::new(expr),
-                        arguments,
-                    };
-                }
-            } else if self.current().ty == TokenType::BracketLeft {
-                let indexing_expr = self.parse_expression()?;
-
-                self.expect(TokenType::BracketRight)?;
-                expr = Expression::Indexing {
-                    span: self
-                        .current()
-                        .span
-                        .combine_with([expr.span()], self.ctx.span_interner),
-                    left_side: Box::new(expr),
-                    right_side: Box::new(indexing_expr),
-                };
-            } else if self.current().ty == TokenType::Dot {
-                let name = self.expect_identifier()?;
-                if self.peek().ty == TokenType::NamespaceAccess
-                    || self.peek().ty == TokenType::ParenLeft
+        loop {
+            if self.match_tok_dismiss(TokenType::Dot) {
+                let field = self.expect_identifier()?;
+                // check for :: or ( ... ), as that means this is a member call (a.b::<i32>(), or
+                // a.b())
+                if let Some(t) = self.peek_tok()
+                    && matches!(t.ty, TokenType::NamespaceAccess | TokenType::ParenOpen)
                 {
-                    let span = self
-                        .current()
-                        .span
-                        .combine_with([expr.span()], self.ctx.span_interner);
-                    expr = self.parse_membercall(expr, span, name)?;
+                    expr = self.parse_membercall(expr, field)?;
                 } else if let Expression::MemberAccess { index, span, .. } = &mut expr {
-                    index.push(name);
-                    span.combine_with([self.current().span], self.ctx.span_interner);
-                    continue;
+                    index.push(field);
+                    *span = span.combine_with([field.span()], self.ctx().span_interner);
                 } else {
+                    let span = expr
+                        .span()
+                        .combine_with([field.span()], self.ctx().span_interner);
                     expr = Expression::MemberAccess {
-                        span: self
-                            .current()
-                            .span
-                            .combine_with([expr.span()], self.ctx.span_interner),
-                        left_side: Box::new(expr),
-                        index: vec![name],
+                        lhs: Box::new(expr),
+                        index: vec![field],
+                        span,
                     };
                 }
+            } else if let Some(delim) = self.match_delim(Delimiter::Brackets) {
+                let mut argp = self.subparser(delim.into());
+                let idx = argp.parse_expression()?;
+                argp.finish()?;
+                let span = expr
+                    .span()
+                    .combine_with([delim.close_span], self.ctx().span_interner);
+                expr = Expression::Indexing {
+                    lhs: Box::new(expr),
+                    rhs: Box::new(idx),
+                    span,
+                };
+            } else if let Some(delim) = self.match_delim(Delimiter::Parenthesis) {
+                // a(), (a.b)(), a()(), ...; member calls, a.b(), are handled by the `.` case.
+                let arguments = self.subparser(delim.into()).parse_args()?;
+                let span = expr
+                    .span()
+                    .combine_with([delim.close_span], self.ctx().span_interner);
+                expr = Expression::FunctionCall {
+                    func: Box::new(expr),
+                    arguments,
+                    span,
+                };
             } else {
-                unreachable!();
+                break;
             }
         }
 
         Ok(expr)
     }
 
-    // parses ::<generics...>(...) of a membercall (.abcd::<>())
-    fn parse_membercall(
-        &mut self,
-        left_side: Expression<'ctx>,
-        span: Span<'ctx>,
-        identifier: Ident<'ctx>,
-    ) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
+    fn parse_membercall(&mut self, lhs: Expression<'ctx>, fn_name: Ident<'ctx>) -> Result<'ctx> {
         let mut generics = Vec::new();
-        // ::<...>
         if self.match_tok_dismiss(TokenType::NamespaceAccess) {
             self.expect(TokenType::LessThan)?;
             while !self.match_tok_dismiss(TokenType::GreaterThan) {
-                if !generics.is_empty() {
-                    self.expect(TokenType::Comma)?;
-                    if self.match_tok_dismiss(TokenType::GreaterThan) {
-                        break;
-                    }
-                }
-
                 generics.push(TypeRef::parse(self)?);
             }
-            self.expect(TokenType::ParenLeft)?;
-        } else {
-            self.expect_one_of(&[TokenType::ParenLeft, TokenType::NamespaceAccess])?;
         }
-        let mut arguments = Vec::new();
+        let delim = self.expect_delim(Delimiter::Parenthesis)?;
+        let arguments = self.subparser(delim.into()).parse_args()?;
+        let span = lhs
+            .span()
+            .combine_with([fn_name.span(), delim.close_span], self.ctx().span_interner);
+        Ok(Expression::MemberCall {
+            fn_name,
+            lhs: Box::new(lhs),
+            generics,
+            arguments,
+            span,
+        })
+    }
 
-        while !self.match_tok_dismiss(TokenType::ParenRight) {
-            if !arguments.is_empty() {
+    /// Parses a literal or anything with the same precedence (e.g. (a + b), 12, "awa", ...)
+    fn parse_literal(&mut self) -> Result<'ctx> {
+        if let Some(s) = self.match_delim_stream(Delimiter::Parenthesis) {
+            let mut p = self.subparser(s);
+            let v = p.parse_expression()?;
+            p.finish()?;
+            Ok(v)
+        } else if self.match_tok_dismiss(TokenType::Dot) {
+            // .{} / .[]
+            if let Some(delim) = self.match_delim(Delimiter::Brackets) {
+                // tuple (.[a, b, c, d])
+                let mut p = self.subparser(delim.into());
+                let elems = p.parse_args()?;
+                let span = delim.full_span(self.ctx().span_interner);
+                Ok(Expression::Literal(LiteralValue::Tuple(elems), span))
+            } else if let Some(delim) = self.match_delim(Delimiter::Curlies) {
+                // anon struct (.{ a: b, c, d })
+                let mut p = self.subparser(delim.into());
+                let body = p.parse_struct_body()?;
+                let span = delim.full_span(self.ctx().span_interner);
+                Ok(Expression::Literal(
+                    LiteralValue::AnonymousStruct(body),
+                    span,
+                ))
+            } else {
+                Err(ParsingError::ExpectedOneOf {
+                    span: self.peek_span(),
+                    found: self.peek_tok(),
+                    valid: &[TokenType::BracketOpen, TokenType::CurlyOpen],
+                })
+            }
+        } else if let Some(delim) = self.match_delim(Delimiter::Brackets) {
+            // [a, b, c, ...] or [expr; amount]
+            let mut p = self.subparser(delim.into());
+            let span = delim.full_span(self.ctx().span_interner);
+            if p.is_at_end() {
+                // []
+                Ok(Expression::Literal(
+                    LiteralValue::Array(ArrayLiteral::Values(vec![])),
+                    span,
+                ))
+            } else {
+                let expr = p.parse_expression()?;
+                if p.match_tok_dismiss(TokenType::Semicolon) {
+                    let t = p.expect(TokenType::UIntLiteral)?;
+                    let lit = LiteralValue::Array(ArrayLiteral::CopyInitialized(
+                        Box::new(expr),
+                        t.uint_literal().0 as usize,
+                    ));
+                    Ok(Expression::Literal(lit, span))
+                } else {
+                    let elems = p.parse_args_partial(vec![expr])?;
+                    let lit = LiteralValue::Array(ArrayLiteral::Values(elems));
+                    Ok(Expression::Literal(lit, span))
+                }
+            }
+        } else if self.peek_tok().map(|t| t.ty) == Some(TokenType::Fn) {
+            // fnlit
+
+            let (callable, body) = self
+                .parse_callable(true, false, self.peek_span())
+                .and_then(|(callable, body)| {
+                    callable
+                        .contract
+                        .annotations
+                        .are_annotations_valid_for(AnnotationReceiver::Function)?;
+                    Ok((callable, body))
+                })?;
+            let span = callable
+                .contract
+                .span
+                .combine_with([body.span()], self.ctx().span_interner);
+            let lit = LiteralValue::AnonymousFunction(callable.contract, Box::new(body));
+            Ok(Expression::Literal(lit, span))
+        } else if self.peek_tok().map(|t| t.ty) == Some(TokenType::IdentifierLiteral) {
+            // path or struct def
+            let p = Path::parse(self)?;
+            if let Some(delim) = self.match_delim(Delimiter::Curlies) {
+                let mut bodyp = self.subparser(delim.into());
+                let body = bodyp.parse_struct_body()?;
+                let span = p
+                    .span
+                    .combine_with([delim.close_span], bodyp.ctx().span_interner);
+                Ok(Expression::Literal(LiteralValue::Struct(body, p), span))
+            } else {
+                let span = p.span;
+                Ok(Expression::Literal(LiteralValue::Dynamic(p), span))
+            }
+        } else if self.match_tok_dismiss(TokenType::LessThan) {
+            // <type as trait>::fn()
+            let ty = TypeRef::parse(self)?;
+            self.expect(TokenType::As)?;
+            let trait_path = PathWithoutGenerics::parse(self)?;
+            self.expect(TokenType::GreaterThan)?;
+            self.expect(TokenType::NamespaceAccess)?;
+            let fn_name = self.expect_identifier()?;
+            let delim = self.expect_delim(Delimiter::Parenthesis)?;
+            let arguments = self.subparser(delim.into()).parse_args()?;
+            let span = ty.span().combine_with(
+                [trait_path.span, delim.close_span, fn_name.span()],
+                self.ctx().span_interner,
+            );
+            Ok(Expression::TraitFunctionCall {
+                ty,
+                trait_path,
+                fn_name,
+                arguments,
+                span,
+            })
+        } else if let Some(v) = self.peek_tok().and_then(LiteralValue::from_token) {
+            let span = self.peek_span();
+            self.dismiss();
+            Ok(Expression::Literal(v, span))
+        } else {
+            Err(ParsingError::ExpectedOneOf {
+                span: self.peek_span(),
+                found: self.peek_tok(),
+                valid: &[
+                    TokenType::BracketOpen,
+                    TokenType::Dot,
+                    TokenType::IdentifierLiteral,
+                    TokenType::Fn,
+                    TokenType::ParenOpen,
+                    TokenType::FloatLiteral,
+                    TokenType::StringLiteral,
+                    TokenType::VoidLiteral,
+                    TokenType::BooleanLiteral,
+                    TokenType::SIntLiteral,
+                    TokenType::UIntLiteral,
+                    TokenType::LessThan,
+                ],
+            })
+        }
+    }
+
+    fn parse_args(&mut self) -> Result<'ctx, Vec<Expression<'ctx>>> {
+        self.parse_args_partial(Vec::new())
+    }
+
+    /// Parses the insides of a delimited list of expressions (consumes this entire parser).
+    fn parse_args_partial(
+        &mut self,
+        mut args: Vec<Expression<'ctx>>,
+    ) -> Result<'ctx, Vec<Expression<'ctx>>> {
+        while !self.is_at_end() {
+            if !args.is_empty() {
                 self.expect(TokenType::Comma)?;
-                if self.match_tok_dismiss(TokenType::ParenRight) {
+                if self.is_at_end() {
+                    break;
+                }
+            }
+            args.push(self.parse_expression()?);
+        }
+        Ok(args)
+    }
+
+    /// Parses the insides of the curlies of a struct (consumes this entire parser).
+    fn parse_struct_body(
+        &mut self,
+    ) -> Result<'ctx, HashMap<Ident<'ctx>, (Span<'ctx>, Expression<'ctx>)>> {
+        let mut fields = HashMap::new();
+        while !self.is_at_end() {
+            if !fields.is_empty() {
+                self.expect(TokenType::Comma)?;
+                if self.is_at_end() {
                     break;
                 }
             }
 
-            arguments.push(self.parse_expression()?);
-        }
-
-        Ok(Expression::MemberCall {
-            fn_name: identifier,
-            lhs: Box::new(left_side),
-            generics,
-            arguments,
-            span: span.combine_with([self.current().span], self.ctx.span_interner),
-        })
-    }
-
-    fn primary(&mut self) -> Result<Expression<'ctx>, ParsingError<'ctx>> {
-        let span1 = self.peek().span;
-        if self.match_tok_dismiss(TokenType::Dot) {
-            // .{} / .[] / .()
-            let ty = self.peek().ty;
-            if ty == TokenType::ParenLeft || ty == TokenType::BracketLeft {
-                self.eat();
-                let matching_tok = if ty == TokenType::ParenLeft {
-                    TokenType::ParenRight
-                } else {
-                    TokenType::BracketRight
-                };
-                let mut elements = Vec::new();
-                while !self.match_tok_dismiss(matching_tok) {
-                    if !elements.is_empty() {
-                        self.expect(TokenType::Comma)?;
-
-                        if self.match_tok_dismiss(matching_tok) {
-                            break;
-                        }
-                    }
-
-                    elements.push((self.peek().span, self.parse_expression()?));
-                }
-                let span = self
-                    .current()
-                    .span
-                    .combine_with([span1], self.ctx.span_interner);
-                return Ok(Expression::Literal(LiteralValue::Tuple(elements), span));
-            } else if ty == TokenType::CurlyLeft {
-                return self
-                    .try_object()
-                    .expect("this should never return None as we ensured the next token is of type CurlyLeft.")
-                    .map(LiteralValue::AnonymousStruct)
-                    .map(move |v| Expression::Literal(v, self
-                        .current()
-                        .span
-                        .combine_with([span1], self.ctx.span_interner)));
-            } else {
-                unreachable!()
+            // either `name: expr` or `name`.
+            let name = self.expect_identifier()?;
+            if self.is_at_end()
+                || self
+                    .peek_tok()
+                    .map(|v| v.ty == TokenType::Comma)
+                    .unwrap_or(false)
+            {
+                let lit = LiteralValue::Dynamic(Path::new(name, vec![]));
+                let expr = Expression::Literal(lit, name.span());
+                fields.insert(name, (name.span(), expr));
+                continue;
             }
-        }
-
-        // arrays
-        if let Some(v) = self.try_array().transpose() {
-            return v;
-        }
-
-        // functions/callables
-        if self.peek().ty == TokenType::Fn {
-            let span = self.peek().span;
-            return Ok(Expression::Literal(
-                self.parse_callable(true, false)
-                    .and_then(|(callable, body)| {
-                        callable
-                            .contract
-                            .annotations
-                            .are_annotations_valid_for(AnnotationReceiver::Function)?;
-                        Ok(LiteralValue::AnonymousFunction(
-                            callable.contract,
-                            Box::new(body),
-                        ))
-                    })?,
-                span,
-            ));
-        }
-
-        if matches!(self.peek().ty, TokenType::IdentifierLiteral) {
-            let current = self.pos();
-            if let Ok(path) = Path::parse(self) {
-                // StructName { ... };
-                let span = self.peek().span;
-                if let Some(obj) = self.try_object() {
-                    return match obj {
-                        Ok(v) => Ok(Expression::Literal(LiteralValue::Struct(v, path), span)),
-                        Err(e) => Err(e),
-                    };
-                } else {
-                    return Ok(Expression::Literal(LiteralValue::Dynamic(path), span));
-                }
-            } else {
-                self.set_pos(current);
-            }
-        }
-
-        if let Some(lit) = LiteralValue::from_token(self.peek()) {
-            return Ok(Expression::Literal(lit, self.eat().span));
-        }
-
-        if self.match_tok_dismiss(TokenType::ParenLeft) {
+            // can only be colon, because comma was just checked and the control flow is aborted,
+            // and curlyclose would be captured by the parent parser. They're only there for the
+            // error.
+            self.expect_one_of(&[TokenType::Comma, TokenType::Colon, TokenType::CurlyClose])?;
             let expr = self.parse_expression()?;
-            self.expect(TokenType::ParenRight)?;
-            return Ok(expr);
+            let span = name
+                .span()
+                .combine_with([expr.span()], self.ctx().span_interner);
+            fields.insert(name, (span, expr));
         }
-
-        let found_token = self.peek();
-        Err(ParsingError::ExpectedExpression {
-            span: self.peek().span,
-            found: found_token.ty,
-        })
-    }
-
-    fn try_array(&mut self) -> Result<Option<Expression<'ctx>>, ParsingError<'ctx>> {
-        let span = self.peek().span;
-        if self.match_tok_dismiss(TokenType::BracketLeft) {
-            let inner_span = self.current().span;
-            let mut arr = vec![];
-            while !self.match_tok_dismiss(TokenType::BracketRight) {
-                if arr.len() == 1 && self.match_tok_dismiss(TokenType::Semicolon) {
-                    let amount = self.expect(TokenType::UIntLiteral)?.uint_literal().0 as usize;
-                    self.expect(TokenType::BracketRight)?;
-                    return Ok(Some(Expression::Literal(
-                        LiteralValue::Array(ArrayLiteral::CopyInitialized(
-                            Box::new(arr.remove(0)),
-                            amount,
-                        )),
-                        inner_span,
-                    )));
-                }
-                if !arr.is_empty() {
-                    // expect a comma
-                    if !self.match_tok_dismiss(TokenType::Comma) {
-                        return Err(ParsingError::ExpectedArrayElement {
-                            span: self.peek().span,
-                            found: self.peek().ty,
-                        });
-                    }
-                    // in order to allow stuff like [1, 2, 3, ]
-                    if self.match_tok_dismiss(TokenType::BracketRight) {
-                        break;
-                    }
-                }
-
-                arr.push(self.parse_expression()?);
-            }
-
-            let span = self
-                .peek()
-                .span
-                .combine_with([span], self.ctx.span_interner);
-            Ok(Some(Expression::Literal(
-                LiteralValue::Array(ArrayLiteral::Values(arr)),
-                span,
-            )))
-        } else {
-            Ok(None)
-        }
-    }
-
-    // { key : value, }
-    #[allow(clippy::type_complexity)]
-    fn try_object(
-        &mut self,
-    ) -> Option<Result<HashMap<Ident<'ctx>, (Span<'ctx>, Expression<'ctx>)>, ParsingError<'ctx>>>
-    {
-        if self.match_tok_dismiss(TokenType::CurlyLeft) {
-            let mut obj = HashMap::new();
-            while !self.match_tok_dismiss(TokenType::CurlyRight) {
-                if !obj.is_empty() {
-                    // expect a comma
-                    if let Err(e) = self.expect_one_of(&[TokenType::CurlyRight, TokenType::Comma]) {
-                        return Some(Err(e));
-                    }
-                    // in order to allow stuff like [1, 2, 3, ]
-                    if self.match_tok_dismiss(TokenType::CurlyRight) {
-                        break;
-                    }
-                }
-
-                // parse key : value
-                let key = match self.expect_identifier() {
-                    Ok(v) => v,
-                    Err(e) => return Some(Err(e)),
-                };
-                let span = self.current().span;
-
-                if let Err(e) = self.expect(TokenType::Colon) {
-                    return Some(Err(e));
-                }
-
-                match self.parse_expression() {
-                    Ok(expr) => obj.insert(key, (span, expr)),
-                    Err(e) => return Some(Err(e)),
-                };
-            }
-
-            Some(Ok(obj))
-        } else {
-            None
-        }
+        Ok(fields)
     }
 }

@@ -11,6 +11,7 @@ mod let_stmt;
 mod struct_def;
 mod trait_def;
 pub use control_flow::{For, If, While};
+pub(crate) use display::display_contract;
 pub use let_stmt::Variable;
 pub use trait_def::{Trait, TraitFunction};
 
@@ -577,6 +578,8 @@ impl<'ctx> Parser<'_, 'ctx> {
         public: bool,
         span: Span<'ctx>,
     ) -> Result<Statement<'ctx>, ParsingError<'ctx>> {
+        // dismiss extern
+        self.dismiss();
         self.parse_any_callable(false, false, false, public, span)
             .and_then(|(callable, body)| {
                 callable
@@ -634,7 +637,7 @@ impl<'ctx> Parser<'_, 'ctx> {
 
         while !argp.is_at_end() {
             if !arguments.is_empty() {
-                if !self.match_tok_dismiss(TokenType::Comma) {
+                if !argp.match_tok_dismiss(TokenType::Comma) {
                     return Err(ParsingError::ExpectedFunctionArgument {
                         span: argp.peek_span(),
                         found: argp.peek_tok(),
