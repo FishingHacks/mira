@@ -4,6 +4,7 @@ use inkwell::{
     types::{AnyTypeEnum, BasicType, BasicTypeEnum},
     values::{BasicValueEnum, GlobalValue, PointerValue},
 };
+use mira_spans::interner::ByteSymbol;
 use mira_typeck::ir::TypedLiteral;
 
 use crate::FnInstance;
@@ -34,6 +35,22 @@ fn global_value_ty(global: GlobalValue<'_>) -> BasicTypeEnum<'_> {
 }
 
 impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
+    fn basic_value_ptr_byte_str(
+        &self,
+        sym: ByteSymbol<'arena>,
+        ptr: PointerValue<'ctx>,
+    ) -> Result<(), BuilderError> {
+        let value = self.ctx.get_byte_string(sym);
+        let strlen = sym.len() as u64;
+        let strlen = self.ctx.default_types.isize.const_int(strlen, false);
+        // store the pointer part of the fat pointer
+        self.build_store(ptr, value)?;
+        // get the metadata pointer
+        let metadata_ptr = self.build_struct_gep(self.ctx.default_types.fat_ptr, ptr, 1, "")?;
+        self.build_store(metadata_ptr, strlen)?;
+        Ok(())
+    }
+
     /// Stores the lit into the ptr.
     ///
     /// distinct: the ptr does not point to the same value as lit could. This means, that:
@@ -94,18 +111,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 }
                 Ok(())
             }
-            &TypedLiteral::String(symbol) => {
-                let value = self.ctx.get_string(symbol);
-                let strlen = symbol.len() as u64;
-                let strlen = self.ctx.default_types.isize.const_int(strlen, false);
-                // store the pointer part of the fat pointer
-                self.build_store(ptr, value)?;
-                // get the metadata pointer
-                let metadata_ptr =
-                    self.build_struct_gep(self.ctx.default_types.fat_ptr, ptr, 1, "")?;
-                self.build_store(metadata_ptr, strlen)?;
-                Ok(())
-            }
+            &TypedLiteral::String(sym) => self.basic_value_ptr_byte_str(sym.to_byte_sym(), ptr),
+            &TypedLiteral::ByteString(sym) => self.basic_value_ptr_byte_str(sym, ptr),
             // zst's don't have to be stored cuz there's nothing to store
             TypedLiteral::Array(ty, _) | TypedLiteral::ArrayInit(ty, _, _)
                 if ty.is_zst(&self.structs_reader) =>
@@ -258,21 +265,8 @@ impl<'ctx, 'arena> FunctionCodegenContext<'ctx, 'arena, '_, '_, '_> {
                 )
                 .expect("the type should always match")
             }
-            &TypedLiteral::String(sym) => {
-                let ptr = self.ctx.get_string(sym).as_pointer_value().into();
-                let size = sym.len();
-                let len_const = self
-                    .ctx
-                    .default_types
-                    .isize
-                    .const_int(size as u64, false)
-                    .into();
-                self.ctx
-                    .default_types
-                    .fat_ptr
-                    .const_named_struct(&[ptr, len_const])
-                    .into()
-            }
+            &TypedLiteral::String(sym) => crate::byte_str_basic_val(sym.to_byte_sym(), self.ctx),
+            &TypedLiteral::ByteString(sym) => crate::byte_str_basic_val(sym, self.ctx),
 
             TypedLiteral::ArrayInit(ty, _, 0) => self
                 .basic_ty(*self.substitute(*ty))

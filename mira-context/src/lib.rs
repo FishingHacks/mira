@@ -1,4 +1,4 @@
-use std::{fmt::Debug, ops::Index, sync::Arc};
+use std::{ffi::CStr, fmt::Debug, ops::Index, sync::Arc};
 
 use mira_common::newty;
 use mira_errors::{
@@ -6,7 +6,7 @@ use mira_errors::{
 };
 use mira_spans::{
     Arena, SourceMap, Span, SpanData, Symbol,
-    interner::{SpanInterner, SymbolInterner},
+    interner::{ByteSymbol, ByteSymbolInterner, SpanInterner},
 };
 use parking_lot::Mutex;
 
@@ -17,7 +17,7 @@ pub use diagnostics_emitter::*;
 pub struct ErrorTracker(usize);
 
 pub struct GlobalCtx<'arena> {
-    string_interner: Mutex<SymbolInterner<'arena>>,
+    byte_string_interner: Mutex<ByteSymbolInterner<'arena>>,
     doc_comment_store: Mutex<DocCommentStore>,
     pub span_interner: SpanInterner<'arena>,
     pub source_map: Arc<SourceMap>,
@@ -33,7 +33,7 @@ impl<'arena> GlobalCtx<'arena> {
     ) -> Self {
         let source_map = Arc::new(SourceMap::new());
         Self {
-            string_interner: SymbolInterner::new(arena).into(),
+            byte_string_interner: ByteSymbolInterner::new(arena).into(),
             doc_comment_store: DocCommentStore::new().into(),
             span_interner: SpanInterner::new(arena),
             diag_ctx: DiagCtx::new(emitter, source_map.clone(), printer, styles).into(),
@@ -52,7 +52,7 @@ impl<'arena> GlobalCtx<'arena> {
 
     pub fn share(&'arena self) -> SharedCtx<'arena> {
         SharedCtx::new(
-            &self.string_interner,
+            &self.byte_string_interner,
             &self.doc_comment_store,
             &self.span_interner,
             &self.source_map,
@@ -63,7 +63,7 @@ impl<'arena> GlobalCtx<'arena> {
 
 #[derive(Clone, Copy)]
 pub struct SharedCtx<'arena> {
-    string_interner: &'arena Mutex<SymbolInterner<'arena>>,
+    byte_string_interner: &'arena Mutex<ByteSymbolInterner<'arena>>,
     doc_comment_store: &'arena Mutex<DocCommentStore>,
     dctx: &'arena Mutex<DiagCtx>,
     pub span_interner: &'arena SpanInterner<'arena>,
@@ -72,14 +72,14 @@ pub struct SharedCtx<'arena> {
 
 impl<'arena> SharedCtx<'arena> {
     pub fn new(
-        string_interner: &'arena Mutex<SymbolInterner<'arena>>,
+        byte_string_interner: &'arena Mutex<ByteSymbolInterner<'arena>>,
         doc_comment_store: &'arena Mutex<DocCommentStore>,
         span_interner: &'arena SpanInterner<'arena>,
         source_map: &'arena SourceMap,
         dctx: &'arena Mutex<DiagCtx>,
     ) -> Self {
         Self {
-            string_interner,
+            byte_string_interner,
             doc_comment_store,
             span_interner,
             source_map,
@@ -93,7 +93,17 @@ impl<'arena> SharedCtx<'arena> {
     }
 
     pub fn intern_str(self, s: &str) -> Symbol<'arena> {
-        self.string_interner.lock().intern(s)
+        self.byte_string_interner.lock().intern_str(s)
+    }
+
+    pub fn intern_bstr(self, s: &[u8]) -> ByteSymbol<'arena> {
+        self.byte_string_interner.lock().intern(s)
+    }
+
+    pub fn intern_cstr(self, s: &CStr) -> ByteSymbol<'arena> {
+        self.byte_string_interner
+            .lock()
+            .intern(s.to_bytes_with_nul())
     }
 
     pub fn intern_span(self, data: SpanData) -> Span<'arena> {

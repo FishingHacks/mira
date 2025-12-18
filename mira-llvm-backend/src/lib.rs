@@ -37,7 +37,7 @@ use mira_parser::{
         noinline::Noinline, section::SectionAnnotation,
     },
 };
-use mira_spans::interner::Symbol;
+use mira_spans::interner::{ByteSymbol, Symbol};
 use mira_target::{NATIVE_TARGET, Target};
 use mira_typeck::{
     Substitute, SubstitutionCtx, Ty, TyKind, TyList, TypeckCtx, ir::TypedLiteral,
@@ -148,6 +148,19 @@ fn static_to_basic_type(static_value: GlobalValue<'_>) -> BasicTypeEnum<'_> {
     }
 }
 
+fn byte_str_basic_val<'ctx, 'arena>(
+    sym: ByteSymbol<'arena>,
+    ctx: &CodegenContext<'ctx, 'arena, '_>,
+) -> BasicValueEnum<'ctx> {
+    let ptr = ctx.get_byte_string(sym).as_pointer_value().into();
+    let size = sym.len();
+    let len_const = ctx.default_types.isize.const_int(size as u64, false).into();
+    ctx.default_types
+        .fat_ptr
+        .const_named_struct(&[ptr, len_const])
+        .into()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn basic_val<'ctx, 'arena>(
     lit: &TypedLiteral<'arena>,
@@ -175,15 +188,8 @@ fn basic_val<'ctx, 'arena>(
                 )
                 .expect("the type should always match")
         }
-        TypedLiteral::String(sym) => {
-            let ptr = ctx.get_string(*sym).as_pointer_value().into();
-            let size = sym.len();
-            let len_const = ctx.default_types.isize.const_int(size as u64, false).into();
-            ctx.default_types
-                .fat_ptr
-                .const_named_struct(&[ptr, len_const])
-                .into()
-        }
+        &TypedLiteral::String(sym) => byte_str_basic_val(sym.to_byte_sym(), ctx),
+        &TypedLiteral::ByteString(sym) => byte_str_basic_val(sym, ctx),
 
         TypedLiteral::ArrayInit(ty, _, 0) => ctx.basic_ty(ty).array_type(0).const_zero().into(),
         TypedLiteral::ArrayInit(_, elem, amount) => {
@@ -455,7 +461,7 @@ pub struct CodegenContext<'ctx, 'arena, 'a> {
 
     intrinsics: RefCell<HashMap<Symbol<'arena>, FunctionValue<'ctx>>>,
     function_store: RefCell<FnStore<'ctx, 'arena>>,
-    string_map: RefCell<HashMap<Symbol<'arena>, GlobalValue<'ctx>>>,
+    byte_string_map: RefCell<HashMap<ByteSymbol<'arena>, GlobalValue<'ctx>>>,
     vtables: RefCell<HashMap<VTableKey<'arena>, GlobalValue<'ctx>>>,
 }
 
@@ -620,7 +626,7 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             external_functions: IndexMap::new(),
             structs: StructStore::default(),
             statics: IndexMap::new(),
-            string_map: RefCell::new(HashMap::new()),
+            byte_string_map: RefCell::new(HashMap::new()),
             machine,
             triple,
             tc_ctx: ctx,
@@ -959,20 +965,20 @@ impl<'ctx, 'arena, 'a> CodegenContext<'ctx, 'arena, 'a> {
             .map(|v| v.value)
     }
 
-    pub fn get_string(&self, s: Symbol<'arena>) -> GlobalValue<'ctx> {
-        if let Some(&v) = self.string_map.borrow().get(&s) {
+    pub fn get_byte_string(&self, s: ByteSymbol<'arena>) -> GlobalValue<'ctx> {
+        if let Some(&v) = self.byte_string_map.borrow().get(&s) {
             return v;
         }
         assert!(s.len() < u32::MAX as usize);
-        let mut string_map = self.string_map.borrow_mut();
+        let mut byte_string_map = self.byte_string_map.borrow_mut();
         let global = self.module.add_global(
             self.default_types.i8.array_type(s.len() as u32),
             None,
-            "str",
+            "bstr",
         );
         global.set_linkage(Linkage::Private);
-        global.set_initializer(&self.context.const_string(s.as_bytes(), false));
-        string_map.insert(s, global);
+        global.set_initializer(&self.context.const_string(*s, false));
+        byte_string_map.insert(s, global);
         global
     }
 

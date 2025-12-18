@@ -853,12 +853,12 @@ fn typecheck_expression<'ctx>(
     expression: &Expression<'ctx>,
     type_suggestion: TypeSuggestion<'ctx>,
 ) -> Result<(Ty<'ctx>, TypedLiteral<'ctx>), ErrorEmitted> {
+    use LiteralValue as LV;
     match expression {
         &Expression::Literal(ref literal_value, span) => match literal_value {
-            LiteralValue::String(global_str) => {
-                Ok((default_types::str_ref, TypedLiteral::String(*global_str)))
-            }
-            LiteralValue::Array(ArrayLiteral::Values(vec)) if vec.is_empty() => {
+            &LV::String(s) => Ok((default_types::str_ref, TypedLiteral::String(s))),
+            &LV::ByteString(s) => Ok((default_types::u8_slice, TypedLiteral::ByteString(s))),
+            LV::Array(ArrayLiteral::Values(vec)) if vec.is_empty() => {
                 let ty = match type_suggestion {
                     TypeSuggestion::UnsizedArray(_) | TypeSuggestion::Array(_) => type_suggestion
                         .to_type(ctx)
@@ -867,7 +867,7 @@ fn typecheck_expression<'ctx>(
                 };
                 Ok((ty, TypedLiteral::Array(ty, [].into())))
             }
-            LiteralValue::Array(ArrayLiteral::CopyInitialized(value, amount)) => {
+            LV::Array(ArrayLiteral::CopyInitialized(value, amount)) => {
                 let suggested_typ = match type_suggestion {
                     TypeSuggestion::UnsizedArray(v) | TypeSuggestion::Array(v) => *v,
                     _ => TypeSuggestion::Unknown,
@@ -881,7 +881,7 @@ fn typecheck_expression<'ctx>(
                     TypedLiteral::ArrayInit(ty, Box::new(lit), *amount),
                 ))
             }
-            LiteralValue::Array(ArrayLiteral::Values(vec)) => {
+            LV::Array(ArrayLiteral::Values(vec)) => {
                 let suggested_typ = match type_suggestion {
                     TypeSuggestion::UnsizedArray(v) | TypeSuggestion::Array(v) => *v,
                     _ => TypeSuggestion::Unknown,
@@ -905,7 +905,7 @@ fn typecheck_expression<'ctx>(
                     TypedLiteral::Array(ty, elements.into_boxed_slice()),
                 ))
             }
-            LiteralValue::Tuple(values) => {
+            LV::Tuple(values) => {
                 let mut elements = Vec::with_capacity(values.len());
                 let mut element_types = Vec::with_capacity(values.len());
                 let mut suggested_element_types = &Vec::new();
@@ -927,7 +927,7 @@ fn typecheck_expression<'ctx>(
                     TypedLiteral::Tuple(elements.into_boxed_slice()),
                 ))
             }
-            LiteralValue::AnonymousStruct(values) => {
+            LV::AnonymousStruct(values) => {
                 let TypeSuggestion::Struct(struct_id, generics) = type_suggestion else {
                     return Err(ctx.emit_cannot_infer_anon_struct_type(span));
                 };
@@ -962,7 +962,7 @@ fn typecheck_expression<'ctx>(
                     TypedLiteral::Struct(struct_id, generics, elements.into_boxed_slice()),
                 ))
             }
-            LiteralValue::Struct(values, path) => {
+            LV::Struct(values, path) => {
                 let value = ctx.resolve_import(path.iter(), span)?;
                 let ResolvedValue::Struct(struct_id, generics) = value else {
                     return Err(ctx.emit_mismatching_scope_type(
@@ -1001,19 +1001,19 @@ fn typecheck_expression<'ctx>(
                     TypedLiteral::Struct(struct_id, generics, elements.into_boxed_slice()),
                 ))
             }
-            LiteralValue::Float(v, number_type) => {
+            LV::Float(v, number_type) => {
                 Ok(float_number_to_literal(*v, *number_type, type_suggestion))
             }
-            LiteralValue::SInt(v, number_type) => {
+            LV::SInt(v, number_type) => {
                 Ok(signed_number_to_literal(*v, *number_type, type_suggestion))
             }
-            LiteralValue::UInt(v, number_type) => Ok(unsigned_number_to_literal(
+            LV::UInt(v, number_type) => Ok(unsigned_number_to_literal(
                 *v,
                 *number_type,
                 type_suggestion,
             )),
-            LiteralValue::Bool(v) => Ok((default_types::bool, TypedLiteral::Bool(*v))),
-            LiteralValue::Dynamic(path) => {
+            LV::Bool(v) => Ok((default_types::bool, TypedLiteral::Bool(*v))),
+            LV::Dynamic(path) => {
                 if path.entries.len() == 1
                     && let Some(id) = ctx.get_scoped(&path.entries[0].0)
                 {
@@ -1079,7 +1079,7 @@ fn typecheck_expression<'ctx>(
                     }
                 }
             }
-            &LiteralValue::BakedAnonymousFunction(fn_id) => {
+            &LV::BakedAnonymousFunction(fn_id) => {
                 let func = &ctx.functions.read()[fn_id].0;
                 let fn_typ = FunctionType {
                     return_type: func.return_type,
@@ -1091,8 +1091,8 @@ fn typecheck_expression<'ctx>(
                     TypedLiteral::Function(fn_id, EMPTY_TYLIST),
                 ))
             }
-            LiteralValue::AnonymousFunction(..) => unreachable!("unbaked function"),
-            LiteralValue::Void => Ok((default_types::void, TypedLiteral::Void)),
+            LV::AnonymousFunction(..) => unreachable!("unbaked function"),
+            LV::Void => Ok((default_types::void, TypedLiteral::Void)),
         },
         Expression::Asm {
             span,

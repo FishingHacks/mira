@@ -4,7 +4,7 @@ use mira_parser::{
     module::{ExternalFunctionId, FunctionId, StaticId, StructId},
     std_annotations::intrinsic::Intrinsic,
 };
-use mira_spans::Symbol;
+use mira_spans::{Symbol, interner::ByteSymbol};
 
 use crate::{
     Substitute, Ty, TyKind, TyList, TypeckCtx, default_types,
@@ -22,6 +22,7 @@ pub enum TypedLiteral<'ctx> {
     ExternalFunction(ExternalFunctionId),
     Static(StaticId),
     String(Symbol<'ctx>),
+    ByteString(ByteSymbol<'ctx>),
     Array(Ty<'ctx>, Box<[TypedLiteral<'ctx>]>),
     ArrayInit(Ty<'ctx>, Box<TypedLiteral<'ctx>>, usize),
     Struct(StructId, TyList<'ctx>, Box<[TypedLiteral<'ctx>]>),
@@ -75,6 +76,7 @@ impl<'ctx> TypedLiteral<'ctx> {
             }
             &TypedLiteral::Static(id) => ctx.statics.read()[id].ty,
             TypedLiteral::String(_) => default_types::str_ref,
+            TypedLiteral::ByteString(_) => default_types::u8_slice,
             TypedLiteral::Array(ty, elems) => ctx.ctx.intern_ty(TyKind::SizedArray {
                 ty: *ty,
                 number_elements: elems.len(),
@@ -136,6 +138,7 @@ impl<'ctx> TypedLiteral<'ctx> {
             TypedLiteral::ISize(_) => Some(default_types::isize),
             TypedLiteral::Bool(_) => Some(default_types::bool),
             TypedLiteral::String(_) => Some(default_types::str_ref),
+            TypedLiteral::ByteString(_) => Some(default_types::u8_slice),
             TypedLiteral::Void => Some(default_types::void),
             TypedLiteral::Dynamic(id) => {
                 let ty = scope[*id].ty;
@@ -170,6 +173,7 @@ impl<'ctx> TypedLiteral<'ctx> {
             | TypedLiteral::Intrinsic(..)
             | TypedLiteral::LLVMIntrinsic(_) => false,
             TypedLiteral::String(_)
+            | TypedLiteral::ByteString(_)
             | TypedLiteral::Function(..)
             | TypedLiteral::ExternalFunction(..)
             | TypedLiteral::Void

@@ -9,8 +9,11 @@ use crate::{
     error::ParsingError,
     module::{FunctionId, Module, ModuleContext, ModuleId},
 };
-use mira_lexer::{Delimiter, Literal, NumberType, Token, TokenTree, TokenType};
-use mira_spans::{Ident, Span, interner::Symbol};
+use mira_lexer::{Delimiter, NumberType, Token, TokenTree, TokenType};
+use mira_spans::{
+    Ident, Span,
+    interner::{ByteSymbol, Symbol},
+};
 
 use super::{FunctionContract, Parser, Statement, statements::display_contract, types::TypeRef};
 
@@ -26,6 +29,7 @@ pub enum ArrayLiteral<'ctx> {
 #[derive(Debug, Clone)]
 pub enum LiteralValue<'ctx> {
     String(Symbol<'ctx>),
+    ByteString(ByteSymbol<'ctx>),
     Array(ArrayLiteral<'ctx>),
     Struct(
         HashMap<Ident<'ctx>, (Span<'ctx>, Expression<'ctx>)>,
@@ -55,6 +59,7 @@ impl Display for LiteralValue<'_> {
             LiteralValue::SInt(v, ty) => f.write_fmt(format_args!("{}{}", *v, *ty)),
             LiteralValue::Float(v, ty) => f.write_fmt(format_args!("{}{}", *v, *ty)),
             LiteralValue::String(v) => Debug::fmt(v, f),
+            LiteralValue::ByteString(v) => Debug::fmt(v, f),
             LiteralValue::Array(v) => {
                 f.write_char('[')?;
                 match v {
@@ -131,6 +136,7 @@ impl<'ctx> LiteralValue<'ctx> {
             LiteralValue::Dynamic(..) => "{unknown}",
             LiteralValue::Float(..) | LiteralValue::SInt(..) | LiteralValue::UInt(..) => "number",
             LiteralValue::String(..) => "string",
+            LiteralValue::ByteString(..) => "byte string",
             LiteralValue::Array(..) => "array",
             LiteralValue::Struct(..) => "struct",
             LiteralValue::AnonymousStruct(..) => "anonymous struct",
@@ -142,26 +148,15 @@ impl<'ctx> LiteralValue<'ctx> {
 
     fn from_token(value: Token<'ctx>) -> Option<Self> {
         match value.ty {
-            TokenType::StringLiteral
-            | TokenType::BooleanLiteral
-            | TokenType::FloatLiteral
-            | TokenType::UIntLiteral
-            | TokenType::SIntLiteral => value.literal.as_ref().map(|v| match v {
-                Literal::Bool(boolean) => LiteralValue::Bool(*boolean),
-                Literal::Float(float, ty) => LiteralValue::Float(*float, *ty),
-                Literal::SInt(int, ty) => LiteralValue::SInt(*int, *ty),
-                Literal::UInt(uint, ty) => LiteralValue::UInt(*uint, *ty),
-                Literal::String(string) => LiteralValue::String(*string),
-                Literal::DocComment(_) => unreachable!(),
-            }),
-            TokenType::VoidLiteral => Some(LiteralValue::Void),
-            TokenType::IdentifierLiteral => match value.literal {
-                Some(Literal::String(ref v)) => Some(LiteralValue::Dynamic(Path::new(
-                    Ident::new(*v, value.span),
-                    Vec::new(),
-                ))),
-                _ => None,
-            },
+            TokenType::StringLiteral => Some(Self::String(value.string_literal())),
+            TokenType::ByteStringLiteral => Some(Self::ByteString(value.byte_string_literal())),
+            TokenType::BooleanLiteral => Some(Self::Bool(value.bool_literal())),
+            TokenType::FloatLiteral => {
+                Some(value.float_literal()).map(|(v, ty)| Self::Float(v, ty))
+            }
+            TokenType::SIntLiteral => Some(value.sint_literal()).map(|(v, ty)| Self::SInt(v, ty)),
+            TokenType::UIntLiteral => Some(value.uint_literal()).map(|(v, ty)| Self::UInt(v, ty)),
+            TokenType::VoidLiteral => Some(Self::Void),
             _ => None,
         }
     }
@@ -493,8 +488,8 @@ impl<'ctx> Expression<'ctx> {
     ) {
         match self {
             Self::Asm { .. } => (),
-            Self::Literal(val, ..) => {
-                if let LiteralValue::AnonymousFunction(contract, statements) = val {
+            Self::Literal(val, ..) => match val {
+                LiteralValue::AnonymousFunction(contract, statements) => {
                     let id = module.push_fn(
                         FunctionContract {
                             name: contract.name.take(),
@@ -511,7 +506,28 @@ impl<'ctx> Expression<'ctx> {
                     );
                     *val = LiteralValue::BakedAnonymousFunction(id)
                 }
-            }
+                LiteralValue::Array(ArrayLiteral::Values(exprs)) | LiteralValue::Tuple(exprs) => {
+                    for expr in exprs {
+                        expr.bake_functions(module, module_key, context);
+                    }
+                }
+                LiteralValue::Array(ArrayLiteral::CopyInitialized(expr, _)) => {
+                    expr.bake_functions(module, module_key, context)
+                }
+                LiteralValue::Struct(exprs, _) | LiteralValue::AnonymousStruct(exprs) => exprs
+                    .values_mut()
+                    .for_each(|v| v.1.bake_functions(module, module_key, context)),
+
+                LiteralValue::BakedAnonymousFunction(_)
+                | LiteralValue::String(_)
+                | LiteralValue::ByteString(_)
+                | LiteralValue::Float(_, _)
+                | LiteralValue::SInt(_, _)
+                | LiteralValue::UInt(_, _)
+                | LiteralValue::Bool(_)
+                | LiteralValue::Dynamic(_)
+                | LiteralValue::Void => (),
+            },
             Self::Binary { rhs, lhs, .. }
             | Self::Assignment { lhs, rhs, .. }
             | Self::Indexing { lhs, rhs, .. }

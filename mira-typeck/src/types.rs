@@ -44,6 +44,8 @@ pub mod default_types {
     pub static never: Ty<'static> = Ty(&TyKind::PrimitiveNever);
 
     // types used by the compiler
+    pub static u8_array: Ty<'static> = Ty(&TyKind::UnsizedArray(u8));
+    pub static u8_slice: Ty<'static> = Ty(&TyKind::Ref(u8_array));
     pub static str_ref: Ty<'static> = Ty(&TyKind::Ref(str));
     pub static self_ref: Ty<'static> = Ty(&TyKind::Ref(self_));
     pub static void_ref: Ty<'static> = Ty(&TyKind::Ref(void));
@@ -51,7 +53,7 @@ pub mod default_types {
 
     pub static ALL: &[&Ty<'static>] = &[
         &u8, &u16, &u32, &u64, &usize, &i8, &i16, &i32, &i64, &isize, &bool, &void, &never,
-        &str_ref, &self_ref, &void_ref, &self_, &u8_ref,
+        &str_ref, &self_ref, &void_ref, &self_, &u8_ref, &u8_array, &u8_slice,
     ];
 }
 

@@ -17,6 +17,16 @@ pub fn dummy_token(tokens: &mut Vec<Token<'static>>, ty: TokenType) {
     tokens.push(Token::new(ty, None, Span::DUMMY));
 }
 
+#[derive(PartialEq, Eq, Debug)]
+enum StringType {
+    /// "" -- unicode escape sequences, hex escape sequences in the range 0..=0x7f
+    Normal,
+    /// c"" -- unicode escape sequences, hex escape sequences
+    CStr,
+    /// b"" -- no unicode escape sequences, hex escape sequences
+    BStr,
+}
+
 pub struct Cursor<'src> {
     chars: Chars<'src>,
     peeks: [Option<char>; 3],
@@ -331,9 +341,9 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
             }
             '@' => token!(AnnotationIntroducer),
             ('0'..='9') => self.parse_number(c, pos_start),
-            '"' => self.parse_string('"', pos_start),
+            '"' => self.parse_string('"', pos_start, StringType::Normal),
             '`' => {
-                let mut tok = self.parse_string('`', pos_start)?;
+                let mut tok = self.parse_string('`', pos_start, StringType::Normal)?;
                 tok.ty = TokenType::IdentifierLiteral;
                 Ok(tok)
             }
@@ -877,7 +887,8 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
         &mut self,
         string_char: char,
         backslash_byte: usize,
-    ) -> Result<char, LexingError<'ctx>> {
+        allow_any_byte_range: bool,
+    ) -> Result<u8, LexingError<'ctx>> {
         let pos = self.next_pos();
         let part1 = match self.advance() {
             None => return Err(LexingError::UnclosedString(self.span(pos, 1))),
@@ -908,12 +919,15 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
                 return Err(LexingError::InvalidNumericEscapeChar(self.span(pos, 1), c));
             }
         };
-        match char::from_u32(((part1 << 4) | part2) as u32) {
-            Some(c) if c.is_ascii() => Ok(c),
-            _ => Err(LexingError::OutOfRangeEscape(
+        let v = (part1 << 4) | part2;
+        let end = if allow_any_byte_range { 0xff } else { 0x7f };
+        if v <= end {
+            Ok(v)
+        } else {
+            Err(LexingError::OutOfRangeEscape(
                 self.span(backslash_byte, 4),
-                0..=0x7f,
-            )),
+                0..=end,
+            ))
         }
     }
 
@@ -974,9 +988,17 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
         &mut self,
         string_char: char,
         start: usize,
+        string_ty: StringType,
     ) -> Result<Token<'ctx>, LexingError<'ctx>> {
         let mut is_backslash = false;
-        let mut s = String::new();
+        let mut s = Vec::new();
+
+        let allow_unicode = matches!(string_ty, StringType::Normal | StringType::CStr);
+        let allow_any_byte = matches!(string_ty, StringType::CStr | StringType::BStr);
+
+        fn pushc(s: &mut Vec<u8>, c: char) {
+            s.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
+        }
 
         loop {
             let Some(c) = self.peek() else {
@@ -989,19 +1011,37 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
             } else if is_backslash {
                 is_backslash = false;
                 match c {
-                    'n' => s.push('\n'),
-                    '0' => s.push('\0'),
-                    'r' => s.push('\r'),
-                    't' => s.push('\t'),
-                    'e' => s.push('\x1b'),
-                    'b' => s.push('\x08'),
-                    '\\' => s.push('\\'),
-                    '\'' => s.push('\''),
-                    '"' => s.push('"'),
-                    c if string_char == c => s.push(c),
+                    'n' => pushc(&mut s, '\n'),
+                    '0' if string_ty == StringType::CStr => {
+                        return Err(LexingError::NulEscapeInCStr(self.span(pos, 1)));
+                    }
+                    '0' => pushc(&mut s, '\0'),
+                    'r' => pushc(&mut s, '\r'),
+                    't' => pushc(&mut s, '\t'),
+                    'e' => pushc(&mut s, '\x1b'),
+                    'b' => pushc(&mut s, '\x08'),
+                    '\\' => pushc(&mut s, '\\'),
+                    '\'' => pushc(&mut s, '\''),
+                    '"' => pushc(&mut s, '"'),
+                    c if string_char == c => pushc(&mut s, c),
                     // 'x'.len_utf8() == 1; 'u'.len_utf8() == 1
-                    'x' => s.push(self.parse_xhh_escape(string_char, pos - 1)?),
-                    'u' => s.push(self.parse_unicode_escape(string_char, pos - 1)?),
+                    'x' => {
+                        let byte = self.parse_xhh_escape(string_char, pos - 1, allow_any_byte)?;
+                        if byte == 0 && matches!(string_ty, StringType::CStr) {
+                            return Err(LexingError::NulEscapeInCStr(self.span_from(pos)));
+                        }
+                        s.push(byte)
+                    }
+                    'u' => {
+                        let c = self.parse_unicode_escape(string_char, pos - 1)?;
+                        if !allow_unicode {
+                            return Err(LexingError::UnicodeInByteStr(self.span_from(pos)));
+                        }
+                        if c == '\0' && matches!(string_ty, StringType::CStr) {
+                            return Err(LexingError::NulEscapeInCStr(self.span_from(pos)));
+                        }
+                        pushc(&mut s, c);
+                    }
                     '\n' => loop {
                         match self.peek() {
                             None => {
@@ -1022,15 +1062,55 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
             } else if c == '\n' {
                 return Err(LexingError::UnclosedString(self.span(pos, 1)));
             } else {
-                s.push(c);
+                pushc(&mut s, c);
             }
         }
 
-        Ok(Token::new(
-            TokenType::StringLiteral,
-            Some(Literal::String(self.ctx.intern_str(&s))),
-            self.span_from(start),
-        ))
+        if matches!(string_ty, StringType::CStr) {
+            s.push(0);
+        }
+
+        match string_ty {
+            StringType::Normal => {
+                let s = str::from_utf8(&s).expect("normal strings only permit valid utf8");
+                Ok(Token::new(
+                    TokenType::StringLiteral,
+                    Some(Literal::String(self.ctx.intern_str(s))),
+                    self.span_from(start),
+                ))
+            }
+            StringType::CStr | StringType::BStr => Ok(Token::new(
+                TokenType::ByteStringLiteral,
+                Some(Literal::ByteString(self.ctx.intern_bstr(&s))),
+                self.span_from(start),
+            )),
+        }
+    }
+
+    // parses b"", c"", ...
+    fn parse_string_with_attrs(
+        &mut self,
+        attributes: String,
+        start: usize,
+    ) -> Result<Token<'ctx>, LexingError<'ctx>> {
+        let modifier_span = self.span_from(start);
+        // skip the opening quote
+        self.dismiss();
+        let mut string_ty = StringType::Normal;
+        let mut is_illegal_attribute = false;
+        for c in attributes.chars() {
+            match c {
+                'c' if string_ty == StringType::Normal => string_ty = StringType::CStr,
+                'b' if string_ty == StringType::Normal => string_ty = StringType::BStr,
+                _ => is_illegal_attribute = true,
+            }
+        }
+
+        let s = self.parse_string('"', start, string_ty)?;
+        if is_illegal_attribute {
+            return Err(LexingError::InvalidStringModifier(modifier_span));
+        }
+        Ok(s)
     }
 
     fn parse_identifier(
@@ -1059,6 +1139,9 @@ impl<'ctx, 'src> Lexer<'ctx, 'src> {
                     self.span_from(start),
                 )
             });
+        }
+        if self.peek() == Some('"') {
+            return self.parse_string_with_attrs(identifier, start);
         }
         Ok(match identifier.as_str() {
             "true" => Token::new(

@@ -1,7 +1,7 @@
 use mira_context::DocComment;
 #[cfg(test)]
 use mira_context::SharedCtx;
-use mira_spans::interner::SpanInterner;
+use mira_spans::interner::{ByteSymbol, SpanInterner};
 use mira_spans::{Ident, Span, Symbol};
 use std::fmt::{Debug, Display, Write};
 use std::str::FromStr;
@@ -48,6 +48,7 @@ token_type! {
     LogicalAnd = "&&",
     LogicalOr = "||",
     StringLiteral,
+    ByteStringLiteral,
     FloatLiteral,
     SIntLiteral,
     UIntLiteral,
@@ -305,6 +306,7 @@ pub enum Literal<'arena> {
     SInt(i64, NumberType),
     UInt(u64, NumberType),
     String(Symbol<'arena>),
+    ByteString(ByteSymbol<'arena>),
     Bool(bool),
     DocComment(DocComment),
 }
@@ -435,6 +437,10 @@ impl Display for Token<'_> {
                 Some(Literal::String(v)) => Debug::fmt(v, f),
                 _ => f.write_str("string(malformed data)"),
             },
+            TokenType::ByteStringLiteral => match &self.literal {
+                Some(Literal::ByteString(v)) => Debug::fmt(v, f),
+                _ => f.write_str("string(malformed data)"),
+            },
             TokenType::MacroInvocation => match &self.literal {
                 Some(Literal::String(v)) => {
                     display_ident(f, v)?;
@@ -462,6 +468,13 @@ impl<'arena> Token<'arena> {
     pub fn string_literal(&self) -> Symbol<'arena> {
         match &self.literal {
             Some(Literal::String(v)) => *v,
+            _ => unreachable!("{self} should only ever contain a string literal"),
+        }
+    }
+
+    pub fn byte_string_literal(&self) -> ByteSymbol<'arena> {
+        match &self.literal {
+            Some(Literal::ByteString(v)) => *v,
             _ => unreachable!("{self} should only ever contain a string literal"),
         }
     }

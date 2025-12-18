@@ -136,6 +136,14 @@ fn macro_concat<'ctx>(
             Some(Literal::Bool(v)) if v => concat_str.push_str("true"),
             Some(Literal::Bool(_)) => concat_str.push_str("false"),
             Some(Literal::String(ref v)) => concat_str.push_str(v),
+            Some(Literal::ByteString(ref v)) => {
+                for c in v.utf8_chunks() {
+                    concat_str.push_str(c.valid());
+                    if !c.invalid().is_empty() {
+                        concat_str.push(std::char::REPLACEMENT_CHARACTER);
+                    }
+                }
+            }
             Some(Literal::DocComment(v)) => ctx.with_doc_comment(v, |v| concat_str.push_str(v)),
         }
     }
@@ -271,6 +279,7 @@ fn macro_compile_error<'ctx>(
             Literal::SInt(v, _) => _ = diagnostics.add_compile_error(format!("{v}"), span),
             Literal::UInt(v, _) => _ = diagnostics.add_compile_error(format!("{v}"), span),
             Literal::String(v) => _ = diagnostics.add_compile_error(format!("{v}"), span),
+            Literal::ByteString(v) => _ = diagnostics.add_compile_error(format!("{v}"), span),
             Literal::Bool(v) => _ = diagnostics.add_compile_error(format!("{v}"), span),
         }
     } else {

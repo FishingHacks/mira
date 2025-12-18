@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, Write};
 
 use parking_lot::Mutex;
 
@@ -126,14 +126,106 @@ macro_rules! extra_traits {
     };
 }
 
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+pub struct Symbol<'arena>(ByteSymbol<'arena>);
+
+impl<'arena> Symbol<'arena> {
+    pub const EMPTY: Symbol<'static> = symbols::EMPTY_SYM;
+
+    pub const fn to_str(self) -> &'arena str {
+        unsafe { str::from_utf8_unchecked(self.0.0) }
+    }
+
+    pub const fn to_byte_sym(self) -> ByteSymbol<'arena> {
+        self.0
+    }
+}
+
+impl<'arena> std::ops::Deref for Symbol<'arena> {
+    type Target = &'arena str;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { std::mem::transmute::<&&'arena [u8], &&'arena str>(&self.0.0) }
+    }
+}
+
+impl Debug for Symbol<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self.to_str(), f)
+    }
+}
+
+impl Display for Symbol<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self.to_str(), f)
+    }
+}
+
+// interner!(
+//     SymbolInterner,
+//     Symbol,
+//     str,
+//     |arena, s| arena.alloc_str(s),
+//     symbols::ALL_SYMBOLS
+// );
+// extra_traits!(for Symbol impl debug, display);
+
 interner!(
-    SymbolInterner,
-    Symbol,
-    str,
-    |arena, s| arena.alloc_str(s),
+    ByteSymbolInterner,
+    ByteSymbol,
+    [u8],
+    |arena, bstr| arena.alloc_slice(bstr),
     symbols::ALL_SYMBOLS
 );
-extra_traits!(for Symbol impl debug, display);
+
+impl<'arena> ByteSymbolInterner<'arena> {
+    pub fn intern_str(&mut self, s: impl AsRef<str>) -> Symbol<'arena> {
+        let v = self.intern(s.as_ref().as_bytes());
+        Symbol(v)
+    }
+}
+
+impl Debug for ByteSymbol<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // b"ASDF\x00" will be printed as c"ASDF", and c"ASDF\0" will be printed as c"ASDF\0".
+        let bytes = if self.0.last().copied() == Some(0) {
+            f.write_str("c\"")?;
+            &self.0[..self.0.len() - 1]
+        } else {
+            f.write_str("b\"")?;
+            self.0
+        };
+        for c in bytes.utf8_chunks() {
+            Display::fmt(&c.valid().escape_default(), f)?;
+            for b in c.invalid() {
+                if *b == 0 {
+                    f.write_str("\\0")?;
+                } else {
+                    f.write_fmt(format_args!("\\x{b:02x}"))?;
+                }
+            }
+        }
+        f.write_char('"')
+    }
+}
+
+impl Display for ByteSymbol<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // b"ASDF\x00" will be printed as "ASDF, and ASDF\0 will be printed as ASDF\0.
+        let bytes = if self.0.last().copied() == Some(0) {
+            &self.0[..self.0.len() - 1]
+        } else {
+            self.0
+        };
+        for c in bytes.utf8_chunks() {
+            Display::fmt(&c.valid().escape_default(), f)?;
+            if !c.invalid().is_empty() {
+                f.write_char(std::char::REPLACEMENT_CHARACTER)?;
+            }
+        }
+        f.write_char('"')
+    }
+}
 
 mod span {
     use crate::arena::Arena;
@@ -161,26 +253,18 @@ impl<'arena> SpanInterner<'arena> {
     }
 }
 
-impl<'arena> Symbol<'arena> {
-    pub const EMPTY: Symbol<'static> = symbols::EMPTY_SYM;
-
-    pub fn to_str(self) -> &'arena str {
-        self.0
-    }
-}
-
 macro_rules! symbols {
     ($( $category:ident { $($sym:ident $(= $value:expr)?),* $(,)? } ),* $(,)?) => {
         pub mod symbols {
-        use super::Symbol;
-        pub static EMPTY_SYM: Symbol<'static> = Symbol("");
+        use super::{Symbol, ByteSymbol};
+        pub static EMPTY_SYM: Symbol<'static> = Symbol(ByteSymbol(b""));
 
         $(#[allow(non_upper_case_globals, non_snake_case)] pub mod $category {
-            use super::Symbol;
-            $(pub static $sym: Symbol<'static> = Symbol(symbols!(value $sym $(= $value)?));)*
+            use super::{Symbol, ByteSymbol};
+            $(pub static $sym: Symbol<'static> = Symbol(ByteSymbol(symbols!(value $sym $(= $value)?).as_bytes()));)*
         })*
 
-        pub(super) static ALL_SYMBOLS: &[&Symbol<'static>] = &[&EMPTY_SYM, $($(&$category::$sym),*),*];
+        pub(super) static ALL_SYMBOLS: &[&ByteSymbol<'static>] = &[&EMPTY_SYM.0, $($(&$category::$sym.0),*),*];
         }
     };
 
@@ -203,33 +287,36 @@ mod test {
     use super::*;
 
     fn addr(v: Symbol<'_>) -> usize {
-        <*const str>::addr(v.0)
+        <*const str>::addr(v.to_str())
     }
 
     #[test]
     fn interner_interns() {
         let arena = Arena::new();
-        let mut interner = SymbolInterner::new(&arena);
+        let mut interner = ByteSymbolInterner::new(&arena);
         println!(
             "u8 is {:p}, but supposed to be {:p}",
-            *interner.values.get("u8").unwrap(),
-            symbols::Types::u8.0
+            *interner.values.get("u8".as_bytes()).unwrap(),
+            symbols::Types::u8.to_str()
         );
         for symbol in symbols::ALL_SYMBOLS {
-            println!("all symbols {} is {:p}", symbol.0, symbol.0);
+            println!("all symbols {} is {:p}", **symbol, symbol.0);
         }
-        println!("pointer for empty symbol is {:p}", symbols::EMPTY_SYM.0);
-        let abcd1 = interner.intern("abcd");
-        let abcd2 = interner.intern("abcd");
-        let meow1 = interner.intern("meow");
-        let purr1 = interner.intern("purr");
-        let abcd3 = interner.intern("abcd");
-        let meow2 = interner.intern("meow");
-        let purr2 = interner.intern("purr");
+        println!(
+            "pointer for empty symbol is {:p}",
+            symbols::EMPTY_SYM.to_str()
+        );
+        let abcd1 = interner.intern_str("abcd");
+        let abcd2 = interner.intern_str("abcd");
+        let meow1 = interner.intern_str("meow");
+        let purr1 = interner.intern_str("purr");
+        let abcd3 = interner.intern_str("abcd");
+        let meow2 = interner.intern_str("meow");
+        let purr2 = interner.intern_str("purr");
 
-        let u8 = interner.intern("u8");
-        let u16 = interner.intern("u16");
-        let u32 = interner.intern("u32");
+        let u8 = interner.intern_str("u8");
+        let u16 = interner.intern_str("u16");
+        let u32 = interner.intern_str("u32");
 
         assert_eq!(abcd1, abcd2);
         assert_eq!(abcd2, abcd3);

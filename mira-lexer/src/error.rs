@@ -55,6 +55,10 @@ pub enum LexingError<'arena> {
     MultipleDecimalPoints(#[primary_label("Second decimal point")] Span<'arena>),
     #[error("Module-level doc comment have to be the first token in the file.")]
     InvalidModuleDocComment(#[primary_label("")] Span<'arena>),
+    #[error(
+        "invalid string modifier, valid string modifiers are b (for byte-strings) and c (for c-strings)"
+    )]
+    InvalidStringModifier(#[primary_label("invalid string modifier")] Span<'arena>),
     #[error("numeric character escape is too short")]
     UnterminatedNumericEscape(#[primary_label("")] Span<'arena>),
     #[error("invalid character in numeric escape: `{}`", _1.escape_debug())]
@@ -66,8 +70,15 @@ pub enum LexingError<'arena> {
     ),
     #[error("invalid escape character: `{}`. Valid escapes are: \\n, \\r, \\t, \\e, \\b, \\u{{...}}, and \\xHH", _1.escape_debug())]
     InvalidEscape(#[primary_label("")] Span<'arena>, char),
+    #[error("null characters in c string literals are not supported")]
+    NulEscapeInCStr(#[primary_label("")] Span<'arena>),
 
     // Unicode Escape (\u{...})
+
+    // unicode escape in a bstr ("b\u{ff}")
+    #[error("unicode escape sequence in byte string")]
+    #[note("unicode escape sequences cannot be used in a byte string")]
+    UnicodeInByteStr(#[primary_label("unicode escape sequence in byte string")] Span<'arena>),
 
     // "\u"
     #[error("incorrect unicode escape sequence")]

@@ -33,6 +33,7 @@ impl Tld<'_> {
             }
             TypedLiteral::Static(id) => f.write_fmt(format_args!("static_{}", id.to_usize())),
             TypedLiteral::String(sym) => f.write_debug(sym),
+            TypedLiteral::ByteString(sym) => f.write_debug(sym),
             TypedLiteral::Array(_, elements) => {
                 f.write_char('[')?;
                 for (idx, v) in elements.iter().enumerate() {
