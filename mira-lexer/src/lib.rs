@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 mod error;
 pub mod token;
+#[macro_use]
+mod quote;
+
 pub use error::{LexingError, LexingErrorDiagnosticsExt, LexingErrorEmitterExt};
 pub use token::{Literal, NumberType, Token, TokenType};
 
 pub use crate::token::{Delimiter, TTDelim, TokenTree};
-#[macro_use]
-mod quote;
 
 #[doc(hidden)]
 pub fn dummy_token(tokens: &mut Vec<Token<'static>>, ty: TokenType) {

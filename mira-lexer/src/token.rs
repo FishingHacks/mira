@@ -3,7 +3,10 @@ use mira_context::DocComment;
 use mira_context::SharedCtx;
 use mira_spans::interner::{ByteSymbol, SpanInterner};
 use mira_spans::{Ident, Span, Symbol};
+use std::alloc::Layout;
 use std::fmt::{Debug, Display, Write};
+use std::marker::PhantomData;
+use std::ptr::NonNull;
 use std::str::FromStr;
 
 use crate::Lexer;
@@ -169,8 +172,8 @@ impl Delimiter {
 pub struct TTDelim<'ctx> {
     pub open_span: Span<'ctx>,
     pub close_span: Span<'ctx>,
-    pub delimiter: Delimiter,
     pub children: Box<[TokenTree<'ctx>]>,
+    pub delimiter: Delimiter,
 }
 
 impl<'ctx> TTDelim<'ctx> {
